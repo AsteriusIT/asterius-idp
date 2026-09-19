@@ -3748,6 +3748,13 @@ async fn run_authorize(
     let sessions = scope.sessions();
     let clients = scope.clients(endpoints.capabilities);
     let subjects = scope.users(std::sync::Arc::clone(&endpoints.kek));
+    let memory = match memory_policy_for(endpoints, tenant).await {
+        Ok(memory) => memory,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
 
     // Every `cookie` field, not just the first (ast-bze).
     let language = page_language(endpoints, tenant, headers).await;
@@ -3788,7 +3795,7 @@ async fn run_authorize(
             users: &subjects,
             policy: decision_policy(),
             acr: acr_policy(),
-            memory: memory_policy(),
+            memory,
             nonce,
             mount,
         },
@@ -3819,21 +3826,6 @@ async fn run_authorize(
 /// day a chooser exists this is the line that changes.
 const fn decision_policy() -> asterius_oidc::decision::DecisionPolicy {
     asterius_oidc::decision::DecisionPolicy::new(false)
-}
-
-/// Whether this deployment remembers a consent it has already been given.
-///
-/// It does. A server that asks the same question every morning trains the
-/// person to answer it without reading it, which is the consent failure FAPI
-/// 2.0 SP §7 names, and OIDC Core §3.1.2.1's `prompt=none` cannot succeed at
-/// all without a memory to consult. The "always ask" tenant switch is the
-/// argument to this constructor and per-tenant settings are `ast-f7m.4`; the
-/// `offline_access` window keeps
-/// `asterius_oidc::consent_memory::DEFAULT_OFFLINE_ACCESS_MEMORY`, which is a
-/// decision with a reason written down beside it rather than a default nobody
-/// chose.
-const fn memory_policy() -> asterius_oidc::consent_memory::MemoryPolicy {
-    asterius_oidc::consent_memory::MemoryPolicy::new(false)
 }
 
 /// Which authentication contexts this deployment can produce (`ast-2vk.7`).
@@ -4085,6 +4077,23 @@ async fn requires_a_verified_email(
             .for_tenant(&tenant.id)
             .await?
             .require_verified_email()),
+    }
+}
+
+/// Whether remembered consent may skip this tenant's consent screen.
+///
+/// The default keeps the normal returning-user shortcut. A failed settings
+/// read is not treated as that default: doing so would silently disable the
+/// fresh decision a tenant explicitly required.
+async fn memory_policy_for(
+    endpoints: &ClientEndpoints,
+    tenant: &Tenant,
+) -> Result<asterius_oidc::consent_memory::MemoryPolicy, DomainError> {
+    match &endpoints.tenant_settings {
+        None => Ok(asterius_oidc::consent_memory::MemoryPolicy::default()),
+        Some(directory) => Ok(asterius_oidc::consent_memory::MemoryPolicy::new(
+            directory.for_tenant(&tenant.id).await?.always_ask_consent(),
+        )),
     }
 }
 
@@ -4376,6 +4385,13 @@ async fn interaction_show(
             return unavailable();
         }
     };
+    let memory = match memory_policy_for(&endpoints, &tenant).await {
+        Ok(memory) => memory,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
     // Grant Management ID1 §5.2. The same flag the pushed-request endpoint
     // read: a stored request can only name a `grant_id` if it was on then, and
     // a tenant that has switched it off since must not have the amendment made
@@ -4416,7 +4432,7 @@ async fn interaction_show(
             clients: &clients,
             grants: &grants,
             grant_amendments,
-            memory: memory_policy(),
+            memory,
             authorization_details_types: Some(&detail_types),
             codes: &codes,
             subjects: &users,
@@ -4479,6 +4495,13 @@ async fn interaction_submit(
             return unavailable();
         }
     };
+    let memory = match memory_policy_for(&endpoints, &tenant).await {
+        Ok(memory) => memory,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
     // Grant Management ID1 §5.2. The same flag the pushed-request endpoint
     // read: a stored request can only name a `grant_id` if it was on then, and
     // a tenant that has switched it off since must not have the amendment made
@@ -4519,7 +4542,7 @@ async fn interaction_submit(
             clients: &clients,
             grants: &grants,
             grant_amendments,
-            memory: memory_policy(),
+            memory,
             authorization_details_types: Some(&detail_types),
             codes: &codes,
             subjects: &users,

@@ -1257,6 +1257,18 @@ impl Flow {
         self.settings.invalidate();
     }
 
+    /// Requires a fresh consent decision even when this browser's grant
+    /// already covers the request, then drops the settings cache so the next
+    /// endpoint visit observes it.
+    async fn set_always_ask_consent(&self, always_ask: bool) {
+        let settings = TenantSettings::default().with_always_ask_consent(always_ask);
+        PgTenantSettings::new(self.store.pool().clone())
+            .save(&self.tenant.id, &settings)
+            .await
+            .expect("store the tenant's settings");
+        self.settings.invalidate();
+    }
+
     /// The stored binding of a code this flow was just handed.
     ///
     /// Read through the repository port rather than by a query of its own, and
@@ -2872,6 +2884,76 @@ async fn a_returning_user_is_sent_back_to_the_client_without_a_screen() {
     assert_eq!(
         second, first,
         "OIDC Core §2: a reused session keeps its auth_time"
+    );
+
+    flow.tear_down().await;
+}
+
+/// `ast-k5u`: a tenant may insist that remembered consent never removes the
+/// user's opportunity to reject an authorization.
+#[tokio::test]
+async fn always_ask_consent_shows_a_returning_user_a_deniable_screen() {
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    sign_in_and_consent(&mut flow).await;
+    flow.set_always_ask_consent(true).await;
+
+    let key = ProofKey::generate();
+    let request_uri = flow.push(&key).await;
+    let interaction = flow.authorize(&request_uri).await;
+    let page = flow.get(&interaction).await;
+
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    let html = page.text();
+    assert!(
+        html.contains(r#"name="decision" value="deny""#),
+        "the returning user was not given a denial control:\n{html}"
+    );
+    assert!(
+        !html.contains(r#"id="passkey-signin-button""#),
+        "the existing session was discarded instead of asking for consent:\n{html}"
+    );
+    let csrf = csrf_from(&html);
+    let denied = flow
+        .post_form(&interaction, &[("csrf", &csrf), ("decision", "deny")], None)
+        .await;
+    assert_eq!(denied.status, StatusCode::SEE_OTHER, "{}", denied.text());
+    assert_eq!(
+        parameter(&denied.location(), "error").as_deref(),
+        Some("access_denied")
+    );
+
+    flow.tear_down().await;
+}
+
+/// A silent request cannot manufacture the fresh consent the tenant requires.
+#[tokio::test]
+async fn always_ask_consent_makes_a_remembered_silent_request_consent_required() {
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    sign_in_and_consent(&mut flow).await;
+    flow.set_always_ask_consent(true).await;
+
+    let key = ProofKey::generate();
+    let request_uri = flow
+        .push_with(&key, &[("prompt", "none")])
+        .await
+        .request_uri();
+    let answered = flow.authorize_raw(&request_uri).await;
+
+    assert_eq!(
+        answered.status,
+        StatusCode::SEE_OTHER,
+        "{}",
+        answered.text()
+    );
+    assert_eq!(
+        parameter(&answered.location(), "error").as_deref(),
+        Some("consent_required")
     );
 
     flow.tear_down().await;
