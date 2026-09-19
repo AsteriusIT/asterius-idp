@@ -2353,7 +2353,7 @@ resolution, outbound fetching, caching and trust-policy code remain absent.
 
 *task · P4 · labels: track, spec:ietf-identity-assertion-authz-grant, status:draft*
 
-**Spec:** draft-ietf-oauth-identity-assertion-authz-grant-04 (IETF OAuth WG document; builds on RFC 8693 + RFC 7523); stable MCP Enterprise-Managed Authorization extension (`io.modelcontextprotocol/enterprise-managed-authorization`).
+**Spec:** [draft-ietf-oauth-identity-assertion-authz-grant-04](https://datatracker.ietf.org/doc/draft-ietf-oauth-identity-assertion-authz-grant/) (IETF OAuth WG document; builds on RFC 8693 + RFC 7523); [stable MCP Enterprise-Managed Authorization extension](https://github.com/modelcontextprotocol/ext-auth/blob/main/specification/stable/enterprise-managed-authorization.mdx) (`io.modelcontextprotocol/enterprise-managed-authorization`).
 
 IdP-brokered token issuance for third-party apps/agents inside an enterprise. The
 IdP mints an Identity Assertion JWT Authorization Grant (ID-JAG) through RFC
