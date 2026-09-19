@@ -24,6 +24,53 @@
       }
     },
     "schemas": {
+      "AcrPolicy": {
+        "additionalProperties": false,
+        "description": "Weakest first; names must be unique. User verification requires a passkey. Reserved passkey contexts cannot be weakened; hardware-protected contexts are unavailable. Empty levels disable ACR assertions, not administrator passkey requirements.",
+        "properties": {
+          "amr_in_id_token": {
+            "default": true,
+            "type": "boolean"
+          },
+          "levels": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "amr": {
+                  "items": {
+                    "enum": [
+                      "pwd",
+                      "swk",
+                      "user"
+                    ],
+                    "type": "string"
+                  },
+                  "minItems": 1,
+                  "type": "array",
+                  "uniqueItems": true
+                },
+                "value": {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "pattern": "^[!-~]+$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "value",
+                "amr"
+              ],
+              "type": "object"
+            },
+            "maxItems": 32,
+            "type": "array"
+          }
+        },
+        "required": [
+          "levels"
+        ],
+        "type": "object"
+      },
       "Error": {
         "properties": {
           "error": {
@@ -634,6 +681,254 @@
         "summary": "Streams this tenant's audit records as NDJSON, with the same filters as the listing",
         "x-asterius-reach": "tenant",
         "x-asterius-scope": "admin.audit:read"
+      }
+    },
+    "/admin/api/v1/authorization-details-types": {
+      "get": {
+        "operationId": "authorization_details_types.list",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.authorization_details_types:read"
+            ]
+          }
+        ],
+        "summary": "Lists this tenant's registered authorization-details types",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.authorization_details_types:read"
+      }
+    },
+    "/admin/api/v1/authorization-details-types/{type}": {
+      "delete": {
+        "operationId": "authorization_details_types.delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "type",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request conflicts with the current state, or its Idempotency-Key has already been used."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.authorization_details_types:write"
+            ]
+          }
+        ],
+        "summary": "Withdraws one authorization-details type",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.authorization_details_types:write"
+      },
+      "put": {
+        "operationId": "authorization_details_types.update",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "type",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request conflicts with the current state, or its Idempotency-Key has already been used."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.authorization_details_types:write"
+            ]
+          }
+        ],
+        "summary": "Creates or replaces one authorization-details type",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.authorization_details_types:write"
       }
     },
     "/admin/api/v1/clients": {
@@ -3193,7 +3488,7 @@
             ]
           }
         ],
-        "summary": "The signed-in administrator, their roles, and this session's CSRF token",
+        "summary": "The signed-in administrator, active workspace, roles, and this session's CSRF token",
         "x-asterius-reach": "authenticated",
         "x-asterius-scope": "admin.session:read"
       }
@@ -3728,6 +4023,11 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "properties": {
+                    "acr_policy": {
+                      "$ref": "#/components/schemas/AcrPolicy"
+                    }
+                  },
                   "type": "object"
                 }
               }
@@ -3801,6 +4101,36 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "description": "Omitting acr_policy preserves the stored policy. Updates are tenant-scoped, audited and visible on other replicas within 30 seconds.",
+                "properties": {
+                  "access_token_lifetime_seconds": {
+                    "maximum": 900,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "acr_policy": {
+                    "$ref": "#/components/schemas/AcrPolicy"
+                  },
+                  "authorization_code_lifetime_seconds": {
+                    "maximum": 60,
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "authorization_code_lifetime_seconds",
+                  "access_token_lifetime_seconds"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {

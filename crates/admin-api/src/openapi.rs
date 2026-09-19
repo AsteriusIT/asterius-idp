@@ -110,6 +110,7 @@ pub fn value() -> Value {
             "schemas": {
                 "Error": error_schema(),
                 "Page": page_schema(),
+                "AcrPolicy": acr_policy_schema(),
             },
             "parameters": {
                 "cursor": {
@@ -186,6 +187,27 @@ fn operation_object(operation: &Operation) -> Value {
         "responses": responses(operation),
     });
 
+    if operation.id() == crate::TENANT_SETTINGS_UPDATE_ID {
+        object["requestBody"] = json!({
+            "required": true,
+            "content": { "application/json": { "schema": {
+                "type": "object",
+                "required": ["authorization_code_lifetime_seconds", "access_token_lifetime_seconds"],
+                "properties": {
+                    "authorization_code_lifetime_seconds": {"type": "integer", "minimum": 1, "maximum": 60},
+                    "access_token_lifetime_seconds": {"type": "integer", "minimum": 1, "maximum": 900},
+                    "acr_policy": {"$ref": "#/components/schemas/AcrPolicy"}
+                },
+                "description": "Omitting acr_policy preserves the stored policy. Updates are tenant-scoped, audited and visible on other replicas within 30 seconds."
+            }}}
+        });
+    }
+    if operation.id() == crate::TENANT_SETTINGS_READ_ID {
+        object["responses"]["200"]["content"]["application/json"]["schema"] = json!({
+            "type": "object", "properties": { "acr_policy": {"$ref": "#/components/schemas/AcrPolicy"} }
+        });
+    }
+
     if let Some(fields) = object.as_object_mut() {
         if !parameters.is_empty() {
             fields.insert("parameters".to_owned(), Value::Array(parameters));
@@ -207,6 +229,24 @@ fn operation_object(operation: &Operation) -> Value {
     }
 
     object
+}
+
+/// The bounded, attainable authentication ladder persisted for a tenant.
+fn acr_policy_schema() -> Value {
+    json!({
+        "type": "object", "additionalProperties": false, "required": ["levels"],
+        "properties": {
+            "amr_in_id_token": {"type": "boolean", "default": true},
+            "levels": {"type": "array", "maxItems": 32, "items": {
+                "type": "object", "additionalProperties": false, "required": ["value", "amr"],
+                "properties": {
+                    "value": {"type": "string", "minLength": 1, "maxLength": 255, "pattern": "^[!-~]+$"},
+                    "amr": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "enum": ["pwd", "swk", "user"]}}
+                }
+            }}
+        },
+        "description": "Weakest first; names must be unique. User verification requires a passkey. Reserved passkey contexts cannot be weakened; hardware-protected contexts are unavailable. Empty levels disable ACR assertions, not administrator passkey requirements."
+    })
 }
 
 /// The two reads of the trail take the same filters (`ast-lh3.9`).

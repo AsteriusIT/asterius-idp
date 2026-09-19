@@ -244,7 +244,7 @@ pub struct PdpIssuance {
     /// and the bench use, and that function resolves facts before it evaluates.
     subjects: Box<dyn SubjectFacts>,
     /// This deployment's authentication ladder, which `attach` reads.
-    acr: &'static AcrPolicy,
+    acr: AcrPolicy,
     /// The cache and the posture.
     guard: std::sync::Arc<IssuanceGuard>,
     /// When the request arrived: the clock reading that decides which grants
@@ -260,17 +260,17 @@ impl PdpIssuance {
     /// version that referred to an engine and a fact resolver made every caller
     /// keep three locals whose lifetimes had to line up by hand.
     #[must_use]
-    pub const fn new(
+    pub fn new(
         engine: Box<dyn PolicyEngine>,
         subjects: Box<dyn SubjectFacts>,
-        acr: &'static AcrPolicy,
+        acr: &AcrPolicy,
         guard: std::sync::Arc<IssuanceGuard>,
         now: OffsetDateTime,
     ) -> Self {
         Self {
             engine,
             subjects,
-            acr,
+            acr: acr.clone(),
             guard,
             now,
         }
@@ -292,7 +292,13 @@ impl IssuancePolicy for PdpIssuance {
         tenant: &TenantId,
         query: &IssuanceQuery,
     ) -> Result<IssuanceDecision, DomainError> {
-        let key = query.cache_key();
+        // A cached decision under another assurance definition is not reusable,
+        // including on replicas whose policy cache expires before this cache.
+        let key = format!(
+            "{}:{}",
+            query.cache_key(),
+            asterius_domain::sha256_hex(self.acr.to_json().to_string().as_bytes())
+        );
         if let Some(decision) = self.guard.cached(tenant, &key, self.now) {
             return Ok(decision);
         }
@@ -300,7 +306,7 @@ impl IssuancePolicy for PdpIssuance {
         let decision = decide_without_enforcing(
             self.engine.as_ref(),
             self.subjects.as_ref(),
-            self.acr,
+            &self.acr,
             tenant,
             &request,
             self.now,
@@ -981,6 +987,38 @@ mod tests {
                  "subject_type": "agent", "resource_type": "token",
                  "actions": ["obtain_token"]}]"#,
         )
+    }
+
+    #[tokio::test]
+    async fn assurance_policy_change_does_not_reuse_a_cached_permit() {
+        let guard = std::sync::Arc::new(IssuanceGuard::new(false));
+        let now = OffsetDateTime::now_utc();
+        let old = PdpIssuance::new(
+            Box::new(asterius_domain::policy::DeclarativeEngine::new(
+                std::sync::Arc::new(Stored(permitting())),
+            )),
+            Box::new(NoFacts),
+            &AcrPolicy::default(),
+            guard.clone(),
+            now,
+        );
+        assert!(old.permits(&tenant(), &sample()).await.unwrap().permitted());
+        let changed = PdpIssuance::new(
+            Box::new(asterius_domain::policy::DeclarativeEngine::new(
+                std::sync::Arc::new(Stored(asterius_domain::policy::RuleSet::deny_all())),
+            )),
+            Box::new(NoFacts),
+            &AcrPolicy::empty(),
+            guard,
+            now,
+        );
+        assert!(
+            !changed
+                .permits(&tenant(), &sample())
+                .await
+                .unwrap()
+                .permitted()
+        );
     }
 
     #[tokio::test]

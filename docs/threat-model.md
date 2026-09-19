@@ -2177,3 +2177,16 @@ useful it would be.
    residual risks above end at a resource server this project does not ship
    (T-A12, T-A13, T-A1). A review that treats "the RS will check `aud`" as an
    assumption should say so explicitly in its report.
+
+### Tenant assurance policy changes (`ast-6uqw.3`)
+
+An administrator can redefine an ACR label while browsers and offline grants still
+carry that label. Treating the string as proof would silently upgrade existing
+sessions. Authorization and consent therefore check actual recorded AMR against
+the current tenant definition, and token issuance drops stale ACR assertions.
+Administrator passkey/UV guards remain independent of editable policy. Settings
+writes enforce tenant RBAC and CSRF, validate attainable methods and reserved
+passkey names, and audit the change. Settings lookup failures fail closed; another
+replica may serve its previously cached policy for up to 30 seconds. Already
+issued tokens retain their original claims until expiry or explicit revocation.
+See [tenant assurance policy](tenant-assurance-policy.md) for operational behavior.

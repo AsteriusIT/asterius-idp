@@ -833,9 +833,14 @@ impl Handling<'_> {
             .await
             .map_err(|error| AdminError::from_storage("tenants.settings.read", &error))?;
 
-        // Read before the new settings are assembled, because an absent
-        // `registration_policy` means "keep the stored one": `TenantSettings`
-        // is replaced wholesale here, so anything not carried over is deleted.
+        // Older consoles omit newer policies; omission preserves the stored
+        // value instead of silently changing another security control.
+        let acr_policy = match &requested.acr_policy {
+            None => previous.acr_policy().clone(),
+            Some(document) => asterius_domain::AcrPolicy::from_json(document)
+                .map_err(|error| AdminError::Invalid(error.to_string()))?,
+        };
+
         let registration = match &requested.registration_policy {
             None => previous.registration().clone(),
             Some(document) => asterius_domain::RegistrationPolicy::from_json(Some(document))
@@ -873,22 +878,26 @@ impl Handling<'_> {
             }
         };
 
-        // The one line this whole operation exists for. `TenantSettings` has
-        // private fields and one constructor, so there is no way past it.
-        let settings = TenantSettings::validated(
-            disabled,
-            time::Duration::seconds(requested.authorization_code_lifetime_seconds),
-            time::Duration::seconds(requested.access_token_lifetime_seconds),
-        )
-        .map_err(|refusal| AdminError::Invalid(refusal.to_string()))?
-        .with_registration(registration)
-        .with_default_locale(default_locale)
-        .with_messages(messages)
-        .with_always_ask_consent(
-            requested
-                .always_ask_consent
-                .unwrap_or(previous.always_ask_consent()),
-        );
+        // Start from the stored settings so unrelated policies survive older
+        // clients. Every changed field still crosses its domain validator.
+        let settings = previous
+            .clone()
+            .with_protocol_settings(
+                disabled,
+                time::Duration::seconds(requested.authorization_code_lifetime_seconds),
+                time::Duration::seconds(requested.access_token_lifetime_seconds),
+            )
+            .map_err(|refusal| AdminError::Invalid(refusal.to_string()))?
+            .with_acr_policy(acr_policy)
+            .map_err(|error| AdminError::Invalid(error.to_string()))?
+            .with_registration(registration)
+            .with_default_locale(default_locale)
+            .with_messages(messages)
+            .with_always_ask_consent(
+                requested
+                    .always_ask_consent
+                    .unwrap_or(previous.always_ask_consent()),
+            );
 
         repository
             .save(&named, &settings)
@@ -3383,6 +3392,9 @@ struct RequestedTenantStatus {
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RequestedSettings {
+    /// Omitted by older consoles: preserve the current policy.
+    #[serde(default)]
+    acr_policy: Option<serde_json::Value>,
     #[serde(default)]
     disabled_features: Vec<String>,
     authorization_code_lifetime_seconds: i64,
@@ -3442,6 +3454,7 @@ fn render_settings(tenant: &TenantId, settings: &TenantSettings) -> serde_json::
         // so a console shows the rules that are in force — including the ones
         // a preset expanded into.
         "registration_policy": settings.registration().to_json(),
+        "acr_policy": settings.acr_policy().to_json(),
         // OIDC Core §3.1.2.1's last layer, and the wording this tenant has
         // substituted. Rendered from the stored settings rather than echoed
         // from a request, like the policy above.
@@ -3495,6 +3508,14 @@ fn settings_diff(tenant: &TenantId, before: &TenantSettings, after: &TenantSetti
                 "access_token_lifetime_seconds.after",
                 after.lifetimes().access_token().whole_seconds(),
             );
+    }
+    if before.acr_policy() != after.acr_policy() {
+        detail = detail
+            .text(
+                "acr_policy.before",
+                before.acr_policy().to_json().to_string(),
+            )
+            .text("acr_policy.after", after.acr_policy().to_json().to_string());
     }
     if before.always_ask_consent() != after.always_ask_consent() {
         detail = detail
@@ -10620,6 +10641,82 @@ mod tests {
             unrelated["messages"]["consent.allow"], "Continuer",
             "a save that did not mention the wording deleted it: {unrelated}"
         );
+    }
+
+    #[tokio::test]
+    async fn assurance_policy_is_scoped_audited_and_preserved_when_omitted() {
+        let world = World::new();
+        let policy = serde_json::json!({"amr_in_id_token": false, "levels": [
+            {"value": "tenant:verified", "amr": ["swk", "user"]}
+        ]});
+        let mut body = settings_body(60, 300);
+        body["acr_policy"] = policy.clone();
+        let response = put_settings(&world, body).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_of(response).await["acr_policy"], policy);
+        let stored = body_of(put_settings(&world, settings_body(45, 300)).await).await;
+        assert_eq!(stored["acr_policy"], policy);
+        let settings = world.handle.0.settings.lock().unwrap();
+        assert_eq!(settings["acme"].acr_policy().to_json(), policy);
+        assert!(!settings.contains_key("sibling"));
+        let events = world.handle.0.events.lock().unwrap();
+        assert!(events.iter().any(|event| {
+            event
+                .detail
+                .iter()
+                .any(|(key, _)| key == "acr_policy.after")
+        }));
+    }
+
+    #[tokio::test]
+    async fn assurance_policy_update_preserves_unrelated_security_settings() {
+        let world = World::new();
+        let previous = TenantSettings::from_json(Some(&serde_json::json!({
+            "disabled_features": ["grant_management"],
+            "grant_management_action_required": true,
+            "grant_id_in_access_token": false,
+            "require_verified_email": true,
+            "revoke_refresh_on_logout": true
+        })))
+        .unwrap();
+        world
+            .handle
+            .0
+            .settings
+            .lock()
+            .unwrap()
+            .insert("acme".to_owned(), previous.clone());
+        let mut body = settings_body(60, 300);
+        body["acr_policy"] = serde_json::json!({"levels": []});
+        assert_eq!(put_settings(&world, body).await.status(), StatusCode::OK);
+        let all = world.handle.0.settings.lock().unwrap();
+        let stored = all["acme"].to_json();
+        for field in [
+            "grant_management_action_required",
+            "grant_id_in_access_token",
+            "require_verified_email",
+            "revoke_refresh_on_logout",
+        ] {
+            assert_eq!(stored[field], previous.to_json()[field], "changed {field}");
+        }
+    }
+
+    #[tokio::test]
+    async fn assurance_policy_api_refuses_unattainable_or_weakened_admin_contexts() {
+        for (name, methods) in [
+            ("custom", vec!["otp"]),
+            ("phr", vec!["pwd"]),
+            (asterius_domain::acr::PASSKEY_USER_VERIFIED, vec!["swk"]),
+        ] {
+            let world = World::new();
+            let mut body = settings_body(60, 300);
+            body["acr_policy"] = serde_json::json!({"levels": [{"value": name, "amr": methods}]});
+            assert_eq!(
+                put_settings(&world, body).await.status(),
+                StatusCode::BAD_REQUEST
+            );
+            assert!(world.handle.0.settings.lock().unwrap().is_empty());
+        }
     }
 
     /// The consent switch is part of the public settings document, and an

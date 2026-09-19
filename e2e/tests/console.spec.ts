@@ -397,6 +397,19 @@ test('a lifetime above the profile ceiling is refused and the reason is shown', 
   await expect(page.getByRole('status')).toHaveCount(0);
 });
 
+test('authentication assurance editor reads the policy and shows server validation', async ({ page }) => {
+  await signIn(page);
+  await openSettings(page);
+  await page.getByRole('tab', { name: 'Authentication', exact: true }).click();
+  await expect(page.getByLabel('Context 1 value', { exact: true })).not.toHaveValue('');
+  await expect(page.getByLabel('Include authentication methods in ID tokens')).toBeVisible();
+  await page.getByRole('button', { name: 'Add authentication context' }).click();
+  await page.getByRole('button', { name: 'Save settings' }).click();
+  await expect(page.getByRole('alert')).toContainText(/acr value.*empty/i);
+  await page.getByRole('button', { name: 'Discard changes' }).click();
+  await expect(page.getByRole('button', { name: 'Discard changes' })).toBeDisabled();
+});
+
 test('the tenant settings screen has no accessibility violation', async ({ page }, testInfo) => {
   // Arrange
   await signIn(page);

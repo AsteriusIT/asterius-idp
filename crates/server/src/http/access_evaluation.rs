@@ -827,6 +827,23 @@ fn attach(
 /// met. `None` when no live grant carries an `acr`, which satisfies no
 /// `acr_at_least` condition at all.
 fn authenticated_acr(policy: &AcrPolicy, grants: &[Grant], now: OffsetDateTime) -> Option<String> {
+    // A changed label cannot upgrade historical proof. Do not discard an
+    // invalid weaker grant and then report only a stronger sibling grant.
+    if grants
+        .iter()
+        .filter(|grant| grant.status(now) == asterius_domain::GrantStatus::Active)
+        .filter_map(|grant| grant.authentication.as_ref())
+        .any(|authentication| {
+            authentication.acr.as_deref().is_some_and(|value| {
+                policy
+                    .level(value)
+                    .is_none_or(|level| !level.is_met_by(&authentication.amr))
+            })
+        })
+    {
+        return None;
+    }
+
     let rank = |value: &str| {
         policy
             .levels()
@@ -1387,6 +1404,48 @@ mod tests {
     use asterius_domain::keys::SigningAlgorithm;
     use asterius_domain::{Issuer, TenantStatus};
     use serde_json::json;
+
+    #[test]
+    fn assurance_policy_changes_cannot_upgrade_a_grants_historical_proof() {
+        use asterius_domain::{AcrLevel, AuthenticationMethod};
+        let now = OffsetDateTime::UNIX_EPOCH;
+        let old = AcrPolicy::new(vec![
+            AcrLevel::new("custom", [AuthenticationMethod::Password]).unwrap(),
+        ])
+        .unwrap();
+        let tightened = AcrPolicy::new(vec![
+            AcrLevel::new(
+                "custom",
+                [
+                    AuthenticationMethod::Passkey,
+                    AuthenticationMethod::UserVerified,
+                ],
+            )
+            .unwrap(),
+        ])
+        .unwrap();
+        let mut grant = Grant::new(tenant().id, ClientId::new("client"), now);
+        grant.claimed_at = Some(now);
+        grant.authentication = Some(asterius_domain::GrantAuthentication {
+            authenticated_at: now,
+            acr: Some("custom".to_owned()),
+            amr: vec![AuthenticationMethod::Password],
+        });
+        assert_eq!(
+            authenticated_acr(&old, std::slice::from_ref(&grant), now),
+            Some("custom".to_owned())
+        );
+        assert_eq!(
+            authenticated_acr(&tightened, std::slice::from_ref(&grant), now),
+            None
+        );
+        let mut strong = grant.clone();
+        strong.authentication.as_mut().unwrap().amr = vec![
+            AuthenticationMethod::Passkey,
+            AuthenticationMethod::UserVerified,
+        ];
+        assert_eq!(authenticated_acr(&tightened, &[grant, strong], now), None);
+    }
 
     fn tenant() -> Tenant {
         Tenant {

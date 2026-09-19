@@ -74,6 +74,11 @@ fuzz_target!(|case: Case| {
         && let Ok(parsed) = AcrPolicy::from_json(&document)
     {
         check(&parsed);
+        if parsed.validate_attainable().is_ok() {
+            let settings = asterius_domain::TenantSettings::default().with_acr_policy(parsed.clone())
+                .expect("validated attainable policy");
+            assert_eq!(asterius_domain::TenantSettings::from_json(Some(&settings.to_json())).unwrap(), settings);
+        }
         let again = AcrPolicy::from_json(&parsed.to_json()).expect("a policy this build wrote");
         assert_eq!(
             again, parsed,

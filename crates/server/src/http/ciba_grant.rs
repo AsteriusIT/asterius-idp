@@ -83,6 +83,8 @@ const INVALID_GRANT: &str = "the auth_req_id cannot be redeemed";
 /// fields are facts about *this* request: the instant it arrived and the key
 /// it proved possession of.
 pub struct CibaGrant<'a> {
+    /// Current tenant assurance policy, resolved once for this issuance.
+    pub acr_policy: &'a asterius_domain::AcrPolicy,
     /// Backchannel authentication requests for this tenant.
     pub ciba_requests: &'a PgCibaRequestRepository,
     /// Grants for this tenant.
@@ -147,6 +149,7 @@ impl<'a> CibaGrant<'a> {
             users: code.users,
             roles: code.roles,
             signer: code.signer,
+            acr_policy: code.acr_policy,
             audit,
             grant_management: code.grant_management,
             grant_id_claim: code.grant_id_claim,
@@ -285,7 +288,8 @@ impl CibaGrant<'_> {
         }
         let claimed = self.grants.claim(&redeemed.grant_id, self.now).await?;
 
-        let session = issuance::session_facts(self.sessions, &grant).await?;
+        let mut session = issuance::session_facts(self.sessions, &grant).await?;
+        session.revalidate_acr(self.acr_policy);
         // OIDC Back-Channel Logout 1.0 §2.3, as at the code grant: a client
         // that obtained an ID token in this person's session is a relying
         // party that has to be told when it ends.
@@ -335,6 +339,7 @@ impl CibaGrant<'_> {
         // flow has no authorization request to have carried one.
         let id_token = if grant.scopes.contains("openid") {
             let parts = issuance::IdTokenParts {
+                acr_policy: self.acr_policy,
                 claimed: &claimed,
                 session: &session,
                 access_token: access_token.as_str(),
