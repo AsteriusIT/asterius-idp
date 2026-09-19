@@ -527,10 +527,10 @@ async fn a_malformed_request_uri_is_refused_without_a_lookup() {
     }
 }
 
-/// A second `/authorize` on one `request_uri` is a replay, and the store
-/// refuses it. The browser gets a page, not somebody else's flow.
+/// A storage race or interaction-id collision is still a page, never a
+/// redirect built from a request whose ownership could not be established.
 #[tokio::test]
-async fn a_second_authorize_on_one_request_uri_is_refused() {
+async fn a_failure_to_begin_the_interaction_is_refused() {
     let minted = MintedRequestUri::generate();
     let mut store = Store::with(request("billing", minted.digest(), later()));
     store.fail_begin = true;

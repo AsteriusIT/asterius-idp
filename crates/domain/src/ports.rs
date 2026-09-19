@@ -929,10 +929,10 @@ pub trait AuthRequestRepository: Debug + Send + Sync {
     /// Spends a reference, if it is live.
     ///
     /// Must be atomic. FAPI 2.0 SP §5.3.2.2 Note 3 puts one-time use at the
-    /// *completion* of authorization, not at page load, so two tabs that both
-    /// reach the consent screen are fine and two that both submit are not —
-    /// and the second must lose. A read followed by a write would let both
-    /// win, which is the whole attack.
+    /// *completion* of authorization, not at page load. Page loading therefore
+    /// does not spend the reference; the interaction port may replace an
+    /// unfinished browser binding. Completion remains single-use, and a read
+    /// followed by a write would let two completions win.
     ///
     /// # Errors
     ///
@@ -975,12 +975,19 @@ pub trait InteractionRepository: Debug + Send + Sync {
     /// the client's `request_uri` or the browser's interaction id — and
     /// neither is derivable from the other.
     ///
+    /// A later arrival with the same `request_uri` replaces the browser
+    /// identity and resets its interaction progress. FAPI 2.0 SP §5.3.2.2
+    /// Note 3 recommends enforcing one-time use at authorization rather than
+    /// when the page is loaded: an operating-system or browser preloader must
+    /// not strand the real browser on an already-used reference. Replacing the
+    /// identity makes the earlier, possibly preloaded, page inert without
+    /// giving the later browser its state.
+    ///
     /// # Errors
     ///
-    /// [`DomainError::NotFound`] if the request is gone or already consumed,
-    /// and [`DomainError::Conflict`] if it already has an interaction: a
-    /// second `/authorize` on one `request_uri` is a replay, not a retry, and
-    /// re-keying the row would hand the second browser the first one's flow.
+    /// [`DomainError::NotFound`] if the request is gone, expired or already
+    /// consumed, and [`DomainError::Conflict`] if the new interaction digest
+    /// is already in use.
     async fn begin_interaction(
         &self,
         request_uri_digest: &str,
@@ -1023,9 +1030,9 @@ pub trait InteractionRepository: Debug + Send + Sync {
     /// This is where FAPI 2.0 SP §5.3.2.2 Note 3's one-time use actually
     /// happens. Not at page load — a user who reloads the consent screen has
     /// done nothing wrong — but here, at *completion*, which is the only point
-    /// where spending it prevents anything. Two tabs that both reach the
-    /// consent screen are fine; two that both submit must produce one
-    /// authorization response, and this is the statement that decides which.
+    /// where spending it prevents anything. Two racing submissions must
+    /// produce one authorization response, and this is the statement that
+    /// decides which.
     ///
     /// Must be atomic for the same reason [`AuthRequestRepository::consume`]
     /// must be: a read followed by a write lets both tabs win, and both

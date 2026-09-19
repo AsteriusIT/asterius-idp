@@ -3,10 +3,10 @@
 //! The interesting statement is `consume`: one `update ... where consumed_at
 //! is null and expires_at > now returning ...`, so the check and the spend are
 //! the same statement. FAPI 2.0 SP §5.3.2.2 Note 3 puts one-time use at the
-//! completion of authorization rather than at page load, which means two tabs
-//! may both *render* the consent screen — and exactly one may submit it.
-//! Reading and then writing would let both submit, which is the race the
-//! requirement exists to close.
+//! completion of authorization rather than at page load. A later arrival may
+//! therefore replace an unfinished browser interaction, while exactly one
+//! interaction may complete. Reading and then writing would let two
+//! completions win, which is the race the requirement exists to close.
 
 use crate::error::to_domain_error;
 use asterius_domain::{
@@ -183,16 +183,25 @@ impl asterius_domain::InteractionRepository for PgAuthRequestRepository {
         let request = Self::digest_bytes(request_uri_digest)?;
         let interaction = Self::digest_bytes(interaction_digest)?;
 
-        // `interaction_id_hash is null` in the predicate is what makes a second
-        // `/authorize` on one `request_uri` a conflict rather than a re-key. A
-        // read-then-write here would let two browsers race for one flow, and
-        // the loser would be holding a cookie for a request the winner owns.
+        // A new arrival replaces any unfinished interaction. FAPI 2.0 SP
+        // §5.3.2.2 Note 3 exists for software that preloads an authorization
+        // URL: loading the page must not spend the `request_uri` before the
+        // real browser arrives. Reset every browser-owned field at the same
+        // time, so the replacement cannot inherit authentication progress,
+        // session binding or a passkey challenge from the preloaded page.
+        //
+        // This update races safely with `complete_interaction`: the row lock
+        // makes either the completion consume the request first, or this
+        // replacement make the earlier interaction id inert first.
         let updated = sqlx::query!(
             "update auth_requests
-                set interaction_id_hash = $3
+                set interaction_id_hash = $3,
+                    interaction_state = '{}'::jsonb,
+                    session_id = null,
+                    passkey_challenge = null,
+                    passkey_challenge_expires_at = null
               where tenant_id = $1
                 and request_uri_hash = $2
-                and interaction_id_hash is null
                 and consumed_at is null
                 and expires_at > $4",
             self.tenant.as_str(),
@@ -213,24 +222,10 @@ impl asterius_domain::InteractionRepository for PgAuthRequestRepository {
             return Ok(());
         }
 
-        // Nothing matched. Distinguish "no such request" from "already has an
-        // interaction" for the log; the caller renders one page for both.
-        let existing = sqlx::query!(
-            "select interaction_id_hash from auth_requests
-              where tenant_id = $1 and request_uri_hash = $2",
-            self.tenant.as_str(),
-            request,
-        )
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(to_domain_error)?;
-
-        Err(match existing {
-            Some(row) if row.interaction_id_hash.is_some() => {
-                DomainError::Conflict("the request already has an interaction".to_owned())
-            }
-            _ => DomainError::NotFound,
-        })
+        // Absent, expired and consumed are deliberately one store answer. The
+        // HTTP layer renders one page for all three and must not become an
+        // oracle for the lifetime of a bearer credential.
+        Err(DomainError::NotFound)
     }
 
     async fn by_interaction(

@@ -5486,12 +5486,10 @@ mod interactions {
     }
 
     db_test! {
-        /// A second `/authorize` on one `request_uri` is a replay, not a retry.
-        ///
-        /// Re-keying the row would hand the second browser the first one's
-        /// flow, and the first would be left holding a cookie for a request
-        /// somebody else now owns.
-        async fn a_request_accepts_only_one_interaction(db) {
+        /// FAPI 2.0 SP §5.3.2.2 Note 3: loading an authorization page must not
+        /// spend the `request_uri`. A real browser arriving after a preloader
+        /// replaces the unfinished interaction, without inheriting its state.
+        async fn a_request_can_replace_an_unfinished_interaction(db) {
             seed_client(&db.pool, "demo").await;
             let repo = PgAuthRequestRepository::new(db.pool.clone(), TenantId::new("demo"));
             let pushed = request("demo", "once", later());
@@ -5501,28 +5499,38 @@ mod interactions {
             repo.begin_interaction(&pushed.request_uri_digest, &first, OffsetDateTime::now_utc())
                 .await
                 .expect("first");
+            repo.save_interaction_state(
+                &first,
+                &serde_json::json!({"stage": "consent"}),
+                Some("a-session-digest"),
+                OffsetDateTime::now_utc(),
+            )
+            .await
+            .expect("save progress");
 
             let second = digest("second-browser");
-            let error = repo
-                .begin_interaction(&pushed.request_uri_digest, &second, OffsetDateTime::now_utc())
-                .await
-                .expect_err("a second interaction must be refused");
-            assert!(matches!(error, DomainError::Conflict(_)), "{error:?}");
+            repo.begin_interaction(
+                &pushed.request_uri_digest,
+                &second,
+                OffsetDateTime::now_utc(),
+            )
+            .await
+            .expect("the real browser replaces the preload");
 
-            // The first browser still owns it, and the second's id resolves
-            // to nothing.
             assert!(
                 repo.by_interaction(&first, OffsetDateTime::now_utc())
                     .await
                     .expect("read")
-                    .is_some()
+                    .is_none(),
+                "the preloader's browser credential still resolves"
             );
-            assert!(
-                repo.by_interaction(&second, OffsetDateTime::now_utc())
-                    .await
-                    .expect("read")
-                    .is_none()
-            );
+            let replacement = repo
+                .by_interaction(&second, OffsetDateTime::now_utc())
+                .await
+                .expect("read")
+                .expect("the replacement must resolve");
+            assert_eq!(replacement.state, serde_json::json!({}));
+            assert_eq!(replacement.session, None);
         }
     }
 
