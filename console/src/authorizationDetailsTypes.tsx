@@ -62,7 +62,10 @@ export function AuthorizationDetailsTypes({ session }: { session: Session }): JS
     setName(item.type); setSchema(JSON.stringify(item.schema, null, 2)); setTemplate(item.consent_template ?? '');
   };
 
-  return <Screen title="Authorization details" description={`RFC 9396 request types accepted by ${session.workspace}.`}>
+  // These are the authorization detail types defined by RFC 9396. Keep that
+  // implementation reference here; the operator-facing copy uses product
+  // language instead of asking its reader to interpret a specification number.
+  return <Screen title="Authorization details" description={`Structured authorization request types accepted by ${session.workspace}.`}>
     {notice !== null && <Message tone="success">{notice}</Message>}
     {error !== null && <Message tone="error">{error}</Message>}
     {mayWrite && <Panel title="Register or update a type" description="Schemas use the supported JSON Schema subset and are validated again by the server.">
