@@ -219,6 +219,69 @@ input.capability-switch:checked::before { transform: translateX(15px); }
 input.capability-switch:disabled { opacity: .5; cursor: default; }
 .tenant-configuration form > .actions { border-top: 1px solid var(--line); margin-top: 28px; padding-top: 22px; justify-content: flex-end; }
 .lifetime-settings .field { max-width: 620px; margin-top: 24px; }
+
+/* Authentication assurance: a sortable ladder rather than numbered fields. */
+.assurance-editor { max-width: 920px; }
+.assurance-release-row { display: flex; align-items: center; gap: 16px; padding: 16px 18px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-sunken); cursor: pointer; }
+.assurance-release-icon { display: grid; place-items: center; width: 40px; height: 40px; flex: none; color: var(--accent); border-radius: 9px; background: var(--tint-accent); }
+.assurance-release-icon svg { width: 20px; height: 20px; }
+.assurance-release-copy { display: grid; flex: 1; gap: 2px; min-width: 0; }
+.assurance-release-copy strong { font-size: 14px; font-weight: 600; }
+.assurance-release-copy > span { color: var(--muted); font-size: 13px; }
+.assurance-flow-heading { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 12px; margin: 28px 0 12px 24px; color: var(--muted); font-size: 11px; font-weight: 650; letter-spacing: .07em; text-transform: uppercase; }
+.assurance-flow-line { height: 1px; background: linear-gradient(90deg, var(--line), var(--accent)); }
+.assurance-flow { display: grid; }
+.assurance-flow-item { position: relative; display: grid; grid-template-columns: 48px minmax(0, 1fr); align-items: stretch; padding-bottom: 16px; }
+.assurance-flow-item:last-child { padding-bottom: 0; }
+.assurance-flow-item::before { content: ''; position: absolute; top: 30px; bottom: -2px; left: 23px; width: 2px; background: var(--line); }
+.assurance-flow-item:last-child::before { display: none; }
+.assurance-node { position: relative; z-index: 1; display: flex; justify-content: center; padding-top: 19px; }
+.assurance-node span { display: grid; place-items: center; width: 28px; height: 28px; border: 2px solid var(--line); border-radius: 50%; background: var(--card); color: var(--muted); font-size: 12px; font-weight: 700; transition: border-color var(--motion), background var(--motion), color var(--motion); }
+.assurance-flow-item:hover .assurance-node span, .assurance-flow-item.is-drop-target .assurance-node span { border-color: var(--accent); color: var(--accent); }
+.assurance-card { min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background: var(--card); box-shadow: var(--shadow-sm); transition: border-color var(--motion), box-shadow var(--motion), transform var(--motion); }
+.assurance-flow-item:hover .assurance-card { border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); box-shadow: var(--shadow); }
+.assurance-flow-item.is-dragging .assurance-card { opacity: .45; transform: scale(.99); }
+.assurance-flow-item.is-drop-target .assurance-card { border-color: var(--accent); box-shadow: 0 0 0 2px var(--tint-accent); }
+.assurance-card-header { display: flex; align-items: center; gap: 12px; min-height: 76px; padding: 14px 16px 14px 10px; background: var(--surface-sunken); border-bottom: 1px solid var(--line); }
+.assurance-drag-handle { display: grid; place-items: center; width: 34px; height: 44px; flex: none; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--muted); cursor: grab; touch-action: none; user-select: none; }
+.assurance-drag-handle:hover { color: var(--fg); background: color-mix(in srgb, var(--line) 65%, transparent); }
+.assurance-drag-handle:active { cursor: grabbing; }
+.assurance-drag-handle[aria-disabled='true'] { opacity: .5; cursor: default; }
+.assurance-drag-handle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.assurance-drag-handle svg { width: 19px; height: 19px; }
+.assurance-card-title { display: grid; flex: 1; min-width: 0; gap: 1px; }
+.assurance-level-label { color: var(--accent); font-size: 10px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
+.assurance-card-title h3 { overflow: hidden; font-size: 15px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.assurance-requirement { color: var(--muted); font-size: 12px; }
+.assurance-requirement.warning { color: var(--warning); }
+.assurance-card-actions { display: flex; align-items: center; gap: 2px; }
+.assurance-card-actions button { width: 34px; padding: 0; }
+.assurance-card-actions svg, .assurance-add svg { width: 16px; height: 16px; }
+.assurance-card-actions button:last-child { color: var(--muted); }
+.assurance-card-actions button:last-child:hover { color: var(--danger); }
+.assurance-card-body { display: grid; grid-template-columns: minmax(220px, .9fr) minmax(360px, 1.4fr); align-items: start; gap: 24px; padding: 18px; }
+.assurance-card-body .field { margin: 0; }
+.assurance-methods { min-width: 0; margin: 0; padding: 0; border: 0; }
+.assurance-methods > legend { margin-bottom: 7px; padding: 0; font-size: 13px; font-weight: 550; }
+.assurance-method-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.assurance-method { position: relative; display: flex; align-items: center; min-width: 0; gap: 8px; min-height: 58px; margin: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); cursor: pointer; transition: border-color var(--motion), background var(--motion); }
+.assurance-method:hover { border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); }
+.assurance-method.selected { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); background: var(--tint-accent); }
+.assurance-method input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.assurance-method:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.assurance-method-icon { display: grid; place-items: center; width: 30px; height: 30px; flex: none; border-radius: 7px; color: var(--muted); background: var(--surface-sunken); }
+.assurance-method.selected .assurance-method-icon { color: var(--accent); background: var(--card); }
+.assurance-method-icon svg { width: 15px; height: 15px; }
+.assurance-method > span:last-child { display: grid; min-width: 0; }
+.assurance-method strong { overflow: hidden; font-size: 12px; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
+.assurance-method small { overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.assurance-method.selected small { color: color-mix(in srgb, var(--fg) 55%, var(--muted)); }
+.assurance-empty { display: grid; justify-items: center; gap: 5px; padding: 36px 20px; border: 1px dashed var(--line); border-radius: 10px; color: var(--muted); text-align: center; }
+.assurance-empty svg { width: 28px; height: 28px; margin-bottom: 3px; }
+.assurance-empty strong { color: var(--fg); font-size: 14px; }
+.assurance-empty span { font-size: 13px; }
+.assurance-add { margin: 16px 0 0 48px; }
+.assurance-footnote { margin: 16px 0 0 48px; color: var(--muted); font-size: 12px; }
 .role-catalogue-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 24px; margin-bottom: 24px; }
 .role-catalogue-toolbar p { margin: 0; }
 .role-catalogue-toolbar button { flex-shrink: 0; }
@@ -228,5 +291,19 @@ input.capability-switch:disabled { opacity: .5; cursor: default; }
 @media (max-width: 600px) {
   .capability-row { padding: 18px 14px; gap: 12px; }
   .capability-icon, .capability-state { display: none; }
+  .assurance-release-row { padding: 14px; }
+  .assurance-release-icon, .assurance-release-row .capability-state { display: none; }
+  .assurance-flow-heading { margin-left: 0; }
+  .assurance-flow-item { grid-template-columns: 32px minmax(0, 1fr); }
+  .assurance-flow-item::before { left: 15px; }
+  .assurance-node { padding-top: 20px; }
+  .assurance-node span { width: 24px; height: 24px; }
+  .assurance-card-header { align-items: flex-start; flex-wrap: wrap; padding: 12px; }
+  .assurance-drag-handle { width: 28px; height: 36px; }
+  .assurance-card-title { flex-basis: calc(100% - 44px); }
+  .assurance-card-actions { width: 100%; justify-content: flex-end; padding-left: 40px; }
+  .assurance-card-body { grid-template-columns: 1fr; gap: 18px; padding: 14px; }
+  .assurance-method-grid { grid-template-columns: 1fr; }
+  .assurance-add, .assurance-footnote { margin-left: 32px; }
   .role-catalogue-toolbar { align-items: flex-start; gap: 16px; }
 }

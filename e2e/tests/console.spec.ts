@@ -401,9 +401,26 @@ test('authentication assurance editor reads the policy and shows server validati
   await signIn(page);
   await openSettings(page);
   await page.getByRole('tab', { name: 'Authentication', exact: true }).click();
-  await expect(page.getByLabel('Context 1 value', { exact: true })).not.toHaveValue('');
+  await expect(page.getByLabel('Assurance level 1 ACR value', { exact: true })).not.toHaveValue('');
   await expect(page.getByLabel('Include authentication methods in ID tokens')).toBeVisible();
-  await page.getByRole('button', { name: 'Add authentication context' }).click();
+  await expect(page.getByText('Weakest', { exact: true })).toBeVisible();
+  await expect(page.getByText('Strongest', { exact: true })).toBeVisible();
+  const accessibility = await new AxeBuilder({ page })
+    .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
+    .analyze();
+  expect(accessibility.violations).toEqual([]);
+  const first = page.getByLabel('Assurance level 1 ACR value', { exact: true });
+  const second = page.getByLabel('Assurance level 2 ACR value', { exact: true });
+  const firstValue = await first.inputValue();
+  const secondValue = await second.inputValue();
+  await page.getByRole('button', { name: /Reorder assurance level 1:/ }).dragTo(
+    page.locator('.assurance-flow-item').nth(1),
+  );
+  await expect(first).toHaveValue(secondValue);
+  await expect(second).toHaveValue(firstValue);
+  await page.getByRole('button', { name: 'Move assurance level 2 earlier' }).click();
+  await expect(first).toHaveValue(firstValue);
+  await page.getByRole('button', { name: 'Add assurance level' }).click();
   await page.getByRole('button', { name: 'Save settings' }).click();
   await expect(page.getByRole('alert')).toContainText(/acr value.*empty/i);
   await page.getByRole('button', { name: 'Discard changes' }).click();
