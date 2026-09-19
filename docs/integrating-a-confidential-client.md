@@ -190,12 +190,50 @@ Two ways out, in order of preference:
    }
    ```
 
-   The set must be public material only — a `d` component anywhere in it and
-   the whole set is refused as a disclosure, not as a parse error.
+   The set must contain public material only. A key with `d`, `p`, `q`, `dp`,
+   `dq`, `qi`, `oth` or `k`, even set to `null`, or with `kty: "oct"`, causes
+   the whole registration to be refused.
 
 2. **A non-loopback host the server can actually reach.** Inside the compose
    network, a service name resolving to a container address is *still* private
    space and still refused. This route means a genuinely public DNS name.
+
+### Upgrade preflight: previously stored private JWKS
+
+Earlier versions could store inline private or symmetric JWK material. Before
+upgrading, run this read-only check against the deployment database. It reports
+only tenant and client IDs, including disabled clients; it never selects key
+material:
+
+```sql
+SELECT tenant_id, client_id
+FROM clients
+WHERE EXISTS (
+    SELECT 1
+    FROM jsonb_array_elements(
+        CASE WHEN jsonb_typeof(jwks -> 'keys') = 'array'
+             THEN jwks -> 'keys' ELSE '[]'::jsonb END
+    ) AS entry(key)
+    WHERE key ->> 'kty' = 'oct'
+       OR key ?| ARRAY['d', 'p', 'q', 'dp', 'dq', 'qi', 'oth', 'k']
+)
+ORDER BY tenant_id, client_id;
+```
+
+Treat real private keys found this way as exposed: generate replacement keys
+in the application and update or re-register the client with only the new public
+JWKS before upgrading. Coordinate the application's key change with its
+registration. Do not merely strip private fields and keep using the same key.
+Handle any historical copies according to the deployment's incident process;
+do not paste key material into logs or tickets.
+
+The PostgreSQL adapter (`crates/store-pg/src/clients.rs`, `Row::into_entity`)
+uses the same metadata validation as registration. After upgrading, an affected
+stored row fails closed on reads, and one invalid row makes the tenant's client
+inventory request fail. Disabling that row does not bypass validation. There is
+no automatic sanitation migration or permissive read fallback; existing public
+JWKS registrations continue to work. This query checks the new private-material
+restriction, not every possible metadata validation error.
 
 ## 4. DPoP
 
