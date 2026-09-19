@@ -400,6 +400,7 @@ fn limits(max: u32) -> EndpointLimits {
         token: plain,
         userinfo: plain,
         introspection: plain,
+        revocation: plain,
         ssf_subjects: EndpointLimit {
             per_address: limit,
             per_client: Some(limit),

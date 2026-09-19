@@ -612,6 +612,11 @@ mod tests {
             registration: plain,
             client_configuration: plain,
             introspection: plain,
+            revocation: asterius_domain::EndpointLimit {
+                per_address: limit(2),
+                per_client: Some(limit(5)),
+                per_subject: None,
+            },
             par: asterius_domain::EndpointLimit {
                 per_address: limit(2),
                 per_client: Some(limit(5)),
@@ -717,6 +722,51 @@ mod tests {
 
         // Assert
         assert_eq!(elsewhere.status(), StatusCode::OK);
+    }
+
+    /// Revocation has a dedicated budget: exhausting it refuses before the
+    /// expensive handler and tells an RFC 7009 client when it may retry.
+    #[tokio::test]
+    async fn revocation_exhaustion_returns_429_without_running_the_handler() {
+        // Arrange
+        let store = Counters::default();
+        let trail = Trail::default();
+        let context = context(&store, &trail);
+        for _ in 0..2 {
+            guard(&context, LimitedEndpoint::Revocation, None, ok).await;
+        }
+        let called = std::sync::atomic::AtomicBool::new(false);
+
+        // Act
+        let refused = guard(&context, LimitedEndpoint::Revocation, None, async || {
+            called.store(true, std::sync::atomic::Ordering::Relaxed);
+            StatusCode::OK.into_response()
+        })
+        .await;
+
+        // Assert
+        assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(refused.headers().contains_key(header::RETRY_AFTER));
+        assert!(!called.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    /// A revocation flood must not deny token exchange: both operations verify
+    /// assertions, but operators configure and observe them independently.
+    #[tokio::test]
+    async fn revocation_exhaustion_does_not_spend_the_token_budget() {
+        // Arrange
+        let store = Counters::default();
+        let trail = Trail::default();
+        let context = context(&store, &trail);
+        for _ in 0..3 {
+            guard(&context, LimitedEndpoint::Revocation, None, ok).await;
+        }
+
+        // Act
+        let token = guard(&context, LimitedEndpoint::Token, None, ok).await;
+
+        // Assert
+        assert_eq!(token.status(), StatusCode::OK);
     }
 
     /// The property the whole design turns on: a client that authenticates is

@@ -530,6 +530,8 @@ struct RawLimits {
     userinfo_per_address: Option<u32>,
     introspection_per_address: Option<u32>,
     introspection_per_client: Option<u32>,
+    revocation_per_address: Option<u32>,
+    revocation_per_client: Option<u32>,
     ssf_subjects_per_address: Option<u32>,
     ssf_subjects_per_client: Option<u32>,
     backchannel_per_address: Option<u32>,
@@ -855,6 +857,20 @@ pub(crate) const DEFAULT_LIMIT_INTROSPECTION_PER_ADDRESS: u32 = 600;
 /// token scanning: every answer to a scan is a 200 saying `active: false`, so
 /// nothing else tells a caller walking values to stop.
 pub(crate) const DEFAULT_LIMIT_INTROSPECTION_PER_CLIENT: u32 = 3_000;
+
+/// Token revocation — per address, per window (RFC 7009, `ast-1sk.7`).
+///
+/// Every attempt authenticates a client and can therefore cost a public-key
+/// signature verification before an invalid token receives RFC 7009's empty
+/// success response. Sized like `/token`, which bears the same authentication
+/// cost.
+pub(crate) const DEFAULT_LIMIT_REVOCATION_PER_ADDRESS: u32 = 120;
+
+/// The same, per authenticated client.
+///
+/// Revocation is normally rare, but a client may withdraw a batch after an
+/// incident. This leaves that work room without sharing `/token`'s budget.
+pub(crate) const DEFAULT_LIMIT_REVOCATION_PER_CLIENT: u32 = 1_200;
 
 /// The SSF add-subject and remove-subject endpoints — per address, per window.
 ///
@@ -1359,6 +1375,26 @@ fn configured_introspection_limit(
     }
 }
 
+/// What `POST /revoke` permits per window (RFC 7009, `ast-1sk.7`).
+fn configured_revocation_limit(
+    raw: &RawLimits,
+    limit: &mut dyn FnMut(&str, Option<u32>, u32) -> RateLimit,
+) -> EndpointLimit {
+    EndpointLimit {
+        per_address: limit(
+            "limits.revocation_per_address",
+            raw.revocation_per_address,
+            DEFAULT_LIMIT_REVOCATION_PER_ADDRESS,
+        ),
+        per_client: Some(limit(
+            "limits.revocation_per_client",
+            raw.revocation_per_client,
+            DEFAULT_LIMIT_REVOCATION_PER_CLIENT,
+        )),
+        per_subject: None,
+    }
+}
+
 fn configured_endpoint_limits(
     raw: &RawLimits,
     limit: &mut dyn FnMut(&str, Option<u32>, u32) -> RateLimit,
@@ -1423,6 +1459,7 @@ fn configured_endpoint_limits(
             per_subject: None,
         },
         introspection: configured_introspection_limit(raw, limit),
+        revocation: configured_revocation_limit(raw, limit),
         backchannel: EndpointLimit {
             per_address: limit(
                 "limits.backchannel_per_address",
@@ -2354,6 +2391,10 @@ mod tests {
             config.limits.token.per_client.map(|limit| limit.max),
             Some(DEFAULT_LIMIT_TOKEN_PER_CLIENT)
         );
+        assert_eq!(
+            config.limits.revocation.per_client.map(|limit| limit.max),
+            Some(DEFAULT_LIMIT_REVOCATION_PER_CLIENT)
+        );
     }
 
     /// The endpoints do not share one number: a limit sized for UserInfo's
@@ -2372,8 +2413,9 @@ mod tests {
     #[test]
     fn endpoint_limits_are_read_from_the_file() {
         // Arrange
-        let text =
-            format!("{MINIMAL}\n[limits]\nwindow_seconds = 30\nregistration_per_address = 3\n");
+        let text = format!(
+            "{MINIMAL}\n[limits]\nwindow_seconds = 30\nregistration_per_address = 3\nrevocation_per_address = 7\nrevocation_per_client = 11\n"
+        );
 
         // Act
         let config = parse(&text).expect("a valid limits table");
@@ -2394,6 +2436,11 @@ mod tests {
         assert_eq!(
             config.limits.token.per_address.max,
             DEFAULT_LIMIT_TOKEN_PER_ADDRESS
+        );
+        assert_eq!(config.limits.revocation.per_address.max, 7);
+        assert_eq!(
+            config.limits.revocation.per_client.map(|limit| limit.max),
+            Some(11)
         );
     }
 
