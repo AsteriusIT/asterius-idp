@@ -40,8 +40,8 @@ use crate::idempotency::{self, IdempotencyKey};
 use crate::operations::{Method, Operation};
 use crate::pagination::{Cursor, Page, PageRequest};
 use crate::{
-    audit, clients, csrf, initial_access_tokens, keys, openapi, outbox, policies, ssf, throttle,
-    users,
+    audit, clients, csrf, initial_access_tokens, keys, openapi, outbox, policies, resource_servers,
+    ssf, throttle, users,
 };
 
 /// The client address, as this crate sees it.
@@ -288,6 +288,10 @@ async fn route(
         crate::CLIENT_READ_ID => context.read_client().await,
         crate::CLIENT_CREATE_ID => context.create_client(body).await,
         crate::CLIENT_UPDATE_ID => context.update_client(body).await,
+        crate::RESOURCE_SERVERS_LIST_ID => context.list_resource_servers().await,
+        crate::RESOURCE_SERVER_READ_ID => context.read_resource_server().await,
+        crate::RESOURCE_SERVER_UPDATE_ID => context.update_resource_server(body).await,
+        crate::RESOURCE_SERVER_WITHDRAW_ID => context.withdraw_resource_server().await,
         crate::REGISTRATION_READ_ID => Ok(context.read_registration_gate()),
         crate::INITIAL_ACCESS_TOKENS_LIST_ID => context.list_initial_access_tokens().await,
         crate::INITIAL_ACCESS_TOKEN_CREATE_ID => context.issue_initial_access_token(body).await,
@@ -1077,6 +1081,112 @@ impl Handling<'_> {
         .await;
 
         Ok(json_no_store(StatusCode::OK, &clients::document(&stored)))
+    }
+
+    /// `GET /resource-servers` — the exact audiences future tokens may name.
+    async fn list_resource_servers(&self) -> Result<Response, AdminError> {
+        let servers = self
+            .state
+            .backend
+            .resource_servers(&self.tenant.id)
+            .list()
+            .await
+            .map_err(|error| AdminError::from_storage(crate::RESOURCE_SERVERS_LIST_ID, &error))?;
+        let items = servers
+            .iter()
+            .map(resource_servers::render)
+            .collect::<Vec<_>>();
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({ "items": items }),
+        ))
+    }
+
+    /// `GET /resource-servers/{identifier}` — exact-string lookup inside this tenant.
+    async fn read_resource_server(&self) -> Result<Response, AdminError> {
+        let identifier = self.resource_identifier_in_path()?;
+        let server = self
+            .state
+            .backend
+            .resource_servers(&self.tenant.id)
+            .list()
+            .await
+            .map_err(|error| AdminError::from_storage(crate::RESOURCE_SERVER_READ_ID, &error))?
+            .into_iter()
+            .find(|server| server.identifier.as_str() == identifier)
+            .ok_or(AdminError::NotFound)?;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &resource_servers::render(&server),
+        ))
+    }
+
+    /// `PUT /resource-servers/{identifier}` — one idempotent upsert.
+    async fn update_resource_server(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let identifier = self.resource_identifier_in_path()?;
+        let requested: resource_servers::Document = self.parse_body(body).await?;
+        let server = resource_servers::parse(&identifier, requested)?;
+        self.state
+            .backend
+            .resource_servers(&self.tenant.id)
+            .register(&server)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::RESOURCE_SERVER_UPDATE_ID, &error))?;
+        self.record(
+            EventType::ADMIN_CHANGED,
+            Detail::new()
+                .label("operation", crate::RESOURCE_SERVER_UPDATE_ID)
+                .text("identifier", server.identifier.as_str()),
+        )
+        .await;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &resource_servers::render(&server),
+        ))
+    }
+
+    /// `DELETE /resource-servers/{identifier}` — stop future issuance to it.
+    async fn withdraw_resource_server(&self) -> Result<Response, AdminError> {
+        let identifier = self.resource_identifier_in_path()?;
+        let withdrawn = self
+            .state
+            .backend
+            .resource_servers(&self.tenant.id)
+            .withdraw(&identifier)
+            .await
+            .map_err(|error| {
+                AdminError::from_storage(crate::RESOURCE_SERVER_WITHDRAW_ID, &error)
+            })?;
+        if !withdrawn {
+            return Err(AdminError::NotFound);
+        }
+        self.record(
+            EventType::ADMIN_CHANGED,
+            Detail::new()
+                .label("operation", crate::RESOURCE_SERVER_WITHDRAW_ID)
+                .text("identifier", &identifier),
+        )
+        .await;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({ "withdrawn": true }),
+        ))
+    }
+
+    /// Percent-decodes the one-segment representation emitted by
+    /// `encodeURIComponent`; the decoded value is validated before a write.
+    fn resource_identifier_in_path(&self) -> Result<String, AdminError> {
+        let segment = self
+            .path
+            .rsplit('/')
+            .next()
+            .filter(|value| !value.is_empty())
+            .ok_or(AdminError::NotFound)?;
+        let encoded = format!("value={}", segment.replace('+', "%2B"));
+        url::form_urlencoded::parse(encoded.as_bytes())
+            .next()
+            .map(|(_, value)| value.into_owned())
+            .ok_or(AdminError::NotFound)
     }
 
     /// `GET /registration` — the dynamic registration gate, as configured.
@@ -3405,6 +3515,7 @@ mod tests {
         key_schedules: Mutex<BTreeMap<String, RotationSchedule>>,
         minted: Mutex<u32>,
         clients: Mutex<Vec<Client>>,
+        resource_servers: Mutex<Vec<(TenantId, asterius_domain::ResourceServer)>>,
         capabilities: Mutex<asterius_domain::Capabilities>,
         /// Sectors this fake will confirm. A registration naming anything else
         /// is refused, which is how a test reaches OIDC Registration §5's
@@ -3506,6 +3617,64 @@ mod tests {
 
     #[derive(Debug, Clone)]
     struct Handle(Arc<Fake>);
+
+    #[derive(Debug, Clone)]
+    struct FakeResourceServers {
+        handle: Handle,
+        tenant: TenantId,
+    }
+
+    #[async_trait::async_trait]
+    impl asterius_domain::ports::ResourceServerRepository for FakeResourceServers {
+        async fn list(&self) -> Result<Vec<asterius_domain::ResourceServer>, DomainError> {
+            let mut rows = self
+                .handle
+                .0
+                .resource_servers
+                .lock()
+                .expect("an uncontended lock")
+                .iter()
+                .filter(|(tenant, _)| tenant == &self.tenant)
+                .map(|(_, server)| server.clone())
+                .collect::<Vec<_>>();
+            rows.sort_by(|a, b| a.identifier.as_str().cmp(b.identifier.as_str()));
+            Ok(rows)
+        }
+
+        async fn register(
+            &self,
+            server: &asterius_domain::ResourceServer,
+        ) -> Result<(), DomainError> {
+            let mut rows = self
+                .handle
+                .0
+                .resource_servers
+                .lock()
+                .expect("an uncontended lock");
+            if let Some((_, held)) = rows.iter_mut().find(|(tenant, held)| {
+                tenant == &self.tenant && held.identifier == server.identifier
+            }) {
+                *held = server.clone();
+            } else {
+                rows.push((self.tenant.clone(), server.clone()));
+            }
+            Ok(())
+        }
+
+        async fn withdraw(&self, identifier: &str) -> Result<bool, DomainError> {
+            let mut rows = self
+                .handle
+                .0
+                .resource_servers
+                .lock()
+                .expect("an uncontended lock");
+            let before = rows.len();
+            rows.retain(|(tenant, server)| {
+                tenant != &self.tenant || server.identifier.as_str() != identifier
+            });
+            Ok(rows.len() < before)
+        }
+    }
 
     #[async_trait::async_trait]
     impl asterius_domain::ports::PolicyStore for Handle {
@@ -4905,6 +5074,16 @@ mod tests {
             Arc::new(self.clone())
         }
 
+        fn resource_servers(
+            &self,
+            tenant: &TenantId,
+        ) -> Arc<dyn asterius_domain::ports::ResourceServerRepository> {
+            Arc::new(FakeResourceServers {
+                handle: self.clone(),
+                tenant: tenant.clone(),
+            })
+        }
+
         fn application_roles(&self) -> Arc<dyn asterius_domain::ApplicationRoleDirectory> {
             Arc::new(self.clone())
         }
@@ -4949,6 +5128,8 @@ mod tests {
     /// Shaped like one this server mints (`c.` and 22 `base64url` symbols) so
     /// that the routes are exercised with the identifiers they will really see.
     const SEEDED_CLIENT_ID: &str = "c.SeededClientSeededClien";
+    const SEEDED_RESOURCE: &str = "https://api.example/";
+    const SEEDED_RESOURCE_PATH: &str = "https%3A%2F%2Fapi.example%2F";
 
     /// The account every tenant in the fixture holds, and the value
     /// `{user_id}` is replaced with when a test walks the registry.
@@ -5178,6 +5359,24 @@ mod tests {
         }
     }
 
+    fn seed_resource_server(handle: &Handle, tenant: &str) {
+        handle
+            .0
+            .resource_servers
+            .lock()
+            .expect("an uncontended lock")
+            .push((
+                TenantId::new(tenant),
+                asterius_domain::ResourceServer {
+                    identifier: asterius_domain::ResourceIdentifier::parse(SEEDED_RESOURCE)
+                        .expect("a fixed resource identifier"),
+                    scopes: None,
+                    default_token_lifetime: None,
+                    introspection_clients: std::collections::BTreeSet::new(),
+                },
+            ));
+    }
+
     /// A deployment holding two tenants, with a signed-in user in each whose
     /// roles the caller chooses.
     struct World {
@@ -5227,6 +5426,7 @@ mod tests {
                     .lock()
                     .expect("an uncontended lock")
                     .push(seeded_client(id, SEEDED_CLIENT_ID));
+                seed_resource_server(&handle, id);
                 // One account per tenant, with one live session, one passkey
                 // and one authorization, so that every `{user_id}`, `{sid}`,
                 // `{credential_id}` and `{grant_id}` in the registry names
@@ -5531,6 +5731,7 @@ mod tests {
             .replace("{tenant_id}", "acme")
             .replace("{kid}", SEEDED_KID)
             .replace("{client_id}", SEEDED_CLIENT_ID)
+            .replace("{identifier}", SEEDED_RESOURCE_PATH)
             .replace("{user_id}", SEEDED_USER_ID)
             .replace("{sid}", SEEDED_SID)
             .replace("{credential_id}", SEEDED_CREDENTIAL_ID)
@@ -5589,6 +5790,9 @@ mod tests {
             // the same document `POST /register` takes, validated by the same
             // call.
             crate::CLIENT_CREATE_ID | crate::CLIENT_UPDATE_ID => valid_registration(),
+            crate::RESOURCE_SERVER_UPDATE_ID => serde_json::json!({
+                "scopes": ["accounts:read", "accounts:write"]
+            }),
             // A label is the one thing an issuance requires: the quota is the
             // tenant's and the expiry is optional (`ast-cu3`).
             crate::INITIAL_ACCESS_TOKEN_CREATE_ID => serde_json::json!({"label": "onboarding"}),
@@ -7149,6 +7353,38 @@ mod tests {
                 response.status()
             );
         }
+    }
+
+    #[tokio::test]
+    async fn resource_server_changes_are_tenant_scoped() {
+        // Arrange: deployment authority can visit both workspaces, so a
+        // refusal cannot hide an adapter accidentally scoped to the caller.
+        let mut world = World::new().routed_at("acme");
+        let cookie = world.sign_in("asterius-admin", &[Role::DeploymentAdmin]);
+        let update = world
+            .send(
+                request_for(&crate::RESOURCE_SERVER_UPDATE)
+                    .header(
+                        "cookie",
+                        format!(
+                            "{}={cookie}",
+                            asterius_domain::entities::session::COOKIE_NAME
+                        ),
+                    )
+                    .header(csrf::HEADER, csrf::token(&cookie))
+                    .body(body_for(&crate::RESOURCE_SERVER_UPDATE))
+                    .expect("a request"),
+            )
+            .await;
+        assert_eq!(update.status(), StatusCode::OK);
+
+        // Act: read the same identifier through the sibling tenant.
+        world.api_tenant = Arc::new(tenant_named("other"));
+        let response = world.get(&crate::RESOURCE_SERVER_READ, &cookie).await;
+
+        // Assert: the sibling retained its unrestricted registration.
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_of(response).await["scopes"], serde_json::Value::Null);
     }
 
     // ---- the authenticator a deployment admin must have used (`ast-895`) ---

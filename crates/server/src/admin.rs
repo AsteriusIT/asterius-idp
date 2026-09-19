@@ -1362,6 +1362,16 @@ impl AdminBackend for Deployment {
         })
     }
 
+    fn resource_servers(
+        &self,
+        tenant: &TenantId,
+    ) -> Arc<dyn asterius_domain::ports::ResourceServerRepository> {
+        Arc::new(asterius_store_pg::PgResourceServers::new(
+            self.store.pool().clone(),
+            tenant.clone(),
+        ))
+    }
+
     fn capabilities(&self) -> Capabilities {
         self.capabilities
     }

@@ -12,6 +12,7 @@ import { Keys } from './keys';
 import { DESTINATIONS, visibleTo } from './navigation';
 import { Policy } from './policy';
 import { Preferences } from './preferences';
+import { ResourceServers } from './resourceServers';
 import { hrefOf, paramsOf, routeOf } from './routes';
 import { TenantSettings } from './settings';
 import { Tenants } from './tenants';
@@ -157,6 +158,9 @@ function RouteScreen({
   }
   if (route === 'clients') {
     return <Clients session={session} />;
+  }
+  if (route === 'resources') {
+    return <ResourceServers session={session} />;
   }
   if (route === 'keys') {
     return <Keys session={session} />;

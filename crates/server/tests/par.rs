@@ -57,6 +57,20 @@ impl ResourceServerRepository for FakeResourceServers {
     async fn list(&self) -> Result<Vec<ResourceServer>, DomainError> {
         Ok(self.0.clone())
     }
+
+    async fn register(&self, _server: &ResourceServer) -> Result<(), DomainError> {
+        Err(DomainError::invalid(
+            "resource_server",
+            "read-only test fake",
+        ))
+    }
+
+    async fn withdraw(&self, _identifier: &str) -> Result<bool, DomainError> {
+        Err(DomainError::invalid(
+            "resource_server",
+            "read-only test fake",
+        ))
+    }
 }
 
 /// The registry every test here pushes against.
