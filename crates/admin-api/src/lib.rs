@@ -58,6 +58,7 @@ pub mod outbox;
 pub mod pagination;
 pub mod policies;
 pub mod rbac;
+pub mod resource_servers;
 pub mod roles;
 pub mod router;
 pub mod ssf;
@@ -110,6 +111,14 @@ pub const CLIENT_READ_ID: &str = "clients.read";
 pub const CLIENT_CREATE_ID: &str = "clients.create";
 /// The `operationId` of `PUT /clients/{client_id}`.
 pub const CLIENT_UPDATE_ID: &str = "clients.update";
+/// The `operationId` of `GET /resource-servers`.
+pub const RESOURCE_SERVERS_LIST_ID: &str = "resource_servers.list";
+/// The `operationId` of `GET /resource-servers/{identifier}`.
+pub const RESOURCE_SERVER_READ_ID: &str = "resource_servers.read";
+/// The `operationId` of `PUT /resource-servers/{identifier}`.
+pub const RESOURCE_SERVER_UPDATE_ID: &str = "resource_servers.update";
+/// The `operationId` of `DELETE /resource-servers/{identifier}`.
+pub const RESOURCE_SERVER_WITHDRAW_ID: &str = "resource_servers.withdraw";
 /// The `operationId` of `GET /registration`.
 pub const REGISTRATION_READ_ID: &str = "registration.read";
 /// The `operationId` of `GET /initial-access-tokens`.
@@ -360,6 +369,42 @@ pub const CLIENT_UPDATE: Operation = Operation::mutation(
     M::Put,
     A::new(R::Tenant, "admin.clients:write"),
     "Replaces one client's registration",
+);
+
+/// The audiences this tenant issues access tokens for.
+pub const RESOURCE_SERVERS_LIST: Operation = Operation::read(
+    RESOURCE_SERVERS_LIST_ID,
+    "/resource-servers",
+    S::Get,
+    A::new(R::Tenant, "admin.resource_servers:read"),
+    "Lists this tenant's resource-server audiences and supported scopes",
+);
+
+/// One registered audience. The identifier is percent-encoded as one path segment.
+pub const RESOURCE_SERVER_READ: Operation = Operation::read(
+    RESOURCE_SERVER_READ_ID,
+    "/resource-servers/{identifier}",
+    S::Get,
+    A::new(R::Tenant, "admin.resource_servers:read"),
+    "Reads one resource server by its exact audience",
+);
+
+/// Creates or replaces one registered audience.
+pub const RESOURCE_SERVER_UPDATE: Operation = Operation::mutation(
+    RESOURCE_SERVER_UPDATE_ID,
+    "/resource-servers/{identifier}",
+    M::Put,
+    A::new(R::Tenant, "admin.resource_servers:write"),
+    "Creates or replaces one resource server and its supported scopes",
+);
+
+/// Withdraws an audience from future token issuance.
+pub const RESOURCE_SERVER_WITHDRAW: Operation = Operation::mutation(
+    RESOURCE_SERVER_WITHDRAW_ID,
+    "/resource-servers/{identifier}",
+    M::Delete,
+    A::new(R::Tenant, "admin.resource_servers:write"),
+    "Withdraws one resource server from future token issuance",
 );
 
 /// Whether dynamic client registration admits anybody, and on how many
@@ -1029,7 +1074,7 @@ pub const USER_CLIENT_APP_ROLE_WITHDRAW: Operation = Operation::mutation(
 /// A `static` rather than a function building a `Vec`, so that the router, the
 /// document and the tests are looking at one object and cannot be handed
 /// different copies of it.
-static REGISTRY: [Operation; 59] = [
+static REGISTRY: [Operation; 63] = [
     SESSION_READ,
     SESSION_END,
     OPENAPI_READ,
@@ -1043,6 +1088,10 @@ static REGISTRY: [Operation; 59] = [
     CLIENT_READ,
     CLIENT_CREATE,
     CLIENT_UPDATE,
+    RESOURCE_SERVERS_LIST,
+    RESOURCE_SERVER_READ,
+    RESOURCE_SERVER_UPDATE,
+    RESOURCE_SERVER_WITHDRAW,
     REGISTRATION_READ,
     INITIAL_ACCESS_TOKENS_LIST,
     INITIAL_ACCESS_TOKEN_CREATE,

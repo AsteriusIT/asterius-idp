@@ -150,4 +150,12 @@ impl ResourceServerRepository for PgResourceServers {
         }
         Ok(servers)
     }
+
+    async fn register(&self, server: &ResourceServer) -> Result<(), DomainError> {
+        PgResourceServers::register(self, server).await
+    }
+
+    async fn withdraw(&self, identifier: &str) -> Result<bool, DomainError> {
+        PgResourceServers::withdraw(self, identifier).await
+    }
 }

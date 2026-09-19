@@ -205,6 +205,12 @@ pub trait ResourceServerRepository: Debug + Send + Sync {
     /// nothing": that would refuse every token request during an outage while
     /// looking like a configuration change rather than a failure.
     async fn list(&self) -> Result<Vec<ResourceServer>, DomainError>;
+
+    /// Registers or replaces one resource server in this tenant.
+    async fn register(&self, server: &ResourceServer) -> Result<(), DomainError>;
+
+    /// Withdraws one resource server, returning whether it existed.
+    async fn withdraw(&self, identifier: &str) -> Result<bool, DomainError>;
 }
 
 /// One tenant's registered authorization details types (RFC 9396 §2.1).

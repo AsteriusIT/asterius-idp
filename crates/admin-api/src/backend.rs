@@ -228,6 +228,12 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
     /// built for the console.
     fn clients(&self) -> Arc<dyn ClientAdministration>;
 
+    /// This tenant's audience registry, over the store token issuance reads.
+    fn resource_servers(
+        &self,
+        tenant: &TenantId,
+    ) -> Arc<dyn asterius_domain::ports::ResourceServerRepository>;
+
     /// The deployment's outbox, for the dead-letter screen (`ast-0ju.9`).
     ///
     /// A handle for the same reason [`Self::tenants`] is one: the object

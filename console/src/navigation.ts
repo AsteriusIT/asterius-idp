@@ -92,6 +92,7 @@ export const DESTINATIONS: readonly Destination[] = [
   { route: 'overview', label: 'Overview', reach: 'tenant', scope: 'admin.tenants:read', bead: 'ast-f7m.3', group: 'Overview' },
   { route: 'users', label: 'Users', reach: 'tenant', scope: 'admin.users:read', bead: 'ast-f7m.6', group: 'Directory' },
   { route: 'clients', label: 'Applications', reach: 'tenant', scope: 'admin.clients:read', bead: 'ast-f7m.5', group: 'Directory' },
+  { route: 'resources', label: 'Resource servers', reach: 'tenant', scope: 'admin.resource_servers:read', bead: 'ast-f7m.12', group: 'Directory' },
   { route: 'roles', label: 'Roles', reach: 'tenant', scope: 'admin.app_roles:read', bead: 'ast-7fvb', group: 'Directory' },
   // Built by `ast-l5bl`, so the tag is historical like the four around it.
   // The line kept the *epic* while it was a placeholder, because no child
