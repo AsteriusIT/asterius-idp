@@ -12,10 +12,10 @@
 //! text, and all of it lands in HTML.
 //!
 //! askama escapes by default for `.html` templates, so the defence is the
-//! absence of `|safe` rather than the presence of a call. There is exactly one
-//! `|safe` in the tree — the CSP nonce attribute, which this crate generates
-//! and which is base64url by construction — and `crate::source_audit` fails the
-//! build if a second appears.
+//! absence of `|safe` rather than the presence of a call. The two fragments
+//! that must remain markup — the CSP nonce attribute and the reviewed tenant
+//! icon — use narrow Rust types with private constructors, and
+//! `crate::source_audit` rejects every template-level escape bypass.
 //!
 //! # No JavaScript
 //!
@@ -193,8 +193,8 @@ pub struct LoginPage<'a> {
     /// bytes for every address, so a link to it is not an enumeration oracle
     /// and hiding it only hides it from the people who need it.
     pub recovery_href: Option<&'a str>,
-    /// The CSP nonce attribute, rendered raw. See the module docs.
-    pub nonce_attribute: String,
+    /// The CSP nonce attribute, carried by a dedicated trusted type.
+    pub nonce_attribute: NonceAttribute,
     /// The tenant's design tokens, as the CSS custom properties
     /// `crate::theme::custom_properties` renders. Escaped like any other
     /// value, and by construction unchanged by escaping; empty for a tenant
@@ -238,7 +238,7 @@ pub struct ConsentPage<'a> {
     /// The synchroniser token for this rendering.
     pub csrf: &'a str,
     /// The CSP nonce attribute.
-    pub nonce_attribute: String,
+    pub nonce_attribute: NonceAttribute,
     /// The tenant's design tokens, as the CSS custom properties
     /// `crate::theme::custom_properties` renders. Escaped like any other
     /// value, and unchanged by escaping by construction; empty for a tenant
@@ -274,7 +274,7 @@ pub struct LogoutConfirmationPage<'a> {
     /// The synchroniser token for this rendering.
     pub csrf: &'a str,
     /// The CSP nonce attribute.
-    pub nonce_attribute: String,
+    pub nonce_attribute: NonceAttribute,
     /// The tenant's design tokens, as the CSS custom properties
     /// `crate::theme::custom_properties` renders. Escaped like any other
     /// value, and unchanged by escaping by construction; empty for a tenant
@@ -305,7 +305,7 @@ pub struct LoggedOutPage<'a> {
     /// Whether the session was actually ended.
     pub signed_out: bool,
     /// The CSP nonce attribute.
-    pub nonce_attribute: String,
+    pub nonce_attribute: NonceAttribute,
     /// The tenant's design tokens, as the CSS custom properties
     /// `crate::theme::custom_properties` renders. Escaped like any other
     /// value, and unchanged by escaping by construction; empty for a tenant
@@ -364,7 +364,7 @@ pub struct PasskeyPage<'a> {
     /// A previous failure, if this is a retry. A fixed string, never echoed.
     pub message: Option<&'a str>,
     /// The CSP nonce attribute — here it is the script's, not only the style's.
-    pub nonce_attribute: String,
+    pub nonce_attribute: NonceAttribute,
     /// The tenant's design tokens, as the CSS custom properties
     /// `crate::theme::custom_properties` renders. Escaped like any other
     /// value, and unchanged by escaping by construction; empty for a tenant
@@ -441,7 +441,7 @@ pub struct FormPostPage<'a> {
     /// The response parameters, each rendered as a hidden input.
     pub fields: Vec<ResponseField>,
     /// The CSP nonce attribute — here it is the auto-submit script's.
-    pub nonce_attribute: String,
+    pub nonce_attribute: NonceAttribute,
     /// The tenant's design tokens, as the CSS custom properties
     /// `crate::theme::custom_properties` renders. Escaped like any other
     /// value, and unchanged by escaping by construction; empty for a tenant
@@ -494,7 +494,7 @@ pub struct DevicePage<'a> {
     /// working through a short code space.
     pub message: Option<&'a str>,
     /// The CSP nonce attribute.
-    pub nonce_attribute: String,
+    pub nonce_attribute: NonceAttribute,
     /// The tenant's design tokens, as the CSS custom properties
     /// `crate::theme::custom_properties` renders. Escaped like any other
     /// value, and unchanged by escaping by construction; empty for a tenant
@@ -549,7 +549,7 @@ pub struct DeviceConfirmationPage<'a> {
     /// A previous failure, if this is a retry.
     pub message: Option<&'a str>,
     /// The CSP nonce attribute.
-    pub nonce_attribute: String,
+    pub nonce_attribute: NonceAttribute,
     /// The tenant's design tokens, as the CSS custom properties
     /// `crate::theme::custom_properties` renders. Escaped like any other
     /// value, and unchanged by escaping by construction; empty for a tenant
@@ -587,7 +587,7 @@ pub struct DeviceOutcomePage<'a> {
     /// The client's registered name, shown only when the device was connected.
     pub client_name: &'a str,
     /// The CSP nonce attribute.
-    pub nonce_attribute: String,
+    pub nonce_attribute: NonceAttribute,
     /// The tenant's design tokens, as the CSS custom properties
     /// `crate::theme::custom_properties` renders. Escaped like any other
     /// value, and unchanged by escaping by construction; empty for a tenant
@@ -686,7 +686,7 @@ pub struct ApprovalsPage<'a> {
     /// What happened last time, if anything did.
     pub message: Option<&'a str>,
     /// The CSP nonce attribute.
-    pub nonce_attribute: String,
+    pub nonce_attribute: NonceAttribute,
     /// The tenant's design tokens, as the CSS custom properties
     /// `crate::theme::custom_properties` renders.
     pub theme_css: &'a str,
@@ -802,7 +802,7 @@ pub struct GrantsPage<'a> {
     /// What happened last time, if anything did.
     pub message: Option<&'a str>,
     /// The CSP nonce attribute.
-    pub nonce_attribute: String,
+    pub nonce_attribute: NonceAttribute,
     /// The tenant's design tokens, as the CSS custom properties
     /// `crate::theme::custom_properties` renders.
     pub theme_css: &'a str,
@@ -841,7 +841,7 @@ pub struct AccountPage<'a> {
     /// The grants dashboard (`ast-uwv.6`).
     pub grants_href: &'a str,
     /// The CSP nonce attribute.
-    pub nonce_attribute: String,
+    pub nonce_attribute: NonceAttribute,
     /// The tenant's design tokens, as the CSS custom properties
     /// `crate::theme::custom_properties` renders.
     pub theme_css: &'a str,
@@ -928,7 +928,7 @@ pub struct PasskeysPage<'a> {
     /// What happened last time, if anything did.
     pub message: Option<&'a str>,
     /// The CSP nonce attribute.
-    pub nonce_attribute: String,
+    pub nonce_attribute: NonceAttribute,
     /// The tenant's design tokens.
     pub theme_css: &'a str,
     /// The tenant's mark and the URL of the face this server hosts.
@@ -961,7 +961,7 @@ pub struct AccountPasswordPage<'a> {
     /// What happened last time, if anything did.
     pub message: Option<&'a str>,
     /// The CSP nonce attribute.
-    pub nonce_attribute: String,
+    pub nonce_attribute: NonceAttribute,
     /// The tenant's design tokens.
     pub theme_css: &'a str,
     /// The tenant's mark and the URL of the face this server hosts.
@@ -1014,7 +1014,7 @@ pub struct AccountSessionsPage<'a> {
     /// What happened last time, if anything did.
     pub message: Option<&'a str>,
     /// The CSP nonce attribute.
-    pub nonce_attribute: String,
+    pub nonce_attribute: NonceAttribute,
     /// The tenant's design tokens.
     pub theme_css: &'a str,
     /// The tenant's mark and the URL of the face this server hosts.
@@ -1063,7 +1063,7 @@ pub struct RegistrationPage<'a> {
     /// A previous failure, if this is a retry.
     pub message: Option<&'a str>,
     /// The CSP nonce attribute.
-    pub nonce_attribute: String,
+    pub nonce_attribute: NonceAttribute,
     /// The tenant's design tokens, as the CSS custom properties
     /// `crate::theme::custom_properties` renders. Escaped like any other
     /// value, and unchanged by escaping by construction; empty for a tenant
@@ -1107,7 +1107,7 @@ pub struct EmailVerificationPage<'a> {
     /// A previous failure — an expired link, a resend that was throttled.
     pub message: Option<&'a str>,
     /// The CSP nonce attribute.
-    pub nonce_attribute: String,
+    pub nonce_attribute: NonceAttribute,
     /// The tenant's design tokens, as the CSS custom properties
     /// `crate::theme::custom_properties` renders. Escaped like any other
     /// value, and unchanged by escaping by construction; empty for a tenant
@@ -1145,7 +1145,7 @@ pub struct PasswordResetRequestPage<'a> {
     /// "no such account": see [`PasswordResetSentPage`].
     pub message: Option<&'a str>,
     /// The CSP nonce attribute.
-    pub nonce_attribute: String,
+    pub nonce_attribute: NonceAttribute,
     /// The tenant's design tokens, as the CSS custom properties
     /// `crate::theme::custom_properties` renders. Escaped like any other
     /// value, and unchanged by escaping by construction; empty for a tenant
@@ -1180,7 +1180,7 @@ pub struct PasswordResetSentPage<'a> {
     /// Back to the sign-in page.
     pub sign_in_href: &'a str,
     /// The CSP nonce attribute.
-    pub nonce_attribute: String,
+    pub nonce_attribute: NonceAttribute,
     /// The tenant's design tokens, as the CSS custom properties
     /// `crate::theme::custom_properties` renders. Escaped like any other
     /// value, and unchanged by escaping by construction; empty for a tenant
@@ -1227,7 +1227,7 @@ pub struct NewPasswordPage<'a> {
     /// short, a token that has expired.
     pub message: Option<&'a str>,
     /// The CSP nonce attribute.
-    pub nonce_attribute: String,
+    pub nonce_attribute: NonceAttribute,
     /// The tenant's design tokens, as the CSS custom properties
     /// `crate::theme::custom_properties` renders. Escaped like any other
     /// value, and unchanged by escaping by construction; empty for a tenant
@@ -1261,7 +1261,7 @@ pub struct ErrorPage<'a> {
     /// What to quote to support.
     pub correlation_id: &'a str,
     /// The CSP nonce attribute.
-    pub nonce_attribute: String,
+    pub nonce_attribute: NonceAttribute,
     /// The tenant's design tokens, as the CSS custom properties
     /// `crate::theme::custom_properties` renders. Escaped like any other
     /// value, and unchanged by escaping by construction; empty for a tenant
@@ -1291,13 +1291,29 @@ pub fn render<T: Template>(page: &T) -> String {
     })
 }
 
-/// Builds the `nonce="…"` attribute for a template.
+/// A nonce attribute that is safe to render as HTML.
 ///
-/// A free function rather than a method so that the one `|safe` in the
-/// templates has an obvious, greppable source.
+/// Construction is private so templates cannot accidentally bless arbitrary
+/// strings as markup. The only value comes from [`Nonce::attribute`], whose
+/// base64url token cannot contain HTML syntax.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NonceAttribute(String);
+
+impl std::fmt::Display for NonceAttribute {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl askama::filters::HtmlSafe for NonceAttribute {}
+
+/// Builds the trusted `nonce="…"` attribute for a template.
+///
+/// A dedicated type keeps the trust decision in Rust instead of disabling
+/// escaping at each template call site.
 #[must_use]
-pub fn nonce_attribute(nonce: &Nonce) -> String {
-    nonce.attribute()
+pub fn nonce_attribute(nonce: &Nonce) -> NonceAttribute {
+    NonceAttribute(nonce.attribute())
 }
 
 #[cfg(test)]

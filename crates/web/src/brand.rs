@@ -28,9 +28,10 @@
 //!
 //! An icon has to be a document fragment: it is drawn in the tenant's colours
 //! (`currentColor` against `--fg`), and a sprite or an `<img>` would be a
-//! second request for 300 bytes. So [`Brand::icon_svg`] returns markup that
-//! `base.html` renders **unescaped** — the second and last `|safe` in this
-//! tree, and the one `crate::source_audit` exempts by its exact spelling.
+//! second request for 300 bytes. So [`Brand::icon_svg`] returns an [`IconSvg`]
+//! that Askama recognises as reviewed markup. The template cannot disable
+//! escaping, and `crate::source_audit` rejects every use of the broad `safe`
+//! filter.
 //!
 //! That is only safe because of what it can return: the markup is built here
 //! from a [`TenantIcon`], which is an enumeration in
@@ -47,6 +48,7 @@
 //! upload with a 415, so nothing a tenant supplies is ever XML this server
 //! inlines.
 
+use askama::filters::HtmlSafe;
 use asterius_domain::TenantIcon;
 use std::sync::LazyLock;
 
@@ -240,15 +242,15 @@ impl<'a> Brand<'a> {
         self.logo_url
     }
 
-    /// The mark, as the markup `base.html` renders unescaped.
+    /// The mark, as trusted markup for `base.html`.
     ///
     /// Every byte of the result comes from this file or from
     /// `crates/web/assets/icons`; [`Self::icon`] is an enumeration, so there is
     /// no input to this function that a request could influence beyond
     /// *choosing among twenty-four reviewed drawings*.
     #[must_use]
-    pub fn icon_svg(&self) -> String {
-        format!("{WRAPPER_OPEN}{}</svg>", geometry(self.icon))
+    pub fn icon_svg(&self) -> IconSvg {
+        IconSvg(format!("{WRAPPER_OPEN}{}</svg>", geometry(self.icon)))
     }
 
     /// Which mark this chrome draws.
@@ -257,6 +259,30 @@ impl<'a> Brand<'a> {
         self.icon
     }
 }
+
+/// Reviewed inline SVG chosen from the closed [`TenantIcon`] enumeration.
+///
+/// The private field prevents arbitrary strings from acquiring this trust.
+/// Askama may render this type without escaping; templates never need to use
+/// the broad `safe` filter themselves.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct IconSvg(String);
+
+impl std::fmt::Display for IconSvg {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::ops::Deref for IconSvg {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl HtmlSafe for IconSvg {}
 
 #[cfg(test)]
 mod tests {
@@ -361,7 +387,7 @@ mod tests {
     /// markup this function can emit is finite and is this list.
     #[test]
     fn no_free_string_can_reach_the_rendered_mark() {
-        let reviewed: std::collections::BTreeSet<String> = TenantIcon::ALL
+        let reviewed: std::collections::BTreeSet<IconSvg> = TenantIcon::ALL
             .iter()
             .map(|icon| Brand::new("/f.woff2").with_icon(*icon).icon_svg())
             .collect();

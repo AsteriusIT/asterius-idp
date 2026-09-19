@@ -47,8 +47,8 @@ use crate::pages::{
     ConsentPage, DelegationLine, DetailLine, DeviceConfirmationPage, DeviceOutcomePage, DevicePage,
     EmailVerificationPage, ErrorPage, FormPostPage, GrantLine, GrantsPage, LoggedOutPage,
     LoginPage, LogoutConfirmationPage, NewPasswordPage, PasskeyLine, PasskeyPage, PasskeysPage,
-    PasswordResetRequestPage, PasswordResetSentPage, RegistrationPage, ResponseField, ScopeLine,
-    SessionLine, nonce_attribute, render,
+    NonceAttribute, PasswordResetRequestPage, PasswordResetSentPage, RegistrationPage,
+    ResponseField, ScopeLine, SessionLine, nonce_attribute, render,
 };
 use asterius_domain::Locale;
 use std::path::{Path, PathBuf};
@@ -57,7 +57,7 @@ use std::path::{Path, PathBuf};
 ///
 /// A generated one would make every snapshot differ from the last, which is
 /// the one thing a snapshot may not do.
-fn nonce() -> String {
+fn nonce() -> NonceAttribute {
     nonce_attribute(&Nonce::fixed_for_test("snapshot-nonce"))
 }
 

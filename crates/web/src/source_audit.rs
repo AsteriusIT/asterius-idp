@@ -21,8 +21,8 @@
 //! * askama escapes by default, so a cross-site scripting bug in a template
 //!   takes the form of somebody *adding* `|safe` — usually to make a piece of
 //!   markup render, in a value that turns out to be attacker-supplied. The
-//!   templates are scanned for it, with one exemption that is named rather
-//!   than pattern-matched.
+//!   templates are scanned for it with no exemptions; reviewed fragments use
+//!   narrow Rust types with private constructors instead.
 //! * A `<script>` in a template is the thing `strict-dynamic` trusts, so the
 //!   templates that may have one are listed by name with the reason they must
 //!   (`SCRIPTED_TEMPLATES`), and each listing is itself checked: one inline
@@ -255,24 +255,6 @@ mod tests {
         files
     }
 
-    /// The interpolations this crate is allowed to leave unescaped, in the
-    /// spelling `marks_a_value_safe` normalises to.
-    ///
-    /// Two, and each is exempted **by its exact expression** rather than by
-    /// file, so that a third `|safe` anywhere — including on the next line of
-    /// `base.html` — still fails the build.
-    ///
-    /// * the CSP nonce attribute, which `crate::csp` generates and which is
-    ///   `base64url` by construction;
-    /// * the tenant's mark, which `crate::brand::Brand::icon_svg` builds from
-    ///   an `asterius_domain::TenantIcon` — an enumeration — and twenty-four
-    ///   reviewed files. It has to be unescaped because it is SVG, and it is
-    ///   safe to be because it has no string input:
-    ///   `brand::tests::no_free_string_can_reach_the_rendered_mark` is that
-    ///   claim, and `no_rendered_mark_can_run_or_fetch_anything` is what the
-    ///   markup may contain.
-    const PERMITTED_SAFE: &[&str] = &["{{ nonce_attribute|safe }}", "{{ brand.icon_svg()|safe }}"];
-
     /// Whether a template line leaves an interpolation unescaped.
     ///
     /// A function rather than a loop body so that the rule can be shown to
@@ -288,18 +270,14 @@ mod tests {
             normalised = normalised.replace(" |", "|").replace("| ", "|");
         }
         normalised.contains("|safe")
-            && !PERMITTED_SAFE
-                .iter()
-                .any(|permitted| normalised.contains(permitted))
     }
 
-    /// The only unescaped interpolation in the tree is the CSP nonce.
+    /// No template may disable Askama's escaping.
     ///
     /// askama escapes automatically, so a template injection here is always
-    /// somebody adding `|safe`. The one legitimate use is the nonce attribute,
-    /// which this crate generates and which is base64url by construction — it
-    /// is exempted **by the exact expression**, not by file, so that adding a
-    /// second `|safe` to `base.html` still fails.
+    /// somebody adding `|safe`. Trusted fragments use narrow Rust types with
+    /// private constructors instead, so the template language needs no broad
+    /// exemption.
     #[test]
     fn no_template_marks_a_request_value_safe() {
         let mut offenders = Vec::new();
@@ -318,34 +296,13 @@ mod tests {
         );
     }
 
-    /// Both exemptions are real: each permitted expression is still in a
-    /// template.
-    ///
-    /// Without this, deleting the nonce from `base.html` would make the test
-    /// above pass for the wrong reason — and every page would lose its inline
-    /// style block, or its mark. An exemption for an expression nobody writes
-    /// any more is an exemption that should be deleted, not carried.
-    #[test]
-    fn every_permitted_interpolation_is_still_rendered_somewhere() {
-        let templates = templates();
-        for permitted in PERMITTED_SAFE {
-            assert!(
-                templates
-                    .iter()
-                    .any(|(_, source)| source.contains(permitted)),
-                "no template renders {permitted} any more; delete the exemption"
-            );
-        }
-    }
-
     /// The `|safe` rule fires on the lines it is there for (`ast-ndk.2`).
     ///
     /// The tree passes `no_template_marks_a_request_value_safe` today, which
     /// is exactly the state in which a matcher that had stopped matching would
     /// look healthy. So the predicate is run against the lines somebody would
     /// actually write: a client name rendered as markup, a filter chain ending
-    /// in `safe`, the tenant's own text. Each must be caught, and the nonce
-    /// must not be.
+    /// in `safe`, and the tenant's own text. Each must be caught.
     #[test]
     fn the_safe_filter_audit_would_catch_a_new_use() {
         for hostile in [
@@ -357,11 +314,8 @@ mod tests {
             "  {{ tenant_name | safe }}",
             "{{ tenant_name  |  safe }}",
             "{{ scope.description |safe }}",
-            // The mutation `ast-vn7` opens the door to: the mark is exempted,
-            // so the way to smuggle markup past this audit is to render
-            // something *else* off the same value. `brand.logo_url()` is a
-            // URL a tenant's upload named, and unescaped it is an attribute
-            // break.
+            // A URL a tenant's upload named would be an attribute break when
+            // rendered unescaped.
             "<img src={{ brand.logo_url()|safe }}>",
             "{{ brand.font_url()|safe }}",
             "{{ brand|safe }}",
@@ -369,15 +323,6 @@ mod tests {
             assert!(
                 marks_a_value_safe(hostile),
                 "the audit would not catch {hostile}"
-            );
-        }
-        for permitted in [
-            "<style {{ nonce_attribute|safe }}>",
-            "<span class=\"brand-mark\">{{ brand.icon_svg()|safe }}</span>",
-        ] {
-            assert!(
-                !marks_a_value_safe(permitted),
-                "a permitted interpolation is being reported: {permitted}"
             );
         }
     }
@@ -584,7 +529,7 @@ mod tests {
     /// a policy keyword to make the page work again. Each is a failure here.
     #[test]
     fn every_scripted_template_is_a_single_nonce_carrying_block() {
-        const NONCED: &str = "<script {{ nonce_attribute|safe }}>";
+        const NONCED: &str = "<script {{ nonce_attribute }}>";
 
         let templates = templates();
         for ScriptedTemplate { name, reason, .. } in SCRIPTED_TEMPLATES {

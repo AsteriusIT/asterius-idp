@@ -100,7 +100,7 @@
 <p class="muted">{{ text.login_no_script() }}</p>
 </noscript>
 
-<script {{ nonce_attribute|safe }}>
+<script {{ nonce_attribute }}>
 (() => {
   "use strict";
   const root = document.getElementById("passkey-signin");
