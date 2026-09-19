@@ -294,10 +294,11 @@ implemented in `scripts/conformance-verdict.py`:
   A module that started passing must not break a release — but a waiver kept
   past its cause is the next hidden regression, so it is shouted about.
 
-Exactly one waiver exists today:
-`fapi2-security-profile-final-user-rejects-authentication`, for `ast-k5u`, whose
-story is two sections up. `docs/certification.md` is the submission checklist
-that reads out of all this.
+No active waiver remains after `ast-k5u` delivered the tenant's
+`always_ask_consent` setting. The conformance fixture enables it so a remembered
+grant cannot remove the Deny action. The historical run above is not new
+certification evidence: the next conformance run must pass this module without
+a waiver. `docs/certification.md` remains the submission checklist.
 
 ## What is not covered
 

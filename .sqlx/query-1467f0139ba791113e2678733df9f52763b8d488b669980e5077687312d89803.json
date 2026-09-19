@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update sessions\n                set last_seen_at = greatest(last_seen_at, $3),\n                    idle_expires_at = least(expires_at, greatest(idle_expires_at, $4))\n              where tenant_id = $1\n                and session_id = $2\n                and revoked_at is null\n                and expires_at > $3\n                and idle_expires_at > $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1467f0139ba791113e2678733df9f52763b8d488b669980e5077687312d89803"
+}

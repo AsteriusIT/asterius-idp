@@ -133,12 +133,30 @@ more script beside these.
 `crates/server/tests/end_to_end.rs` drives one push, one arrival at
 `/authorize`, one passkey sign-in, one consent and one redemption through the
 assembled router with a `tracing` layer that records every statement `sqlx`
-executes, and asserts the count against a ceiling. The ceiling is **71**,
-which is what the flow cost on the day it was pinned: the test was written
-red (budget 0) to print the log, the log was read for a per-row pattern, and
-none was found — no statement repeats with a different key inside one
-handler. The ceiling is a shape, not a target: a change that adds a statement
-on purpose moves it and says why.
+executes, and asserts the count against a ceiling. The current measured
+ceiling is **86**. The original baseline was 71: the test was written red
+(budget 0) to print the log, and the log was reviewed for per-row lookups.
+`ast-6uqw.4` and `ast-6uqw.5` deliberately add these 15 statements:
+
+| Security control | Additional statements per flow |
+| --- | ---: |
+| Live tenant limiter policy at PAR, passkey sign-in and token redemption | 3 |
+| Tenant session policy when issuing the browser session | 1 |
+| Two browser session checks and activity updates | 10 |
+| Tenant session policy when reading the session at token redemption | 1 |
+
+Each browser check adds five statements to the original session read: its
+policy read, the activity update's session reread and two policy reads, and
+the guarded update. These reads enforce current tenant lifetimes and prevent
+browser activity from reviving an expired or revoked session. Raw session
+reads during token redemption do not renew browser activity. Limiter policy
+reads bypass the cache so another replica observes changed limits on its
+next check. ACR resolution (`ast-6uqw.3`) uses the settings cache already
+loaded by the flow and adds no statements to this measurement.
+
+The measured count exactly matches the revised ceiling; there is no extra
+allowance for queries per scope, role or resource. A change that adds a
+statement on purpose must update this accounting and the test together.
 
 What the log does show, for a later ticket, is redundancy rather than
 multiplication: the client row is read nine times across the five requests
@@ -223,8 +241,10 @@ busy connections ≈ requests/s × statements per request × (execution + round 
 max_connections  ≈ 2 × busy connections, and at least the number of CPU threads the process has
 ```
 
-Statements per request: 12–17 for a token response, 71 for a whole code
-flow (five requests, the budget test's ceiling), 1–2 for JWKS and discovery.
+The original load measurements used 12–17 statements per token response.
+The current complete code flow costs 86 statements (the budget test's
+ceiling); tenant limiter and session policy each add one read at token
+redemption. JWKS and discovery use 1–2 statements.
 
 **3. What the load will be.** FAPI 2.0 SP §6.1 makes this a function of the
 access-token lifetime. For `S` sessions that stay active — a session refreshes

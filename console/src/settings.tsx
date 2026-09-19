@@ -8,10 +8,8 @@
  * deliberately no wider than that — a form whose `PUT` goes nowhere is worse
  * than an absent one, because it tells an operator a change was saved.
  *
- * Theming tokens, the ACR policy editor, rate limits and session lifetimes are
- * named by `ast-bfn` and are *not* here: none of them exists below the API
- * yet, so each needs a domain type, a route and a migration before a control
- * for it can mean anything.
+ * Assurance, session and rate-limit policies share the scoped settings API.
+ * Runtime branding controls remain tracked separately.
  *
  * # The ceilings are the server's
  *
@@ -38,7 +36,12 @@ import { ShieldCheck, KeyRound, Smartphone, ArrowRightLeft, Radio, Fingerprint, 
 import { Tabs, TabsList, TabsTrigger, TabsContent } from './components/ui/tabs';
 import { toast } from './components/ui/toast';
 import { Actions, Button, Field, LoadFailure, Message, Panel, Screen, Skeleton } from './ui';
+import { SessionPolicyFields } from './session-policy';
+
+import { AssuranceEditor } from './assurance-policy';
 import { draftOf, isDirty, type Draft, type Settings } from './settings-model';
+import { RateLimitFields } from './rate-limit-fields';
+import { rateDocument } from './rate-limit-model';
 
 /**
  * The optional features this console draws a switch for, mirroring
@@ -169,6 +172,7 @@ export function TenantSettings({
       setNotice(null);
       setRefusal(null);
       mutate(path, 'PUT', session, {
+        acr_policy: current.acrPolicy,
         disabled_features: current.disabled,
         // `Number` and not `parseInt`: an entry of `60abc` must be refused
         // rather than quietly become 60. `NaN` fails the server's parse, which
@@ -176,6 +180,9 @@ export function TenantSettings({
         authorization_code_lifetime_seconds: Number(current.code),
         access_token_lifetime_seconds: Number(current.token),
         always_ask_consent: current.alwaysAskConsent,
+        session_policy: { idle_seconds: Number(current.sessionIdle), absolute_seconds: Number(current.sessionAbsolute) },
+
+        ...(load.kind === 'ready' && load.settings.rate_limit_bounds !== undefined ? { rate_limits: rateDocument(current.rateLimits) } : {}),
       }).then(
         (document) => {
           // Re-read from the answer rather than from the form: the server's
@@ -193,7 +200,7 @@ export function TenantSettings({
         },
       );
     },
-    [path, session],
+    [load, path, session],
   );
 
   if (load.kind === 'loading') {
@@ -265,7 +272,7 @@ export function TenantSettings({
           save(draft);
         }}
       >
-        <Tabs defaultValue="features"><TabsList aria-label="Tenant configuration"><TabsTrigger value="features">Capabilities</TabsTrigger><TabsTrigger value="tokens">Token lifetimes</TabsTrigger><TabsTrigger value="consent">Consent</TabsTrigger></TabsList>
+        <Tabs defaultValue="features"><TabsList aria-label="Tenant configuration"><TabsTrigger value="features">Capabilities</TabsTrigger><TabsTrigger value="tokens">Token lifetimes</TabsTrigger><TabsTrigger value="consent">Consent</TabsTrigger><TabsTrigger value="sessions">Sessions</TabsTrigger>{draft.acrPolicy && <TabsTrigger value="assurance">Authentication</TabsTrigger>}{settings.rate_limit_bounds !== undefined && <TabsTrigger value="rate-limits">Rate limits</TabsTrigger>}</TabsList>
         <TabsContent value="features"><fieldset className="settings-section" disabled={busy}>
           <legend>Sign-in and access capabilities</legend>
           <p className="muted">
@@ -327,6 +334,7 @@ export function TenantSettings({
           </Field>
         </fieldset></TabsContent>
 
+        <TabsContent value="sessions"><SessionPolicyFields draft={draft} onChange={setDraft} busy={busy} refusal={refusal} /></TabsContent>
         <TabsContent value="consent"><fieldset className="settings-section" disabled={busy}>
           <legend>Consent decisions</legend>
           <p className="muted">
@@ -351,7 +359,16 @@ export function TenantSettings({
               />
             </label>
           </div>
-        </fieldset></TabsContent></Tabs>
+        </fieldset></TabsContent>
+        {draft.acrPolicy && <TabsContent value="assurance"><AssuranceEditor
+          policy={draft.acrPolicy} disabled={busy}
+          onChange={(acrPolicy) => setDraft({ ...draft, acrPolicy })} /></TabsContent>}
+
+        {settings.rate_limit_bounds !== undefined && <TabsContent value="rate-limits"><fieldset className="settings-section" disabled={busy}>
+          <RateLimitFields bounds={settings.rate_limit_bounds} effective={settings.effective_rate_limits ?? settings.rate_limit_bounds}
+            draft={draft.rateLimits} refusal={refusal} onChange={(rateLimits) => setDraft({ ...draft, rateLimits })} />
+        </fieldset></TabsContent>}
+        </Tabs>
 
         <Actions>
           <Button

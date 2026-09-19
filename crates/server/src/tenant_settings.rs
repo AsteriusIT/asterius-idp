@@ -75,6 +75,23 @@ impl SettingsDirectory {
         }
     }
 
+    /// Reads limiter policy directly so all replicas observe administrative changes
+    /// on their next check. Cache TTL must not keep a relaxed tenant budget alive.
+    ///
+    /// # Errors
+    /// Propagates storage or validation errors; limiters fail closed.
+    pub async fn rate_limits_for(
+        &self,
+        tenant: &TenantId,
+    ) -> Result<asterius_domain::tenant_rate_limits::TenantRateLimits, DomainError> {
+        Ok(self
+            .repository
+            .settings(tenant)
+            .await?
+            .rate_limits()
+            .clone())
+    }
+
     /// This tenant's settings, from the cache or from the repository.
     ///
     /// # Errors
@@ -100,6 +117,39 @@ impl SettingsDirectory {
             );
         }
         Ok(settings)
+    }
+}
+
+/// Shared in-memory settings adapter for limiter tests; counters remain a separate port.
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub(crate) struct RateLimitTestRepository {
+    values: std::sync::Mutex<std::collections::BTreeMap<String, TenantSettings>>,
+    pub(crate) fail_reads: std::sync::atomic::AtomicBool,
+}
+
+#[cfg(test)]
+#[async_trait::async_trait]
+impl TenantSettingsRepository for RateLimitTestRepository {
+    async fn settings(&self, tenant: &TenantId) -> Result<TenantSettings, DomainError> {
+        if self.fail_reads.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(DomainError::NotFound);
+        }
+        Ok(self
+            .values
+            .lock()
+            .expect("uncontended test lock")
+            .get(tenant.as_str())
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    async fn save(&self, tenant: &TenantId, settings: &TenantSettings) -> Result<(), DomainError> {
+        self.values
+            .lock()
+            .expect("uncontended test lock")
+            .insert(tenant.as_str().to_owned(), settings.clone());
+        Ok(())
     }
 }
 
@@ -144,6 +194,93 @@ mod tests {
 
     fn tenant() -> TenantId {
         TenantId::parse("demo").expect("a valid tenant id")
+    }
+
+    #[derive(Debug, Default)]
+    struct ScopedSettings(RwLock<HashMap<String, TenantSettings>>);
+
+    #[async_trait::async_trait]
+    impl TenantSettingsRepository for ScopedSettings {
+        async fn settings(&self, tenant: &TenantId) -> Result<TenantSettings, DomainError> {
+            Ok(self
+                .0
+                .read()
+                .unwrap()
+                .get(tenant.as_str())
+                .cloned()
+                .unwrap_or_default())
+        }
+        async fn save(
+            &self,
+            tenant: &TenantId,
+            settings: &TenantSettings,
+        ) -> Result<(), DomainError> {
+            self.0
+                .write()
+                .unwrap()
+                .insert(tenant.as_str().to_owned(), settings.clone());
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn assurance_policy_isolated_in_cache_and_reloaded_on_other_replica_after_ttl() {
+        let repository = Arc::new(ScopedSettings::default());
+        let local = SettingsDirectory::new(repository.clone());
+        let replica = SettingsDirectory::new(repository.clone());
+        let other = TenantId::parse("other").unwrap();
+        local.for_tenant(&other).await.unwrap();
+        replica.for_tenant(&tenant()).await.unwrap();
+        let narrowed = TenantSettings::default()
+            .with_acr_policy(asterius_domain::AcrPolicy::empty())
+            .unwrap();
+        repository.save(&tenant(), &narrowed).await.unwrap();
+        local.invalidate();
+        assert!(
+            local
+                .for_tenant(&tenant())
+                .await
+                .unwrap()
+                .acr_policy()
+                .levels()
+                .is_empty()
+        );
+        assert!(
+            !local
+                .for_tenant(&other)
+                .await
+                .unwrap()
+                .acr_policy()
+                .levels()
+                .is_empty()
+        );
+        assert!(
+            !replica
+                .for_tenant(&tenant())
+                .await
+                .unwrap()
+                .acr_policy()
+                .levels()
+                .is_empty()
+        );
+        replica
+            .cached
+            .write()
+            .unwrap()
+            .get_mut(tenant().as_str())
+            .unwrap()
+            .1 = Instant::now()
+            .checked_sub(CACHE_TTL)
+            .expect("test clock supports the cache TTL lookback");
+        assert!(
+            replica
+                .for_tenant(&tenant())
+                .await
+                .unwrap()
+                .acr_policy()
+                .levels()
+                .is_empty()
+        );
     }
 
     #[tokio::test]

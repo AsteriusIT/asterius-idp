@@ -1876,6 +1876,25 @@ human owes this table (see the verification note at the top of this file).
 | **Client impersonating the resource owner (§6.7)** | A1 | A `client_id` minted here carries `ClientId::MINTED_PREFIX` (`c.`, `crates/domain/src/ids.rs`), a prefix that cannot occur in either spelling of a `sub` this server issues; `act` names the actor separately from `sub`; the audit trail records the chain in the same order the token does | `crates/server/src/http/token_exchange.rs` (`the_audit_chain_holds_the_actors_the_token_does_in_the_same_order`), the `ClientId` tests in `crates/domain/src/ids.rs` | `ast-lh3.1`, `ast-lh3.9` (closed) | A resource server keying authorisation on `sub` alone still cannot see the agent (T-A1) |
 | **Key compromise** | A1, A2 | Private keys are sealed at rest under a KEK (`crates/store-pg/src/keys.rs`); rotation and purge are operator commands with audit records (`docs/runbooks/kek-rotation.md`); a purge destroys the private half, unpublishes the key and makes this server refuse its signatures; client keys come only from the source that client's own registration named; every grant is individually revocable | `crates/server/tests/rotation.rs`, `crates/server/tests/signing.rs`; `fuzz/fuzz_targets/kek_unwrap.rs` | `ast-7rq`, `ast-7kw` (closed) | A purge does not reach a token a third party has already accepted, and `LocalKek` keeps the KEK on the machine holding the database credentials — both rows in §5 |
 
+### Managed group persistence (`ast-6uqw.9`)
+
+Managed groups are tenant configuration with stable UUID identities. Composite
+foreign keys bind every direct membership to a group and user in the same tenant;
+deleting either parent cascades membership. Group edits and explicit membership
+changes serialize on a tenant/group row lock. Revisions prevent stale renames or
+deletions from overwriting an intervening change. Unique exact names, bounded
+metadata and paginated reads prevent ambiguous names and unbounded responses.
+Display labels reject control and bidi formatting characters and carry no authority.
+
+Migration 0090 deliberately leaves legacy `groups` claims and `groups_of(user)`
+policy evaluation intact. Managed rows grant no policy or token authority until
+`ast-6uqw.12` implements a reviewed cutover: automatically normalizing legacy names,
+unioning both sources, or replacing claims with initially empty memberships could
+silently grant or withdraw access. [The migration contract](groups-migration.md)
+documents reconciliation and rollback requirements. Administrative authorization
+and audit wiring belong to `ast-6uqw.10`; persistence alone does not expose an API.
+Group parser fuzzing and PostgreSQL race/isolation tests enforce these invariants.
+
 ## 5. Known residual risks
 
 A risk is here when somebody decided to accept it. A choice nobody has made yet
@@ -2177,3 +2196,57 @@ useful it would be.
    residual risks above end at a resource server this project does not ship
    (T-A12, T-A13, T-A1). A review that treats "the RS will check `aud`" as an
    assumption should say so explicitly in its report.
+
+### Tenant session policy (`ast-6uqw.4`)
+
+Browser session acceptance applies the owning tenant's persisted idle and absolute
+limits in the storage adapter, including reserved administrator sessions. Rotation
+and renewal retain the issuance absolute deadline and reject expired credentials.
+Only interactive browser lookups renew idle activity; token refresh and internal
+projections remain read-only. Concurrent touches cannot move activity backward.
+Policy relaxation is distinct from permanent session revocation; see
+[tenant session policy](tenant-session-policy.md) for existing-session semantics.
+
+### Tenant assurance policy changes (`ast-6uqw.3`)
+
+An administrator can redefine an ACR label while browsers and offline grants still
+carry that label. Treating the string as proof would silently upgrade existing
+sessions. Authorization and consent therefore check actual recorded AMR against
+the current tenant definition, and token issuance drops stale ACR assertions.
+Administrator passkey/UV guards remain independent of editable policy. Settings
+writes enforce tenant RBAC and CSRF, validate attainable methods and reserved
+passkey names, and audit the change. Settings lookup failures fail closed; another
+replica may serve its previously cached policy for up to 30 seconds. Already
+issued tokens retain their original claims until expiry or explicit revocation.
+See [tenant assurance policy](tenant-assurance-policy.md) for operational behavior.
+
+### Tenant rate-limit overrides (`ast-6uqw.5`)
+
+A tenant administrator cannot relax deployment abuse controls by editing the
+settings API. Only positive maxima up to the current deployment ceiling are
+accepted; windows and bucket identities remain deployment-owned. Runtime
+resolution takes the minimum again if the deployment tightened since the save.
+Settings changes preserve counters and their whole-second epoch boundaries,
+including across replicas and request timestamps with different nanoseconds.
+Limiter policy is read without the general settings cache and a failed read
+refuses admission. Existing tenant-keyed PostgreSQL counters isolate tenants;
+updates remain scope-checked, atomic and audited. See
+[tenant rate limits](tenant-rate-limits.md) for coverage and the existing
+concurrent in-flight admission limitation.
+
+### Confidential-client onboarding (`ast-6uqw.1`)
+
+The console refuses pasted private or symmetric JWK material before upload.
+The domain validator independently rejects it on registration and metadata updates,
+including mixed public/private key sets. Export uses an allowlist of the saved
+client's public configuration and excludes keys and reusable secrets. API scope
+checks remain authoritative when console controls are hidden or disabled.
+
+### Managed group persistence (`ast-6uqw.9`)
+
+Composite tenant foreign keys prevent memberships from referring to another
+tenant's user or group. Revision checks reject stale administrative writes and
+membership updates advance the group revision. Managed memberships do not yet
+feed policy evaluation: legacy `groups_of` claims keep their existing authority
+until an explicit migration enables the new source. See
+[group migration](groups-migration.md) for the staged transition.

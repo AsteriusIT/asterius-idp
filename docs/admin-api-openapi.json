@@ -24,6 +24,53 @@
       }
     },
     "schemas": {
+      "AcrPolicy": {
+        "additionalProperties": false,
+        "description": "Weakest first; names must be unique. User verification requires a passkey. Reserved passkey contexts cannot be weakened; hardware-protected contexts are unavailable. Empty levels disable ACR assertions, not administrator passkey requirements.",
+        "properties": {
+          "amr_in_id_token": {
+            "default": true,
+            "type": "boolean"
+          },
+          "levels": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "amr": {
+                  "items": {
+                    "enum": [
+                      "pwd",
+                      "swk",
+                      "user"
+                    ],
+                    "type": "string"
+                  },
+                  "minItems": 1,
+                  "type": "array",
+                  "uniqueItems": true
+                },
+                "value": {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "pattern": "^[!-~]+$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "value",
+                "amr"
+              ],
+              "type": "object"
+            },
+            "maxItems": 32,
+            "type": "array"
+          }
+        },
+        "required": [
+          "levels"
+        ],
+        "type": "object"
+      },
       "Error": {
         "properties": {
           "error": {
@@ -69,6 +116,233 @@
           "items",
           "next_cursor"
         ],
+        "type": "object"
+      },
+      "SessionPolicy": {
+        "additionalProperties": false,
+        "description": "Idle must not exceed absolute. Omission preserves policy. Current policy constrains existing sessions; browser activity renews only idle time and never extends issuance absolute expiry. Session lookup reads committed policy on every replica.",
+        "properties": {
+          "absolute_seconds": {
+            "default": 43200,
+            "maximum": 43200,
+            "minimum": 60,
+            "type": "integer"
+          },
+          "idle_seconds": {
+            "default": 3600,
+            "maximum": 43200,
+            "minimum": 60,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "idle_seconds",
+          "absolute_seconds"
+        ],
+        "type": "object"
+      },
+      "TenantRateLimits": {
+        "additionalProperties": false,
+        "description": "Overrides may only lower enabled deployment maxima. Omission preserves stored overrides; an empty object resets inheritance. Windows stay deployment-owned. GET also exposes rate_limit_bounds and effective_rate_limits, mapping the same groups/buckets to max and window_seconds. Shared counters retain existing concurrent check/charge semantics.",
+        "properties": {
+          "access_evaluation": {
+            "additionalProperties": false,
+            "properties": {
+              "per_address": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "per_client": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "backchannel": {
+            "additionalProperties": false,
+            "properties": {
+              "per_address": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "per_client": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "per_subject": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "client_configuration": {
+            "additionalProperties": false,
+            "properties": {
+              "per_address": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "per_client": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "device_authorization": {
+            "additionalProperties": false,
+            "properties": {
+              "per_address": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "per_client": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "introspection": {
+            "additionalProperties": false,
+            "properties": {
+              "per_address": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "per_client": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "login": {
+            "additionalProperties": false,
+            "properties": {
+              "per_account": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "per_address": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "par": {
+            "additionalProperties": false,
+            "properties": {
+              "per_address": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "per_client": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "registration": {
+            "additionalProperties": false,
+            "properties": {
+              "per_address": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "per_client": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "revocation": {
+            "additionalProperties": false,
+            "properties": {
+              "per_address": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "per_client": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "ssf_subjects": {
+            "additionalProperties": false,
+            "properties": {
+              "per_address": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "per_client": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "token": {
+            "additionalProperties": false,
+            "properties": {
+              "per_address": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "per_client": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "userinfo": {
+            "additionalProperties": false,
+            "properties": {
+              "per_address": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "per_client": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          }
+        },
         "type": "object"
       }
     },
@@ -634,6 +908,254 @@
         "summary": "Streams this tenant's audit records as NDJSON, with the same filters as the listing",
         "x-asterius-reach": "tenant",
         "x-asterius-scope": "admin.audit:read"
+      }
+    },
+    "/admin/api/v1/authorization-details-types": {
+      "get": {
+        "operationId": "authorization_details_types.list",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.authorization_details_types:read"
+            ]
+          }
+        ],
+        "summary": "Lists this tenant's registered authorization-details types",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.authorization_details_types:read"
+      }
+    },
+    "/admin/api/v1/authorization-details-types/{type}": {
+      "delete": {
+        "operationId": "authorization_details_types.delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "type",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request conflicts with the current state, or its Idempotency-Key has already been used."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.authorization_details_types:write"
+            ]
+          }
+        ],
+        "summary": "Withdraws one authorization-details type",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.authorization_details_types:write"
+      },
+      "put": {
+        "operationId": "authorization_details_types.update",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "type",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request conflicts with the current state, or its Idempotency-Key has already been used."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.authorization_details_types:write"
+            ]
+          }
+        ],
+        "summary": "Creates or replaces one authorization-details type",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.authorization_details_types:write"
       }
     },
     "/admin/api/v1/clients": {
@@ -3193,7 +3715,7 @@
             ]
           }
         ],
-        "summary": "The signed-in administrator, their roles, and this session's CSRF token",
+        "summary": "The signed-in administrator, active workspace, roles, and this session's CSRF token",
         "x-asterius-reach": "authenticated",
         "x-asterius-scope": "admin.session:read"
       }
@@ -3728,6 +4250,17 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "properties": {
+                    "acr_policy": {
+                      "$ref": "#/components/schemas/AcrPolicy"
+                    },
+                    "rate_limits": {
+                      "$ref": "#/components/schemas/TenantRateLimits"
+                    },
+                    "session_policy": {
+                      "$ref": "#/components/schemas/SessionPolicy"
+                    }
+                  },
                   "type": "object"
                 }
               }
@@ -3801,6 +4334,42 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "description": "Omitted policies retain stored values. Updates are tenant-scoped and audited. Assurance replicas refresh within 30 seconds; session and rate-limit enforcement read committed settings directly.",
+                "properties": {
+                  "access_token_lifetime_seconds": {
+                    "maximum": 900,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "acr_policy": {
+                    "$ref": "#/components/schemas/AcrPolicy"
+                  },
+                  "authorization_code_lifetime_seconds": {
+                    "maximum": 60,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "rate_limits": {
+                    "$ref": "#/components/schemas/TenantRateLimits"
+                  },
+                  "session_policy": {
+                    "$ref": "#/components/schemas/SessionPolicy"
+                  }
+                },
+                "required": [
+                  "authorization_code_lifetime_seconds",
+                  "access_token_lifetime_seconds"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {

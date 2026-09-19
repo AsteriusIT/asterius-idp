@@ -94,6 +94,8 @@ const INVALID_GRANT: &str = "the refresh token cannot be redeemed";
 /// fields are facts about *this* request — the instant it arrived and the DPoP
 /// key it proved — and [`GrantHandler::handle`] receives neither.
 pub struct RefreshToken<'a> {
+    /// Current tenant assurance policy, resolved once for this issuance.
+    pub acr_policy: &'a asterius_domain::AcrPolicy,
     /// Refresh tokens for this tenant.
     pub tokens: &'a PgRefreshTokenRepository,
     /// Grants for this tenant, consulted for revocation and for what the
@@ -168,6 +170,7 @@ impl<'a> RefreshToken<'a> {
             resource_servers: code.resource_servers,
             roles: code.roles,
             signer: code.signer,
+            acr_policy: code.acr_policy,
             audit,
             grant_management: code.grant_management,
             grant_id_claim: code.grant_id_claim,
@@ -381,7 +384,8 @@ impl RefreshToken<'_> {
         effective: &BTreeSet<String>,
         targets: &BTreeSet<String>,
     ) -> Result<(String, Option<String>), Failure> {
-        let session = self.session_facts(grant).await?;
+        let mut session = self.session_facts(grant).await?;
+        session.revalidate_acr(self.acr_policy);
         let claimed = self.grants.claim(&grant.id, self.now).await?;
         let narrowed = Grant {
             scopes: effective.clone(),
@@ -454,6 +458,7 @@ impl RefreshToken<'_> {
         // code applies, it is the only thing it can produce.
         let id_token = if effective.contains("openid") {
             let parts = issuance::IdTokenParts {
+                acr_policy: self.acr_policy,
                 claimed: &claimed,
                 session: &session,
                 access_token: access_token.as_str(),

@@ -6888,7 +6888,14 @@ where
 /// refuses is the accidental kind — a loop that fetches one row per scope,
 /// per role, per resource — which is the one no unit test notices, because
 /// every unit test has one of each.
-const CODE_FLOW_QUERY_BUDGET: usize = 71;
+///
+/// `ast-6uqw.4`/`ast-6uqw.5` deliberately add 15 statements to the original
+/// 71: three live limiter-policy reads (PAR, passkey sign-in, token), one
+/// session-policy read at issuance, five extra statements for each of the
+/// two browser session checks/touches, and one session-policy read during
+/// token redemption. ACR resolution uses the already-warm settings cache.
+/// The measured total is 86, with no allowance for per-collection growth.
+const CODE_FLOW_QUERY_BUDGET: usize = 86;
 
 /// **One code flow costs a bounded number of SQL statements** (`ast-p2l.8`).
 ///

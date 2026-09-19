@@ -22,6 +22,7 @@ mod device_codes;
 mod email_verification;
 mod error;
 mod grants;
+mod groups;
 mod initial_access_tokens;
 mod key_store;
 mod keys;
@@ -106,3 +107,5 @@ pub use tenant_settings::PgTenantSettings;
 pub use tenants::PgTenantRepository;
 pub use themes::PgThemes;
 pub use users::PgUserRepository;
+
+pub use groups::PgGroups;

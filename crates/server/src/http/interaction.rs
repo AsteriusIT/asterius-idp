@@ -1229,7 +1229,11 @@ async fn subject_of_record(
     now: OffsetDateTime,
 ) -> Option<asterius_domain::SubjectId> {
     let digest = record.session.as_deref()?;
-    let session = context.sessions.find(digest).await.ok()??;
+    let session = context
+        .sessions
+        .find_for_browser(digest, now)
+        .await
+        .ok()??;
     if !session.status(now).is_usable() {
         return None;
     }
@@ -1515,17 +1519,7 @@ async fn mint(
         tracing::error!(tenant = %context.tenant.id, "consent was recorded with no session");
         return Err("server_error");
     };
-    let session = match context.sessions.find(digest).await {
-        Ok(Some(session)) if session.status(now).is_usable() => session,
-        Ok(_) => {
-            tracing::info!(tenant = %context.tenant.id, "the session ended before consent completed");
-            return Err("access_denied");
-        }
-        Err(error) => {
-            tracing::error!(%error, tenant = %context.tenant.id, "cannot read the session");
-            return Err("server_error");
-        }
-    };
+    let session = session_for_consent(context, digest, request, now).await?;
 
     // OIDC Core §8.1. A pairwise client sees its own sector's `sub`; a public
     // one sees the sector every public subject shares.
@@ -1584,7 +1578,12 @@ async fn mint(
     // not a pointer, and why a later step-up does not rewrite it.
     grant.authentication = Some(asterius_domain::GrantAuthentication {
         authenticated_at: session.authenticated_at,
-        acr: session.acr.clone(),
+        acr: session.acr.clone().filter(|value| {
+            context
+                .acr
+                .level(value)
+                .is_some_and(|level| level.is_met_by(&session.amr))
+        }),
         amr: session.amr.clone(),
     });
     // `claimed_at` stays `None`: Grant Management ID1 §5.6 makes a grant
@@ -1630,6 +1629,39 @@ async fn mint(
     }
 
     Ok(minted.expose().to_owned())
+}
+
+/// Rechecks live session proof against the current policy at consent completion.
+async fn session_for_consent(
+    context: &InteractionContext<'_>,
+    digest: &str,
+    request: &ClientRequest,
+    now: OffsetDateTime,
+) -> Result<asterius_domain::Session, &'static str> {
+    let session = match context.sessions.find_for_browser(digest, now).await {
+        Ok(Some(session)) if session.status(now).is_usable() => session,
+        Ok(_) => {
+            tracing::info!(tenant = %context.tenant.id, "the session ended before consent completed");
+            return Err("access_denied");
+        }
+        Err(error) => {
+            tracing::error!(%error, tenant = %context.tenant.id, "cannot read the session");
+            return Err("server_error");
+        }
+    };
+
+    let requirements = asterius_oidc::decision::Requirements::from_parameters(&request.parameters);
+    if !requirements.essential_acr.is_empty()
+        && !asterius_oidc::decision::AcrPolicy::session_satisfies(
+            context.acr,
+            &session,
+            &requirements.essential_acr,
+        )
+    {
+        return Err("unmet_authentication_requirements");
+    }
+
+    Ok(session)
 }
 
 /// Everything an authorization code is bound to, assembled from the stored

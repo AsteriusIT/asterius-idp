@@ -110,6 +110,9 @@ pub fn value() -> Value {
             "schemas": {
                 "Error": error_schema(),
                 "Page": page_schema(),
+                "AcrPolicy": acr_policy_schema(),
+                "SessionPolicy": session_policy_schema(),
+                "TenantRateLimits": rate_limits_schema(),
             },
             "parameters": {
                 "cursor": {
@@ -186,6 +189,31 @@ fn operation_object(operation: &Operation) -> Value {
         "responses": responses(operation),
     });
 
+    if operation.id() == crate::TENANT_SETTINGS_UPDATE_ID {
+        object["requestBody"] = json!({
+            "required": true,
+            "content": { "application/json": { "schema": {
+                "type": "object",
+                "required": ["authorization_code_lifetime_seconds", "access_token_lifetime_seconds"],
+                "properties": {
+                    "authorization_code_lifetime_seconds": {"type": "integer", "minimum": 1, "maximum": 60},
+                    "access_token_lifetime_seconds": {"type": "integer", "minimum": 1, "maximum": 900},
+                    "acr_policy": {"$ref": "#/components/schemas/AcrPolicy"},
+                    "session_policy": {"$ref": "#/components/schemas/SessionPolicy"},
+                    "rate_limits": {"$ref": "#/components/schemas/TenantRateLimits"}
+                },
+                "description": "Omitted policies retain stored values. Updates are tenant-scoped and audited. Assurance replicas refresh within 30 seconds; session and rate-limit enforcement read committed settings directly."
+            }}}
+        });
+    }
+    if operation.id() == crate::TENANT_SETTINGS_READ_ID {
+        object["responses"]["200"]["content"]["application/json"]["schema"] = json!({
+            "type": "object", "properties": { "acr_policy": {"$ref": "#/components/schemas/AcrPolicy"},
+                    "session_policy": {"$ref": "#/components/schemas/SessionPolicy"},
+                    "rate_limits": {"$ref": "#/components/schemas/TenantRateLimits"} }
+        });
+    }
+
     if let Some(fields) = object.as_object_mut() {
         if !parameters.is_empty() {
             fields.insert("parameters".to_owned(), Value::Array(parameters));
@@ -207,6 +235,62 @@ fn operation_object(operation: &Operation) -> Value {
     }
 
     object
+}
+
+fn rate_limits_schema() -> Value {
+    let maximum = json!({"type": "integer", "minimum": 1, "maximum": u32::MAX});
+    let mut properties = Map::new();
+    properties.insert(
+        "login".to_owned(),
+        json!({
+            "type": "object", "additionalProperties": false,
+            "properties": {"per_address": maximum, "per_account": maximum}
+        }),
+    );
+    for endpoint in asterius_domain::LimitedEndpoint::ALL {
+        let mut buckets = json!({"per_address": maximum, "per_client": maximum});
+        if endpoint.as_str() == "backchannel" {
+            buckets["per_subject"] = maximum.clone();
+        }
+        properties.insert(
+            endpoint.as_str().to_owned(),
+            json!({
+                "type": "object", "additionalProperties": false, "properties": buckets
+            }),
+        );
+    }
+    json!({"type": "object", "additionalProperties": false, "properties": properties,
+        "description": "Overrides may only lower enabled deployment maxima. Omission preserves stored overrides; an empty object resets inheritance. Windows stay deployment-owned. GET also exposes rate_limit_bounds and effective_rate_limits, mapping the same groups/buckets to max and window_seconds. Shared counters retain existing concurrent check/charge semantics."})
+}
+
+fn session_policy_schema() -> Value {
+    json!({
+        "type": "object", "additionalProperties": false,
+        "required": ["idle_seconds", "absolute_seconds"],
+        "properties": {
+            "idle_seconds": {"type": "integer", "minimum": 60, "maximum": 43200, "default": 3600},
+            "absolute_seconds": {"type": "integer", "minimum": 60, "maximum": 43200, "default": 43200}
+        },
+        "description": "Idle must not exceed absolute. Omission preserves policy. Current policy constrains existing sessions; browser activity renews only idle time and never extends issuance absolute expiry. Session lookup reads committed policy on every replica."
+    })
+}
+
+/// The bounded, attainable authentication ladder persisted for a tenant.
+fn acr_policy_schema() -> Value {
+    json!({
+        "type": "object", "additionalProperties": false, "required": ["levels"],
+        "properties": {
+            "amr_in_id_token": {"type": "boolean", "default": true},
+            "levels": {"type": "array", "maxItems": 32, "items": {
+                "type": "object", "additionalProperties": false, "required": ["value", "amr"],
+                "properties": {
+                    "value": {"type": "string", "minLength": 1, "maxLength": 255, "pattern": "^[!-~]+$"},
+                    "amr": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "enum": ["pwd", "swk", "user"]}}
+                }
+            }}
+        },
+        "description": "Weakest first; names must be unique. User verification requires a passkey. Reserved passkey contexts cannot be weakened; hardware-protected contexts are unavailable. Empty levels disable ACR assertions, not administrator passkey requirements."
+    })
 }
 
 /// The two reads of the trail take the same filters (`ast-lh3.9`).

@@ -22,6 +22,8 @@ const TENANT_SCOPED_TABLES: &[&str] = &[
     "client_keys",
     "client_key_fetches",
     "users",
+    "managed_groups",
+    "group_memberships",
     "subject_identifiers",
     "retired_subject_identifiers",
     "credentials",

@@ -21,10 +21,31 @@ export interface ClientDocument {
   readonly jwks?: unknown;
   readonly jwks_uri?: string;
   readonly sector_identifier_uri?: string;
+  readonly dpop_bound_access_tokens?: boolean;
+  readonly use_mtls_endpoint_aliases?: boolean;
+  readonly tls_client_auth_subject_dn?: string;
+  readonly tls_client_auth_san_dns?: string;
+  readonly tls_client_auth_san_uri?: string;
+  readonly tls_client_auth_san_ip?: string;
+  readonly tls_client_auth_san_email?: string;
+  readonly require_pushed_authorization_requests?: boolean;
+  readonly response_types?: readonly string[];
 }
+
+/** RFC 8705 certificate identities, exactly one for PKI mutual TLS. */
+export const TLS_SUBJECT_FIELDS = [
+  'tls_client_auth_subject_dn', 'tls_client_auth_san_dns', 'tls_client_auth_san_uri',
+  'tls_client_auth_san_ip', 'tls_client_auth_san_email',
+] as const;
+export type TlsSubjectField = typeof TLS_SUBJECT_FIELDS[number];
 
 /** What the form holds while it is being edited. */
 export interface Draft {
+  readonly token_endpoint_auth_method: string;
+  readonly dpop_bound_access_tokens: boolean | null;
+  readonly use_mtls_endpoint_aliases: boolean | null;
+  readonly tls_subject_field: TlsSubjectField;
+  readonly tls_subject_value: string;
   readonly client_name: string;
   readonly application_type: string;
   readonly redirect_uris: string;
@@ -62,6 +83,11 @@ export function listFrom(value: string): string[] {
 /** The draft a freshly read document starts as. */
 export function draftOf(document: ClientDocument): Draft {
   return {
+    token_endpoint_auth_method: document.token_endpoint_auth_method,
+    dpop_bound_access_tokens: document.dpop_bound_access_tokens ?? null,
+    use_mtls_endpoint_aliases: document.use_mtls_endpoint_aliases ?? null,
+    tls_subject_field: TLS_SUBJECT_FIELDS.find((field) => document[field] !== undefined) ?? 'tls_client_auth_subject_dn',
+    tls_subject_value: TLS_SUBJECT_FIELDS.map((field) => document[field]).find((value) => value !== undefined) ?? '',
     client_name: document.client_name,
     application_type: document.application_type,
     redirect_uris: linesOf(document.redirect_uris),
@@ -85,6 +111,11 @@ export function draftOf(document: ClientDocument): Draft {
 /** The draft a new client starts as: this profile's defaults, spelled out. */
 export function emptyDraft(): Draft {
   return {
+    token_endpoint_auth_method: 'private_key_jwt',
+    dpop_bound_access_tokens: true,
+    use_mtls_endpoint_aliases: false,
+    tls_subject_field: 'tls_client_auth_subject_dn',
+    tls_subject_value: '',
     client_name: '',
     application_type: 'web',
     redirect_uris: '',
@@ -114,13 +145,15 @@ export function emptyDraft(): Draft {
  * default (`false`). Unknown algorithms are ordinary strings here so a console
  * from an older release can preserve a value introduced by a newer server.
  *
- * `jwks` is parsed into an object and takes precedence over `jwks_uri`, matching
- * the existing form behaviour.
+ * Both key sources are preserved when supplied so the server can refuse the
+ * conflict instead of silently selecting a source.
  *
  * @throws SyntaxError if the JWK Set box does not hold JSON.
  */
 export function documentFrom(draft: Draft): Record<string, unknown> {
   const document: Record<string, unknown> = {
+    token_endpoint_auth_method: draft.token_endpoint_auth_method,
+    require_pushed_authorization_requests: true,
     client_name: draft.client_name,
     application_type: draft.application_type,
     redirect_uris: listFrom(draft.redirect_uris),
@@ -132,6 +165,15 @@ export function documentFrom(draft: Draft): Record<string, unknown> {
     status: draft.status,
     roles_in_id_token: draft.roles_in_id_token,
   };
+  if (draft.dpop_bound_access_tokens !== null) {
+    document.dpop_bound_access_tokens = draft.dpop_bound_access_tokens;
+  }
+  if (draft.use_mtls_endpoint_aliases !== null) {
+    document.use_mtls_endpoint_aliases = draft.use_mtls_endpoint_aliases;
+  }
+  if (draft.tls_subject_value !== '') {
+    document[draft.tls_subject_field] = draft.tls_subject_value;
+  }
   if (draft.userinfo_signed_response_alg !== '') {
     document.userinfo_signed_response_alg = draft.userinfo_signed_response_alg;
   }
@@ -147,7 +189,8 @@ export function documentFrom(draft: Draft): Record<string, unknown> {
   }
   if (draft.jwks.trim() !== '') {
     document.jwks = JSON.parse(draft.jwks) as unknown;
-  } else if (draft.jwks_uri.trim() !== '') {
+  }
+  if (draft.jwks_uri.trim() !== '') {
     document.jwks_uri = draft.jwks_uri.trim();
   }
   return document;

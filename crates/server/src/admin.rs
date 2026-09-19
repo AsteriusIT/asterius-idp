@@ -309,6 +309,10 @@ impl AutomationTokenStatus for PgAutomationTokenStatus {
 /// This deployment, as the admin API sees it.
 #[derive(Clone)]
 pub struct Deployment {
+    rate_limit_policy: Option<(
+        asterius_domain::LoginLimits,
+        asterius_domain::EndpointLimits,
+    )>,
     store: Store,
     tenants: Arc<dyn TenantRepository>,
     keys: Arc<dyn KeyAdministration>,
@@ -333,6 +337,17 @@ impl std::fmt::Debug for Deployment {
 }
 
 impl Deployment {
+    /// Publishes the same ceilings enforced by the protocol and sign-in limiters.
+    #[must_use]
+    pub const fn with_rate_limit_policy(
+        mut self,
+        login: asterius_domain::LoginLimits,
+        endpoints: asterius_domain::EndpointLimits,
+    ) -> Self {
+        self.rate_limit_policy = Some((login, endpoints));
+        self
+    }
+
     /// Binds the admin API to the handles the composition root already holds.
     ///
     /// `tenants` must be the process's `dyn TenantRepository` — the
@@ -358,6 +373,7 @@ impl Deployment {
     #[must_use]
     pub fn new(parts: DeploymentParts) -> Self {
         Self {
+            rate_limit_policy: None,
             store: parts.store,
             tenants: parts.tenants,
             keys: parts.keys,
@@ -465,6 +481,7 @@ impl std::fmt::Debug for DeploymentParts {
 /// [`asterius_domain::ports::PolicyStore`].
 #[derive(Clone)]
 struct DeploymentPolicyTrial {
+    settings: crate::tenant_settings::SettingsDirectory,
     store: Store,
     kek: Arc<dyn asterius_jose::Kek>,
 }
@@ -498,7 +515,7 @@ impl asterius_admin_api::backend::PolicyTrial for DeploymentPolicyTrial {
         crate::http::access_evaluation::decide_without_enforcing(
             &engine,
             &subjects,
-            crate::http::protocol::deployment_acr_policy(),
+            self.settings.for_tenant(tenant).await?.acr_policy(),
             tenant,
             request,
             time::OffsetDateTime::now_utc(),
@@ -1611,6 +1628,7 @@ impl AdminBackend for Deployment {
     /// about the subject a relying party would be asking about.
     fn policy_trial(&self) -> Arc<dyn asterius_admin_api::backend::PolicyTrial> {
         Arc::new(DeploymentPolicyTrial {
+            settings: self.settings.clone(),
             store: self.store.clone(),
             kek: Arc::clone(&self.kek),
         })
@@ -1672,6 +1690,15 @@ impl AdminBackend for Deployment {
 
     fn audit(&self) -> Arc<dyn AuditSink> {
         Arc::new(PgAuditSink::new(self.store.pool().clone()))
+    }
+
+    fn rate_limit_policy(
+        &self,
+    ) -> Option<(
+        asterius_domain::LoginLimits,
+        asterius_domain::EndpointLimits,
+    )> {
+        self.rate_limit_policy
     }
 
     fn rate_limits(&self) -> Arc<dyn RateLimitStore> {
