@@ -6,6 +6,7 @@ import {
   LayoutDashboardIcon,
   RadioIcon,
   ScaleIcon,
+  ShieldCheckIcon,
   ScrollTextIcon,
   Settings2Icon,
   SlidersHorizontalIcon,
@@ -19,7 +20,8 @@ import {
   SidebarGroup,
   SidebarGroupContent,
   SidebarGroupLabel,
-  SidebarHeader,
+  SidebarFooter,
+  SidebarTrigger,
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
@@ -33,6 +35,7 @@ import { hrefOf } from '@/routes';
 export const NAVIGATION_ICONS: Readonly<Record<string, LucideIcon>> = {
   overview: LayoutDashboardIcon,
   users: UsersIcon,
+  roles: ShieldCheckIcon,
   clients: AppWindowIcon,
   keys: KeyRoundIcon,
   policy: ScaleIcon,
@@ -43,11 +46,7 @@ export const NAVIGATION_ICONS: Readonly<Record<string, LucideIcon>> = {
   preferences: Settings2Icon,
 };
 
-/**
- * A fixed icon rail on desktop and a labelled sheet on small screens. It does
- * not collapse, expand or pretend to resize: the topbar owns context, while
- * this rail answers only “where next?”.
- */
+/** Labelled desktop navigation, with the existing mobile sheet and collapse control. */
 export function AppSidebar({
   session,
   current,
@@ -60,20 +59,13 @@ export function AppSidebar({
 
   return (
     <Sidebar collapsible="icon" className="app-sidebar">
-      <SidebarHeader className="items-center px-2 py-3">
-        <a className="app-mark" href={hrefOf('overview')} aria-label="Asterius overview">
-          <span aria-hidden="true">A</span>
-          <strong className="md:sr-only">Asterius console</strong>
-        </a>
-      </SidebarHeader>
-
       <SidebarContent className="px-2">
         <nav aria-label="Console sections" className="flex flex-col">
           {sections.map((section, sectionIndex) => (
             <div key={section.group}>
               {sectionIndex > 0 && <SidebarSeparator className="my-2" />}
               <SidebarGroup className="p-0">
-                <SidebarGroupLabel className="md:sr-only">{section.group}</SidebarGroupLabel>
+                <SidebarGroupLabel className="navigation-group">{section.group}</SidebarGroupLabel>
                 <SidebarGroupContent>
                   <SidebarMenu>
                     {section.destinations.map((destination) => {
@@ -85,7 +77,7 @@ export function AppSidebar({
                             asChild
                             isActive={active}
                             tooltip={destination.label}
-                            className="console-nav-link h-10 md:justify-center md:px-0"
+                            className="console-nav-link h-11"
                           >
                             <a
                               href={hrefOf(destination.route)}
@@ -93,7 +85,7 @@ export function AppSidebar({
                               aria-current={active ? 'page' : undefined}
                             >
                               {Icon !== undefined && <Icon className="size-[18px]" aria-hidden="true" />}
-                              <span className="md:sr-only">{destination.label}</span>
+                              <span>{destination.label}</span>
                             </a>
                           </SidebarMenuButton>
                         </SidebarMenuItem>
@@ -106,6 +98,7 @@ export function AppSidebar({
           ))}
         </nav>
       </SidebarContent>
+      <SidebarFooter role="navigation" aria-label="Sidebar display" className="sidebar-bottom"><SidebarTrigger /><span>Collapse navigation</span></SidebarFooter>
     </Sidebar>
   );
 }

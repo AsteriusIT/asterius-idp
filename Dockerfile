@@ -31,6 +31,8 @@ WORKDIR /console
 COPY console/package.json console/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY console/ ./
+# The console references the shared, vendored fonts at build time.
+COPY crates/web/assets/fonts/ /crates/web/assets/fonts/
 RUN npm run build
 
 # --- build -----------------------------------------------------------------

@@ -38,6 +38,8 @@ import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { mutate, read, type Session } from './api';
 import { UserAppRoles, mayRead as mayReadAppRoles } from './appRoles';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from './components/ui/tabs';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from './components/ui/dialog';
 import { toast } from './components/ui/toast';
 import { JsonValue } from './components/json-view';
 import {
@@ -353,6 +355,7 @@ function DirectoryScreen({
       ) : undefined}
     >
       <Panel
+        className="directory-panel"
         title="Directory"
         description="Search by username or email. The list is one page at a time, in the order the server returns."
       >
@@ -406,12 +409,12 @@ function Search({ onSearch }: { onSearch: (term: string) => void }): JSX.Element
             name="q"
             type="search"
             value={typed}
-            placeholder="username or email"
+            placeholder="Search by username or email address"
             onChange={(event) => setTyped(event.target.value)}
           />
         )}
       </Field>
-      <Button type="submit" variant="primary">
+      <Button type="submit">
         Search
       </Button>
     </form>
@@ -440,7 +443,7 @@ function UserTable({
           // username is often an address, an address has nowhere to break, and
           // one long row used to push "Verified" and everything after it off
           // the edge of the card.
-          cell: (row) => <Truncate text={row.username} className="max-w-[32ch]" />,
+          cell: (row) => <div className="user-identity"><span className="identity-avatar" aria-hidden="true">{row.username.slice(0, 2).toUpperCase()}</span><button className="identity-link" onClick={() => onOpen(row.user_id)}><Truncate text={row.username} className="max-w-[32ch]" /></button></div>,
         },
         {
           key: 'email',
@@ -460,16 +463,7 @@ function UserTable({
           cell: (row) => <StatusBadge status={row.status} />,
         },
         { key: 'claims', header: 'Claims', numeric: true, sortBy: (row) => row.claims, cell: (row) => row.claims },
-        {
-          key: 'open',
-          header: 'Actions',
-          actions: true,
-          cell: (row) => (
-            <Button small onClick={() => onOpen(row.user_id)}>
-              Open
-            </Button>
-          ),
-        },
+
       ]}
     />
   );
@@ -603,6 +597,7 @@ function Account({
   id: string;
   onBack: () => void;
 }): JSX.Element {
+  const [tab, setTab] = useState('details');
   const [load, setLoad] = useState<Load<Detail>>({ kind: 'loading' });
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -705,13 +700,26 @@ function Account({
   return (
     <Screen
       title={user.username}
-      description="One account: what it claims, what it can sign in with, and what it has open."
-      actions={<Button onClick={onBack}>Back to users</Button>}
+      identity={user.username}
+      back={{ label: 'Back to users', onClick: onBack }}
+      description={<>User ID: <code>{user.user_id}</code></>}
     >
       {notice !== null && <Message tone="success">{notice}</Message>}
 
+      <Tabs value={tab} onValueChange={setTab}>
+        <TabsList aria-label="Account sections">
+          <TabsTrigger value="details">Details</TabsTrigger>
+          <TabsTrigger value="claims">Claims</TabsTrigger>
+          <TabsTrigger value="credentials">Credentials</TabsTrigger>
+          <TabsTrigger value="sessions">Sessions</TabsTrigger>
+          <TabsTrigger value="grants">Authorizations</TabsTrigger>
+          {(mayReadAppRoles(session) || roles !== null) && <TabsTrigger value="roles">Roles</TabsTrigger>}
+        </TabsList>
+        <TabsContent value="details">
       <Panel
-        title="This account"
+        id="account-details"
+        className="flat-section account-details-section"
+        title="Profile"
         actions={
           <Button
             variant={disabled ? 'secondary' : 'danger'}
@@ -733,7 +741,10 @@ function Account({
           </Button>
         }
       >
-        <dl className="stats">
+        <dl className="stats account-summary">
+          <div className="stat"><dt>Username</dt><dd>{user.username}</dd></div>
+          <div className="stat"><dt>Email</dt><dd>{user.email ?? '—'} <Badge>{user.email_verified ? 'Verified' : 'Unverified'}</Badge></dd></div>
+          <div className="stat"><dt>Signed up</dt><dd><Timestamp value={user.created_at} /></dd></div>
           <div className="stat">
             <dt>Status</dt>
             <dd>
@@ -741,16 +752,14 @@ function Account({
             </dd>
           </div>
           <div className="stat">
-            <dt>Created</dt>
-            <dd>{moment(user.created_at)}</dd>
-          </div>
-          <div className="stat">
             <dt>Last changed</dt>
-            <dd>{moment(user.updated_at)}</dd>
+            <dd><Timestamp value={user.updated_at} /></dd>
           </div>
         </dl>
       </Panel>
 
+        </TabsContent>
+        <TabsContent value="claims">
       <ClaimsEditor
         session={session}
         base={base}
@@ -762,6 +771,8 @@ function Account({
         }}
       />
 
+        </TabsContent>
+        <TabsContent value="roles">
       {/*
         `ast-mqt`. Beside the administrative roles and never merged with them:
         `admin.app_roles:*` delegates the tenant's own vocabulary, and
@@ -794,7 +805,9 @@ function Account({
         />
       )}
 
-      <Panel
+        </TabsContent>
+        <TabsContent value="credentials">
+      <Panel className="flat-section"
         id="credentials"
         title="Credentials"
         actions={
@@ -840,7 +853,8 @@ function Account({
         />
       </Panel>
 
-      <Panel id="sessions" title="Sessions">
+        </TabsContent>
+        <TabsContent value="sessions">
         <SessionTable
           sessions={sessions}
           busy={busy}
@@ -851,9 +865,8 @@ function Account({
             )
           }
         />
-      </Panel>
-
-      <Panel id="grants" title="Authorizations">
+        </TabsContent>
+        <TabsContent value="grants">
         <GrantTable
           grants={grants}
           busy={busy}
@@ -870,7 +883,8 @@ function Account({
             })
           }
         />
-      </Panel>
+        </TabsContent>
+      </Tabs>
 
       {confirming !== null && (
         <ConfirmDialog
@@ -931,6 +945,7 @@ function RoleEditor({
   busy: boolean;
   onSaved: (message: string) => void;
 }): JSX.Element {
+  const [editing, setEditing] = useState(false);
   const [chosen, setChosen] = useState<readonly string[]>(held.roles);
   const [saving, setSaving] = useState(false);
   const mayWrite = session.scopes.includes('admin.roles:write') && !isSelf;
@@ -946,6 +961,7 @@ function RoleEditor({
     mutate(`${base}/roles`, 'PUT', session, { roles: chosen }).then(
       () => {
         setSaving(false);
+        setEditing(false);
         onSaved('The roles this account holds have been replaced.');
       },
       (error: unknown) => {
@@ -957,14 +973,22 @@ function RoleEditor({
 
   return (
     <Panel
+      className="flat-section"
       id="roles"
       title="Administrative roles"
-      description="What this account may do to this server. The tenant's own vocabulary is above, and the two are never merged."
+      description="Permissions to administer Asterius. Managed separately from application access."
+      actions={mayWrite ? <Button onClick={() => { setChosen(held.roles); setEditing(true); }}>Manage roles</Button> : undefined}
     >
       {isSelf && (
         <Message tone="info">Nobody may change their own roles. Ask another administrator.</Message>
       )}
-      {offered.length === 0 && <EmptyState title="This account holds no administrative role." />}
+      <div className="table-wrap"><table>
+        <thead><tr><th>Role name</th><th>Assignment</th></tr></thead>
+        <tbody>{held.roles.length === 0 ? <tr><td colSpan={2} className="table-empty">No administrative roles assigned.</td></tr> : held.roles.map((role) => <tr key={role}><td>{role}</td><td>Direct</td></tr>)}</tbody>
+      </table></div>
+      <Dialog open={editing} onOpenChange={setEditing}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Manage administrative roles</DialogTitle><DialogDescription>Select the roles this account should hold.</DialogDescription></DialogHeader>
       <ul className="switches">
         {offered.map((role) => (
           <li key={role}>
@@ -993,6 +1017,8 @@ function RoleEditor({
           </Button>
         </Actions>
       )}
+        </DialogContent>
+      </Dialog>
     </Panel>
   );
 }
@@ -1063,7 +1089,7 @@ function ClaimsEditor({
   };
 
   return (
-    <Panel id="claims" title="Claims">
+    <Panel className="flat-section tab-primary-section" id="claims" title="Claims">
       {refusal !== null && <Message tone="error">{refusal}</Message>}
       <form onSubmit={save}>
         <Field label="Email" error={emailAddress(email)}>
@@ -1207,9 +1233,6 @@ function PasskeyTable({
   busy: boolean;
   onRemove: (credential: string) => void;
 }): JSX.Element {
-  if (passkeys.length === 0) {
-    return <EmptyState title="No passkey." body="This account signs in with its password, if it has one." />;
-  }
   return (
     <div className="table-wrap">
     <table>
@@ -1226,6 +1249,7 @@ function PasskeyTable({
         </tr>
       </thead>
       <tbody>
+        {passkeys.length === 0 && <tr><td colSpan={6} className="table-empty">This user has no passkeys.</td></tr>}
         {passkeys.map((passkey) => (
           <tr key={passkey.credential_id}>
             <td>{passkey.label ?? '—'}</td>
@@ -1261,9 +1285,6 @@ function SessionTable({
   busy: boolean;
   onRevoke: (sid: string) => void;
 }): JSX.Element {
-  if (sessions.length === 0) {
-    return <EmptyState title="No session." body="Nothing is signed in as this account." />;
-  }
   return (
     <div className="table-wrap">
     <table>
@@ -1281,6 +1302,7 @@ function SessionTable({
         </tr>
       </thead>
       <tbody>
+        {sessions.length === 0 && <tr><td colSpan={7} className="table-empty">This user has no sessions.</td></tr>}
         {sessions.map((row) => (
           <tr key={row.sid}>
             <td>
@@ -1319,9 +1341,6 @@ function GrantTable({
   busy: boolean;
   onRevoke: (grant: string, client: string) => void;
 }): JSX.Element {
-  if (grants.length === 0) {
-    return <EmptyState title="No authorization." body="No client holds an authorization from this account." />;
-  }
   return (
     <div className="table-wrap">
     <table>
@@ -1337,6 +1356,7 @@ function GrantTable({
         </tr>
       </thead>
       <tbody>
+        {grants.length === 0 && <tr><td colSpan={5} className="table-empty">This user has no authorizations.</td></tr>}
         {grants.map((grant) => (
           <tr key={grant.grant_id}>
             <td>

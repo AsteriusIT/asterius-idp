@@ -1,3 +1,4 @@
+import { hrefOf } from './routes';
 /**
  * The clients screen (`ast-f7m.5`).
  *
@@ -45,10 +46,13 @@
  * (ADR-0009). Every control is an ordinary form element, every handler is
  * attached by React, and nothing is fetched from anywhere but this origin.
  */
+import { Tabs, TabsList, TabsTrigger, TabsContent } from './components/ui/tabs';
+import { FormSelect } from './components/ui/select';
+import { ArrowRightLeftIcon, KeyRoundIcon, MonitorSmartphoneIcon, RefreshCwIcon, ServerIcon, SmartphoneIcon } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { ApiError, mutate, read, type Session } from './api';
-import { RoleCatalogue, clientCatalogue, mayRead as mayReadAppRoles } from './appRoles';
+import { mayRead as mayReadAppRoles } from './appRoles';
 import { toast } from './components/ui/toast';
 import { JsonView } from './components/json-view';
 import {
@@ -101,6 +105,15 @@ const KNOWN_GRANTS: readonly (readonly [string, string])[] = [
     'This client swaps one token for another to act on someone’s behalf.',
   ],
 ];
+
+const GRANT_PRESENTATION: Record<string, { label: string; icon: typeof KeyRoundIcon }> = {
+  authorization_code: { label: 'Authorization code', icon: KeyRoundIcon },
+  refresh_token: { label: 'Refresh tokens', icon: RefreshCwIcon },
+  client_credentials: { label: 'Machine to machine', icon: ServerIcon },
+  'urn:ietf:params:oauth:grant-type:device_code': { label: 'Device authorization', icon: MonitorSmartphoneIcon },
+  'urn:openid:params:grant-type:ciba': { label: 'Backchannel authentication', icon: SmartphoneIcon },
+  'urn:ietf:params:oauth:grant-type:token-exchange': { label: 'Token exchange', icon: ArrowRightLeftIcon },
+};
 
 /** The signing algorithms this profile permits (ADR-0003, FAPI 2.0 SP §5.4.1). */
 const ALGORITHMS: readonly string[] = ['EdDSA', 'ES256', 'PS256'];
@@ -318,6 +331,7 @@ type Editing =
 export function Clients({ session }: { session: Session }): JSX.Element {
   const [load, setLoad] = useState<Load>({ kind: 'loading' });
   const [query, setQuery] = useState('');
+  const [tab, setTab] = useState('settings');
   const [editing, setEditing] = useState<Editing>({ kind: 'none' });
   const [draft, setDraft] = useState<Draft | null>(null);
   const [gate, setGate] = useState<RegistrationGate | null>(null);
@@ -359,6 +373,7 @@ export function Clients({ session }: { session: Session }): JSX.Element {
   const openNew = useCallback(() => {
     setNotice(null);
     setRefusal(null);
+    setTab('settings');
     setEditing({ kind: 'new' });
     setDraft(emptyDraft());
   }, []);
@@ -370,6 +385,7 @@ export function Clients({ session }: { session: Session }): JSX.Element {
     read(clientPath(clientId)).then(
       (body) => {
         const document = body as ClientDocument;
+        setTab('settings');
         setEditing({ kind: 'existing', document });
         setDraft(draftOf(document));
         setBusy(false);
@@ -382,6 +398,7 @@ export function Clients({ session }: { session: Session }): JSX.Element {
   }, []);
 
   const close = useCallback(() => {
+    setTab('settings');
     setEditing({ kind: 'none' });
     setDraft(null);
   }, []);
@@ -450,27 +467,31 @@ export function Clients({ session }: { session: Session }): JSX.Element {
     return (
       <Screen
         title={title}
-        description="Identity, callbacks, grants and signing material belong to one focused configuration workflow."
-        actions={<Button onClick={close}>Back to applications</Button>}
+        identity={editing.kind === 'existing' ? editing.document.client_name : undefined}
+        description={editing.kind === 'existing' ? <>Client ID: <code>{editing.document.client_id}</code></> : 'Configure authentication, callbacks, and access for your application.'}
+        back={{ label: 'Back to applications', onClick: close }}
       >
+        {editing.kind === 'existing' && mayReadAppRoles(session) && <a className="application-roles-link" href={hrefOf('roles', { client: editing.document.client_id })}>Manage application roles →</a>}
         {notice !== null && <Message tone="success">{notice}</Message>}
         {refusal !== null && <Message tone="error">{refusal}</Message>}
-        <Editor
+        <Tabs value={tab} onValueChange={setTab}>
+          <TabsList aria-label="Application sections">
+            <TabsTrigger value="settings">Settings</TabsTrigger>
+            <TabsTrigger value="callbacks">Callbacks</TabsTrigger>
+            <TabsTrigger value="grants">Grant types</TabsTrigger>
+            <TabsTrigger value="credentials">Credentials</TabsTrigger>
+            <TabsTrigger value="tokens">Token claims</TabsTrigger>
+
+          </TabsList>
+        <div><Editor
           draft={draft}
           editing={editing}
           busy={busy}
           onChange={setDraft}
           onSubmit={() => save(draft, editing)}
           onClose={close}
-        />
-        {editing.kind === 'existing' && mayReadAppRoles(session) && (
-          <RoleCatalogue
-            session={session}
-            path={clientCatalogue(editing.document.client_id)}
-            title={`Application roles of ${editing.document.client_id}`}
-            explanation="Issued to this client alone, under resource_access.{client_id}.roles. A token issued to another client never names them. Deleting one is refused while any account still holds it."
-          />
-        )}
+        /></div>
+        </Tabs>
       </Screen>
     );
   }
@@ -480,9 +501,7 @@ export function Clients({ session }: { session: Session }): JSX.Element {
       title="Applications"
       description={
         <>
-          Every client registered against <strong>{session.tenant}</strong>. A client created here
-          goes through the same validator as one that registers itself, so anything this
-          deployment would refuse at <code>/register</code> is refused here too.
+          Manage applications, authentication methods, and callback URLs for <strong>{session.tenant}</strong>.
         </>
       }
       actions={
@@ -494,7 +513,7 @@ export function Clients({ session }: { session: Session }): JSX.Element {
       {notice !== null && <Message tone="success">{notice}</Message>}
       {refusal !== null && <Message tone="error">{refusal}</Message>}
 
-      <Panel title="Registered clients">
+      <Panel className="directory-panel" title="Registered clients">
         <form
           className="toolbar"
           role="search"
@@ -633,7 +652,7 @@ function Editor({
     });
 
   return (
-    <Panel id="client-editor" title={heading}>
+    <Panel className="application-editor" id="client-editor" title={heading}>
       {/*
         `noValidate`, for the reason the settings screen gives: the browser's
         own constraint validation would block a submission and show a tooltip
@@ -647,8 +666,8 @@ function Editor({
           onSubmit();
         }}
       >
-        <fieldset disabled={busy}>
-          <legend>Identity</legend>
+        <TabsContent value="settings"><fieldset disabled={busy}>
+          <legend id="client-identity">Identity</legend>
           <Field label="Client name" required>
             {(props) => (
               <input
@@ -662,35 +681,29 @@ function Editor({
           </Field>
           <p>
             <label htmlFor="application-type">Application type</label>
-            <select
+            <FormSelect
               id="application-type"
               name="application_type"
               value={draft.application_type}
-              onChange={(event) => onChange({ ...draft, application_type: event.target.value })}
-            >
-              <option value="web">web</option>
-              <option value="native">native</option>
-            </select>
+              onValueChange={(value) => onChange({ ...draft, application_type: value })}
+             disabled={busy} options={[{"value": "web", "label": "Web application"}, {"value": "native", "label": "Native application"}]} />
           </p>
           <p>
             <label htmlFor="client-status">Status</label>
-            <select
+            <FormSelect
               id="client-status"
               name="status"
               value={draft.status}
-              onChange={(event) => onChange({ ...draft, status: event.target.value })}
-            >
-              <option value="active">active</option>
-              <option value="disabled">disabled</option>
-            </select>
+              onValueChange={(value) => onChange({ ...draft, status: value })}
+             disabled={busy} options={[{"value": "active", "label": "Active"}, {"value": "disabled", "label": "Disabled"}]} />
           </p>
           <p className="muted">
             A disabled client fails client authentication. Its grants and its audit trail stay.
           </p>
-        </fieldset>
+        </fieldset></TabsContent>
 
-        <fieldset disabled={busy}>
-          <legend>Callbacks</legend>
+        <TabsContent value="callbacks"><fieldset disabled={busy}>
+          <legend id="client-callbacks">Callbacks</legend>
           {/*
             The complaint is an echo of `RedirectUri::parse` and never a rule of
             this form's own (`ast-f9j5` (2), `validation.ts`): the submission is
@@ -728,25 +741,22 @@ function Editor({
               />
             )}
           </Field>
-        </fieldset>
+        </fieldset></TabsContent>
 
-        <fieldset disabled={busy}>
-          <legend>Grant types</legend>
-          <ul className="switches">
-            {grantRows(draft.grant_types).map(([name, description]) => (
-              <li key={name}>
-                <label>
-                  <input
-                    type="checkbox"
-                    name={name}
-                    checked={draft.grant_types.includes(name)}
-                    onChange={(event) => toggleGrant(name, event.target.checked)}
-                  />{' '}
-                  <code>{name}</code>
+        <TabsContent value="grants"><fieldset disabled={busy}>
+          <legend id="client-grant-types">Grant types</legend>
+          <ul className="grant-options">
+            {grantRows(draft.grant_types).map(([name, description]) => {
+              const display = GRANT_PRESENTATION[name];
+              const Icon = display?.icon ?? KeyRoundIcon;
+              return <li key={name}>
+                <label className={draft.grant_types.includes(name) ? 'grant-option selected' : 'grant-option'}>
+                  <Icon aria-hidden="true" />
+                  <span><strong>{display?.label ?? name}</strong><small>{description}</small><code>{name}</code></span>
+                  <input type="checkbox" name={name} checked={draft.grant_types.includes(name)} onChange={(event) => toggleGrant(name, event.target.checked)} />
                 </label>
-                <p className="muted">{description}</p>
-              </li>
-            ))}
+              </li>;
+            })}
           </ul>
           <p>
             <label htmlFor="client-scope">Scope</label>
@@ -759,10 +769,10 @@ function Editor({
             />
           </p>
           <p className="muted">The scope names this client may ask for, separated by spaces.</p>
-        </fieldset>
+        </fieldset></TabsContent>
 
-        <fieldset disabled={busy}>
-          <legend>Keys and subjects</legend>
+        <TabsContent value="credentials"><fieldset disabled={busy}>
+          <legend id="client-keys-subjects">Keys and subjects</legend>
           {editing.kind === 'existing' && editing.document.jwks !== undefined && (
             <JsonView value={editing.document.jwks} label="Registered inline JWK Set JSON" />
           )}
@@ -793,20 +803,11 @@ function Editor({
           </p>
           <p>
             <label htmlFor="id-token-alg">ID token signing algorithm</label>
-            <select
+            <FormSelect
               id="id-token-alg"
               name="id_token_signed_response_alg"
               value={draft.id_token_signed_response_alg}
-              onChange={(event) =>
-                onChange({ ...draft, id_token_signed_response_alg: event.target.value })
-              }
-            >
-              {ALGORITHMS.map((alg) => (
-                <option key={alg} value={alg}>
-                  {alg}
-                </option>
-              ))}
-            </select>
+              onValueChange={(value) => onChange({ ...draft, id_token_signed_response_alg: value })} disabled={busy} options={ALGORITHMS.map((alg) => ({ value: alg, label: alg }))} />
           </p>
           <p className="muted">
             This tenant must hold an active key for it, or the client could never be issued an ID
@@ -814,15 +815,12 @@ function Editor({
           </p>
           <p>
             <label htmlFor="subject-type">Subject type</label>
-            <select
+            <FormSelect
               id="subject-type"
               name="subject_type"
               value={draft.subject_type}
-              onChange={(event) => onChange({ ...draft, subject_type: event.target.value })}
-            >
-              <option value="public">public</option>
-              <option value="pairwise">pairwise</option>
-            </select>
+              onValueChange={(value) => onChange({ ...draft, subject_type: value })}
+             disabled={busy} options={[{"value": "public", "label": "Public"}, {"value": "pairwise", "label": "Pairwise"}]} />
           </p>
           <p>
             <label htmlFor="sector-identifier-uri">Sector identifier URL</label>
@@ -840,10 +838,10 @@ function Editor({
             Fetched and checked when the client is saved: every redirect URI above has to appear
             in the document it serves.
           </p>
-        </fieldset>
+        </fieldset></TabsContent>
 
-        <fieldset disabled={busy}>
-          <legend>Application roles in tokens</legend>
+        <TabsContent value="tokens"><fieldset disabled={busy}>
+          <legend id="client-token-roles">Application roles in tokens</legend>
           <p>
             <label>
               <input
@@ -866,7 +864,7 @@ function Editor({
             parameter. Either way a token names only this client in{' '}
             <code>resource_access</code>.
           </p>
-        </fieldset>
+        </fieldset></TabsContent>
 
         <Actions>
           <Button type="button" disabled={busy} onClick={onClose}>
