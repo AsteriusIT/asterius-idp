@@ -2516,9 +2516,21 @@ only for local notifications caused by the applied event.
 
 *task · P4 · labels: track, spec:oauth-2.1, spec:rfc7523bis, status:draft*
 
-**Spec:** draft-ietf-oauth-v2-1 (consolidates BCP: PKCE, exact redirect URIs, no implicit/ROPC); draft-ietf-oauth-rfc7523bis (client assertion `aud` MUST be the issuer identifier; no token endpoint URL).
+**Spec:** draft-ietf-oauth-v2-1-16 (active WG draft, 2026-09-03;
+consolidates PKCE with `S256`, exact redirect URI matching, and omission of the
+implicit and resource-owner-password grants);
+draft-ietf-oauth-rfc7523bis-11 (RFC Editor queue, First Edit; not yet an RFC).
+For JWT client authentication, 7523bis requires the authorization-server
+issuer identifier as the sole `aud` value and forbids the token endpoint URL.
+It also defines `typ=client-authentication+jwt` for new assertions, while
+advising servers not to reject otherwise conforming assertions solely because
+that explicit type is absent.
 
-FAPI 2.0 already implies both; our private_key_jwt `aud` rule (E03_02) matches 7523bis. Track for wording changes only.
+Status checked 2026-09-19. FAPI 2.0 already imposes the relevant OAuth 2.1
+security posture, and E03_02's private_key_jwt `aud` rule remains aligned with
+7523bis. The explicit JWT type is a final-wording/interoperability item to
+revisit after publication, not a reason to add draft-dependent v1 behavior.
+Track both documents for publication or normative wording changes only.
 
 **Acceptance tests**
 
