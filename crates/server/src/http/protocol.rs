@@ -2917,12 +2917,13 @@ impl introspection::IntrospectionSource for StoredIntrospection {
 /// the same closure the token endpoint passes — one authenticator, so there is
 /// no second opinion about who a caller is (RFC 7009 §2.1).
 ///
-/// No per-endpoint limiter yet: `asterius_domain::LimitedEndpoint` covers the
-/// five endpoints that were built when `ast-p2l.3` landed, and adding a sixth
-/// is a change to the configuration surface rather than to this file.
+/// The dedicated revocation limiter runs before client authentication and
+/// token verification, the two attacker-controlled signature-processing paths
+/// this endpoint exposes (`ast-1sk.7`).
 async fn revocation_endpoint(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
     // `Option`, like the client address: the extension exists only when the
     // `mtls` flag is on *and* a certificate reached this server from a source
     // it trusts (`crate::tenancy::layer`). Its absence is "no certificate",
@@ -2930,6 +2931,32 @@ async fn revocation_endpoint(
     certificate: Option<Extension<Arc<crate::mtls::PresentedCertificate>>>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
+) -> Response {
+    let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
+    let limits = endpoint_limits(
+        &endpoints,
+        &tenant,
+        &limiter,
+        client.as_deref(),
+        time::OffsetDateTime::now_utc(),
+    );
+    let claimed = crate::http::limits::claimed_client_id(&body);
+    crate::http::limits::guard(
+        &limits,
+        asterius_domain::LimitedEndpoint::Revocation,
+        claimed.as_deref(),
+        async || revocation_endpoint_inner(&endpoints, &tenant, certificate, &headers, &body).await,
+    )
+    .await
+}
+
+/// The RFC 7009 request itself, once the limiter has admitted it.
+async fn revocation_endpoint_inner(
+    endpoints: &ClientEndpoints,
+    tenant: &Arc<Tenant>,
+    certificate: Option<Extension<Arc<crate::mtls::PresentedCertificate>>>,
+    headers: &axum::http::HeaderMap,
+    body: &axum::body::Bytes,
 ) -> Response {
     let certificate = certificate.as_deref().map(|presented| &presented.leaf);
     let scope = endpoints.store.scope(tenant.id.clone());
@@ -2941,12 +2968,12 @@ async fn revocation_endpoint(
 
     let now = time::OffsetDateTime::now_utc();
     let authenticator = Arc::clone(&endpoints.authenticator);
-    let tenant_for_auth = Arc::clone(&tenant);
+    let tenant_for_auth = Arc::clone(tenant);
     let clients_for_auth = scope.clients(endpoints.capabilities);
 
     revocation::revoke(
         revocation::RevocationContext {
-            tenant: &tenant,
+            tenant,
             clients: &clients,
             store: &store,
             keys: endpoints.keys.as_ref(),
@@ -2954,8 +2981,8 @@ async fn revocation_endpoint(
             now,
             certificate,
         },
-        &headers,
-        &body,
+        headers,
+        body,
         async |attempt: &Attempt<'_>, rules: &AssertionRules| {
             authenticator
                 .authenticate(&tenant_for_auth, &clients_for_auth, attempt, rules, now)
@@ -5973,6 +6000,7 @@ mod tests {
                 LimitedEndpoint::Token => "LimitedEndpoint::Token",
                 LimitedEndpoint::UserInfo => "LimitedEndpoint::UserInfo",
                 LimitedEndpoint::Introspection => "LimitedEndpoint::Introspection",
+                LimitedEndpoint::Revocation => "LimitedEndpoint::Revocation",
                 LimitedEndpoint::SsfSubjects => "LimitedEndpoint::SsfSubjects",
                 LimitedEndpoint::Backchannel => "LimitedEndpoint::Backchannel",
                 LimitedEndpoint::AccessEvaluation => "LimitedEndpoint::AccessEvaluation",

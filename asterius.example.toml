@@ -292,6 +292,8 @@ issuer = "https://as.example/t/demo"
 # token_per_address = 120                   # default 120
 # token_per_client = 1200                   # default 1200
 # userinfo_per_address = 600                # default 600
+# revocation_per_address = 120              # default 120
+# revocation_per_client = 1200              # default 1200
 
 # Where client certificates come from (RFC 8705 §2), when [features] mtls is on.
 #

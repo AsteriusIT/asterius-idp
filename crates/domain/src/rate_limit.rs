@@ -363,13 +363,6 @@ pub trait RateLimitStore: Debug + Send + Sync {
 /// (`ast-2vk.9`), and a second counter over the same requests would silently
 /// halve a number an operator configured once.
 ///
-/// `/revoke` is built (`ast-1sk.2`) and is *not* limited yet, which is a gap
-/// rather than a decision: it authenticates its caller with a signature
-/// verification, so a flood of unauthenticated requests to it costs the same
-/// as one at `/token`. Adding it here means adding a field to
-/// [`EndpointLimits`], a key to the configuration surface and a default an
-/// operator can read, which is a change to that surface rather than to this
-/// endpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum LimitedEndpoint {
     /// `POST /register` — RFC 7591 dynamic client registration.
@@ -409,6 +402,13 @@ pub enum LimitedEndpoint {
     /// there is always a proven caller to charge, and one busy resource server
     /// must not spend the budget of every other one behind the same address.
     Introspection,
+    /// `POST /revoke` — RFC 7009 §2 (`ast-1sk.7`).
+    ///
+    /// Authentication can require a public-key signature before the token is
+    /// classified or verified, so the limiter must run in the wiring before
+    /// either operation. A dedicated bucket keeps a revocation flood from
+    /// spending `/token`'s budget.
+    Revocation,
     /// `POST /access/v1/evaluation` — Authorization API 1.0 §10.1
     /// (`ast-pj0.1`).
     ///
@@ -425,13 +425,14 @@ pub enum LimitedEndpoint {
 impl LimitedEndpoint {
     /// Every endpoint that has limits, so a caller can iterate over them
     /// without writing the list a second time.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Registration,
         Self::ClientConfiguration,
         Self::PushedAuthorizationRequest,
         Self::Token,
         Self::UserInfo,
         Self::Introspection,
+        Self::Revocation,
         Self::SsfSubjects,
         Self::Backchannel,
         Self::AccessEvaluation,
@@ -447,6 +448,7 @@ impl LimitedEndpoint {
             Self::Token => "token",
             Self::UserInfo => "userinfo",
             Self::Introspection => "introspection",
+            Self::Revocation => "revocation",
             Self::SsfSubjects => "ssf_subjects",
             Self::Backchannel => "backchannel",
             Self::AccessEvaluation => "access_evaluation",
@@ -602,6 +604,8 @@ pub struct EndpointLimits {
     pub userinfo: EndpointLimit,
     /// `POST /introspect`.
     pub introspection: EndpointLimit,
+    /// `POST /revoke`.
+    pub revocation: EndpointLimit,
     /// The SSF add-subject and remove-subject endpoints.
     pub ssf_subjects: EndpointLimit,
     /// `POST /bc-authorize`.
@@ -621,6 +625,7 @@ impl EndpointLimits {
             LimitedEndpoint::Token => self.token,
             LimitedEndpoint::UserInfo => self.userinfo,
             LimitedEndpoint::Introspection => self.introspection,
+            LimitedEndpoint::Revocation => self.revocation,
             LimitedEndpoint::SsfSubjects => self.ssf_subjects,
             LimitedEndpoint::Backchannel => self.backchannel,
             LimitedEndpoint::AccessEvaluation => self.access_evaluation,
@@ -746,6 +751,7 @@ mod tests {
             token: plain,
             userinfo: plain,
             introspection: plain,
+            revocation: plain,
             ssf_subjects: plain,
             backchannel: EndpointLimit {
                 per_subject: Some(RateLimit { max: 3, window }),
@@ -873,6 +879,27 @@ mod tests {
 
         // Assert
         assert_ne!(registration, token);
+    }
+
+    /// The registry is exhaustive: every endpoint, including revocation, has
+    /// a distinct namespace and therefore a budget no neighbour can spend.
+    #[test]
+    fn every_limited_endpoint_has_a_distinct_address_bucket() {
+        // Arrange
+        let address = "198.51.100.7".parse().expect("a literal address");
+
+        // Act
+        let buckets: std::collections::BTreeSet<_> = LimitedEndpoint::ALL
+            .into_iter()
+            .map(|endpoint| endpoint_address_bucket(endpoint, address))
+            .collect();
+
+        // Assert
+        assert_eq!(buckets.len(), LimitedEndpoint::ALL.len());
+        assert!(buckets.contains(&endpoint_address_bucket(
+            LimitedEndpoint::Revocation,
+            address
+        )));
     }
 
     /// A client id is chosen by whoever registers, so a separator in one must
