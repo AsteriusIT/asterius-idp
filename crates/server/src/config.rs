@@ -527,6 +527,8 @@ struct RawLimits {
     par_per_client: Option<u32>,
     token_per_address: Option<u32>,
     token_per_client: Option<u32>,
+    device_authorization_per_address: Option<u32>,
+    device_authorization_per_client: Option<u32>,
     userinfo_per_address: Option<u32>,
     introspection_per_address: Option<u32>,
     introspection_per_client: Option<u32>,
@@ -830,6 +832,22 @@ pub(crate) const DEFAULT_LIMIT_TOKEN_PER_ADDRESS: u32 = 120;
 /// every refresh passes through it. Twenty a second sustained is a great deal
 /// of one client and still a bound.
 pub(crate) const DEFAULT_LIMIT_TOKEN_PER_CLIENT: u32 = 1200;
+
+/// `POST /device_authorization` — per address, per window (RFC 8628 §3.1).
+///
+/// Every attempt pays for client authentication, and every accepted request
+/// creates an approval that remains until it expires. Sized like PAR: sixty
+/// failed attempts a minute from one address bounds signature work, while a
+/// working client gets a larger budget of its own.
+pub(crate) const DEFAULT_LIMIT_DEVICE_AUTHORIZATION_PER_ADDRESS: u32 = 60;
+
+/// The same, per authenticated device client.
+///
+/// One deployment may legitimately have many devices beginning flows at once,
+/// so this is an order of magnitude above the address budget. Only successful
+/// responses spend it; a caller that merely names another client cannot drain
+/// that client's budget.
+pub(crate) const DEFAULT_LIMIT_DEVICE_AUTHORIZATION_PER_CLIENT: u32 = 600;
 
 /// UserInfo — per address, per window.
 ///
@@ -1395,6 +1413,26 @@ fn configured_revocation_limit(
     }
 }
 
+/// What `POST /device_authorization` permits per window (RFC 8628 §3.1).
+fn configured_device_authorization_limit(
+    raw: &RawLimits,
+    limit: &mut dyn FnMut(&str, Option<u32>, u32) -> RateLimit,
+) -> EndpointLimit {
+    EndpointLimit {
+        per_address: limit(
+            "limits.device_authorization_per_address",
+            raw.device_authorization_per_address,
+            DEFAULT_LIMIT_DEVICE_AUTHORIZATION_PER_ADDRESS,
+        ),
+        per_client: Some(limit(
+            "limits.device_authorization_per_client",
+            raw.device_authorization_per_client,
+            DEFAULT_LIMIT_DEVICE_AUTHORIZATION_PER_CLIENT,
+        )),
+        per_subject: None,
+    }
+}
+
 fn configured_endpoint_limits(
     raw: &RawLimits,
     limit: &mut dyn FnMut(&str, Option<u32>, u32) -> RateLimit,
@@ -1446,6 +1484,7 @@ fn configured_endpoint_limits(
             )),
             per_subject: None,
         },
+        device_authorization: configured_device_authorization_limit(raw, limit),
         userinfo: EndpointLimit {
             per_address: limit(
                 "limits.userinfo_per_address",
@@ -2414,7 +2453,9 @@ mod tests {
     fn endpoint_limits_are_read_from_the_file() {
         // Arrange
         let text = format!(
-            "{MINIMAL}\n[limits]\nwindow_seconds = 30\nregistration_per_address = 3\nrevocation_per_address = 7\nrevocation_per_client = 11\n"
+            "{MINIMAL}\n[limits]\nwindow_seconds = 30\nregistration_per_address = 3\n\
+             device_authorization_per_address = 7\ndevice_authorization_per_client = 11\n\
+             revocation_per_address = 13\nrevocation_per_client = 17\n"
         );
 
         // Act
@@ -2437,10 +2478,19 @@ mod tests {
             config.limits.token.per_address.max,
             DEFAULT_LIMIT_TOKEN_PER_ADDRESS
         );
-        assert_eq!(config.limits.revocation.per_address.max, 7);
+        assert_eq!(config.limits.device_authorization.per_address.max, 7);
+        assert_eq!(
+            config
+                .limits
+                .device_authorization
+                .per_client
+                .map(|limit| limit.max),
+            Some(11)
+        );
+        assert_eq!(config.limits.revocation.per_address.max, 13);
         assert_eq!(
             config.limits.revocation.per_client.map(|limit| limit.max),
-            Some(11)
+            Some(17)
         );
     }
 

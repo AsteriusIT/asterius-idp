@@ -5174,6 +5174,44 @@ async fn backchannel_authentication_endpoint(
 async fn device_authorization_endpoint(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
+    certificate: Option<Extension<Arc<crate::mtls::PresentedCertificate>>>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
+    let limits = endpoint_limits(
+        &endpoints,
+        &tenant,
+        &limiter,
+        client.as_deref(),
+        time::OffsetDateTime::now_utc(),
+    );
+    let claimed = crate::http::limits::claimed_client_id(&body);
+    crate::http::limits::guard(
+        &limits,
+        asterius_domain::LimitedEndpoint::DeviceAuthorization,
+        claimed.as_deref(),
+        async || {
+            device_authorization_endpoint_inner(
+                &endpoints,
+                &tenant,
+                certificate,
+                mount,
+                headers,
+                body,
+            )
+            .await
+        },
+    )
+    .await
+}
+
+/// The device authorization handler, once its dedicated limiter has admitted it.
+async fn device_authorization_endpoint_inner(
+    endpoints: &ClientEndpoints,
+    tenant: &Arc<Tenant>,
     certificate: Option<Extension<Arc<crate::mtls::PresentedCertificate>>>,
     mount: Option<Extension<MountPrefix>>,
     headers: axum::http::HeaderMap,
@@ -5186,12 +5224,12 @@ async fn device_authorization_endpoint(
     let now = time::OffsetDateTime::now_utc();
 
     let authenticator = Arc::clone(&endpoints.authenticator);
-    let tenant_for_auth = Arc::clone(&tenant);
+    let tenant_for_auth = Arc::clone(tenant);
     let clients_for_auth = scope.clients(endpoints.capabilities);
 
     device_authorization::authorize(
         DeviceAuthorizationContext {
-            tenant: &tenant,
+            tenant,
             clients: &clients,
             device_codes: &device_codes,
             certificate,
@@ -5998,6 +6036,7 @@ mod tests {
                     "LimitedEndpoint::PushedAuthorizationRequest"
                 }
                 LimitedEndpoint::Token => "LimitedEndpoint::Token",
+                LimitedEndpoint::DeviceAuthorization => "LimitedEndpoint::DeviceAuthorization",
                 LimitedEndpoint::UserInfo => "LimitedEndpoint::UserInfo",
                 LimitedEndpoint::Introspection => "LimitedEndpoint::Introspection",
                 LimitedEndpoint::Revocation => "LimitedEndpoint::Revocation",

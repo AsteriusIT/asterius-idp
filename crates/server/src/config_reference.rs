@@ -37,6 +37,7 @@ use crate::config::{
     DEFAULT_LIMIT_ACCESS_EVALUATION_PER_ADDRESS, DEFAULT_LIMIT_ACCESS_EVALUATION_PER_CLIENT,
     DEFAULT_LIMIT_BACKCHANNEL_PER_ADDRESS, DEFAULT_LIMIT_BACKCHANNEL_PER_CLIENT,
     DEFAULT_LIMIT_BACKCHANNEL_PER_USER, DEFAULT_LIMIT_CLIENT_CONFIGURATION_PER_ADDRESS,
+    DEFAULT_LIMIT_DEVICE_AUTHORIZATION_PER_ADDRESS, DEFAULT_LIMIT_DEVICE_AUTHORIZATION_PER_CLIENT,
     DEFAULT_LIMIT_INTROSPECTION_PER_ADDRESS, DEFAULT_LIMIT_INTROSPECTION_PER_CLIENT,
     DEFAULT_LIMIT_PAR_PER_ADDRESS, DEFAULT_LIMIT_PAR_PER_CLIENT,
     DEFAULT_LIMIT_REGISTRATION_PER_ADDRESS, DEFAULT_LIMIT_SSF_SUBJECTS_PER_ADDRESS,
@@ -844,6 +845,25 @@ fn limits() -> Section {
                  The busiest endpoint a working deployment has — every authorization \
                  and every refresh passes through it — so this is the number to raise \
                  first when a large client is refused.",
+            ),
+            key(
+                "device_authorization_per_address",
+                "integer",
+                DEFAULT_LIMIT_DEVICE_AUTHORIZATION_PER_ADDRESS.to_string(),
+                "Requests per window to `POST /device_authorization` (RFC 8628 §3.1) \
+                 from one address, for requests that do not create an authorization. \
+                 Every attempt costs a client-signature verification, so malformed or \
+                 unauthenticated traffic is bounded before it can make that work \
+                 unbounded.",
+            ),
+            key(
+                "device_authorization_per_client",
+                "integer",
+                DEFAULT_LIMIT_DEVICE_AUTHORIZATION_PER_CLIENT.to_string(),
+                "Successful device authorizations per window for one authenticated \
+                 client. Each accepted request creates approval work that lives until \
+                 it is answered or expires. Higher than the address limit so a fleet \
+                 starting flows behind one address does not crowd itself out.",
             ),
             key(
                 "userinfo_per_address",
