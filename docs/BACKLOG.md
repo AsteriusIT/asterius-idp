@@ -24,7 +24,7 @@
 | Spec | Status | Used for |
 |---|---|---|
 | FAPI 2.0 Security Profile / Attacker Model | Final (2025-02) | baseline everywhere |
-| FAPI 2.0 Message Signing | Implementer's Draft (draft-02) | track only (E17_01); JAR in PAR optional (E05_09) |
+| FAPI 2.0 Message Signing | Final (2025-09) | track only (E17_01); JAR in PAR optional (E05_09) |
 | OIDC Core / Discovery / Registration (errata) | Final | E04–E09 |
 | RP-Initiated Logout, Back-Channel Logout | Final | E10 |
 | Session Management, Front-Channel Logout | Final but not planned (decision E10_04) | — |
@@ -34,7 +34,7 @@
 | Shared Signals Framework 1.0, CAEP 1.0, RISC 1.0 | Final (2025-09) | E12 |
 | CAEP Interoperability Profile | Implementer's Draft | track (E17_10) |
 | AuthZEN Authorization API 1.0 | Final (2026-01-12) | E13 |
-| JARM | Final (errata 1) | track with Message Signing |
+| JARM | Final incorporating errata set 1 (2025-08) | track with Message Signing |
 | MCP Authorization (2026-07-28) | MCP spec (references OAuth 2.1 draft and CIMD; DCR deprecated) | E11_08, decision E03_08 |
 | IETF: RFC 6749/6750/7009/7519/7521/7523/7591/7592/7636/7662/8414/8628/8693/8705/8707/8725/8935/8936/9068/9101/9126/9207/9396/9449/9493/9700/9728 | RFCs | cited per story (section numbers from memory where noted — verify while implementing) |
 | OAuth 2.1, RFC 7523bis, Client ID Metadata Documents, Identity Assertion Authz Grant | IETF working drafts | track (E17_02, E17_03, E17_11) |
@@ -777,7 +777,8 @@ Deterministic decision table from (session state, prompt, max_age, hints, acr po
 
 **Spec:** RFC 9126 §3 (`request` parameter in PAR; `request_uri` by reference MUST NOT be used in PAR); RFC 9101 §4 (request object claims; `typ` oauth-authz-req+jwt), §6.1 (all parameters in the JWT; parameters outside are ignored except client auth), §6.3 (validation); OIDC Core §6.1 (`request` parameter), §6.3 (validation: iss=client_id, aud=issuer).
 
-Optional non-repudiation hook (prerequisite for FAPI 2.0 Message Signing later — Implementer's Draft, tracked in E17). Off by default.
+Optional non-repudiation hook and prerequisite for the signed-authorization-request
+component of FAPI 2.0 Message Signing (Final, tracked in E17). Off by default.
 
 **Acceptance tests**
 
@@ -2288,7 +2289,7 @@ Specifications and features deliberately kept out of v1: working drafts (never b
 
 | Key | Story | Type | P | Depends on |
 |---|---|---|---|---|
-| E17_01 | Track: FAPI 2.0 Message Signing (JAR + JARM + HTTP message signatures) | task | P4 | — |
+| E17_01 | Track: FAPI 2.0 Message Signing (JAR + JARM; HTTP signatures separate) | task | P4 | — |
 | E17_02 | Track: Client ID Metadata Documents (IETF draft) for MCP clients | task | P4 | E03_08 |
 | E17_03 | Track: Identity Assertion Authorization Grant / Cross-App Access for enterprise agents | task | P4 | — |
 | E17_04 | Track: OpenID Federation 1.0 (Final) — out of v1 scope by product decision | task | P4 | — |
@@ -2301,17 +2302,27 @@ Specifications and features deliberately kept out of v1: working drafts (never b
 | E17_11 | Track: OAuth 2.1 (draft) and RFC 7523bis (draft) alignment notes | task | P4 | — |
 | E17_12 | Post-v1 candidates: SCIM 2.0 provisioning, TOTP second factor, SAML (nice-to-have), LDAP | task | P4 | — |
 
-### E17_01 — Track: FAPI 2.0 Message Signing (JAR + JARM + HTTP message signatures)
+### E17_01 — Track: FAPI 2.0 Message Signing (JAR + JARM; HTTP signatures separate)
 
-*task · P4 · labels: track, spec:fapi2-message-signing, status:impl-draft*
+*task · P4 · labels: track, spec:fapi2-message-signing, status:final*
 
-**Spec:** FAPI 2.0 Message Signing draft-02 (Implementer's Draft; 'not an OIDF International Standard'); JARM (Final, errata set 1) §2 (JWT response document: iss, aud, exp ≤10 min, plus response params), §4 (response modes query.jwt/fragment.jwt/form_post.jwt/jwt).
+**Spec:** FAPI 2.0 Message Signing Final (2025-09-25) §5.1 (independently
+conformant signed authorization requests, authorization responses and
+introspection responses), §5.3 (JAR in PAR), §5.4 (JARM), §5.5 (JWT token
+introspection responses per RFC 9701), §5.6 (ID token signature verification);
+JARM Final incorporating errata set 1 (2025-08-17) §2.1 (JWT response document:
+`iss`, `aud`, recommended `exp` lifetime ≤10 min, plus response parameters),
+§2.3 (`query.jwt`, `fragment.jwt`, `form_post.jwt`, `jwt`). HTTP message signing
+was split out and remains a separate FAPI 2.0 HTTP Signatures draft.
 
-Non-repudiation profile on top of FAPI 2.0 SP. E05_09 (JAR in PAR) is the only prerequisite worth keeping optional in v1. Re-evaluate when Message Signing reaches Final.
+Non-repudiation profile on top of FAPI 2.0 SP. Finalization does not change the
+v1 boundary: the profile explicitly permits separate conformance for its three
+components, so E05_09 (JAR in PAR) remains the only prerequisite worth keeping
+optional in v1. JARM and signed introspection responses remain post-v1.
 
 **Acceptance tests**
 
-- Bead updated with the spec status at each release; no code beyond E05_09.
+- Bead and this table reflect each spec release; no v1 code beyond E05_09.
 
 **Depends on:** —
 

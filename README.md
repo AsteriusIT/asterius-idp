@@ -62,7 +62,8 @@ the workspace manifest and inherited with `[lints] workspace = true`.
 | Continuous access | Shared Signals Framework 1.0, CAEP 1.0, RISC 1.0 | Final |
 | Authorization decisions | AuthZEN Authorization API 1.0 | Final |
 | Consent lifecycle | Grant Management for OAuth 2.0 | Implementer's Draft — behind a feature flag |
-| Tracked, not implemented | FAPI 2.0 Message Signing, Client ID Metadata Documents, Identity Assertion Authorization Grant, Native SSO, Provider Commands, IPSIE | Drafts |
+| Tracked, not implemented | FAPI 2.0 Message Signing | Final |
+| Tracked, not implemented | Client ID Metadata Documents, Identity Assertion Authorization Grant, Native SSO, Provider Commands, IPSIE | Drafts |
 
 **Deliberately out of scope for v1:** SAML, LDAP, verifiable credentials (OID4VCI/VP), OpenID Federation, Identity Assurance. The claims model is issuer-agnostic so these can be added later without a schema rewrite.
 
