@@ -747,22 +747,18 @@ impl TenantSettings {
             Some(_) => return Err(TenantSettingsError::NotABoolean("always_ask_consent")),
         };
 
-        Ok(
-            Self::validated(disabled_features, authorization_code, access_token)?
-                .with_registration(registration)
-                .requiring_a_grant_management_action(grant_management_action_required)
-                .with_default_locale(default_locale)
-                .with_messages(messages)
-                .with_grant_id_in_access_token(grant_id_in_access_token)
-                .with_revoke_refresh_on_logout(revoke_refresh_on_logout)
-                .requiring_a_verified_email(require_verified_email)
-                .with_always_ask_consent(always_ask_consent)
-                .with_session_policy(crate::entities::session::SessionPolicy::from_json(
-                    object.get("session_policy"),
-                )?)
-                .with_acr_policy(acr_policy)?
-                .with_rate_limits(crate::tenant_rate_limits::TenantRateLimits::from_json(object.get("rate_limits"))?),
-        )
+        Self::validated(disabled_features, authorization_code, access_token)?
+            .with_registration(registration)
+            .requiring_a_grant_management_action(grant_management_action_required)
+            .with_default_locale(default_locale)
+            .with_messages(messages)
+            .with_grant_id_in_access_token(grant_id_in_access_token)
+            .with_revoke_refresh_on_logout(revoke_refresh_on_logout)
+            .requiring_a_verified_email(require_verified_email)
+            .with_always_ask_consent(always_ask_consent)
+            .with_session_policy(crate::entities::session::SessionPolicy::from_json(object.get("session_policy"))?)
+            .with_rate_limits(crate::tenant_rate_limits::TenantRateLimits::from_json(object.get("rate_limits"))?)
+            .with_acr_policy(acr_policy)
     }
 }
 

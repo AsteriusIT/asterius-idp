@@ -8,10 +8,8 @@
  * deliberately no wider than that — a form whose `PUT` goes nowhere is worse
  * than an absent one, because it tells an operator a change was saved.
  *
- * Runtime branding controls are
- * named by `ast-bfn` and are *not* here: none of them exists below the API
- * yet, so each needs a domain type, a route and a migration before a control
- * for it can mean anything.
+ * Assurance, session and rate-limit policies share the scoped settings API.
+ * Runtime branding controls remain tracked separately.
  *
  * # The ceilings are the server's
  *
