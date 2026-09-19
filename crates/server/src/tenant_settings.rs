@@ -75,6 +75,15 @@ impl SettingsDirectory {
         }
     }
 
+    /// Reads limiter policy directly so all replicas observe administrative changes
+    /// on their next check. Cache TTL must not keep a relaxed tenant budget alive.
+    ///
+    /// # Errors
+    /// Propagates storage or validation errors; limiters fail closed.
+    pub async fn rate_limits_for(&self, tenant: &TenantId) -> Result<asterius_domain::tenant_rate_limits::TenantRateLimits, DomainError> {
+        Ok(self.repository.settings(tenant).await?.rate_limits().clone())
+    }
+
     /// This tenant's settings, from the cache or from the repository.
     ///
     /// # Errors
@@ -100,6 +109,30 @@ impl SettingsDirectory {
             );
         }
         Ok(settings)
+    }
+}
+
+/// Shared in-memory settings adapter for limiter tests; counters remain a separate port.
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub(crate) struct RateLimitTestRepository {
+    values: std::sync::Mutex<std::collections::BTreeMap<String, TenantSettings>>,
+    pub(crate) fail_reads: std::sync::atomic::AtomicBool,
+}
+
+#[cfg(test)]
+#[async_trait::async_trait]
+impl TenantSettingsRepository for RateLimitTestRepository {
+    async fn settings(&self, tenant: &TenantId) -> Result<TenantSettings, DomainError> {
+        if self.fail_reads.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(DomainError::NotFound);
+        }
+        Ok(self.values.lock().expect("uncontended test lock").get(tenant.as_str()).cloned().unwrap_or_default())
+    }
+
+    async fn save(&self, tenant: &TenantId, settings: &TenantSettings) -> Result<(), DomainError> {
+        self.values.lock().expect("uncontended test lock").insert(tenant.as_str().to_owned(), settings.clone());
+        Ok(())
     }
 }
 

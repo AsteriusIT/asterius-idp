@@ -33,3 +33,11 @@ test('the consent switch hydrates and participates in dirty state', () => {
   assert.equal(isDirty(stored, draft), false);
   assert.equal(isDirty(stored, { ...draft, alwaysAskConsent: false }), true);
 });
+
+test('stored rate overrides hydrate and editing marks settings dirty', () => {
+  const stored = settings({ rate_limits: { token: { per_client: 20 } } });
+  const draft = draftOf(stored);
+  assert.deepEqual(draft.rateLimits, { token: { per_client: '20' } });
+  assert.equal(isDirty(stored, draft), false);
+  assert.equal(isDirty(stored, { ...draft, rateLimits: { token: { per_client: '10' } } }), true);
+});

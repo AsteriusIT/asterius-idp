@@ -25,6 +25,7 @@ pub mod outbox;
 pub mod policy;
 pub mod ports;
 pub mod rate_limit;
+pub mod tenant_rate_limits;
 pub mod secret;
 mod secret_audit;
 

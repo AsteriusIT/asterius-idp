@@ -41,6 +41,7 @@ use crate::config::{
     DEFAULT_LIMIT_INTROSPECTION_PER_ADDRESS, DEFAULT_LIMIT_INTROSPECTION_PER_CLIENT,
     DEFAULT_LIMIT_PAR_PER_ADDRESS, DEFAULT_LIMIT_PAR_PER_CLIENT,
     DEFAULT_LIMIT_REGISTRATION_PER_ADDRESS, DEFAULT_LIMIT_SSF_SUBJECTS_PER_ADDRESS,
+    DEFAULT_LIMIT_REVOCATION_PER_ADDRESS, DEFAULT_LIMIT_REVOCATION_PER_CLIENT,
     DEFAULT_LIMIT_SSF_SUBJECTS_PER_CLIENT, DEFAULT_LIMIT_TOKEN_PER_ADDRESS,
     DEFAULT_LIMIT_TOKEN_PER_CLIENT, DEFAULT_LIMIT_USERINFO_PER_ADDRESS,
     DEFAULT_LIMIT_WINDOW_SECONDS, DEFAULT_LOGIN_MAX_PER_ACCOUNT, DEFAULT_LOGIN_MAX_PER_ADDRESS,
@@ -895,6 +896,18 @@ fn limits() -> Section {
                  what prices §4's token scanning: every answer to a scan is a 200 \
                  saying `active: false`, so nothing in the protocol tells a caller \
                  walking token values to stop.",
+            ),
+            key(
+                "revocation_per_address",
+                "integer",
+                DEFAULT_LIMIT_REVOCATION_PER_ADDRESS.to_string(),
+                "Requests per window to POST /revoke from one address. Bounds rejected client authentication before further cryptographic work.",
+            ),
+            key(
+                "revocation_per_client",
+                "integer",
+                DEFAULT_LIMIT_REVOCATION_PER_CLIENT.to_string(),
+                "Successful revocation responses per window for one authenticated client, including unknown tokens whose RFC 7009 response is deliberately indistinguishable.",
             ),
             key(
                 "ssf_subjects_per_address",

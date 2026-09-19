@@ -4584,7 +4584,7 @@ fn endpoint_limits<'a>(
             limiter,
             endpoints.endpoint_limits,
             client.map(|client| client.ip),
-        ),
+        ).with_tenant_settings(endpoints.tenant_settings.as_ref()),
         audit: endpoints.audit.as_ref(),
         now,
     }
@@ -4595,7 +4595,7 @@ fn endpoint_limits<'a>(
 /// Built per request because the client address is part of it. The store
 /// behind it is a handle to the shared pool, so this costs an `Arc` clone.
 fn throttle<'a>(
-    endpoints: &ClientEndpoints,
+    endpoints: &'a ClientEndpoints,
     limiter: &'a asterius_store_pg::PgRateLimitStore,
     client: Option<&crate::http::forwarded::ClientAddr>,
 ) -> crate::http::throttle::LoginThrottle<'a> {
@@ -4603,7 +4603,7 @@ fn throttle<'a>(
         limiter,
         endpoints.login_limits,
         client.map(|client| client.ip),
-    )
+    ).with_tenant_settings(endpoints.tenant_settings.as_ref())
 }
 
 /// The adapters the four recovery routes share, built once per request.

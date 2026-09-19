@@ -1,3 +1,4 @@
+import type { RateBounds, RateDraft, RateOverrides } from './rate-limit-model';
 /** The ceilings the server sends with a tenant settings document. */
 export interface Limits {
   readonly max_authorization_code_lifetime_seconds: number;
@@ -13,6 +14,9 @@ export interface Settings {
   /** Optional while an older server may still be present during an upgrade. */
   readonly always_ask_consent?: boolean;
   readonly limits: Limits;
+  readonly rate_limits?: RateOverrides;
+  readonly rate_limit_bounds?: RateBounds;
+  readonly effective_rate_limits?: RateBounds;
 }
 
 /** What the settings form holds while it is being edited. */
@@ -21,6 +25,7 @@ export interface Draft {
   readonly code: string;
   readonly token: string;
   readonly alwaysAskConsent: boolean;
+  readonly rateLimits: RateDraft;
 }
 
 /** The draft a freshly read document starts as. */
@@ -30,6 +35,8 @@ export function draftOf(settings: Settings): Draft {
     code: String(settings.authorization_code_lifetime_seconds),
     token: String(settings.access_token_lifetime_seconds),
     alwaysAskConsent: settings.always_ask_consent ?? false,
+    rateLimits: Object.fromEntries(Object.entries(settings.rate_limits ?? {}).map(([group, scopes]) =>
+      [group, Object.fromEntries(Object.entries(scopes).map(([scope, max]) => [scope, String(max)]))])),
   };
 }
 
@@ -40,6 +47,7 @@ export function isDirty(settings: Settings, draft: Draft): boolean {
     draft.disabled.every((name) => settings.disabled_features.includes(name));
   return (
     !sameFeatures ||
+    JSON.stringify(draft.rateLimits) !== JSON.stringify(draftOf(settings).rateLimits) ||
     draft.code !== String(settings.authorization_code_lifetime_seconds) ||
     draft.token !== String(settings.access_token_lifetime_seconds) ||
     draft.alwaysAskConsent !== (settings.always_ask_consent ?? false)

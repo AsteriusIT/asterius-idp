@@ -249,6 +249,7 @@ pub struct TenantSettings {
     /// on when every authorization must give the person a fresh opportunity
     /// to reject it, including an authorization whose scopes were remembered.
     always_ask_consent: bool,
+    rate_limits: crate::tenant_rate_limits::TenantRateLimits,
 }
 
 impl Default for TenantSettings {
@@ -270,11 +271,25 @@ impl Default for TenantSettings {
             revoke_refresh_on_logout: false,
             require_verified_email: false,
             always_ask_consent: false,
+            rate_limits: crate::tenant_rate_limits::TenantRateLimits::default(),
         }
     }
 }
 
 impl TenantSettings {
+    /// This tenant's bounded rate-limit maxima; windows stay deployment-owned.
+    #[must_use]
+    pub const fn rate_limits(&self) -> &crate::tenant_rate_limits::TenantRateLimits {
+        &self.rate_limits
+    }
+
+    /// Attaches validated override metadata.
+    #[must_use]
+    pub fn with_rate_limits(mut self, limits: crate::tenant_rate_limits::TenantRateLimits) -> Self {
+        self.rate_limits = limits;
+        self
+    }
+
     /// Assembles settings, refusing any lifetime the profile does not allow.
     ///
     /// # Errors
@@ -299,6 +314,7 @@ impl TenantSettings {
             revoke_refresh_on_logout: false,
             require_verified_email: false,
             always_ask_consent: false,
+            rate_limits: crate::tenant_rate_limits::TenantRateLimits::default(),
         })
     }
 
@@ -537,6 +553,7 @@ impl TenantSettings {
             "revoke_refresh_on_logout": self.revoke_refresh_on_logout,
             "require_verified_email": self.require_verified_email,
             "always_ask_consent": self.always_ask_consent,
+            "rate_limits": self.rate_limits.to_json(),
         })
     }
 
@@ -671,7 +688,8 @@ impl TenantSettings {
                 .with_grant_id_in_access_token(grant_id_in_access_token)
                 .with_revoke_refresh_on_logout(revoke_refresh_on_logout)
                 .requiring_a_verified_email(require_verified_email)
-                .with_always_ask_consent(always_ask_consent),
+                .with_always_ask_consent(always_ask_consent)
+                .with_rate_limits(crate::tenant_rate_limits::TenantRateLimits::from_json(object.get("rate_limits"))?),
         )
     }
 }
@@ -698,6 +716,9 @@ fn seconds(value: Option<&serde_json::Value>) -> Result<Option<Duration>, Tenant
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum TenantSettingsError {
+    /// Invalid tenant rate-limit override metadata.
+    #[error(transparent)]
+    RateLimits(#[from] crate::tenant_rate_limits::RateLimitOverrideError),
     /// Above the 60-second ceiling.
     #[error(
         "an authorization code lifetime of {requested_seconds} s exceeds the maximum of 60 s \
