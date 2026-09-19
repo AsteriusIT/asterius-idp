@@ -1,7 +1,7 @@
 # Post-v1 enterprise identity roadmap
 
-**Planning snapshot:** 2026-09-19  
-**Owner:** product  
+**Planning snapshot:** 2026-09-19
+**Owner:** product
 **Tracking bead:** `ast-s36.12`
 
 This is a release-planning aid, not an implementation commitment. None of the
