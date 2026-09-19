@@ -249,14 +249,18 @@ impl Fixture {
         if code_flow && let Some(object) = document.as_object_mut() {
             object.insert("redirect_uris".to_owned(), json!(["https://rp.example/cb"]));
         }
+        let mut registration = ClientRegistration::from_json(
+            &serde_json::to_vec(&document).expect("serialise"),
+            Capabilities::default(),
+        )
+        .expect("a valid registration");
+        // Mirror POST /register: the tenant default is the client's initial
+        // administrator-controlled allow-list, not an issuance-time fallback.
+        registration.resources.insert(RESOURCE.to_owned());
         let client = Client {
             tenant: self.tenant.id.clone(),
             id: ClientId::new(CLIENT),
-            registration: ClientRegistration::from_json(
-                &serde_json::to_vec(&document).expect("serialise"),
-                Capabilities::default(),
-            )
-            .expect("a valid registration"),
+            registration,
             status: ClientStatus::Active,
             created_at: self.now,
             updated_at: self.now,
@@ -695,9 +699,9 @@ db_test! {
 // ---- The audience (RFC 8707 §2.2, FAPI 2.0 SP §5.3.2.1 item 14) ----------
 
 db_test! {
-    /// RFC 8707 §2.2 and `ast-gxh.7`: a request that names no `resource` is
-    /// audienced at the tenant's default, which the registry has to register.
-    async fn a_request_naming_no_resource_is_audienced_at_the_tenants_default(f) {
+    /// RFC 8707 §2.2 and `ast-gxh.7`: a request that names no `resource` uses
+    /// the client's initial allow-list, materialized from the tenant default.
+    async fn a_request_naming_no_resource_uses_the_clients_initial_allow_list(f) {
         // Arrange
         let client = f.client(&["client_credentials"]).await;
 
@@ -711,9 +715,9 @@ db_test! {
 }
 
 db_test! {
-    /// The client's own allow-list comes first, exactly as it does for the
-    /// authorization-code grant: one resolution, one answer.
-    async fn the_clients_allow_list_decides_before_the_tenants_default(f) {
+    /// Replacing the client's allow-list replaces that initial assignment,
+    /// exactly as it does for the authorization-code grant.
+    async fn replacing_the_clients_allow_list_replaces_the_initial_assignment(f) {
         // Arrange
         let client = f.client(&["client_credentials"]).await;
         f.register_resource_server(OTHER_RESOURCE).await;

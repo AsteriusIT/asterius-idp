@@ -793,20 +793,6 @@ impl Flow {
         .expect("register the resource server");
     }
 
-    /// Withdraws one, which is how a tenant ends up with no default audience.
-    async fn withdraw_resource_server(&self, identifier: &str) {
-        assert!(
-            asterius_store_pg::PgResourceServers::new(
-                self.store.pool().clone(),
-                self.tenant.id.clone(),
-            )
-            .withdraw(identifier)
-            .await
-            .expect("withdraw the resource server"),
-            "there was no resource server to withdraw: {identifier}"
-        );
-    }
-
     /// Puts `allowed` on the client's own resource allow-list.
     ///
     /// Not registration metadata (RFC 7591 has no such member): it is policy,
@@ -2728,16 +2714,14 @@ async fn two_resources_are_one_token_with_an_array_audience() {
 /// `resource` and has no default audience left gets `invalid_target` rather
 /// than a token nothing can safely accept.
 ///
-/// The tenant's own default audience is a registered resource server; this
-/// withdraws it, which is the only way to have no default at all.
+/// Registering a resource server is not enough: this client has no assigned
+/// audience, so an omitted parameter has no safe value to select.
 #[tokio::test]
 async fn a_client_with_no_resource_and_no_default_audience_gets_no_token() {
     let Some(mut flow) = Flow::new().await else {
         eprintln!("skipping: DATABASE_URL is not set");
         return;
     };
-    flow.withdraw_resource_server(RESOURCE).await;
-
     let refused = redeemed(&mut flow, &[], &[]).await;
 
     assert_eq!(
@@ -2757,15 +2741,16 @@ async fn a_client_with_no_resource_and_no_default_audience_gets_no_token() {
 }
 
 /// **RFC 9068 §3**: a client that names no `resource` still gets an
-/// audience-bound token — the tenant's registered default, which is what its
-/// tokens have always carried.
+/// audience-bound token when an administrator assigned one. The client's own
+/// allow-list is the default set; the tenant registry alone grants nothing.
 #[tokio::test]
-async fn no_resource_falls_back_to_the_registered_default_audience() {
+async fn no_resource_uses_the_clients_allow_list_as_its_default_audience() {
     let Some(mut flow) = Flow::new().await else {
         eprintln!("skipping: DATABASE_URL is not set");
         return;
     };
 
+    flow.allow_client_resources(&[RESOURCE]).await;
     let issued = redeemed(&mut flow, &[], &[]).await;
     assert_eq!(
         issued.status,

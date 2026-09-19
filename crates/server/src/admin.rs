@@ -792,6 +792,19 @@ impl ClientAdministration for DeploymentClients {
             .await
     }
 
+    async fn replace_resources(
+        &self,
+        tenant: &TenantId,
+        client_id: &ClientId,
+        resources: &std::collections::BTreeSet<String>,
+    ) -> Result<Client, DomainError> {
+        self.store
+            .scope(tenant.clone())
+            .clients(self.capabilities)
+            .replace_resources(client_id, resources)
+            .await
+    }
+
     async fn verify_sector(
         &self,
         registration: &ClientRegistration,

@@ -1137,8 +1137,8 @@ pub struct ClientRegistration {
     /// Scopes the client may request, from RFC 7591 §2's `scope` string.
     pub scopes: BTreeSet<String>,
     /// Resource indicators (RFC 8707) this client may name. Not settable from
-    /// a registration document: the per-client audience allow-list is policy,
-    /// and `ast-m9c.6` owns it.
+    /// a registration document: the per-client audience allow-list is policy
+    /// replaced only through the tenant-scoped administration command.
     pub resources: BTreeSet<String>,
     /// Where the client's keys come from.
     pub jwks: JwksSource,

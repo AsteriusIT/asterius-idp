@@ -309,6 +309,7 @@ async fn route_standard(
         crate::CLIENT_READ_ID => context.read_client().await,
         crate::CLIENT_CREATE_ID => context.create_client(body).await,
         crate::CLIENT_UPDATE_ID => context.update_client(body).await,
+        crate::CLIENT_RESOURCES_UPDATE_ID => context.update_client_resources(body).await,
         crate::RESOURCE_SERVERS_LIST_ID => context.list_resource_servers().await,
         crate::RESOURCE_SERVER_READ_ID => context.read_resource_server().await,
         crate::RESOURCE_SERVER_UPDATE_ID => context.update_resource_server(body).await,
@@ -1280,11 +1281,19 @@ impl Handling<'_> {
     async fn create_client(&self, body: axum::body::Body) -> Result<Response, AdminError> {
         let bytes = self.body_bytes(body).await?;
         let status = clients::requested_status(&bytes)?.unwrap_or(ClientStatus::Active);
-        let registration = ClientRegistration::from_json(&bytes, self.state.backend.capabilities())
-            .map_err(|failure| clients::refusal(&failure))?;
+        let mut registration =
+            ClientRegistration::from_json(&bytes, self.state.backend.capabilities())
+                .map_err(|failure| clients::refusal(&failure))?;
 
         self.check_client_is_serviceable(&registration, crate::CLIENT_CREATE_ID)
             .await?;
+
+        // The default is server-owned resource policy, never a member the
+        // registration document controls. Add it after validating the client
+        // document, exactly as dynamic registration does.
+        registration
+            .resources
+            .insert(self.tenant.default_resource.clone());
 
         let client = Client {
             tenant: self.tenant.id.clone(),
@@ -1346,8 +1355,14 @@ impl Handling<'_> {
         // Absent means unchanged, which is what stops a console built against
         // an older server from reactivating a client somebody suspended.
         let status = clients::requested_status(&bytes)?.unwrap_or(existing.status);
-        let registration = ClientRegistration::from_json(&bytes, self.state.backend.capabilities())
-            .map_err(|failure| clients::refusal(&failure))?;
+        let mut registration =
+            ClientRegistration::from_json(&bytes, self.state.backend.capabilities())
+                .map_err(|failure| clients::refusal(&failure))?;
+        // The parser intentionally ignores `resources`: it is not RFC 7591
+        // metadata. Preserve the administrator-owned policy explicitly so a
+        // fake or future store cannot accidentally rely on PostgreSQL's
+        // current column-level preservation.
+        registration.resources = existing.registration.resources.clone();
 
         self.check_client_is_serviceable(&registration, crate::CLIENT_UPDATE_ID)
             .await?;
@@ -1377,6 +1392,53 @@ impl Handling<'_> {
                 .text("client_id", stored.id.as_str())
                 .text("status_before", existing.status.as_str())
                 .text("status_after", stored.status.as_str()),
+        )
+        .await;
+
+        Ok(json_no_store(StatusCode::OK, &clients::document(&stored)))
+    }
+
+    /// `PUT /clients/{client_id}/resources` — replaces the administrator-owned
+    /// RFC 8707 audience allow-list.
+    async fn update_client_resources(
+        &self,
+        body: axum::body::Body,
+    ) -> Result<Response, AdminError> {
+        let id = self.client_in_path("/resources")?;
+        let existing = self
+            .load_client(&id, crate::CLIENT_RESOURCES_UPDATE_ID)
+            .await?;
+        let bytes = self.body_bytes(body).await?;
+        let resources = clients::resource_allow_list(&bytes)?;
+
+        let stored = self
+            .state
+            .backend
+            .clients()
+            .replace_resources(&self.tenant.id, &id, &resources)
+            .await
+            .map_err(|error| match error {
+                DomainError::NotFound => AdminError::NotFound,
+                DomainError::Invalid { .. } => AdminError::Invalid(
+                    "resources: every selected resource must be registered in this tenant"
+                        .to_owned(),
+                ),
+                other => AdminError::from_storage(crate::CLIENT_RESOURCES_UPDATE_ID, &other),
+            })?;
+
+        self.record(
+            EventType::ADMIN_CHANGED,
+            Detail::new()
+                .label("operation", crate::CLIENT_RESOURCES_UPDATE_ID)
+                .text("client_id", stored.id.as_str())
+                .number(
+                    "resource_count_before",
+                    i64::try_from(existing.registration.resources.len()).unwrap_or(i64::MAX),
+                )
+                .number(
+                    "resource_count_after",
+                    i64::try_from(stored.registration.resources.len()).unwrap_or(i64::MAX),
+                ),
         )
         .await;
 
@@ -5547,6 +5609,39 @@ mod tests {
             Ok(held.clone())
         }
 
+        async fn replace_resources(
+            &self,
+            tenant: &TenantId,
+            client_id: &asterius_domain::ClientId,
+            resources: &std::collections::BTreeSet<String>,
+        ) -> Result<Client, DomainError> {
+            let registered: std::collections::BTreeSet<String> = self
+                .0
+                .resource_servers
+                .lock()
+                .expect("an uncontended lock")
+                .iter()
+                .filter(|(owner, _)| owner == tenant)
+                .map(|(_, server)| server.identifier.as_str().to_owned())
+                .collect();
+            if !resources.is_subset(&registered) {
+                return Err(DomainError::invalid(
+                    "resources",
+                    "every resource must be registered in this tenant",
+                ));
+            }
+
+            let mut clients = self.0.clients.lock().expect("an uncontended lock");
+            let Some(held) = clients
+                .iter_mut()
+                .find(|held| &held.tenant == tenant && &held.id == client_id)
+            else {
+                return Err(DomainError::NotFound);
+            };
+            held.registration.resources = resources.clone();
+            Ok(held.clone())
+        }
+
         async fn verify_sector(
             &self,
             registration: &ClientRegistration,
@@ -7080,6 +7175,9 @@ mod tests {
             // the same document `POST /register` takes, validated by the same
             // call.
             crate::CLIENT_CREATE_ID | crate::CLIENT_UPDATE_ID => valid_registration(),
+            crate::CLIENT_RESOURCES_UPDATE_ID => {
+                serde_json::json!({"resources": [SEEDED_RESOURCE]})
+            }
             crate::RESOURCE_SERVER_UPDATE_ID => serde_json::json!({
                 "scopes": ["accounts:read", "accounts:write"],
                 "default_token_lifetime_seconds": 300,
@@ -10474,6 +10572,28 @@ mod tests {
             .await
     }
 
+    async fn put_client_resources(
+        world: &World,
+        cookie: &str,
+        client_id: &str,
+        resources: &[&str],
+    ) -> Response {
+        world
+            .send(
+                as_console(&crate::CLIENT_RESOURCES_UPDATE, cookie)
+                    .uri(
+                        crate::CLIENT_RESOURCES_UPDATE
+                            .full_path()
+                            .replace("{client_id}", client_id),
+                    )
+                    .body(Body::from(
+                        serde_json::json!({"resources": resources}).to_string(),
+                    ))
+                    .expect("a request"),
+            )
+            .await
+    }
+
     /// **The acceptance criterion of `ast-m9c.6` for this crate.** The tenant's
     /// registration policy is not a property of the `POST /register` endpoint;
     /// it is a property of the tenant, so the console is bound by it too. A
@@ -10689,6 +10809,120 @@ mod tests {
                 "saving changed {member}: {saved}"
             );
         }
+    }
+
+    /// Resource-server registration and client authorization are separate
+    /// controls. The dedicated command replaces the latter, while an ordinary
+    /// metadata update cannot erase it.
+    #[tokio::test]
+    async fn an_administrator_can_replace_and_remove_a_clients_resource_allow_list() {
+        let (world, cookie) = console_in_a_signing_tenant();
+
+        let assigned =
+            put_client_resources(&world, &cookie, SEEDED_CLIENT_ID, &[SEEDED_RESOURCE]).await;
+        assert_eq!(assigned.status(), StatusCode::OK);
+        assert_eq!(
+            body_of(assigned).await["resources"],
+            serde_json::json!([SEEDED_RESOURCE])
+        );
+
+        // A whole-document metadata replacement still cannot write or erase
+        // administrator-owned policy.
+        let renamed = world
+            .send(
+                as_console(&crate::CLIENT_UPDATE, &cookie)
+                    .uri(
+                        crate::CLIENT_UPDATE
+                            .full_path()
+                            .replace("{client_id}", SEEDED_CLIENT_ID),
+                    )
+                    .body(Body::from(valid_registration().to_string()))
+                    .expect("a request"),
+            )
+            .await;
+        assert_eq!(renamed.status(), StatusCode::OK);
+        assert_eq!(
+            body_of(renamed).await["resources"],
+            serde_json::json!([SEEDED_RESOURCE]),
+            "an unrelated client metadata edit erased resource policy"
+        );
+
+        let removed = put_client_resources(&world, &cookie, SEEDED_CLIENT_ID, &[]).await;
+        assert_eq!(removed.status(), StatusCode::OK);
+        assert_eq!(body_of(removed).await["resources"], serde_json::json!([]));
+
+        let events = world.handle.0.events.lock().expect("an uncontended lock");
+        let resource_changes: Vec<&AuditEvent> = events
+            .iter()
+            .filter(|event| {
+                event.detail.iter().any(|(key, value)| {
+                    key == "operation"
+                        && value
+                            == &asterius_domain::audit::DetailValue::Text(
+                                crate::CLIENT_RESOURCES_UPDATE_ID.to_owned(),
+                            )
+                })
+            })
+            .collect();
+        assert_eq!(
+            resource_changes.len(),
+            2,
+            "each replacement must be audited"
+        );
+        assert!(resource_changes.iter().all(|event| {
+            event
+                .detail
+                .iter()
+                .all(|(key, _)| !key.contains("token") && !key.contains("credential"))
+        }));
+    }
+
+    /// A resource registered by another tenant is as unusable as an unknown
+    /// resource. Neither refusal changes the policy already stored.
+    #[tokio::test]
+    async fn a_client_resource_allow_list_rejects_unknown_and_cross_tenant_resources() {
+        let (world, cookie) = console_in_a_signing_tenant();
+        let other_only = "https://other.example/private";
+        world
+            .handle
+            .0
+            .resource_servers
+            .lock()
+            .expect("an uncontended lock")
+            .push((
+                TenantId::new("other"),
+                asterius_domain::ResourceServer {
+                    identifier: asterius_domain::ResourceIdentifier::parse(other_only)
+                        .expect("a fixed resource identifier"),
+                    scopes: None,
+                    default_token_lifetime: None,
+                    introspection_clients: std::collections::BTreeSet::new(),
+                },
+            ));
+
+        for refused in ["https://unknown.example/api", other_only] {
+            let response =
+                put_client_resources(&world, &cookie, SEEDED_CLIENT_ID, &[refused]).await;
+            assert_eq!(
+                response.status(),
+                StatusCode::BAD_REQUEST,
+                "accepted {refused}"
+            );
+        }
+
+        let stored = world
+            .handle
+            .0
+            .clients
+            .lock()
+            .expect("an uncontended lock")
+            .iter()
+            .find(|client| {
+                client.tenant.as_str() == "asterius-admin" && client.id.as_str() == SEEDED_CLIENT_ID
+            })
+            .cloned()
+            .expect("the seeded client");
+        assert!(stored.registration.resources.is_empty());
     }
 
     /// FAPI 2.0 SP §5.3.2.1 and OIDC Registration §3.2: this server issues no
