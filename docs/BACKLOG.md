@@ -2333,13 +2333,21 @@ Would let MCP clients use an https URL as `client_id`; requires SSRF-hardened fe
 
 *task · P4 · labels: track, spec:ietf-identity-assertion-authz-grant, status:draft*
 
-**Spec:** draft-ietf-oauth-identity-assertion-authz-grant (IETF working draft; builds on RFC 8693 + RFC 7523); MCP 'enterprise-managed authorization' extension.
+**Spec:** draft-ietf-oauth-identity-assertion-authz-grant-04 (IETF OAuth WG document; builds on RFC 8693 + RFC 7523); stable MCP Enterprise-Managed Authorization extension (`io.modelcontextprotocol/enterprise-managed-authorization`).
 
-IdP-brokered token issuance for third-party apps/agents inside an enterprise. Our RFC 8693 implementation (E11_02) is the foundation.
+IdP-brokered token issuance for third-party apps/agents inside an enterprise. The
+IdP mints an Identity Assertion JWT Authorization Grant (ID-JAG) through RFC
+8693 token exchange, then the resource authorization server redeems it through
+the RFC 7523 JWT bearer authorization grant. Our RFC 8693 implementation
+(E11_02) covers the first protocol foundation only; Asterius does not implement
+ID-JAG issuance or redemption.
 
 **Acceptance tests**
 
-- Revisit at IETF WGLC.
+- Revisit at IETF WGLC. Status checked 2026-09-19: revision `-04` remains a WG
+  Document in the IETF Datatracker, with no document shepherd or responsible
+  area director; the implementation trigger has not fired. MCP stabilization
+  alone does not override the IETF-draft gate.
 
 **Depends on:** —
 
