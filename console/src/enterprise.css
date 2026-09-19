@@ -89,7 +89,7 @@ td, [data-slot='table-cell'] { padding: calc(var(--table-cell-y) + 6px) 16px; fo
 .identity-heading .screen-title { gap: 5px; }
 .identity-heading .screen-title h2 { font-size: 22px; }
 .detail-avatar { width: 58px; height: 58px; font-size: 21px; }
-.account-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: 24px; }
+.account-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: 24px; border-top: 1px solid var(--line); padding-top: 12px; }
 .account-summary dd { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .console-tabs { display: flex; flex-wrap: wrap; gap: 6px; border-bottom: 1px solid var(--line); padding: 0 0 10px; margin-bottom: 28px; }
 .console-tab { position: relative; padding: 10px 14px; border-radius: 6px; color: var(--muted); font-size: 14px; font-weight: 500; cursor: pointer; }
@@ -101,7 +101,6 @@ td, [data-slot='table-cell'] { padding: calc(var(--table-cell-y) + 6px) 16px; fo
 .flat-section > [data-slot='card-header'], .flat-section > [data-slot='card-content'] { padding: 0; }
 .tab-primary-section > [data-slot='card-header'] { display: none; }
 .flat-section + .flat-section { padding-top: 28px; border-top: 1px solid var(--line); }
-.account-summary { border-top: 1px solid var(--line); padding-top: 12px; }
 .application-editor { border: 0; padding: 0; }
 .application-editor > [data-slot='card-header'] { display: none; }
 .application-editor > [data-slot='card-content'] { padding: 0; }

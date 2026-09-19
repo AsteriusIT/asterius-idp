@@ -163,12 +163,12 @@ export function RoleCatalogue({
   path,
   title,
   explanation,
-}: {
+}: Readonly<{
   session: Session;
   path: string;
   title: string;
   explanation: string;
-}): JSX.Element {
+}>): JSX.Element {
   const [load, setLoad] = useState<Load<Catalogue>>({ kind: 'loading' });
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState('');
@@ -361,12 +361,12 @@ export function UserAppRoles({
   userId,
   busy,
   onChanged,
-}: {
+}: Readonly<{
   session: Session;
   userId: string;
   busy: boolean;
   onChanged: (message: string) => void;
-}): JSX.Element {
+}>): JSX.Element {
   const [load, setLoad] = useState<Load<HeldRoles>>({ kind: 'loading' });
   const [catalogue, setCatalogue] = useState<readonly AppRole[]>([]);
   const [clients, setClients] = useState<readonly string[]>([]);
@@ -561,7 +561,7 @@ export function UserAppRoles({
 }
 
 /** Dedicated home for workspace and application role definitions. */
-export function Roles({ session, client }: { session: Session; client?: string | null }): JSX.Element {
+export function Roles({ session, client }: Readonly<{ session: Session; client?: string | null }>): JSX.Element {
   const [owner, setOwner] = useState(client ?? '');
   const [clients, setClients] = useState<readonly { client_id: string; client_name?: string }[]>([]);
   const [error, setError] = useState<string | null>(null);

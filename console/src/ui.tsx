@@ -73,12 +73,12 @@ export function PageHeader({
   description,
   actions,
   identity,
-}: {
+}: Readonly<{
   identity?: string | undefined;
   title: string;
   description?: ReactNode;
   actions?: ReactNode;
-}): JSX.Element {
+}>): JSX.Element {
   return (
     <header className={identity ? "screen-head identity-heading" : "screen-head"}>
       {identity && <span className="identity-avatar detail-avatar" aria-hidden="true">{identity.slice(0, 2).toUpperCase()}</span>}
@@ -93,14 +93,14 @@ export function PageHeader({
 
 export function Screen({
   title, description, actions, children, back, identity,
-}: {
+}: Readonly<{
   title: string;
   description?: ReactNode;
   actions?: ReactNode;
   children: ReactNode;
   back?: { label: string; onClick: () => void };
   identity?: string | undefined;
-}): JSX.Element {
+}>): JSX.Element {
   return (
     <div className="screen">
       {back && <button className="back-link" onClick={back.onClick}>← {back.label}</button>}
@@ -125,14 +125,14 @@ export function Panel({
   actions,
   className,
   children,
-}: {
+}: Readonly<{
   title: string;
   id?: string;
   description?: ReactNode;
   actions?: ReactNode;
   className?: string;
   children: ReactNode;
-}): JSX.Element {
+}>): JSX.Element {
   const generated = useId();
   const headingId = id ?? generated;
   return (
@@ -157,7 +157,7 @@ export function Panel({
 }
 
 /** A native, keyboard-operable disclosure for a screen's larger filter set. */
-export function FilterPanel({ children }: { children: ReactNode }): JSX.Element {
+export function FilterPanel({ children }: Readonly<{ children: ReactNode }>): JSX.Element {
   return (
     <details className="filter-panel" open>
       <summary>
@@ -173,10 +173,10 @@ export function FilterPanel({ children }: { children: ReactNode }): JSX.Element 
 export function CenteredCard({
   heading,
   children,
-}: {
+}: Readonly<{
   heading: string;
   children?: ReactNode;
-}): JSX.Element {
+}>): JSX.Element {
   return (
     <main id="content" tabIndex={-1} className="page">
       <div className="card">
@@ -212,13 +212,15 @@ export function Button({
   className,
   children,
   ...rest
-}: {
+}: Readonly<{
   variant?: Variant;
   small?: boolean;
   // React 19 passes `ref` as an ordinary prop to a function component, so the
   // dialog can hold one without `forwardRef` in the tree.
-} & React.ComponentProps<'button'>): JSX.Element {
-  const mapped = variant === 'primary' ? 'default' : variant === 'ghost' ? 'ghost' : 'outline';
+}> & React.ComponentProps<'button'>): JSX.Element {
+  let mapped: 'default' | 'ghost' | 'outline' = 'outline';
+  if (variant === 'primary') mapped = 'default';
+  if (variant === 'ghost') mapped = 'ghost';
   return (
     <ShadButton
       type={type}
@@ -240,10 +242,10 @@ export function Button({
 export function Actions({
   end = false,
   children,
-}: {
+}: Readonly<{
   end?: boolean;
   children: ReactNode;
-}): JSX.Element {
+}>): JSX.Element {
   return <div className={end ? 'actions end' : 'actions'}>{children}</div>;
 }
 
@@ -262,18 +264,18 @@ export function Field({
   error,
   required = false,
   children,
-}: {
+}: Readonly<{
   label: string;
   hint?: ReactNode;
   error?: string | null;
   required?: boolean;
-  children: (props: {
+  children: (props: Readonly<{
     id: string;
     'aria-describedby': string | undefined;
     'aria-invalid': boolean | undefined;
     required: boolean;
-  }) => ReactNode;
-}): JSX.Element {
+  }>) => ReactNode;
+}>): JSX.Element {
   const id = useId();
   const hintId = `${id}-hint`;
   const errorId = `${id}-error`;
@@ -324,11 +326,13 @@ export type Tone = 'success' | 'error' | 'info';
 export function Message({
   tone,
   children,
-}: {
+}: Readonly<{
   tone: Tone;
   children: ReactNode;
-}): JSX.Element {
-  const mark = tone === 'success' ? '✓' : tone === 'error' ? '⚠' : 'ℹ';
+}>): JSX.Element {
+  let mark = 'ℹ';
+  if (tone === 'success') mark = '✓';
+  if (tone === 'error') mark = '⚠';
   return (
     <p
       className={`message ${tone}`}
@@ -354,10 +358,10 @@ export function Message({
 export function Badge({
   tone = 'neutral',
   children,
-}: {
+}: Readonly<{
   tone?: 'neutral' | 'ok' | 'warn' | 'bad' | 'info';
   children: ReactNode;
-}): JSX.Element {
+}>): JSX.Element {
   return (
     <ShadBadge
       variant="outline"
@@ -396,10 +400,10 @@ export function Truncate({
   // table laid out automatically asks its cells how wide they want to be, and
   // this is the answer. The caller passes a literal so Tailwind can see it.
   className = 'max-w-[24ch]',
-}: {
+}: Readonly<{
   text: string;
   className?: string;
-}): JSX.Element {
+}>): JSX.Element {
   return (
     <span className={cn('block truncate', className)} title={text}>
       {text}
@@ -408,7 +412,7 @@ export function Truncate({
 }
 
 /** A compact UTC timestamp that retains the exact instant as metadata. */
-export function Timestamp({ value }: { value: string | number | null }): JSX.Element {
+export function Timestamp({ value }: Readonly<{ value: string | number | null }>): JSX.Element {
   if (value === null) {
     return <span className="muted">never</span>;
   }
@@ -429,11 +433,11 @@ export function EmptyState({
   title,
   body,
   action,
-}: {
+}: Readonly<{
   title: string;
   body?: ReactNode;
   action?: ReactNode;
-}): JSX.Element {
+}>): JSX.Element {
   return (
     <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed px-6 py-10 text-center">
       <strong className="text-sm font-semibold">{title}</strong>
@@ -456,7 +460,7 @@ export function EmptyState({
  * it say" to tell a saved change from a refused one. A skeleton that answered
  * that question would be a second status beside the one the screen meant.
  */
-export function Skeleton({ rows = 3, label }: { rows?: number; label: string }): JSX.Element {
+export function Skeleton({ rows = 3, label }: Readonly<{ rows?: number; label: string }>): JSX.Element {
   return (
     <div className="stack">
       <p className="muted" aria-live="polite">
@@ -476,11 +480,11 @@ export function LoadFailure({
   message,
   onRetry,
   retryLabel = 'Try again',
-}: {
+}: Readonly<{
   message: string;
   onRetry?: () => void;
   retryLabel?: string;
-}): JSX.Element {
+}>): JSX.Element {
   return (
     <div className="stack">
       <Message tone="error">{message}</Message>
@@ -583,14 +587,14 @@ export function DataTable<Row>({
   rowKey,
   empty,
   search,
-}: {
+}: Readonly<{
   caption?: string;
   columns: readonly Column<Row>[];
   rows: readonly Row[];
   rowKey: (row: Row) => string;
   empty?: ReactNode;
   search?: Search<Row>;
-}): JSX.Element {
+}>): JSX.Element {
   const [sort, setSort] = useState<{ key: string; direction: Direction } | null>(null);
   const [query, setQuery] = useState('');
   const searchId = useId();
@@ -681,6 +685,34 @@ export function DataTable<Row>({
                 {columns.map((column) => {
                   const sortable = column.sortBy !== undefined;
                   const active = sort?.key === column.key ? sort.direction : undefined;
+                  let heading: ReactNode = column.header;
+                  if (column.actions === true) {
+                    heading = (
+                      <span className="sr-only">
+                        {column.header === '' ? 'Actions' : column.header}
+                      </span>
+                    );
+                  } else if (sortable) {
+                    let icon = <ChevronsUpDownIcon className="size-3.5 opacity-50" />;
+                    if (active === 'ascending') icon = <ArrowUpIcon className="size-3.5" />;
+                    if (active === 'descending') icon = <ArrowDownIcon className="size-3.5" />;
+                    heading = (
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-1 rounded-sm font-medium hover:text-foreground"
+                        onClick={() =>
+                          setSort((current) =>
+                            current?.key === column.key && current.direction === 'ascending'
+                              ? { key: column.key, direction: 'descending' }
+                              : { key: column.key, direction: 'ascending' },
+                          )
+                        }
+                      >
+                        {column.header}
+                        <span aria-hidden="true">{icon}</span>
+                      </button>
+                    );
+                  }
                   return (
                     <TableHead
                       key={column.key}
@@ -691,36 +723,7 @@ export function DataTable<Row>({
                       )}
                       {...(active === undefined ? {} : { 'aria-sort': active })}
                     >
-                      {column.actions === true ? (
-                        <span className="sr-only">
-                          {column.header === '' ? 'Actions' : column.header}
-                        </span>
-                      ) : sortable ? (
-                        <button
-                          type="button"
-                          className="inline-flex items-center gap-1 rounded-sm font-medium hover:text-foreground"
-                          onClick={() =>
-                            setSort((current) =>
-                              current?.key === column.key && current.direction === 'ascending'
-                                ? { key: column.key, direction: 'descending' }
-                                : { key: column.key, direction: 'ascending' },
-                            )
-                          }
-                        >
-                          {column.header}
-                          <span aria-hidden="true">
-                            {active === 'ascending' ? (
-                              <ArrowUpIcon className="size-3.5" />
-                            ) : active === 'descending' ? (
-                              <ArrowDownIcon className="size-3.5" />
-                            ) : (
-                              <ChevronsUpDownIcon className="size-3.5 opacity-50" />
-                            )}
-                          </span>
-                        </button>
-                      ) : (
-                        column.header
-                      )}
+                      {heading}
                     </TableHead>
                   );
                 })}
@@ -780,7 +783,7 @@ export function ConfirmDialog({
   busy = false,
   onConfirm,
   onCancel,
-}: {
+}: Readonly<{
   title: string;
   body: ReactNode;
   confirmLabel: string;
@@ -788,7 +791,7 @@ export function ConfirmDialog({
   busy?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
-}): JSX.Element {
+}>): JSX.Element {
   const dismiss = useCallback(
     (open: boolean) => {
       if (!open) {

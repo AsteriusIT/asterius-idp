@@ -109,8 +109,8 @@ export function settingsPath(tenant: string): string {
 export function featureRows(
   disabled: readonly string[],
 ): readonly (readonly [string, string])[] {
-  const known = KNOWN_FEATURES.map(([key]) => key);
-  const unknown = disabled.filter((name) => !known.includes(name));
+  const known = new Set(KNOWN_FEATURES.map(([key]) => key));
+  const unknown = disabled.filter((name) => !known.has(name));
   return [
     ...KNOWN_FEATURES,
     ...unknown.map((name) => [name, 'A flag this console does not know about.'] as const),
@@ -131,11 +131,11 @@ export function featureRows(
 export function TenantSettings({
   session,
   tenant,
-}: {
+}: Readonly<{
   session: Session;
   /** The tenant to configure. The active workspace when absent. */
   tenant?: string | null;
-}): JSX.Element {
+}>): JSX.Element {
   const [load, setLoad] = useState<Load>({ kind: 'loading' });
   const [draft, setDraft] = useState<Draft | null>(null);
   const [notice, setNotice] = useState<string | null>(null);

@@ -54,10 +54,10 @@ export const NAVIGATION_ICONS: Readonly<Record<string, LucideIcon>> = {
 export function AppSidebar({
   session,
   current,
-}: {
+}: Readonly<{
   session: Session;
   current: string;
-}): JSX.Element {
+}>): JSX.Element {
   const sections = sectionsFor(session);
   const { setOpenMobile } = useSidebar();
 

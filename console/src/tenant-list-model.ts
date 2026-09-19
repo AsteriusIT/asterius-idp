@@ -5,5 +5,7 @@ export function describeFeatures(disabled: readonly string[] | undefined): strin
     // reached a server from before the list document grew this member.
     return '—';
   }
-  return disabled.length === 0 ? 'all on' : `off: ${[...disabled].sort().join(', ')}`;
+  return disabled.length === 0
+    ? 'all on'
+    : `off: ${[...disabled].sort((left, right) => left.localeCompare(right)).join(', ')}`;
 }

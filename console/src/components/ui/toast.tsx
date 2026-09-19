@@ -148,10 +148,10 @@ const MARKS: Record<ToastTone, ReactNode> = {
 function ToastItem({
   toast: item,
   paused,
-}: {
+}: Readonly<{
   toast: Toast;
   paused: { current: boolean };
-}): JSX.Element {
+}>): JSX.Element {
   const close = useCallback(() => dismissToast(item.id), [item.id]);
 
   useEffect(() => {

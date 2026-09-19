@@ -161,7 +161,7 @@ type Load =
   | { readonly kind: 'ready'; readonly rows: readonly AuditRow[]; readonly next: string | null }
   | { readonly kind: 'failed'; readonly message: string };
 
-export function AuditExplorer({ session }: { session: Session }): JSX.Element {
+export function AuditExplorer({ session }: Readonly<{ session: Session }>): JSX.Element {
   const [draft, setDraft] = useState<Filters>(EMPTY_FILTERS);
   const [applied, setApplied] = useState<Filters>(EMPTY_FILTERS);
   const [load, setLoad] = useState<Load>({ kind: 'loading' });
@@ -299,12 +299,12 @@ function Trail({
   more,
   onMore,
   onRetry,
-}: {
+}: Readonly<{
   load: Load;
   more: boolean;
   onMore: () => void;
   onRetry: () => void;
-}): JSX.Element {
+}>): JSX.Element {
   if (load.kind === 'loading') {
     return <Skeleton rows={5} label="Reading the trail." />;
   }
@@ -324,7 +324,7 @@ function Trail({
         axe asks for and what a screen reader announces on arrival
         (`ast-f9j5`).
       */}
-      <div className="table-wrap" tabIndex={0} role="region" aria-label="Audit records">
+      <section className="table-wrap" tabIndex={0} aria-label="Audit records">
       <table>
         <thead>
           <tr>
@@ -383,7 +383,7 @@ function Trail({
           ))}
         </tbody>
       </table>
-      </div>
+      </section>
       {load.next !== null && (
         <Actions>
           <Button disabled={more} onClick={onMore}>
@@ -400,7 +400,7 @@ function Trail({
  * c.b for alice`. An `<ol>` rather than a string, so that a screen reader
  * announces the order the arrows only draw.
  */
-function Chain({ links }: { links: readonly string[] }): JSX.Element {
+function Chain({ links }: Readonly<{ links: readonly string[] }>): JSX.Element {
   if (links.length === 0) {
     return <span className="muted">none</span>;
   }
@@ -419,7 +419,7 @@ function Chain({ links }: { links: readonly string[] }): JSX.Element {
   );
 }
 
-function DetailList({ row }: { row: AuditRow }): JSX.Element {
+function DetailList({ row }: Readonly<{ row: AuditRow }>): JSX.Element {
   const entries: [string, unknown][] = [];
   if (row.client_id !== undefined) {
     entries.push(['client', row.client_id]);

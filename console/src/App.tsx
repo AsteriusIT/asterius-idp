@@ -148,11 +148,11 @@ function RouteScreen({
   route,
   fragment,
   session,
-}: {
+}: Readonly<{
   route: string;
   fragment: string;
   session: Session;
-}): JSX.Element {
+}>): JSX.Element {
   if (route === 'roles') return <Roles session={session} client={paramsOf(fragment).get('client')} />;
   if (route === 'users') {
     return <Users session={session} />;
@@ -218,7 +218,7 @@ function RouteScreen({
  * `GET /session`, which the shell has already read: the overview makes no call
  * of its own.
  */
-function Overview({ session }: { session: Session }): JSX.Element {
+function Overview({ session }: Readonly<{ session: Session }>): JSX.Element {
   const destinations = visibleTo(session).filter((destination) => destination.route !== 'overview' && !destination.menuOnly);
   return (
     <Screen
@@ -300,7 +300,7 @@ function Overview({ session }: { session: Session }): JSX.Element {
  * A session that ends mid-visit is the case that gets here now; a visitor with
  * no session never sees the shell at all.
  */
-function SignedOut({ onRetry }: { onRetry: () => void }): JSX.Element {
+function SignedOut({ onRetry }: Readonly<{ onRetry: () => void }>): JSX.Element {
   return (
     <CenteredCard heading="Signed out">
       <p className="muted">This console has no session. Sign in again to continue.</p>

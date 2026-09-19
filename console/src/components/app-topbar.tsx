@@ -20,11 +20,11 @@ export function AppTopbar({
   session,
   page,
   onSignOut,
-}: {
+}: Readonly<{
   session: Session;
   page: string;
   onSignOut: () => void;
-}): JSX.Element {
+}>): JSX.Element {
   return (
     <header className="app-topbar">
       <a className="skip" href="#content" onClick={(event) => {
@@ -52,10 +52,10 @@ export function AppTopbar({
 function AccountMenu({
   session,
   onSignOut,
-}: {
+}: Readonly<{
   session: Session;
   onSignOut: () => void;
-}): JSX.Element {
+}>): JSX.Element {
   const copyIdentifier = async (): Promise<void> => {
     try {
       await navigator.clipboard.writeText(session.user);

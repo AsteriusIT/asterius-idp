@@ -109,7 +109,7 @@ export function mayWrite(session: Session, scope: 'admin.ssf:write' | 'admin.out
   return session.scopes.includes(scope);
 }
 
-export function SharedSignals({ session }: { session: Session }): JSX.Element {
+export function SharedSignals({ session }: Readonly<{ session: Session }>): JSX.Element {
   const [load, setLoad] = useState<Load>({ kind: 'loading' });
   const [notice, setNotice] = useState<string | null>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
@@ -237,7 +237,7 @@ export function SharedSignals({ session }: { session: Session }): JSX.Element {
       description={
         <>
           Every receiver that has arranged to be told about <strong>{session.workspace}</strong>
-          &apos;s users, and how each stream is doing. A paused stream keeps queueing events and
+          {'’s users'}, and how each stream is doing. A paused stream keeps queueing events and
           delivers none of them until it is re-enabled.
         </>
       }
@@ -280,13 +280,13 @@ function StreamTable({
   mayWrite,
   onStatus,
   onVerify,
-}: {
+}: Readonly<{
   streams: readonly StreamRow[];
   busy: boolean;
   mayWrite: boolean;
   onStatus: (stream: StreamRow, status: 'enabled' | 'paused', reason: string) => void;
   onVerify: (stream: StreamRow, state: string) => void;
-}): JSX.Element {
+}>): JSX.Element {
   return (
     <DataTable
       rows={streams}
@@ -402,44 +402,50 @@ function StreamControls({
   busy,
   onStatus,
   onVerify,
-}: {
+}: Readonly<{
   stream: StreamRow;
   busy: boolean;
   onStatus: (stream: StreamRow, status: 'enabled' | 'paused', reason: string) => void;
   onVerify: (stream: StreamRow, state: string) => void;
-}): JSX.Element {
+}>): JSX.Element {
   const [reason, setReason] = useState('');
   const [state, setState] = useState('');
   const id = stream.stream_id;
+  let statusControl: JSX.Element | null = null;
+  if (stream.status === 'enabled') {
+    statusControl = (
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          onStatus(stream, 'paused', reason);
+        }}
+      >
+        <label htmlFor={`reason-${id}`} className="visually-hidden">
+          Reason for pausing {id}
+        </label>{' '}
+        <input
+          id={`reason-${id}`}
+          type="text"
+          value={reason}
+          placeholder="reason (optional)"
+          maxLength={256}
+          onChange={(event) => setReason(event.target.value)}
+        />{' '}
+        <Button type="submit" small disabled={busy}>
+          Pause
+        </Button>
+      </form>
+    );
+  } else if (stream.status === 'paused') {
+    statusControl = (
+      <Button small disabled={busy} onClick={() => onStatus(stream, 'enabled', '')}>
+        Enable
+      </Button>
+    );
+  }
   return (
     <>
-      {stream.status === 'enabled' ? (
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            onStatus(stream, 'paused', reason);
-          }}
-        >
-          <label htmlFor={`reason-${id}`} className="visually-hidden">
-            Reason for pausing {id}
-          </label>
-          <input
-            id={`reason-${id}`}
-            type="text"
-            value={reason}
-            placeholder="reason (optional)"
-            maxLength={256}
-            onChange={(event) => setReason(event.target.value)}
-          />{' '}
-          <Button type="submit" small disabled={busy}>
-            Pause
-          </Button>
-        </form>
-      ) : stream.status === 'paused' ? (
-        <Button small disabled={busy} onClick={() => onStatus(stream, 'enabled', '')}>
-          Enable
-        </Button>
-      ) : null}
+      {statusControl}
       <form
         onSubmit={(event) => {
           event.preventDefault();
@@ -471,13 +477,13 @@ function DeadLetterTable({
   mayWrite,
   onRetry,
   onDrop,
-}: {
+}: Readonly<{
   letters: readonly DeadLetterRow[];
   busy: boolean;
   mayWrite: boolean;
   onRetry: (letter: DeadLetterRow) => void;
   onDrop: (letter: DeadLetterRow) => void;
-}): JSX.Element {
+}>): JSX.Element {
   return (
     <DataTable
       rows={letters}
