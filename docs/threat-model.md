@@ -2196,3 +2196,13 @@ useful it would be.
    residual risks above end at a resource server this project does not ship
    (T-A12, T-A13, T-A1). A review that treats "the RS will check `aud`" as an
    assumption should say so explicitly in its report.
+
+### Tenant session policy (`ast-6uqw.4`)
+
+Browser session acceptance applies the owning tenant's persisted idle and absolute
+limits in the storage adapter, including reserved administrator sessions. Rotation
+and renewal retain the issuance absolute deadline and reject expired credentials.
+Only interactive browser lookups renew idle activity; token refresh and internal
+projections remain read-only. Concurrent touches cannot move activity backward.
+Policy relaxation is distinct from permanent session revocation; see
+[tenant session policy](tenant-session-policy.md) for existing-session semantics.

@@ -38,6 +38,7 @@ import { ShieldCheck, KeyRound, Smartphone, ArrowRightLeft, Radio, Fingerprint, 
 import { Tabs, TabsList, TabsTrigger, TabsContent } from './components/ui/tabs';
 import { toast } from './components/ui/toast';
 import { Actions, Button, Field, LoadFailure, Message, Panel, Screen, Skeleton } from './ui';
+import { SessionPolicyFields } from './session-policy';
 import { draftOf, isDirty, type Draft, type Settings } from './settings-model';
 
 /**
@@ -176,6 +177,7 @@ export function TenantSettings({
         authorization_code_lifetime_seconds: Number(current.code),
         access_token_lifetime_seconds: Number(current.token),
         always_ask_consent: current.alwaysAskConsent,
+        session_policy: { idle_seconds: Number(current.sessionIdle), absolute_seconds: Number(current.sessionAbsolute) },
       }).then(
         (document) => {
           // Re-read from the answer rather than from the form: the server's
@@ -265,7 +267,7 @@ export function TenantSettings({
           save(draft);
         }}
       >
-        <Tabs defaultValue="features"><TabsList aria-label="Tenant configuration"><TabsTrigger value="features">Capabilities</TabsTrigger><TabsTrigger value="tokens">Token lifetimes</TabsTrigger><TabsTrigger value="consent">Consent</TabsTrigger></TabsList>
+        <Tabs defaultValue="features"><TabsList aria-label="Tenant configuration"><TabsTrigger value="features">Capabilities</TabsTrigger><TabsTrigger value="tokens">Token lifetimes</TabsTrigger><TabsTrigger value="consent">Consent</TabsTrigger><TabsTrigger value="sessions">Sessions</TabsTrigger></TabsList>
         <TabsContent value="features"><fieldset className="settings-section" disabled={busy}>
           <legend>Sign-in and access capabilities</legend>
           <p className="muted">
@@ -327,6 +329,7 @@ export function TenantSettings({
           </Field>
         </fieldset></TabsContent>
 
+        <TabsContent value="sessions"><SessionPolicyFields draft={draft} onChange={setDraft} busy={busy} refusal={refusal} /></TabsContent>
         <TabsContent value="consent"><fieldset className="settings-section" disabled={busy}>
           <legend>Consent decisions</legend>
           <p className="muted">

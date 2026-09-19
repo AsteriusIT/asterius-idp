@@ -386,6 +386,99 @@ impl Lifetimes {
     }
 }
 
+/// Validated tenant session deadlines. Token lifetimes are configured separately.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SessionPolicy {
+    lifetimes: Lifetimes,
+}
+
+impl SessionPolicy {
+    /// Maximum absolute session lifetime; the browser cookie has the same ceiling.
+    pub const MAX_SECONDS: i64 = 43_200;
+
+    /// Validates the two clocks without silently clamping operator input.
+    ///
+    /// # Errors
+    /// Rejects non-positive, sub-minute, inconsistent or excessive lifetimes.
+    pub fn validated(idle: i64, absolute: i64) -> Result<Self, SessionPolicyError> {
+        if !(60..=Self::MAX_SECONDS).contains(&absolute) {
+            return Err(SessionPolicyError::Absolute);
+        }
+        if !(60..=absolute).contains(&idle) {
+            return Err(SessionPolicyError::Idle);
+        }
+        Ok(Self {
+            lifetimes: Lifetimes {
+                idle: Duration::seconds(idle),
+                absolute: Duration::seconds(absolute),
+            },
+        })
+    }
+
+    /// The validated clocks.
+    #[must_use]
+    pub const fn lifetimes(self) -> Lifetimes {
+        self.lifetimes
+    }
+
+    /// Reads a stored policy. Absence preserves the existing issuance defaults.
+    ///
+    /// # Errors
+    /// Rejects malformed documents and invalid durations.
+    // fuzz-target: tenant_settings
+    pub fn from_json(
+        value: Option<&serde_json::Value>,
+    ) -> Result<Option<Self>, SessionPolicyError> {
+        let Some(value) = value.filter(|value| !value.is_null()) else {
+            return Ok(None);
+        };
+        let object = value.as_object().ok_or(SessionPolicyError::Shape)?;
+        if object.len() != 2 {
+            return Err(SessionPolicyError::Shape);
+        }
+        let idle = object
+            .get("idle_seconds")
+            .and_then(serde_json::Value::as_i64)
+            .ok_or(SessionPolicyError::Idle)?;
+        let absolute = object
+            .get("absolute_seconds")
+            .and_then(serde_json::Value::as_i64)
+            .ok_or(SessionPolicyError::Absolute)?;
+        Self::validated(idle, absolute).map(Some)
+    }
+
+    /// The persisted and public settings representation.
+    #[must_use]
+    pub fn to_json(self) -> serde_json::Value {
+        serde_json::json!({"idle_seconds": self.lifetimes.idle.whole_seconds(), "absolute_seconds": self.lifetimes.absolute.whole_seconds()})
+    }
+
+    /// Tightens an existing session without moving its original deadlines forward.
+    pub fn constrain(self, session: &mut Session) {
+        session.expires_at = session
+            .expires_at
+            .min(session.created_at + self.lifetimes.absolute);
+        session.idle_expires_at = session
+            .idle_expires_at
+            .min(session.last_seen_at + self.lifetimes.idle)
+            .min(session.expires_at);
+    }
+}
+
+/// An actionable error for a tenant session setting.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SessionPolicyError {
+    /// Absolute lifetime outside the supported bounds.
+    #[error("session_policy.absolute_seconds must be between 60 and 43200 seconds")]
+    Absolute,
+    /// Idle lifetime outside the supported bounds.
+    #[error("session_policy.idle_seconds must be at least 60 and no greater than absolute_seconds")]
+    Idle,
+    /// Unknown or missing policy fields.
+    #[error("session_policy must contain only idle_seconds and absolute_seconds")]
+    Shape,
+}
+
 /// A client that took part in a session.
 ///
 /// Back-channel logout needs this list: when a session ends, every client that
@@ -404,6 +497,50 @@ pub struct Participant {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn session_policy_rejects_incoherent_and_unbounded_lifetimes() {
+        for (idle, absolute) in [(0, 600), (59, 600), (601, 600), (60, 43201), (60, -1)] {
+            assert!(SessionPolicy::validated(idle, absolute).is_err());
+        }
+        assert!(SessionPolicy::validated(60, 60).is_ok());
+        assert!(SessionPolicy::validated(3600, 43200).is_ok());
+        assert!(
+            SessionPolicy::from_json(Some(
+                &serde_json::json!({"idle_seconds": 60.5, "absolute_seconds": 600})
+            ))
+            .is_err()
+        );
+        assert!(SessionPolicy::from_json(Some(&serde_json::json!({"idle_seconds": 60, "absolute_seconds": 600, "unexpected": true}))).is_err());
+    }
+
+    #[test]
+    fn session_policy_changes_never_extend_original_deadlines() {
+        let id = SessionId::generate();
+        let mut session = Session::begin(
+            TenantId::new("demo"),
+            &id,
+            uuid::Uuid::new_v4(),
+            vec![],
+            now(),
+            Lifetimes::default(),
+        );
+        let policy = SessionPolicy::validated(120, 600).expect("bounded");
+        policy.constrain(&mut session);
+        assert_eq!(
+            session.status(now() + Duration::seconds(120)),
+            SessionStatus::Idle
+        );
+        session.last_seen_at = now() + Duration::seconds(590);
+        session.idle_expires_at = now() + Duration::seconds(710);
+        policy.constrain(&mut session);
+        assert_eq!(
+            session.status(now() + Duration::seconds(600)),
+            SessionStatus::Expired
+        );
+        SessionPolicy::default().constrain(&mut session);
+        assert_eq!(session.expires_at, now() + Duration::seconds(600));
+    }
 
     fn now() -> OffsetDateTime {
         OffsetDateTime::from_unix_timestamp(1_760_000_000).expect("fixed instant")

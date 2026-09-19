@@ -1324,7 +1324,7 @@ pub trait SessionRepository: Debug + Send + Sync {
     /// bits means a broken generator rather than bad luck.
     async fn begin(&self, session: &Session) -> Result<(), DomainError>;
 
-    /// Loads a session by the digest of its id.
+    /// Loads a session by the digest of its id without recording activity.
     ///
     /// Returns the row whatever state it is in — expiry and revocation are
     /// [`Session::status`]'s job, and a caller that needs to *report* why a
@@ -1334,6 +1334,37 @@ pub trait SessionRepository: Debug + Send + Sync {
     ///
     /// [`DomainError::Storage`] if the store could not be reached.
     async fn find(&self, id_digest: &str) -> Result<Option<Session>, DomainError>;
+
+    /// Accepts a session presented by an interactive browser and records activity.
+    ///
+    /// Token refresh, grant projection and administrative reads must use
+    /// [`Self::find`]: those operations do not prove browser activity. A lost
+    /// race with expiry, revocation or rotation is an anonymous browser, not
+    /// permission to renew a session that no longer exists.
+    async fn find_for_browser(
+        &self,
+        id_digest: &str,
+        now: OffsetDateTime,
+    ) -> Result<Option<Session>, DomainError> {
+        let Some(session) = self.find(id_digest).await? else {
+            return Ok(None);
+        };
+        if !session.status(now).is_usable() {
+            return Ok(None);
+        }
+        match self
+            .touch(
+                id_digest,
+                now,
+                crate::entities::session::DEFAULT_IDLE_TIMEOUT,
+            )
+            .await
+        {
+            Ok(()) => Ok(Some(session)),
+            Err(DomainError::NotFound) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
 
     /// Moves the idle deadline forward.
     ///

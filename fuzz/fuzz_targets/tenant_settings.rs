@@ -54,6 +54,13 @@ fuzz_target!(|data: &[u8]| {
         "a stored document produced an access token lifetime outside the cap: {value}"
     );
 
+    if let Some(policy) = settings.session_policy() {
+        let clocks = policy.lifetimes();
+        assert!(clocks.idle.whole_seconds() >= 60);
+        assert!(clocks.idle <= clocks.absolute);
+        assert!(clocks.absolute.whole_seconds() <= 43_200);
+    }
+
     let round_tripped =
         TenantSettings::from_json(Some(&settings.to_json())).expect("what was written parses");
     assert_eq!(round_tripped, settings, "settings did not round-trip");

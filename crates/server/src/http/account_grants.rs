@@ -450,7 +450,7 @@ async fn admitted(
     let cookies = crate::http::cookies(headers);
     let value = interaction::cookie_value(&cookies, session::COOKIE_NAME)?;
     let digest = asterius_domain::sha256_hex(value.as_bytes());
-    let session = match context.sessions.find(&digest).await {
+    let session = match context.sessions.find_for_browser(&digest, now).await {
         Ok(session) => session?,
         Err(error) => {
             tracing::error!(%error, tenant = %context.tenant.id, "cannot read a session");

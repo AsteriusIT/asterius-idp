@@ -1781,3 +1781,31 @@ test('guided application onboarding hides writes for a read-only session and ret
   await page.getByRole('tab', { name: 'Saved configuration', exact: true }).click();
   await expect(page.getByRole('region', { name: 'Saved client configuration', exact: true })).toBeVisible();
 });
+
+test('tenant session policy saves, reloads and rejects invalid clocks', async ({ page }) => {
+  await signIn(page);
+  await openSettings(page);
+  await page.getByRole('tab', { name: 'Sessions', exact: true }).click();
+  const idle = page.getByLabel('Session idle timeout (seconds)');
+  const absolute = page.getByLabel('Session absolute lifetime (seconds)');
+  const originalIdle = await idle.inputValue();
+  const originalAbsolute = await absolute.inputValue();
+  try {
+    await idle.fill('1800');
+    await absolute.fill('21600');
+    await page.getByRole('button', { name: 'Save settings' }).click();
+    await expect(page.getByText('Saved.', { exact: true })).toBeVisible();
+    await page.reload();
+    await page.getByRole('tab', { name: 'Sessions', exact: true }).click();
+    await expect(idle).toHaveValue('1800');
+    await expect(absolute).toHaveValue('21600');
+    await idle.fill('21601');
+    await page.getByRole('button', { name: 'Save settings' }).click();
+    await expect(page.getByRole('alert').first()).toContainText('session_policy.idle_seconds');
+  } finally {
+    await idle.fill(originalIdle);
+    await absolute.fill(originalAbsolute);
+    await page.getByRole('button', { name: 'Save settings' }).click();
+    await expect(page.getByText('Saved.', { exact: true })).toBeVisible();
+  }
+});
