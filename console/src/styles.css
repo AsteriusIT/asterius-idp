@@ -674,6 +674,20 @@
     overflow-wrap: anywhere;
   }
 
+  .overview-metrics .stat {
+    min-height: 11rem;
+  }
+
+  .overview-empty {
+    font-size: var(--text-base);
+    color: var(--muted);
+  }
+
+  .overview-definition {
+    margin: 0;
+    font-size: var(--text-xs);
+  }
+
   /* ---- description lists ----------------------------------------------- */
 
   dt {

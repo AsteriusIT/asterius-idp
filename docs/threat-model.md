@@ -2161,6 +2161,15 @@ useful it would be.
 | Artefact | How it is produced | Where it lands |
 |---|---|---|
 | This threat model, and the residual-risk list | read it; §6 is the rule that keeps it current | `docs/threat-model.md` |
+
+### Tenant overview aggregates (`ast-6uqw.8`)
+
+| Threat | Control |
+| --- | --- |
+| A restricted administrator infers an application, audit, signing-key or delivery count from a landing page they are otherwise allowed to open. | There is no all-metrics response. Each aggregate has its own route and declares the detailed resource's read scope; the shared request gate authorizes every card independently. The React client also omits requests absent from the session's effective scopes, but that is only a usability measure. |
+| Data from another tenant enters a summary through an unscoped count. | Every scalar subquery binds the routed tenant id. The overview adapter accepts a `TenantId`, and the handler obtains it from the resolved tenant rather than from query input. |
+| An overview count becomes an unbounded list scan or leaks operational detail. | The adapter returns scalar counts only. It never selects usernames, client identifiers, key ids, destinations, payloads or failure detail. Time-based incident figures use a fixed preceding 24-hour window and indexed tenant/time predicates. |
+| One failed source makes the console hide healthy data, or stale figures look current. | Metrics load independently and retain per-card failure states. Successful cards show the server collection timestamp; refresh repeats every authorized aggregate. |
 | Decision log (ADRs) | read it; ADR-0001 to ADR-0010 | [`docs/adr/`](adr/README.md) |
 | Everything CI checks, locally, in fail-fastest order | `./scripts/check.sh` (add `--db` for the database tests) | terminal |
 | Format, strict lints, targeted tests | `./scripts/verify.sh <scope>` | terminal |

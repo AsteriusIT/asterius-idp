@@ -89,7 +89,10 @@ export interface HeldScopes {
  * and names `ast-l5bl` now that one has built it.
  */
 export const DESTINATIONS: readonly Destination[] = [
-  { route: 'overview', label: 'Overview', reach: 'tenant', scope: 'admin.tenants:read', bead: 'ast-f7m.3', group: 'Overview' },
+  // The landing page itself needs only the caller's session. Every aggregate
+  // beneath it has an independently authorized endpoint and is omitted when
+  // this session lacks that resource's read scope (`ast-6uqw.8`).
+  { route: 'overview', label: 'Overview', reach: 'tenant', scope: 'admin.session:read', bead: 'ast-6uqw.8', group: 'Overview' },
   { route: 'users', label: 'Users', reach: 'tenant', scope: 'admin.users:read', bead: 'ast-f7m.6', group: 'Directory' },
   { route: 'clients', label: 'Applications', reach: 'tenant', scope: 'admin.clients:read', bead: 'ast-f7m.5', group: 'Directory' },
   { route: 'resources', label: 'Resource servers', reach: 'tenant', scope: 'admin.resource_servers:read', bead: 'ast-f7m.12', group: 'Directory' },

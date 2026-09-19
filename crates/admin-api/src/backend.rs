@@ -27,6 +27,17 @@ use asterius_domain::{
 };
 use std::sync::Arc;
 
+/// One independently-authorized overview aggregate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverviewMetric {
+    Users,
+    Sessions,
+    Applications,
+    Authentication,
+    Keys,
+    Delivery,
+}
+
 use crate::clients::RegistrationGate;
 
 /// One evaluation, decided against the tenant's stored policy for somebody who
@@ -68,6 +79,16 @@ pub trait PolicyTrial: std::fmt::Debug + Send + Sync {
 /// What an admin API request needs from below the API.
 #[async_trait::async_trait]
 pub trait AdminBackend: std::fmt::Debug + Send + Sync {
+    /// Exact, fixed-cost aggregates for one tenant's overview.
+    ///
+    /// Implementations must compute only `metric` and bind it to `tenant`.
+    async fn overview(
+        &self,
+        tenant: &TenantId,
+        metric: OverviewMetric,
+        now: time::OffsetDateTime,
+    ) -> Result<u64, DomainError>;
+
     /// The session behind a cookie, whatever state it is in.
     ///
     /// Returns the row rather than a verdict, because deciding whether an

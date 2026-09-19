@@ -28,6 +28,7 @@ mod key_store;
 mod keys;
 mod notifications;
 mod outbox;
+mod overview;
 mod passkeys;
 mod passwords;
 mod policies;
@@ -80,6 +81,7 @@ pub use outbox::{
     Backoff, DEFAULT_LEASE, DEFAULT_MAX_ATTEMPTS, NewOutboxEntry, Outcome, PgOutbox, PgTransaction,
     Verdict, enqueue,
 };
+pub use overview::{Metric as OverviewMetric, PgOverview};
 pub use passkeys::{PgPasskeyRepository, RemovedPasskey, RenamedPasskey};
 pub use passwords::PgPasswordVerifier;
 pub use policies::PgPolicies;

@@ -288,9 +288,27 @@ transferred between origins to make that navigation silent.
 
 **The landing screen is Overview**, deliberately, and not the screen the
 operator was on. What this administrator may reach in the other tenant is
-decided by the roles they hold *there*, which this page does not know; Overview
-is the one screen certain to answer, and it answers with exactly that — who you
-are here, and what it lets you reach.
+decided by the roles they hold *there*. Overview keeps that workspace identity
+and the permission-filtered navigation, then reads each activity or health
+figure through a separate tenant-scoped endpoint. The definitions are fixed:
+
+* **Active users** are accounts whose current status is `active`.
+* **Active sessions** are unrevoked browser sessions inside both their absolute
+  and idle expiry at the collection instant.
+* **Applications** are the tenant's currently registered clients.
+* **Authentication failures** are `auth.failed` audit events in the preceding
+  24 hours.
+* **Active signing keys** are signature-purpose keys currently in `active`.
+* **Delivery failures** are outbox attempts ending in `retry` or `abandoned`
+  in the preceding 24 hours.
+
+The endpoint for each figure declares the same read scope as its detailed
+screen. The console requests only endpoints named by `GET /session`'s effective
+scopes, while the server independently enforces each route. Every database read
+is a scalar aggregate with a tenant predicate; no list is loaded to count it.
+Cards carry their own loading, empty and failure state, so one unavailable
+aggregate leaves the others usable, and every successful card names its exact
+collection timestamp.
 
 ## Under the policy
 

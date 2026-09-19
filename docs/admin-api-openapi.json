@@ -2880,6 +2880,426 @@
         "x-asterius-scope": "admin.outbox:write"
       }
     },
+    "/admin/api/v1/overview/applications": {
+      "get": {
+        "operationId": "overview.applications",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.clients:read"
+            ]
+          }
+        ],
+        "summary": "Counts registered applications in this tenant; current state, no time window",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.clients:read"
+      }
+    },
+    "/admin/api/v1/overview/authentication": {
+      "get": {
+        "operationId": "overview.authentication",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.audit:read"
+            ]
+          }
+        ],
+        "summary": "Counts failed authentication audit events in this tenant during the preceding 24 hours",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.audit:read"
+      }
+    },
+    "/admin/api/v1/overview/delivery": {
+      "get": {
+        "operationId": "overview.delivery",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.outbox:read"
+            ]
+          }
+        ],
+        "summary": "Counts retry and abandoned delivery attempts in this tenant during the preceding 24 hours",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.outbox:read"
+      }
+    },
+    "/admin/api/v1/overview/keys": {
+      "get": {
+        "operationId": "overview.keys",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.keys:read"
+            ]
+          }
+        ],
+        "summary": "Counts active signing keys in this tenant; current state, no time window",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.keys:read"
+      }
+    },
+    "/admin/api/v1/overview/sessions": {
+      "get": {
+        "operationId": "overview.sessions",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.sessions:read"
+            ]
+          }
+        ],
+        "summary": "Counts unrevoked, unexpired browser sessions in this tenant at collection time",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.sessions:read"
+      }
+    },
+    "/admin/api/v1/overview/users": {
+      "get": {
+        "operationId": "overview.users",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.users:read"
+            ]
+          }
+        ],
+        "summary": "Counts active accounts in this tenant; current state, no time window",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.users:read"
+      }
+    },
     "/admin/api/v1/policies": {
       "delete": {
         "operationId": "policies.delete",
