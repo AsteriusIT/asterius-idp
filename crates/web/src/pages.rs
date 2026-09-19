@@ -45,9 +45,9 @@
 //! criterion are not in conflict.
 //!
 //! Everything added since — the device flow's three pages, registration, email
-//! verification and the two password-reset pages (`ast-ndk.2`) — is unscripted,
-//! including its focus management: `autofocus` on the shared error summary is
-//! HTML doing what a page would otherwise need a script for.
+//! verification and the two password-reset pages (`ast-ndk.2`) — is unscripted.
+//! The shared error summary uses an alert role for announcement without forcing
+//! focus to move when a failed submission is rendered.
 //!
 //! # A fixed set of pages, and tenants change tokens and strings
 //!
@@ -2597,16 +2597,17 @@ mod tests {
     // The shared error summary
     // -----------------------------------------------------------------------
 
-    /// A failure announces itself and takes the focus, with no script.
+    /// A failure announces itself without forcing the user's focus to move.
     ///
-    /// WCAG 2.2 SC 3.3.1 and 2.4.3. `autofocus` on a `tabindex="-1"` container
-    /// is the whole of the focus management on these pages, which is why none
-    /// of them needs a `SCRIPTED_TEMPLATES` entry to satisfy the criterion.
+    /// WCAG 2.2 SC 3.3.1. The alert role announces the failure, while the
+    /// programmatic tabindex keeps the summary focusable if a caller later
+    /// chooses to move focus in response to a user action.
     #[test]
-    fn a_failed_submission_announces_itself_and_takes_the_focus() {
+    fn a_failed_submission_announces_itself_without_autofocus() {
         let failed = device(None, Some("That code did not work."));
         assert!(failed.contains(r#"role="alert""#), "{failed}");
         assert!(failed.contains(r#"tabindex="-1""#), "{failed}");
+        assert!(!failed.contains("autofocus"), "{failed}");
         assert!(failed.contains("That code did not work."), "{failed}");
 
         // And the summary is not rendered when there is nothing to report —
@@ -2615,19 +2616,23 @@ mod tests {
         assert!(!fresh.contains(r#"role="alert""#), "{fresh}");
     }
 
-    /// Two things may not both want the focus on the same page.
+    /// Only fresh forms ask the browser to move focus automatically.
     ///
-    /// The first field of a fresh form is focused for convenience; the error
-    /// summary is focused because something went wrong. When both would apply
-    /// the summary wins, and the templates express that by dropping the
-    /// field's `autofocus` — HTML's own rule is "first one in document order",
-    /// which would silently pick the wrong one if the summary ever moved.
+    /// The first field of a fresh form is focused for convenience. A failed
+    /// form drops that attribute and the error summary announces itself as an
+    /// alert without taking focus away from the user's current context.
     #[test]
-    fn only_one_element_on_a_page_asks_for_the_focus() {
+    fn only_fresh_forms_ask_for_autofocus() {
+        for html in [device(None, None), registration(None, None)] {
+            assert_eq!(
+                html.matches("autofocus").count(),
+                1,
+                "a fresh form should focus its first field: {html}"
+            );
+        }
+
         for html in [
-            device(None, None),
             device(None, Some("That code did not work.")),
-            registration(None, None),
             render(&LoginPage {
                 text: &ENGLISH,
                 tenant_name: "Demo",
@@ -2646,8 +2651,8 @@ mod tests {
         ] {
             assert_eq!(
                 html.matches("autofocus").count(),
-                1,
-                "two elements ask for the focus: {html}"
+                0,
+                "a failed form must not move focus automatically: {html}"
             );
         }
     }
