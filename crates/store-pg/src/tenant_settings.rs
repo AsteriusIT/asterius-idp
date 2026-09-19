@@ -54,6 +54,33 @@ impl PgTenantSettings {
     pub const fn new(pool: PgPool) -> Self {
         Self { pool }
     }
+
+    /// Reads every tenant's settings in one query, ordered by tenant id.
+    ///
+    /// This is deliberately an inherent deployment read rather than part of
+    /// [`TenantSettingsRepository`], whose ordinary callers are tenant-scoped.
+    /// The admin tenant directory uses it to avoid one query per displayed
+    /// row.
+    ///
+    /// # Errors
+    ///
+    /// A stored settings document that this build refuses, or a storage
+    /// failure. One bad row fails the directory instead of presenting that
+    /// tenant as if its security settings had reverted to defaults.
+    pub async fn list(&self) -> Result<Vec<(TenantId, TenantSettings)>, DomainError> {
+        let rows = sqlx::query!("select tenant_id, settings from tenants order by tenant_id")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(to_domain_error)?;
+
+        rows.into_iter()
+            .map(|row| {
+                let settings = TenantSettings::from_json(row.settings.get(MEMBER))
+                    .map_err(|error| DomainError::invalid("settings.options", error.to_string()))?;
+                Ok((TenantId::new(row.tenant_id), settings))
+            })
+            .collect()
+    }
 }
 
 #[async_trait::async_trait]

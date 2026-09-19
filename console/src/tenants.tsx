@@ -10,21 +10,13 @@
  *
  * # What it does not invent
  *
- * `GET /tenants` answers with what `summarise` in
+ * `GET /tenants` answers with what `summarise_listing` in
  * `crates/admin-api/src/router.rs` renders: an id, an issuer, a display name,
- * a default resource, an optional custom host and a status. There is no count
- * of clients and no count of users in that document, so there is no column for
- * either one here: a console that showed "—" under a heading it invented would
- * be describing an API that does not exist.
- *
- * Features are a second document — `GET /tenants/{tenant_id}/settings`, which
- * a deployment-scoped caller may read for any tenant — so the column is filled
- * in by one read per listed row, after the list has drawn. Tens of tenants is
- * what the server's own pagination note expects (`list_tenants`), and a read
- * that fails leaves one cell unknown rather than failing the screen. The
- * alternative, widening the list document with every tenant's flags, is a
- * change to a route four screens depend on and is noted as follow-up rather
- * than made here.
+ * a default resource, an optional custom host, a status, and the disabled
+ * feature names needed by the directory. There is no count of clients and no
+ * count of users in that document, so there is no column for either one here:
+ * a console that showed "—" under a heading it invented would be describing an
+ * API that does not exist.
  *
  * # What creating a tenant asks for
  *
@@ -39,8 +31,8 @@ import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { type Session, mutate, read } from './api';
 import { hrefOf } from './routes';
-import { type Settings, settingsPath } from './settings';
 import { toast } from './components/ui/toast';
+import { describeFeatures } from './tenant-list-model';
 import {
   Actions,
   Badge,
@@ -69,6 +61,8 @@ export interface TenantRow {
   readonly default_resource: string;
   readonly custom_host: string | null;
   readonly status: TenantStatus;
+  /** Absent only when talking to a server predating `ast-f7m.16`. */
+  readonly disabled_features?: readonly string[];
 }
 
 /** One page of them. */
@@ -133,13 +127,6 @@ export function tenantConsoleUrl(issuer: string, route: string): string {
  * knows about and calling the rest "on" would be a claim about the server's
  * feature set that this bundle is not entitled to make.
  */
-export function describeFeatures(disabled: readonly string[] | undefined): string {
-  if (disabled === undefined) {
-    return '—';
-  }
-  return disabled.length === 0 ? 'all on' : `off: ${[...disabled].sort().join(', ')}`;
-}
-
 /**
  * Which creation field the server's refusal is about, when it is about one.
  *
@@ -166,7 +153,6 @@ export function refusedField(message: string | null): 'tenant_id' | 'issuer' | n
 export function Tenants({ session }: { session: Session }): JSX.Element {
   const [load, setLoad] = useState<Load>({ kind: 'loading' });
   const [cursor, setCursor] = useState<string | null>(null);
-  const [features, setFeatures] = useState<Record<string, readonly string[]>>({});
   const [notice, setNotice] = useState<string | null>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
   const [pending, setPending] = useState<Pending | null>(null);
@@ -183,35 +169,6 @@ export function Tenants({ session }: { session: Session }): JSX.Element {
   }, []);
 
   useEffect(() => refresh(cursor), [refresh, cursor]);
-
-  // One settings read per listed tenant, after the list is on screen. The
-  // flag says whether the page this effect belongs to is still the one being
-  // shown: a click on "Next page" while six reads are in flight must not
-  // write their answers into the new page's state.
-  useEffect(() => {
-    if (load.kind !== 'ready') {
-      return undefined;
-    }
-    let live = true;
-    for (const row of load.value.items) {
-      read(settingsPath(row.tenant_id)).then(
-        (document) => {
-          if (!live) {
-            return;
-          }
-          const settings = document as Settings;
-          setFeatures((held) => ({ ...held, [row.tenant_id]: settings.disabled_features }));
-        },
-        // A settings read that is refused leaves that one cell unknown. The
-        // list is the screen; failing all of it because one tenant's flags
-        // could not be read would be the wrong trade.
-        () => undefined,
-      );
-    }
-    return () => {
-      live = false;
-    };
-  }, [load]);
 
   const changeStatus = useCallback(
     (subject: Pending) => {
@@ -280,7 +237,7 @@ export function Tenants({ session }: { session: Session }): JSX.Element {
 
       <Panel
         title="Directory"
-        description="One page at a time, in the order the server returns. Features come from each tenant's own settings document."
+        description="One page at a time, in the order the server returns. Feature summaries travel with the directory rows."
       >
         {load.kind === 'loading' && <Skeleton rows={4} label="Reading the tenants." />}
         {load.kind === 'failed' && (
@@ -290,7 +247,6 @@ export function Tenants({ session }: { session: Session }): JSX.Element {
           <>
             <TenantTable
               rows={load.value.items}
-              features={features}
               writable={writable}
               onChange={(tenant, enable) => setPending({ tenant, enable })}
             />
@@ -330,12 +286,10 @@ export function Tenants({ session }: { session: Session }): JSX.Element {
 /** The list, with what can be done to each row. */
 function TenantTable({
   rows,
-  features,
   writable,
   onChange,
 }: {
   rows: readonly TenantRow[];
-  features: Record<string, readonly string[]>;
   writable: boolean;
   onChange: (tenant: TenantRow, enable: boolean) => void;
 }): JSX.Element {
@@ -393,7 +347,7 @@ function TenantTable({
         {
           key: 'features',
           header: 'Features',
-          cell: (row) => describeFeatures(features[row.tenant_id]),
+          cell: (row) => describeFeatures(row.disabled_features),
         },
         {
           key: 'links',
