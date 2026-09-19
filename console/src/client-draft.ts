@@ -156,6 +156,54 @@ export function emptyDraft(): Draft {
   };
 }
 
+/** Whether this authentication method itself sends a client certificate. */
+function authenticationUsesMtls(method: string): boolean {
+  return method === 'tls_client_auth' || method === 'self_signed_tls_client_auth';
+}
+
+/** Applies a security-profile selection without carrying incompatible mTLS metadata. */
+export function changeComplianceProfile(
+  draft: Draft,
+  complianceProfile: Draft['compliance_profile'],
+): Draft {
+  const tokenEndpointAuthMethod = complianceProfile === 'oidc'
+    ? 'client_secret_basic'
+    : 'private_key_jwt';
+  return {
+    ...draft,
+    compliance_profile: complianceProfile,
+    token_endpoint_auth_method: tokenEndpointAuthMethod,
+    jwks: complianceProfile === 'oidc' ? '' : draft.jwks,
+    jwks_uri: complianceProfile === 'oidc' ? '' : draft.jwks_uri,
+    tls_subject_value: '',
+    use_mtls_endpoint_aliases: authenticationUsesMtls(tokenEndpointAuthMethod)
+      || draft.tls_client_certificate_bound_access_tokens === true,
+  };
+}
+
+/** Applies a client-authentication selection and derives its mTLS metadata. */
+export function changeClientAuthentication(draft: Draft, method: string): Draft {
+  return {
+    ...draft,
+    token_endpoint_auth_method: method,
+    tls_subject_value: method === 'tls_client_auth' ? draft.tls_subject_value : '',
+    use_mtls_endpoint_aliases: authenticationUsesMtls(method)
+      || draft.tls_client_certificate_bound_access_tokens === true,
+  };
+}
+
+/** Applies the selected sender constraint and derives its mTLS metadata. */
+export function changeSenderConstraint(draft: Draft, constraint: 'dpop' | 'mtls'): Draft {
+  const certificateBound = constraint === 'mtls';
+  return {
+    ...draft,
+    dpop_bound_access_tokens: constraint === 'dpop',
+    tls_client_certificate_bound_access_tokens: certificateBound,
+    use_mtls_endpoint_aliases: certificateBound
+      || authenticationUsesMtls(draft.token_endpoint_auth_method),
+  };
+}
+
 /**
  * The registration document a draft posts.
  *

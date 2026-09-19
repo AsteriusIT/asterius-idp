@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  changeClientAuthentication,
+  changeComplianceProfile,
+  changeSenderConstraint,
   documentFrom,
   draftOf,
   emptyDraft,
@@ -58,15 +61,16 @@ test('creates a safe new-client payload with optional algorithms unset', () => {
 });
 
 test('standard OIDC payloads omit key metadata and never earn the FAPI badge', () => {
-  const payload = documentFrom({
+  const draft = changeComplianceProfile({
     ...emptyDraft(),
-    compliance_profile: 'oidc',
-    token_endpoint_auth_method: 'client_secret_basic',
     jwks: '{"keys":[{"kty":"EC"}]}',
     jwks_uri: 'https://app.example/keys',
-  });
+  }, 'oidc');
+  const payload = documentFrom(draft);
 
   assert.equal(payload.require_pushed_authorization_requests, false);
+  assert.equal(payload.token_endpoint_auth_method, 'client_secret_basic');
+  assert.equal(payload.use_mtls_endpoint_aliases, false);
   assert.equal('jwks' in payload, false);
   assert.equal('jwks_uri' in payload, false);
   assert.deepEqual(profilePresentation('oidc'), {
@@ -74,6 +78,33 @@ test('standard OIDC payloads omit key metadata and never earn the FAPI badge', (
     fapiBadge: false,
   });
   assert.equal(profilePresentation('fapi').fapiBadge, true);
+});
+
+test('security selections enable mTLS aliases only when they use mTLS', () => {
+  const standard = changeComplianceProfile({
+    ...emptyDraft(),
+    token_endpoint_auth_method: 'tls_client_auth',
+    tls_subject_value: 'CN=old-client',
+    use_mtls_endpoint_aliases: true,
+  }, 'oidc');
+  assert.equal(standard.token_endpoint_auth_method, 'client_secret_basic');
+  assert.equal(standard.tls_subject_value, '');
+  assert.equal(standard.use_mtls_endpoint_aliases, false);
+
+  const tlsAuth = changeClientAuthentication(standard, 'tls_client_auth');
+  assert.equal(tlsAuth.use_mtls_endpoint_aliases, true);
+  const selfSigned = changeClientAuthentication(standard, 'self_signed_tls_client_auth');
+  assert.equal(selfSigned.use_mtls_endpoint_aliases, true);
+  const sharedSecret = changeClientAuthentication(tlsAuth, 'client_secret_basic');
+  assert.equal(sharedSecret.use_mtls_endpoint_aliases, false);
+
+  const certificateBound = changeSenderConstraint(standard, 'mtls');
+  assert.equal(certificateBound.use_mtls_endpoint_aliases, true);
+  const dpopBound = changeSenderConstraint(certificateBound, 'dpop');
+  assert.equal(dpopBound.use_mtls_endpoint_aliases, false);
+
+  const tlsAuthWithDpop = changeSenderConstraint(tlsAuth, 'dpop');
+  assert.equal(tlsAuthWithDpop.use_mtls_endpoint_aliases, true);
 });
 
 test('round-trips the managed group release opt-in', () => {
