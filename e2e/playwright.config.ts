@@ -81,6 +81,7 @@ export default defineConfig({
         '**/console-shots.spec.ts',
         '**/key-rotation.spec.ts',
         '**/accessibility.spec.ts',
+        '**/sso-demo.spec.ts',
       ],
     },
     {

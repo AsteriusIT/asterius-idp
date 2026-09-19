@@ -189,6 +189,40 @@ impl GroupDirectory for PgGroups {
         .collect()
     }
 
+    async fn search(
+        &self,
+        tenant: &TenantId,
+        term: &str,
+        after: Option<GroupId>,
+        limit: u16,
+    ) -> Result<Vec<Group>, DomainError> {
+        if term.len() > GroupMetadata::MAX_DISPLAY_BYTES {
+            return Err(DomainError::invalid("q", "must be at most 200 bytes"));
+        }
+        let literal = term
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        sqlx::query_as::<_, GroupRow>(
+            "select tenant_id, group_id, name, display_name, revision, created_at, updated_at
+            from managed_groups
+            where tenant_id = $1 and ($2::uuid is null or group_id > $2)
+              and (name ilike '%' || $3 || '%' escape '\\'
+                   or display_name ilike '%' || $3 || '%' escape '\\')
+            order by group_id limit $4",
+        )
+        .bind(tenant.as_str())
+        .bind(after.map(GroupId::as_uuid))
+        .bind(literal)
+        .bind(page_limit(limit)?)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(to_domain_error)?
+        .into_iter()
+        .map(TryInto::try_into)
+        .collect()
+    }
+
     async fn update(
         &self,
         tenant: &TenantId,

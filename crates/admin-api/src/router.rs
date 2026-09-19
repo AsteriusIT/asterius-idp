@@ -40,8 +40,8 @@ use crate::idempotency::{self, IdempotencyKey};
 use crate::operations::{Method, Operation};
 use crate::pagination::{Cursor, Page, PageRequest};
 use crate::{
-    audit, authorization_details_types, clients, csrf, initial_access_tokens, keys, openapi,
-    outbox, policies, resource_servers, ssf, throttle, users,
+    audit, authorization_details_types, clients, csrf, groups, initial_access_tokens, keys,
+    openapi, outbox, policies, resource_servers, ssf, throttle, users,
 };
 
 /// The client address, as this crate sees it.
@@ -277,6 +277,9 @@ async fn route(
     context: &Handling<'_>,
     body: axum::body::Body,
 ) -> Result<Response, AdminError> {
+    if is_group_route(id) {
+        return route_groups(id, context, body).await;
+    }
     match id {
         crate::SESSION_READ_ID => context.session_document(),
         crate::SESSION_END_ID => context.end_session().await,
@@ -375,6 +378,40 @@ async fn route(
             );
             Err(AdminError::Unavailable)
         }
+    }
+}
+
+fn is_group_route(id: &str) -> bool {
+    matches!(
+        id,
+        crate::GROUPS_LIST_ID
+            | crate::GROUP_CREATE_ID
+            | crate::GROUP_READ_ID
+            | crate::GROUP_UPDATE_ID
+            | crate::GROUP_DELETE_ID
+            | crate::GROUP_MEMBERS_LIST_ID
+            | crate::GROUP_MEMBER_ADD_ID
+            | crate::GROUP_MEMBER_REMOVE_ID
+            | crate::USER_GROUPS_LIST_ID
+    )
+}
+
+async fn route_groups(
+    id: &str,
+    context: &Handling<'_>,
+    body: axum::body::Body,
+) -> Result<Response, AdminError> {
+    match id {
+        crate::GROUPS_LIST_ID => context.list_groups().await,
+        crate::GROUP_CREATE_ID => context.create_group(body).await,
+        crate::GROUP_READ_ID => context.read_group().await,
+        crate::GROUP_UPDATE_ID => context.update_group(body).await,
+        crate::GROUP_DELETE_ID => context.delete_group(body).await,
+        crate::GROUP_MEMBERS_LIST_ID => context.list_group_members().await,
+        crate::GROUP_MEMBER_ADD_ID => context.add_group_member().await,
+        crate::GROUP_MEMBER_REMOVE_ID => context.remove_group_member().await,
+        crate::USER_GROUPS_LIST_ID => context.list_user_groups().await,
+        _ => Err(AdminError::Unavailable),
     }
 }
 
@@ -2505,6 +2542,270 @@ impl Handling<'_> {
         )
     }
 
+    // ---- managed groups (`ast-6uqw.10`) ---------------------------------
+
+    async fn list_groups(&self) -> Result<Response, AdminError> {
+        let request = PageRequest::parse(
+            query_value(&self.query, "cursor").as_deref(),
+            query_value(&self.query, "limit").as_deref(),
+        )?;
+        let after = request
+            .after
+            .as_ref()
+            .map(|cursor| parse_group_id(cursor.key()))
+            .transpose()?;
+        let term = clients::search_term(&query_value(&self.query, "q").unwrap_or_default());
+        let fetch = u16::try_from(request.limit + 1).unwrap_or(201);
+        let rows = self
+            .state
+            .backend
+            .groups()
+            .search(&self.tenant.id, &term, after, fetch)
+            .await
+            .map_err(|error| group_error(crate::GROUPS_LIST_ID, error))?;
+        let items = rows.iter().map(groups::document).collect::<Vec<_>>();
+        let page = Page::from_overfetched(items, request.limit, |row| {
+            row["id"].as_str().unwrap_or_default().to_owned()
+        });
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::to_value(page).unwrap_or_else(|_| serde_json::json!({})),
+        ))
+    }
+
+    async fn create_group(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let requested: groups::RequestedGroup = self.parse_body(body).await?;
+        let metadata = requested.metadata()?;
+        let group = self
+            .state
+            .backend
+            .groups()
+            .create(&self.tenant.id, &metadata, self.now)
+            .await
+            .map_err(|error| group_error(crate::GROUP_CREATE_ID, error))?;
+        self.record(
+            EventType::ADMIN_CHANGED,
+            Detail::new()
+                .label("operation", crate::GROUP_CREATE_ID)
+                .text("group_id", group.id.as_uuid().to_string()),
+        )
+        .await;
+        Ok(json_no_store(
+            StatusCode::CREATED,
+            &groups::document(&group),
+        ))
+    }
+
+    async fn read_group(&self) -> Result<Response, AdminError> {
+        let group = self
+            .load_group(self.group_in_path()?, crate::GROUP_READ_ID)
+            .await?;
+        Ok(json_no_store(StatusCode::OK, &groups::document(&group)))
+    }
+
+    async fn update_group(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Update {
+            name: String,
+            display_name: String,
+            revision: i64,
+        }
+        let id = self.group_in_path()?;
+        let requested: Update = self.parse_body(body).await?;
+        let metadata =
+            asterius_domain::GroupMetadata::parse(&requested.name, &requested.display_name)
+                .map_err(|error| AdminError::Invalid(error.to_string()))?;
+        let group = self
+            .state
+            .backend
+            .groups()
+            .update(&self.tenant.id, id, requested.revision, &metadata, self.now)
+            .await
+            .map_err(|error| group_error(crate::GROUP_UPDATE_ID, error))?;
+        self.record(
+            EventType::ADMIN_CHANGED,
+            Detail::new()
+                .label("operation", crate::GROUP_UPDATE_ID)
+                .text("group_id", id.as_uuid().to_string())
+                .number("revision", group.revision),
+        )
+        .await;
+        Ok(json_no_store(StatusCode::OK, &groups::document(&group)))
+    }
+
+    async fn delete_group(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let id = self.group_in_path()?;
+        let requested: groups::ExpectedRevision = self.parse_body(body).await?;
+        self.state
+            .backend
+            .groups()
+            .delete(&self.tenant.id, id, requested.revision)
+            .await
+            .map_err(|error| group_error(crate::GROUP_DELETE_ID, error))?;
+        self.record(
+            EventType::ADMIN_CHANGED,
+            Detail::new()
+                .label("operation", crate::GROUP_DELETE_ID)
+                .text("group_id", id.as_uuid().to_string()),
+        )
+        .await;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({"deleted": true}),
+        ))
+    }
+
+    async fn list_group_members(&self) -> Result<Response, AdminError> {
+        let id = self.group_in_path()?;
+        self.load_group(id, crate::GROUP_MEMBERS_LIST_ID).await?;
+        let request = PageRequest::parse(
+            query_value(&self.query, "cursor").as_deref(),
+            query_value(&self.query, "limit").as_deref(),
+        )?;
+        let after = request
+            .after
+            .as_ref()
+            .map(|cursor| parse_user_id(cursor.key()))
+            .transpose()?;
+        let rows = self
+            .state
+            .backend
+            .groups()
+            .members(
+                &self.tenant.id,
+                id,
+                after,
+                u16::try_from(request.limit + 1).unwrap_or(201),
+            )
+            .await
+            .map_err(|error| group_error(crate::GROUP_MEMBERS_LIST_ID, error))?;
+        let items = rows
+            .iter()
+            .map(|user| serde_json::json!({"user_id": user.as_uuid().to_string()}))
+            .collect::<Vec<_>>();
+        let page = Page::from_overfetched(items, request.limit, |row| {
+            row["user_id"].as_str().unwrap_or_default().to_owned()
+        });
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::to_value(page).unwrap_or_default(),
+        ))
+    }
+
+    async fn add_group_member(&self) -> Result<Response, AdminError> {
+        self.change_group_member(true).await
+    }
+
+    async fn remove_group_member(&self) -> Result<Response, AdminError> {
+        self.change_group_member(false).await
+    }
+
+    async fn change_group_member(&self, add: bool) -> Result<Response, AdminError> {
+        let group = self.group_in_path()?;
+        let user = self.user_in_membership_path()?;
+        let operation = if add {
+            crate::GROUP_MEMBER_ADD_ID
+        } else {
+            crate::GROUP_MEMBER_REMOVE_ID
+        };
+        self.load_group(group, operation).await?;
+        self.load_user(user, operation).await?;
+        let changed = if add {
+            self.state
+                .backend
+                .groups()
+                .add_member(&self.tenant.id, group, user, self.now)
+                .await
+        } else {
+            self.state
+                .backend
+                .groups()
+                .remove_member(&self.tenant.id, group, user, self.now)
+                .await
+        }
+        .map_err(|error| group_error(operation, error))?;
+        if changed {
+            self.record_about(
+                EventType::ADMIN_CHANGED,
+                &user,
+                Detail::new()
+                    .label("operation", operation)
+                    .text("group_id", group.as_uuid().to_string()),
+            )
+            .await;
+        }
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({"changed": changed}),
+        ))
+    }
+
+    async fn list_user_groups(&self) -> Result<Response, AdminError> {
+        let user = self.user_in_path()?;
+        self.load_user(user, crate::USER_GROUPS_LIST_ID).await?;
+        let request = PageRequest::parse(
+            query_value(&self.query, "cursor").as_deref(),
+            query_value(&self.query, "limit").as_deref(),
+        )?;
+        let after = request
+            .after
+            .as_ref()
+            .map(|cursor| parse_group_id(cursor.key()))
+            .transpose()?;
+        let rows = self
+            .state
+            .backend
+            .groups()
+            .groups_for_user(
+                &self.tenant.id,
+                user,
+                after,
+                u16::try_from(request.limit + 1).unwrap_or(201),
+            )
+            .await
+            .map_err(|error| group_error(crate::USER_GROUPS_LIST_ID, error))?;
+        let items = rows.iter().map(groups::document).collect::<Vec<_>>();
+        let page = Page::from_overfetched(items, request.limit, |row| {
+            row["id"].as_str().unwrap_or_default().to_owned()
+        });
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::to_value(page).unwrap_or_default(),
+        ))
+    }
+
+    fn group_in_path(&self) -> Result<asterius_domain::GroupId, AdminError> {
+        let mut segments = self.path.split('/');
+        segments
+            .find(|segment| *segment == "groups")
+            .and_then(|_| segments.next())
+            .ok_or(AdminError::NotFound)
+            .and_then(parse_group_id)
+    }
+
+    fn user_in_membership_path(&self) -> Result<asterius_domain::UserId, AdminError> {
+        self.path
+            .split('/')
+            .next_back()
+            .ok_or(AdminError::NotFound)
+            .and_then(parse_user_id)
+    }
+
+    async fn load_group(
+        &self,
+        id: asterius_domain::GroupId,
+        operation: &'static str,
+    ) -> Result<asterius_domain::Group, AdminError> {
+        self.state
+            .backend
+            .groups()
+            .get(&self.tenant.id, id)
+            .await
+            .map_err(|error| group_error(operation, error))?
+            .ok_or(AdminError::NotFound)
+    }
+
     /// Whether this account is the one making the request.
     fn is_the_caller(&self, subject: asterius_domain::UserId) -> bool {
         matches!(
@@ -3831,6 +4132,27 @@ fn query_value(query: &str, name: &str) -> Option<String> {
     })
 }
 
+fn parse_group_id(raw: &str) -> Result<asterius_domain::GroupId, AdminError> {
+    uuid::Uuid::parse_str(raw)
+        .map(asterius_domain::GroupId::from_uuid)
+        .map_err(|_| AdminError::NotFound)
+}
+
+fn parse_user_id(raw: &str) -> Result<asterius_domain::UserId, AdminError> {
+    uuid::Uuid::parse_str(raw)
+        .map(asterius_domain::UserId::new)
+        .map_err(|_| AdminError::NotFound)
+}
+
+fn group_error(operation: &'static str, error: DomainError) -> AdminError {
+    match error {
+        DomainError::NotFound => AdminError::NotFound,
+        DomainError::Conflict(message) => AdminError::Conflict(message),
+        DomainError::Invalid { field, reason } => AdminError::Invalid(format!("{field}: {reason}")),
+        other => AdminError::from_storage(operation, &other),
+    }
+}
+
 fn json_no_store(status: StatusCode, body: &serde_json::Value) -> Response {
     let mut response = (status, axum::Json(body)).into_response();
     // An admin API answer describes a deployment's configuration and its
@@ -3975,6 +4297,11 @@ mod tests {
         /// that read them are about a handful of rows and a scan is clearer
         /// than an index that could be wrong.
         role_assignments: Mutex<Vec<SeededAssignment>>,
+        /// Tenant-scoped managed groups used by the administration tests.
+        groups: Mutex<Vec<asterius_domain::Group>>,
+        /// Direct memberships as `(tenant, group, user)` tuples.
+        group_memberships:
+            Mutex<Vec<(TenantId, asterius_domain::GroupId, asterius_domain::UserId)>>,
     }
 
     /// One application-role assignment held by the fake.
@@ -4016,6 +4343,268 @@ mod tests {
 
     #[derive(Debug, Clone)]
     struct Handle(Arc<Fake>);
+
+    #[async_trait::async_trait]
+    impl asterius_domain::GroupDirectory for Handle {
+        async fn create(
+            &self,
+            tenant: &TenantId,
+            metadata: &asterius_domain::GroupMetadata,
+            now: OffsetDateTime,
+        ) -> Result<asterius_domain::Group, DomainError> {
+            let mut rows = self.0.groups.lock().expect("an uncontended lock");
+            if rows
+                .iter()
+                .any(|row| &row.tenant == tenant && row.metadata.name() == metadata.name())
+            {
+                return Err(DomainError::Conflict(
+                    "group name already exists".to_owned(),
+                ));
+            }
+            let group = asterius_domain::Group {
+                tenant: tenant.clone(),
+                id: asterius_domain::GroupId::mint(),
+                metadata: metadata.clone(),
+                revision: 1,
+                created_at: now,
+                updated_at: now,
+            };
+            rows.push(group.clone());
+            Ok(group)
+        }
+
+        async fn get(
+            &self,
+            tenant: &TenantId,
+            id: asterius_domain::GroupId,
+        ) -> Result<Option<asterius_domain::Group>, DomainError> {
+            Ok(self
+                .0
+                .groups
+                .lock()
+                .expect("an uncontended lock")
+                .iter()
+                .find(|row| &row.tenant == tenant && row.id == id)
+                .cloned())
+        }
+
+        async fn list(
+            &self,
+            tenant: &TenantId,
+            after: Option<asterius_domain::GroupId>,
+            limit: u16,
+        ) -> Result<Vec<asterius_domain::Group>, DomainError> {
+            let mut rows = self
+                .0
+                .groups
+                .lock()
+                .expect("an uncontended lock")
+                .iter()
+                .filter(|row| &row.tenant == tenant && after.is_none_or(|id| row.id > id))
+                .cloned()
+                .collect::<Vec<_>>();
+            rows.sort_by_key(|row| row.id);
+            rows.truncate(usize::from(limit));
+            Ok(rows)
+        }
+
+        async fn search(
+            &self,
+            tenant: &TenantId,
+            term: &str,
+            after: Option<asterius_domain::GroupId>,
+            limit: u16,
+        ) -> Result<Vec<asterius_domain::Group>, DomainError> {
+            let term = term.to_ascii_lowercase();
+            let mut rows =
+                asterius_domain::GroupDirectory::list(self, tenant, after, u16::MAX).await?;
+            rows.retain(|row| {
+                row.metadata.name().as_str().contains(&term)
+                    || row
+                        .metadata
+                        .display_name()
+                        .to_ascii_lowercase()
+                        .contains(&term)
+            });
+            rows.truncate(usize::from(limit));
+            Ok(rows)
+        }
+
+        async fn update(
+            &self,
+            tenant: &TenantId,
+            id: asterius_domain::GroupId,
+            expected_revision: i64,
+            metadata: &asterius_domain::GroupMetadata,
+            now: OffsetDateTime,
+        ) -> Result<asterius_domain::Group, DomainError> {
+            let mut rows = self.0.groups.lock().expect("an uncontended lock");
+            if rows.iter().any(|row| {
+                &row.tenant == tenant && row.id != id && row.metadata.name() == metadata.name()
+            }) {
+                return Err(DomainError::Conflict(
+                    "group name already exists".to_owned(),
+                ));
+            }
+            let row = rows
+                .iter_mut()
+                .find(|row| &row.tenant == tenant && row.id == id)
+                .ok_or(DomainError::NotFound)?;
+            if row.revision != expected_revision {
+                return Err(DomainError::Conflict("group revision changed".to_owned()));
+            }
+            row.metadata = metadata.clone();
+            row.revision += 1;
+            row.updated_at = now;
+            Ok(row.clone())
+        }
+
+        async fn delete(
+            &self,
+            tenant: &TenantId,
+            id: asterius_domain::GroupId,
+            expected_revision: i64,
+        ) -> Result<(), DomainError> {
+            let mut rows = self.0.groups.lock().expect("an uncontended lock");
+            let position = rows
+                .iter()
+                .position(|row| &row.tenant == tenant && row.id == id)
+                .ok_or(DomainError::NotFound)?;
+            if rows[position].revision != expected_revision {
+                return Err(DomainError::Conflict("group revision changed".to_owned()));
+            }
+            rows.remove(position);
+            self.0
+                .group_memberships
+                .lock()
+                .expect("an uncontended lock")
+                .retain(|(owner, group, _)| owner != tenant || *group != id);
+            Ok(())
+        }
+
+        async fn add_member(
+            &self,
+            tenant: &TenantId,
+            id: asterius_domain::GroupId,
+            user: UserId,
+            now: OffsetDateTime,
+        ) -> Result<bool, DomainError> {
+            if self.get(tenant, id).await?.is_none() {
+                return Err(DomainError::NotFound);
+            }
+            let mut memberships = self
+                .0
+                .group_memberships
+                .lock()
+                .expect("an uncontended lock");
+            if memberships
+                .iter()
+                .any(|row| row == &(tenant.clone(), id, user))
+            {
+                return Ok(false);
+            }
+            memberships.push((tenant.clone(), id, user));
+            drop(memberships);
+            let mut groups = self.0.groups.lock().expect("an uncontended lock");
+            if let Some(group) = groups
+                .iter_mut()
+                .find(|group| &group.tenant == tenant && group.id == id)
+            {
+                group.revision += 1;
+                group.updated_at = now;
+            }
+            Ok(true)
+        }
+
+        async fn remove_member(
+            &self,
+            tenant: &TenantId,
+            id: asterius_domain::GroupId,
+            user: UserId,
+            now: OffsetDateTime,
+        ) -> Result<bool, DomainError> {
+            if self.get(tenant, id).await?.is_none() {
+                return Err(DomainError::NotFound);
+            }
+            let mut memberships = self
+                .0
+                .group_memberships
+                .lock()
+                .expect("an uncontended lock");
+            let before = memberships.len();
+            memberships.retain(|row| row != &(tenant.clone(), id, user));
+            let changed = memberships.len() < before;
+            drop(memberships);
+            if changed
+                && let Some(group) = self
+                    .0
+                    .groups
+                    .lock()
+                    .expect("an uncontended lock")
+                    .iter_mut()
+                    .find(|group| &group.tenant == tenant && group.id == id)
+            {
+                group.revision += 1;
+                group.updated_at = now;
+            }
+            Ok(changed)
+        }
+
+        async fn members(
+            &self,
+            tenant: &TenantId,
+            id: asterius_domain::GroupId,
+            after: Option<UserId>,
+            limit: u16,
+        ) -> Result<Vec<UserId>, DomainError> {
+            let mut users = self
+                .0
+                .group_memberships
+                .lock()
+                .expect("an uncontended lock")
+                .iter()
+                .filter(|(owner, group, user)| {
+                    owner == tenant && *group == id && after.is_none_or(|after| *user > after)
+                })
+                .map(|(_, _, user)| *user)
+                .collect::<Vec<_>>();
+            users.sort();
+            users.truncate(usize::from(limit));
+            Ok(users)
+        }
+
+        async fn groups_for_user(
+            &self,
+            tenant: &TenantId,
+            user: UserId,
+            after: Option<asterius_domain::GroupId>,
+            limit: u16,
+        ) -> Result<Vec<asterius_domain::Group>, DomainError> {
+            let memberships = self
+                .0
+                .group_memberships
+                .lock()
+                .expect("an uncontended lock");
+            let mut groups = self
+                .0
+                .groups
+                .lock()
+                .expect("an uncontended lock")
+                .iter()
+                .filter(|group| {
+                    &group.tenant == tenant
+                        && after.is_none_or(|after| group.id > after)
+                        && memberships
+                            .iter()
+                            .any(|row| row == &(tenant.clone(), group.id, user))
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            groups.sort_by_key(|group| group.id);
+            groups.truncate(usize::from(limit));
+            Ok(groups)
+        }
+    }
 
     #[derive(Debug, Clone)]
     struct FakeResourceServers {
@@ -5554,6 +6143,10 @@ mod tests {
             Arc::new(self.clone())
         }
 
+        fn groups(&self) -> Arc<dyn asterius_domain::GroupDirectory> {
+            Arc::new(self.clone())
+        }
+
         fn outbox(&self) -> Arc<dyn asterius_domain::outbox::DeadLetterQuery> {
             Arc::new(self.clone())
         }
@@ -5701,6 +6294,7 @@ mod tests {
     /// The account every tenant in the fixture holds, and the value
     /// `{user_id}` is replaced with when a test walks the registry.
     const SEEDED_USER_ID: &str = "3f1d5c2a-0000-4000-8000-000000000001";
+    const SEEDED_GROUP_ID: &str = "3f1d5c2a-0000-4000-8000-000000000004";
 
     /// An application role in both catalogues that nobody holds, so the two
     /// delete routes have something they are allowed to remove (`ast-095`).
@@ -5963,6 +6557,32 @@ mod tests {
         .expect("a fixed role")
     }
 
+    fn seed_group(handle: &Handle, tenant: &str) {
+        let group_id = asterius_domain::GroupId::from_uuid(
+            uuid::Uuid::parse_str(SEEDED_GROUP_ID).expect("a fixed group uuid"),
+        );
+        handle
+            .0
+            .groups
+            .lock()
+            .expect("an uncontended lock")
+            .push(asterius_domain::Group {
+                tenant: TenantId::new(tenant),
+                id: group_id,
+                metadata: asterius_domain::GroupMetadata::parse("engineering", "Engineering")
+                    .expect("fixed group metadata"),
+                revision: 1,
+                created_at: OffsetDateTime::UNIX_EPOCH,
+                updated_at: OffsetDateTime::UNIX_EPOCH,
+            });
+        handle
+            .0
+            .group_memberships
+            .lock()
+            .expect("an uncontended lock")
+            .push((TenantId::new(tenant), group_id, seeded_user_id()));
+    }
+
     impl World {
         fn new() -> Self {
             let handle = Handle(Arc::new(Fake::default()));
@@ -6004,6 +6624,7 @@ mod tests {
                     .lock()
                     .expect("an uncontended lock")
                     .push(seeded_user(id));
+                seed_group(&handle, id);
                 handle
                     .0
                     .account_passwords
@@ -6301,6 +6922,7 @@ mod tests {
             .replace("{identifier}", SEEDED_RESOURCE_PATH)
             .replace("{type}", SEEDED_DETAIL_TYPE)
             .replace("{user_id}", SEEDED_USER_ID)
+            .replace("{group_id}", SEEDED_GROUP_ID)
             .replace("{sid}", SEEDED_SID)
             .replace("{credential_id}", SEEDED_CREDENTIAL_ID)
             .replace("{grant_id}", SEEDED_GRANT_ID)
@@ -6379,6 +7001,16 @@ mod tests {
             // is optional (a tenant may enrol a passkey instead) and every
             // claim is.
             crate::USER_CREATE_ID => serde_json::json!({"username": "new@example.test"}),
+            crate::GROUP_CREATE_ID => serde_json::json!({
+                "name": "walked",
+                "display_name": "Walked"
+            }),
+            crate::GROUP_UPDATE_ID => serde_json::json!({
+                "name": "engineering-updated",
+                "display_name": "Engineering updated",
+                "revision": 1
+            }),
+            crate::GROUP_DELETE_ID => serde_json::json!({"revision": 3}),
             // A name and nothing else: the description is optional, and a
             // role cannot be created already assigned to somebody (`ast-095`).
             crate::APP_ROLE_CREATE_ID | crate::CLIENT_APP_ROLE_CREATE_ID => {
@@ -6430,6 +7062,263 @@ mod tests {
             .await
             .expect("a readable body");
         serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
+    }
+
+    async fn group_call(
+        world: &World,
+        cookie: &str,
+        method: &str,
+        path: &str,
+        body: serde_json::Value,
+        key: Option<&str>,
+    ) -> Response {
+        let mut request = HttpRequest::builder()
+            .method(method)
+            .uri(format!("{}{}", crate::BASE_PATH, path))
+            .header("origin", ORIGIN)
+            .header(
+                "cookie",
+                format!(
+                    "{}={cookie}",
+                    asterius_domain::entities::session::COOKIE_NAME
+                ),
+            )
+            .header(csrf::HEADER, csrf::token(cookie));
+        if let Some(key) = key {
+            request = request.header(idempotency::HEADER, key);
+        }
+        world
+            .send(
+                request
+                    .body(if body.is_null() {
+                        Body::empty()
+                    } else {
+                        Body::from(body.to_string())
+                    })
+                    .expect("a group request"),
+            )
+            .await
+    }
+
+    async fn create_named_group(world: &World, cookie: &str, name: &str) -> String {
+        let response = group_call(
+            world,
+            cookie,
+            "POST",
+            "/groups",
+            serde_json::json!({"name": name, "display_name": "Finance"}),
+            Some(&format!("group-create-{name}")),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        body_of(response).await["id"]
+            .as_str()
+            .expect("a group id")
+            .to_owned()
+    }
+
+    async fn assert_duplicate_group_conflicts(world: &World, cookie: &str, name: &str) {
+        let response = group_call(
+            world,
+            cookie,
+            "POST",
+            "/groups",
+            serde_json::json!({"name": name, "display_name": "Another label"}),
+            Some("group-create-duplicate"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    async fn update_stale_delete_and_confirm_missing(world: &World, cookie: &str, group_id: &str) {
+        let path = format!("/groups/{group_id}");
+        let updated = group_call(
+            world,
+            cookie,
+            "PUT",
+            &path,
+            serde_json::json!({"name": "finance", "display_name": "Finance team", "revision": 2}),
+            None,
+        )
+        .await;
+        assert_eq!(updated.status(), StatusCode::OK);
+        assert_eq!(body_of(updated).await["revision"], 3);
+        let stale = group_call(
+            world,
+            cookie,
+            "PUT",
+            &path,
+            serde_json::json!({"name": "finance", "display_name": "Stale", "revision": 2}),
+            None,
+        )
+        .await;
+        assert_eq!(stale.status(), StatusCode::CONFLICT);
+        let deleted = group_call(
+            world,
+            cookie,
+            "DELETE",
+            &path,
+            serde_json::json!({"revision": 3}),
+            None,
+        )
+        .await;
+        assert_eq!(deleted.status(), StatusCode::OK);
+        let missing = group_call(world, cookie, "GET", &path, serde_json::Value::Null, None).await;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// One end-to-end exercise covers the API semantics that are above the
+    /// persistence tests: conflict mapping, idempotent membership, audit,
+    /// revision checks and the user-side membership view.
+    #[tokio::test]
+    async fn group_crud_and_membership_are_revisioned_idempotent_and_audited() {
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+        let before_roles = world
+            .handle
+            .roles(&TenantId::new("acme"), seeded_user_id())
+            .await
+            .expect("roles");
+
+        let group_id = create_named_group(&world, &cookie, "finance").await;
+        assert_duplicate_group_conflicts(&world, &cookie, "finance").await;
+
+        let membership_path = format!("/groups/{group_id}/members/{SEEDED_USER_ID}");
+        let first = group_call(
+            &world,
+            &cookie,
+            "PUT",
+            &membership_path,
+            serde_json::Value::Null,
+            None,
+        )
+        .await;
+        assert_eq!(body_of(first).await["changed"], true);
+        let repeated = group_call(
+            &world,
+            &cookie,
+            "PUT",
+            &membership_path,
+            serde_json::Value::Null,
+            None,
+        )
+        .await;
+        assert_eq!(body_of(repeated).await["changed"], false);
+
+        let user_groups = group_call(
+            &world,
+            &cookie,
+            "GET",
+            &format!("/users/{SEEDED_USER_ID}/groups"),
+            serde_json::Value::Null,
+            None,
+        )
+        .await;
+        assert_eq!(user_groups.status(), StatusCode::OK);
+        assert!(
+            body_of(user_groups).await["items"]
+                .as_array()
+                .is_some_and(|items| items.iter().any(|item| item["id"] == group_id))
+        );
+
+        update_stale_delete_and_confirm_missing(&world, &cookie, &group_id).await;
+
+        let membership_events = {
+            world
+                .handle
+                .0
+                .events
+                .lock()
+                .expect("events")
+                .iter()
+                .filter(|event| {
+                    event.detail.iter().any(|(key, value)| {
+                        key == "operation"
+                            && value
+                                == &asterius_domain::audit::DetailValue::Text(
+                                    crate::GROUP_MEMBER_ADD_ID.to_owned(),
+                                )
+                    })
+                })
+                .count()
+        };
+        assert_eq!(
+            membership_events, 1,
+            "a duplicate membership write must not claim a second change"
+        );
+        assert_eq!(
+            world
+                .handle
+                .roles(&TenantId::new("acme"), seeded_user_id())
+                .await
+                .expect("roles"),
+            before_roles,
+            "group APIs must never assign built-in administrator roles"
+        );
+    }
+
+    #[tokio::test]
+    async fn group_reads_are_tenant_scoped_and_search_is_paginated() {
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+        let foreign_id = asterius_domain::GroupId::mint();
+        world
+            .handle
+            .0
+            .groups
+            .lock()
+            .expect("groups")
+            .push(asterius_domain::Group {
+                tenant: TenantId::new("other"),
+                id: foreign_id,
+                metadata: asterius_domain::GroupMetadata::parse("hidden", "Hidden")
+                    .expect("metadata"),
+                revision: 1,
+                created_at: OffsetDateTime::UNIX_EPOCH,
+                updated_at: OffsetDateTime::UNIX_EPOCH,
+            });
+        let foreign = group_call(
+            &world,
+            &cookie,
+            "GET",
+            &format!("/groups/{}", foreign_id.as_uuid()),
+            serde_json::Value::Null,
+            None,
+        )
+        .await;
+        assert_eq!(foreign.status(), StatusCode::NOT_FOUND);
+
+        for (name, label, key) in [
+            ("search-one", "Search one", "search-one-key"),
+            ("search-two", "Search two", "search-two-key"),
+        ] {
+            assert_eq!(
+                group_call(
+                    &world,
+                    &cookie,
+                    "POST",
+                    "/groups",
+                    serde_json::json!({"name": name, "display_name": label}),
+                    Some(key),
+                )
+                .await
+                .status(),
+                StatusCode::CREATED
+            );
+        }
+        let page = group_call(
+            &world,
+            &cookie,
+            "GET",
+            "/groups?q=search&limit=1",
+            serde_json::Value::Null,
+            None,
+        )
+        .await;
+        assert_eq!(page.status(), StatusCode::OK);
+        let page = body_of(page).await;
+        assert_eq!(page["items"].as_array().map(Vec::len), Some(1));
+        assert!(page["next_cursor"].is_string());
     }
 
     // ---- the policy screen (`ast-pj0.4`) ----------------------------------
