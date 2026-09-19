@@ -1392,7 +1392,13 @@ test('the tenant selector lists the deployment and hands over to the chosen cons
   // and then a tenant-scoped screen backed by that tenant's admin API.
   await page.waitForURL(/\/t\/e2e\/admin\/#\/overview$/);
   await expect(page.getByRole('heading', { name: 'Overview', exact: true })).toBeVisible();
-  await expect(page.getByRole('combobox', { name: /Tenant: e2e\./ })).toBeVisible();
+  const workspace = page.getByRole('combobox', { name: /Tenant: e2e\./ });
+  await expect(workspace).toBeVisible();
+  await workspace.click();
+  await expect(page.locator('.tenant-menu-heading strong')).toHaveText('e2e');
+  await expect(page.getByRole('option', { name: /^e2e e2e$/ }).locator('svg')).toHaveClass(
+    /opacity-100/,
+  );
   await page.getByRole('link', { name: 'Applications', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Applications', exact: true })).toBeVisible();
 });

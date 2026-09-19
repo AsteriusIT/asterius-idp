@@ -236,7 +236,7 @@ export function SharedSignals({ session }: { session: Session }): JSX.Element {
       title="Shared signals"
       description={
         <>
-          Every receiver that has arranged to be told about <strong>{session.tenant}</strong>
+          Every receiver that has arranged to be told about <strong>{session.workspace}</strong>
           &apos;s users, and how each stream is doing. A paused stream keeps queueing events and
           delivers none of them until it is re-enabled.
         </>

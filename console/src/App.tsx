@@ -215,7 +215,7 @@ function Overview({ session }: { session: Session }): JSX.Element {
   return (
     <Screen
       title="Overview"
-      description={`A clear view of ${session.tenant} and the tools available to this session.`}
+      description={`A clear view of ${session.workspace} and the tools available to this session.`}
     >
       <div className="overview-bento">
         <Panel
@@ -226,7 +226,7 @@ function Overview({ session }: { session: Session }): JSX.Element {
           <dl className="stats">
             <div className="stat">
               <dt>Tenant</dt>
-              <dd>{session.tenant}</dd>
+              <dd>{session.workspace}</dd>
             </div>
             <div className="stat">
               <dt>User</dt>

@@ -340,7 +340,7 @@ export function Policy({ session }: { session: Session }): JSX.Element {
       title="Access policy"
       description={
         <>
-          The rules <strong>{session.tenant}</strong> is decided by. An enforcement point asks
+          The rules <strong>{session.workspace}</strong> is decided by. An enforcement point asks
           whether a subject may take an action on a resource, and this document answers; an
           explicit deny wins, and a request no rule matches is denied.{' '}
           {load.policy.rule_count === 0

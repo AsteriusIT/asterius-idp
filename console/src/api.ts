@@ -39,7 +39,8 @@ function idempotencyKey(): string {
 }
 
 /**
- * Who the session belongs to, as `GET /session` describes it.
+ * Who the session belongs to and where it is acting, as `GET /session`
+ * describes them.
  *
  * `scopes` and `deployment_scopes` are what this caller may *do*, computed by
  * the server from the roles it holds and the authority each route declares
@@ -52,10 +53,13 @@ function idempotencyKey(): string {
  * "why can I not see Clients?" is helped by seeing what they hold.
  */
 export interface Session {
+  /** The tenant that owns this account and session. */
   readonly tenant: string;
+  /** The tenant whose console and relative admin API this document is using. */
+  readonly workspace: string;
   readonly user: string;
   readonly roles: readonly string[];
-  /** Scopes held over this session's own tenant. */
+  /** Scopes held in the active workspace. */
   readonly scopes: readonly string[];
   /** Scopes held over every tenant of the deployment. */
   readonly deployment_scopes: readonly string[];

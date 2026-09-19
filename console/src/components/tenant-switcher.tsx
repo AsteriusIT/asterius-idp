@@ -141,7 +141,7 @@ export function TenantSwitcher({
           variant="outline"
           role="combobox"
           aria-expanded={open}
-          aria-label={`Tenant: ${session.tenant}. Switch tenant`}
+          aria-label={`Tenant: ${session.workspace}. Switch tenant`}
           // `min-w-0 overflow-hidden`: the trigger is as wide as the rail and
           // its middle column is the only thing allowed to grow (`ast-f9j5`).
           // Without it a long tenant name pushed the chevron past the rail's
@@ -154,7 +154,7 @@ export function TenantSwitcher({
         >
           <BuildingIcon className="size-4 shrink-0" aria-hidden="true" />
           <span className="flex min-w-0 flex-1 flex-col">
-            <span className="truncate text-sm font-medium">{session.tenant}</span>
+            <span className="truncate text-sm font-medium">{session.workspace}</span>
             <span className="tenant-context-label">Workspace</span>
           </span>
           <ChevronsUpDownIcon
@@ -164,7 +164,7 @@ export function TenantSwitcher({
         </Button>
       </PopoverTrigger>
       <PopoverContent align="start" className="tenant-menu w-(--radix-popover-trigger-width) min-w-64 p-0">
-        <div className="tenant-menu-heading"><strong>{session.tenant}</strong><span>{sessionRoleLabel(session)}</span></div>
+        <div className="tenant-menu-heading"><strong>{session.workspace}</strong><span>{sessionRoleLabel(session)}</span></div>
         <Command>
           {switchable && <CommandInput placeholder="Find a tenant…" />}
           <CommandList>
@@ -195,7 +195,7 @@ export function TenantSwitcher({
                     >
                       <CheckIcon
                         className={
-                          tenant.tenant_id === session.tenant
+                          tenant.tenant_id === session.workspace
                             ? 'size-4 opacity-100'
                             : 'size-4 opacity-0'
                         }
