@@ -613,6 +613,44 @@ async fn prompt_none_without_a_session_redirects_login_required_without_a_page()
     assert!(!response.headers().contains_key(header::SET_COOKIE));
 }
 
+/// An achievable stronger ACR still requires user interaction. `prompt=none`
+/// forbids creating the step-up interaction and receives the specific OIDC
+/// `interaction_required` response instead.
+#[tokio::test]
+async fn prompt_none_needing_step_up_is_refused_without_rendering_a_page() {
+    let minted = MintedRequestUri::generate();
+    let store = Store::with(request_with(
+        minted.digest(),
+        serde_json::json!({
+            "redirect_uri": "https://rp.example/cb",
+            "prompts": ["none"],
+            "claims": stored_claims(&format!(
+                r#"{{"id_token":{{"acr":{{"essential":true,"values":["{}"]}}}}}}"#,
+                asterius_domain::acr::PASSKEY_USER_VERIFIED
+            )),
+        }),
+    ));
+    let mut weak = session(time::Duration::minutes(1));
+    weak.acr = Some(asterius_domain::acr::PASSWORD.to_owned());
+
+    let response = run_with(
+        &store,
+        &[("client_id", "billing"), ("request_uri", minted.uri())],
+        Some(&weak),
+    )
+    .await;
+
+    let location = response.headers()[header::LOCATION]
+        .to_str()
+        .expect("location");
+    assert!(
+        location.contains("error=interaction_required"),
+        "{location}"
+    );
+    assert!(store.begun.lock().expect("lock").is_empty());
+    assert!(!response.headers().contains_key(header::SET_COOKIE));
+}
+
 /// The other half of §3.1.2.6, and the reason the four codes exist: a
 /// signed-in browser is not refused `login_required` — it is refused
 /// `consent_required`, which tells the client to retry *with* a prompt rather
@@ -944,6 +982,37 @@ fn beginning(store: &Store) -> (Value, Option<String>) {
         .last()
         .expect("the handler recorded where the interaction begins");
     (state.clone(), session.clone())
+}
+
+/// A usable but weaker session starts at the explicit step-up stage and is
+/// attached to the interaction so successful re-authentication can rotate it.
+#[tokio::test]
+async fn an_achievable_stronger_acr_begins_at_step_up() {
+    let minted = MintedRequestUri::generate();
+    let store = Store::with(request_with(
+        minted.digest(),
+        serde_json::json!({
+            "redirect_uri": "https://rp.example/cb",
+            "claims": stored_claims(&format!(
+                r#"{{"id_token":{{"acr":{{"essential":true,"values":["{}"]}}}}}}"#,
+                asterius_domain::acr::PASSKEY_USER_VERIFIED
+            )),
+        }),
+    ));
+    let mut weak = session(time::Duration::minutes(1));
+    weak.acr = Some(asterius_domain::acr::PASSWORD.to_owned());
+
+    let response = run_with(
+        &store,
+        &[("client_id", "billing"), ("request_uri", minted.uri())],
+        Some(&weak),
+    )
+    .await;
+
+    assert_eq!(response.status().as_u16(), 303);
+    let (state, attached) = beginning(&store);
+    assert_eq!(state["stage"], "step_up");
+    assert_eq!(attached.as_deref(), Some(weak.id_digest.as_str()));
 }
 
 /// **`ast-k7f`**: a signed-in user meeting a client they have never consented

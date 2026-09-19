@@ -959,6 +959,28 @@ async fn a_step_up_rotates_the_session_and_records_the_class_it_reached() {
     assert_eq!(fixture.requests.session(), Some(after.id_digest.clone()));
 }
 
+/// A cryptographically valid assertion without user verification does not
+/// satisfy the UV ACR. It leaves both the interaction and existing session at
+/// their previous assurance instead of treating validity as sufficient.
+#[tokio::test]
+async fn a_passkey_below_the_requested_acr_does_not_rotate_the_session() {
+    let now = OffsetDateTime::now_utc();
+    let fixture = Fixture::at_step_up(now, asterius_domain::acr::PASSKEY_USER_VERIFIED);
+    let before = fixture.sessions.0.lock().expect("lock")[0].clone();
+    let (_, options) = fixture.options(now).await;
+    let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(options["challenge"].as_str().expect("a challenge"))
+        .expect("base64url");
+
+    let response = fixture
+        .finish(&fixture.assertion(&challenge, UP, 5), now)
+        .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(fixture.requests.stage(), Some(Stage::StepUp));
+    assert_eq!(fixture.sessions.0.lock().expect("lock")[0], before);
+}
+
 /// **The screens after a passkey sign-in can name who signed in** (`ast-bo5`).
 ///
 /// The credential identifies the account, so nobody typed a name — and without

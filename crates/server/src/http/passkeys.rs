@@ -872,7 +872,12 @@ async fn session_from_assertion(
     )
     .await
     {
-        Ok(established) => established,
+        Ok(crate::http::step_up::Establishment::Established(established)) => established,
+        Ok(crate::http::step_up::Establishment::Insufficient) => {
+            return login_refused(
+                "the assertion did not meet the requested authentication context",
+            );
+        }
         Err(error) => {
             tracing::error!(%error, tenant = %context.tenant.id, "cannot start a session");
             return login_refused("the session could not be started");
@@ -884,9 +889,17 @@ async fn session_from_assertion(
     // authenticated user goes straight to whatever the interaction was for,
     // exactly as the password path does — the continuation decides, not this
     // handler.
-    let next = Stage::after_login(&record.continuation);
-    if state.stage.may_advance_to(next, &record.continuation) {
-        state.stage = next;
+    if !established.essential_satisfied
+        && state
+            .stage
+            .may_advance_to(Stage::StepUp, &record.continuation)
+    {
+        state.stage = Stage::StepUp;
+    } else {
+        let next = Stage::after_login(&record.continuation);
+        if state.stage.may_advance_to(next, &record.continuation) {
+            state.stage = next;
+        }
     }
     let value = serde_json::to_value(&state).unwrap_or_default();
     if let Err(error) = context

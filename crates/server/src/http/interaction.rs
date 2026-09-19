@@ -523,6 +523,24 @@ pub async fn submit(
     // would let the same body be replayed until the interaction expired.
     state.spend_csrf();
 
+    // A step-up is optional from the person's point of view even when it is
+    // required for the authorization. Cancelling therefore completes the
+    // client request as `access_denied`; it does not weaken the requirement,
+    // modify the existing session, or strand the relying party on a local
+    // error page. This is a plain HTML form submission, so it is also the exit
+    // path when JavaScript (and therefore WebAuthn) is unavailable.
+    if state.stage == Stage::StepUp && field("decision") == Some("cancel") {
+        return complete(
+            &context,
+            &presented,
+            &Decision::Denied,
+            &record,
+            ConsentSource::Screen,
+            now,
+        )
+        .await;
+    }
+
     match state.stage {
         // `Login` and `StepUp` take the same submission and the same form: the
         // difference between them is not what is asked of the person, it is
@@ -731,7 +749,15 @@ async fn authenticated(
     )
     .await
     {
-        Ok(established) => established,
+        Ok(crate::http::step_up::Establishment::Established(established)) => established,
+        Ok(crate::http::step_up::Establishment::Insufficient) => {
+            let message = context
+                .language
+                .catalog(locale_of(context, &state))
+                .step_up_insufficient()
+                .to_owned();
+            return retry(context, presented, state, id, now, &message).await;
+        }
         Err(error) => {
             tracing::error!(%error, "cannot start a session");
             return error_page(
@@ -758,10 +784,11 @@ async fn authenticated(
     // was for — the consent screen for an authorization, the
     // destination itself for a first-party login, which has nobody to
     // consent to.
-    let next = Stage::after_login(&record.continuation);
-    if state.stage.may_advance_to(next, &record.continuation) {
-        state.stage = next;
-    }
+    advance_after_authentication(
+        &mut state,
+        established.essential_satisfied,
+        &record.continuation,
+    );
 
     // ADR-0009's path. The session is written and the interaction is
     // over: there is no client, no scope and no screen left, so this
@@ -790,8 +817,9 @@ async fn authenticated(
         session: Some(established.digest.clone()),
         ..record.clone()
     };
-    if let Some(response) =
-        skip_consent_if_remembered(context, presented, state.clone(), &record, now).await
+    if state.stage == Stage::Consent
+        && let Some(response) =
+            skip_consent_if_remembered(context, presented, state.clone(), &record, now).await
     {
         let mut response = response;
         set_session_cookie(&mut response, &id_value);
@@ -800,7 +828,11 @@ async fn authenticated(
 
     // Signed in, so the next screen is consent — which needs the
     // offer.
-    let offer = describe(context, &record).await;
+    let offer = if state.stage == Stage::Consent {
+        describe(context, &record).await
+    } else {
+        None
+    };
     let mut response = render(
         context,
         &Screen {
@@ -816,6 +848,23 @@ async fn authenticated(
     );
     set_session_cookie(&mut response, &id_value);
     response
+}
+
+/// Chooses the page after a valid credential without losing an essential ACR
+/// that still needs another factor.
+fn advance_after_authentication(
+    state: &mut StoredState,
+    essential_satisfied: bool,
+    continuation: &asterius_domain::Continuation,
+) {
+    if !essential_satisfied && state.stage.may_advance_to(Stage::StepUp, continuation) {
+        state.stage = Stage::StepUp;
+        return;
+    }
+    let next = Stage::after_login(continuation);
+    if state.stage.may_advance_to(next, continuation) {
+        state.stage = next;
+    }
 }
 
 /// The email-verification gate, as a page to return or nothing (`ast-vae`).
@@ -2418,6 +2467,8 @@ fn consent_page(
 struct SignInPage<'a> {
     /// The words, and the language they are in.
     text: &'a Catalog,
+    /// Whether this is the stronger-authentication stage.
+    step_up: bool,
     /// Where the form posts, and where a passkey sign-in navigates.
     action: &'a str,
     /// Where the script asks for its assertion options.
@@ -2440,6 +2491,7 @@ fn sign_in_page(context: &InteractionContext<'_>, page: &SignInPage<'_>) -> Resp
         pages::render(&LoginPage {
             text: page.text,
             tenant_name: &context.tenant.display_name,
+            step_up: page.step_up,
             action: page.action,
             passkey_options_action: page.passkey_options,
             passkey_finish_action: page.passkey_finish,
@@ -2549,6 +2601,7 @@ fn render(context: &InteractionContext<'_>, screen: &Screen<'_>) -> Response {
             context,
             &SignInPage {
                 text,
+                step_up: stage == Stage::StepUp,
                 action: &action,
                 passkey_options: &passkey_options,
                 passkey_finish: &passkey_finish,

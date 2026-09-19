@@ -33,8 +33,9 @@
 //! [`AcrPolicy`] is asked whether a requirement is satisfiable at all and
 //! whether a session already satisfies it — and the conservative implementation
 //! [`NoAcrPolicy`] for a deployment that has configured none. The step-up
-//! itself is [`Interaction::StepUp`], which this module can already return and
-//! the server does not yet have a screen for.
+//! itself is [`Interaction::StepUp`]; the server renders that outcome as a
+//! synchronised, cancellable re-authentication flow and resumes the stored
+//! authorization only after the requested context is actually reached.
 //!
 //! **Whether the user has consented before.** The caller decides that and
 //! passes the answer in. [`crate::consent_memory`] is what computes it
