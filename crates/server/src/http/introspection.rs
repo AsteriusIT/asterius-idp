@@ -274,7 +274,9 @@ pub async fn introspect(
         assertion: find(&pairs, "client_assertion"),
         assertion_type: find(&pairs, "client_assertion_type"),
         client_id: find(&pairs, "client_id"),
-        authorization_header: headers.contains_key(header::AUTHORIZATION),
+        authorization_header: headers
+            .get(header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok()),
         certificate: context.certificate,
     };
     let rules = AssertionRules::for_issuer(context.tenant.issuer.as_str());
@@ -288,10 +290,10 @@ pub async fn introspect(
             // said elsewhere: at the token endpoint a malformed assertion is a
             // 400 about the request, and here the only fact worth reporting is
             // that the caller is not one this endpoint knows.
-            return oauth_error(
+            return crate::http::token::client_authentication_error(
+                &failure,
+                attempt.authorization_header,
                 StatusCode::UNAUTHORIZED,
-                failure.code(),
-                "client authentication failed",
             );
         }
     };

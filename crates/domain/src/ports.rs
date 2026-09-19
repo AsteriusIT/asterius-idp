@@ -392,6 +392,38 @@ pub trait ClientRepository: Debug + Send + Sync {
     /// "no such client" are the same to a client and must not be the same
     /// here, because one of them is a reason to stop.
     async fn find(&self, client_id: &ClientId) -> Result<Option<Client>, DomainError>;
+
+    /// The digest of this client's server-issued shared secret, if one is
+    /// active. Implementations return only the digest; plaintext is never
+    /// stored and therefore cannot be read back.
+    async fn client_secret_digest(
+        &self,
+        _client_id: &ClientId,
+    ) -> Result<Option<[u8; 32]>, DomainError> {
+        Ok(None)
+    }
+}
+
+/// How an administrative metadata replacement changes the separately stored
+/// client secret.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ClientSecretUpdate {
+    /// Preserve the current digest.
+    Keep,
+    /// Store the digest of a newly generated secret.
+    Set([u8; 32]),
+    /// Remove the digest immediately.
+    Revoke,
+}
+
+impl std::fmt::Debug for ClientSecretUpdate {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Keep => "Keep",
+            Self::Set(_) => "Set([REDACTED])",
+            Self::Revoke => "Revoke",
+        })
+    }
 }
 
 /// Creates the clients of one tenant.
@@ -874,7 +906,11 @@ pub trait ClientAdministration: Debug + Send + Sync {
     /// [`DomainError::Conflict`] if the `client_id` is taken or the tenant does
     /// not exist, [`DomainError::Invalid`] if the entity belongs to another
     /// tenant, or a storage failure.
-    async fn create(&self, client: &Client) -> Result<Client, DomainError>;
+    async fn create(
+        &self,
+        client: &Client,
+        client_secret_digest: Option<&[u8; 32]>,
+    ) -> Result<Client, DomainError>;
 
     /// Replaces a client's registration wholesale, and returns it as stored.
     ///
@@ -887,7 +923,11 @@ pub trait ClientAdministration: Debug + Send + Sync {
     /// [`DomainError::NotFound`] if the client vanished between the read and
     /// the write, [`DomainError::Invalid`] if the entity belongs to another
     /// tenant, or a storage failure.
-    async fn replace(&self, client: &Client) -> Result<Client, DomainError>;
+    async fn replace(
+        &self,
+        client: &Client,
+        client_secret: ClientSecretUpdate,
+    ) -> Result<Client, DomainError>;
 
     /// Replaces the administrator-owned RFC 8707 resource allow-list.
     ///

@@ -315,6 +315,7 @@ async fn every_advertised_dpop_algorithm_produces_an_acceptable_proof() {
         &asterius_domain::AcrPolicy::default(),
         &[],
         asterius_oidc::grant_management::Policy::default(),
+        false,
     );
     let advertised = document["dpop_signing_alg_values_supported"]
         .as_array()

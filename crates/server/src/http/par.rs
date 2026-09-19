@@ -1,10 +1,9 @@
 //! `POST /par` — the pushed authorization request endpoint (RFC 9126).
 //!
-//! The entry point of every flow this server runs, because ADR-0002 makes PAR
-//! the only way to start one. Which makes this the place where an
-//! authorization request stops being attacker-controlled input and becomes
-//! something stored: it arrives over an authenticated connection, is validated
-//! in full, and is exchanged for a reference that carries no information.
+//! The entry point of every FAPI flow. ADR-0014 reuses this module's validator
+//! and storage step for a standard OIDC direct request, so either route turns
+//! attacker-controlled input into the same validated stored record before the
+//! interaction pipeline begins.
 //!
 //! # Why every failure here is a response and not a redirect
 //!
@@ -109,6 +108,10 @@ pub struct PushContext<'a> {
 ///
 /// Never returns `Err`: every failure is a `Response`, because RFC 9126 §2.3
 /// specifies the error format and a client is entitled to it.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the endpoint keeps authentication and each authorization-request validation in protocol order"
+)]
 pub async fn push(
     context: PushContext<'_>,
     headers: &HeaderMap,
@@ -157,7 +160,9 @@ pub async fn push(
         assertion: find(&pairs, "client_assertion"),
         assertion_type: find(&pairs, "client_assertion_type"),
         client_id: find(&pairs, "client_id"),
-        authorization_header: headers.contains_key(header::AUTHORIZATION),
+        authorization_header: headers
+            .get(header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok()),
         certificate: context.certificate,
     };
     let rules = AssertionRules::for_issuer(context.tenant.issuer.as_str());
@@ -166,12 +171,12 @@ pub async fn push(
         Ok(client) => client,
         Err(failure) => {
             // The client is unauthenticated, so it learns the code and nothing
-            // else. `WWW-Authenticate` is absent because this server accepts no
-            // header-based scheme — see `ClientAuthError::status`.
-            return error(
+            // else. Basic attempts receive the challenge RFC 6749 §5.2
+            // requires; body assertions and certificates do not.
+            return crate::http::token::client_authentication_error(
+                &failure,
+                attempt.authorization_header,
                 StatusCode::from_u16(failure.status()).unwrap_or(StatusCode::UNAUTHORIZED),
-                failure.code(),
-                "client authentication failed",
             );
         }
     };
@@ -250,7 +255,99 @@ pub async fn push(
             Err(refusal) => return refusal.into_response(),
         };
 
-    stored(&context, &client, &request, hinted_subject, dpop_jkt, now).await
+    match store_request(&context, &client, &request, hinted_subject, dpop_jkt, now).await {
+        Ok(minted) => (
+            StatusCode::CREATED,
+            [
+                (header::CACHE_CONTROL, "no-store"),
+                (header::PRAGMA, "no-cache"),
+            ],
+            Json(json!({
+                "request_uri": minted.uri(),
+                "expires_in": context.lifetime.whole_seconds(),
+            })),
+        )
+            .into_response(),
+        Err(response) => *response,
+    }
+}
+
+/// Validates and stores a front-channel authorization request for an
+/// explicitly non-FAPI client, returning the internal reference used by the
+/// existing interaction pipeline.
+pub async fn direct(
+    context: PushContext<'_>,
+    pairs: &[(String, String)],
+    now: OffsetDateTime,
+) -> Result<(String, String), Box<Response>> {
+    let parameters = Parameters::from_pairs(pairs.to_vec());
+    let client_id = parameters
+        .get("client_id")
+        .map_err(|failure| {
+            Box::new(error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                &failure.to_string(),
+            ))
+        })?
+        .ok_or_else(|| {
+            Box::new(error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "client_id is required",
+            ))
+        })?;
+    let client_id = asterius_domain::ClientId::new(client_id);
+    let client = context
+        .clients
+        .find(&client_id)
+        .await
+        .map_err(|failure| {
+            tracing::error!(%failure, tenant = %context.tenant.id, "cannot read a direct authorization client");
+            Box::new(error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable", "the request could not be validated"))
+        })?
+        .filter(Client::is_active)
+        .ok_or_else(|| Box::new(error(StatusCode::BAD_REQUEST, "unauthorized_client", "client is unknown or disabled")))?;
+    if client.registration.compliance_profile != asterius_domain::ClientComplianceProfile::Oidc {
+        return Err(Box::new(error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "this client must use pushed authorization requests",
+        )));
+    }
+
+    let request = authorize::validate(
+        &parameters,
+        client.id.as_str(),
+        &client.registration,
+        context.policy,
+    )
+    .map_err(|failure| {
+        Box::new(error(
+            StatusCode::BAD_REQUEST,
+            failure.code(),
+            &failure.to_string(),
+        ))
+    })?;
+    let hinted_subject = hinted_subject(&context, &client, &request, now).await?;
+    if let Some(refusal) = refuse_an_unservable_form_post(&request) {
+        return Err(Box::new(refusal));
+    }
+    if let Some(refusal) = refuse_an_unregistered_resource(&context, &request).await {
+        return Err(Box::new(refusal));
+    }
+    if let Some(refusal) =
+        refuse_an_unusable_authorization_detail(&context, &client, &request).await
+    {
+        return Err(Box::new(refusal));
+    }
+    if let Some(refusal) = refuse_an_unusable_grant(&context, &client, &request, now).await {
+        return Err(Box::new(refusal));
+    }
+    let dpop_jkt = crate::http::dpop::reconcile_par_key(None, request.dpop_jkt.as_deref())
+        .map_err(|failure| Box::new(failure.into_response()))?;
+    let minted = store_request(&context, &client, &request, hinted_subject, dpop_jkt, now).await?;
+    Ok((client.id.as_str().to_owned(), minted.uri().to_owned()))
 }
 
 /// The parameters to validate: the request object's, if there is one.
@@ -304,14 +401,14 @@ async fn unwrapped(
 /// # Errors
 ///
 /// Never returns `Err`; every outcome is a `Response` (RFC 9126 §2.2 and §2.3).
-async fn stored(
+async fn store_request(
     context: &PushContext<'_>,
     client: &Client,
     request: &authorize::AuthorizationRequest,
     hinted_subject: Option<String>,
     dpop_jkt: Option<String>,
     now: OffsetDateTime,
-) -> Response {
+) -> Result<MintedRequestUri, Box<Response>> {
     // The reference. Minted after validation, so a rejected push leaves
     // nothing behind to expire.
     let minted = MintedRequestUri::generate();
@@ -327,29 +424,13 @@ async fn stored(
 
     if let Err(failure) = context.requests.push(&record).await {
         tracing::error!(%failure, tenant = %context.tenant.id, "cannot store a pushed request");
-        return error(
+        return Err(Box::new(error(
             StatusCode::SERVICE_UNAVAILABLE,
             "temporarily_unavailable",
             "the request could not be stored",
-        );
+        )));
     }
-
-    // RFC 9126 §2.2: 201, with `request_uri` and `expires_in`.
-    //
-    // `no-store` because the body contains a credential. A cached 201 is a
-    // `request_uri` handed to whoever asks next.
-    (
-        StatusCode::CREATED,
-        [
-            (header::CACHE_CONTROL, "no-store"),
-            (header::PRAGMA, "no-cache"),
-        ],
-        Json(json!({
-            "request_uri": minted.uri(),
-            "expires_in": context.lifetime.whole_seconds(),
-        })),
-    )
-        .into_response()
+    Ok(minted)
 }
 
 /// Validates the `id_token_hint` and returns the subject it names.

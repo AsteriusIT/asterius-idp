@@ -1,6 +1,7 @@
 /** One client's registration, as `GET /clients/{client_id}` renders it. */
 export interface ClientDocument {
   readonly client_id: string;
+  readonly compliance_profile: 'fapi' | 'oidc';
   readonly status: string;
   readonly client_name: string;
   readonly application_type: string;
@@ -31,6 +32,9 @@ export interface ClientDocument {
   readonly tls_client_auth_san_email?: string;
   readonly require_pushed_authorization_requests?: boolean;
   readonly response_types?: readonly string[];
+  /** Returned only once when a shared secret is created or rotated. */
+  readonly client_secret?: string;
+  readonly client_secret_expires_at?: number;
 }
 
 /** RFC 8705 certificate identities, exactly one for PKI mutual TLS. */
@@ -40,8 +44,19 @@ export const TLS_SUBJECT_FIELDS = [
 ] as const;
 export type TlsSubjectField = typeof TLS_SUBJECT_FIELDS[number];
 
+/** Inventory presentation; only the effective FAPI profile earns its badge. */
+export function profilePresentation(profile: 'fapi' | 'oidc'): {
+  readonly label: string;
+  readonly fapiBadge: boolean;
+} {
+  return profile === 'fapi'
+    ? { label: 'FAPI', fapiBadge: true }
+    : { label: 'Standard OIDC', fapiBadge: false };
+}
+
 /** What the form holds while it is being edited. */
 export interface Draft {
+  readonly compliance_profile: 'fapi' | 'oidc';
   readonly token_endpoint_auth_method: string;
   readonly dpop_bound_access_tokens: boolean | null;
   readonly use_mtls_endpoint_aliases: boolean | null;
@@ -85,6 +100,7 @@ export function listFrom(value: string): string[] {
 /** The draft a freshly read document starts as. */
 export function draftOf(document: ClientDocument): Draft {
   return {
+    compliance_profile: document.compliance_profile ?? 'fapi',
     token_endpoint_auth_method: document.token_endpoint_auth_method,
     dpop_bound_access_tokens: document.dpop_bound_access_tokens ?? null,
     use_mtls_endpoint_aliases: document.use_mtls_endpoint_aliases ?? null,
@@ -114,6 +130,7 @@ export function draftOf(document: ClientDocument): Draft {
 /** The draft a new client starts as: this profile's defaults, spelled out. */
 export function emptyDraft(): Draft {
   return {
+    compliance_profile: 'fapi',
     token_endpoint_auth_method: 'private_key_jwt',
     dpop_bound_access_tokens: true,
     use_mtls_endpoint_aliases: false,
@@ -156,8 +173,9 @@ export function emptyDraft(): Draft {
  */
 export function documentFrom(draft: Draft): Record<string, unknown> {
   const document: Record<string, unknown> = {
+    compliance_profile: draft.compliance_profile,
     token_endpoint_auth_method: draft.token_endpoint_auth_method,
-    require_pushed_authorization_requests: true,
+    require_pushed_authorization_requests: draft.compliance_profile === 'fapi',
     client_name: draft.client_name,
     application_type: draft.application_type,
     redirect_uris: listFrom(draft.redirect_uris),
@@ -192,10 +210,10 @@ export function documentFrom(draft: Draft): Record<string, unknown> {
   if (draft.sector_identifier_uri.trim() !== '') {
     document.sector_identifier_uri = draft.sector_identifier_uri.trim();
   }
-  if (draft.jwks.trim() !== '') {
+  if (draft.token_endpoint_auth_method !== 'client_secret_basic' && draft.jwks.trim() !== '') {
     document.jwks = JSON.parse(draft.jwks) as unknown;
   }
-  if (draft.jwks_uri.trim() !== '') {
+  if (draft.token_endpoint_auth_method !== 'client_secret_basic' && draft.jwks_uri.trim() !== '') {
     document.jwks_uri = draft.jwks_uri.trim();
   }
   return document;

@@ -126,7 +126,9 @@ pub async fn token(
         assertion: find(&pairs, "client_assertion"),
         assertion_type: find(&pairs, "client_assertion_type"),
         client_id: find(&pairs, "client_id"),
-        authorization_header: headers.contains_key(header::AUTHORIZATION),
+        authorization_header: headers
+            .get(header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok()),
         certificate: context.certificate,
     };
     let rules = AssertionRules::for_issuer(context.tenant.issuer.as_str());
@@ -134,11 +136,11 @@ pub async fn token(
     let client = match authenticate(&attempt, &rules).await {
         Ok(client) => client,
         Err(failure) => {
-            let mapped = TokenError::ClientAuthentication {
-                code: failure.code(),
-                status: failure.status(),
-            };
-            return render(&mapped, "client authentication failed");
+            return client_authentication_error(
+                &failure,
+                attempt.authorization_header,
+                StatusCode::from_u16(failure.status()).unwrap_or(StatusCode::UNAUTHORIZED),
+            );
         }
     };
 
@@ -328,6 +330,28 @@ pub(crate) fn error(status: StatusCode, code: &str, description: &str) -> Respon
         .into_response()
 }
 
+/// Renders a client-authentication refusal and supplies the HTTP authentication
+/// challenge required by RFC 6749 §5.2 when the caller attempted Basic auth.
+/// Body-carried assertion and certificate failures deliberately have no such
+/// challenge: there is no HTTP authentication scheme for them to retry.
+pub(crate) fn client_authentication_error(
+    failure: &ClientAuthError,
+    authorization_header: Option<&str>,
+    status: StatusCode,
+) -> Response {
+    let mut response = error(status, failure.code(), "client authentication failed");
+    let attempted_basic = authorization_header
+        .and_then(|value| value.split_ascii_whitespace().next())
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("basic"));
+    if attempted_basic && status == StatusCode::UNAUTHORIZED {
+        response.headers_mut().insert(
+            header::WWW_AUTHENTICATE,
+            header::HeaderValue::from_static("Basic realm=\"oauth2/client\""),
+        );
+    }
+    response
+}
+
 /// The first value of `name`, for client authentication only.
 fn find<'a>(pairs: &'a [(String, String)], name: &str) -> Option<&'a str> {
     pairs
@@ -347,4 +371,35 @@ pub(crate) fn is_form_encoded(headers: &HeaderMap) -> bool {
                     .eq_ignore_ascii_case("application/x-www-form-urlencoded")
             })
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_client_secret_basic_failure_has_a_matching_challenge() {
+        let response = client_authentication_error(
+            &ClientAuthError::AssertionNotVerified,
+            Some("Basic not-base64"),
+            StatusCode::UNAUTHORIZED,
+        );
+        assert_eq!(
+            response.headers().get(header::WWW_AUTHENTICATE),
+            Some(&header::HeaderValue::from_static(
+                "Basic realm=\"oauth2/client\""
+            ))
+        );
+
+        let assertion_response = client_authentication_error(
+            &ClientAuthError::AssertionNotVerified,
+            None,
+            StatusCode::UNAUTHORIZED,
+        );
+        assert!(
+            !assertion_response
+                .headers()
+                .contains_key(header::WWW_AUTHENTICATE)
+        );
+    }
 }

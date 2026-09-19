@@ -267,6 +267,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "client_basic"
+path = "fuzz_targets/client_basic.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "client_certificate"
 path = "fuzz_targets/client_certificate.rs"
 test = false

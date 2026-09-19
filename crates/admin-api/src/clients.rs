@@ -33,9 +33,10 @@
 //! could not save an unedited client would corrupt one on every visit.
 //!
 //! No credential is rendered anywhere here, and none can be: [`Client`] holds
-//! no secret. This server issues no `client_secret` at all (FAPI 2.0 SP
-//! §5.3.2.1 permits only `private_key_jwt` and mTLS), and a registration access
-//! token exists only as a digest in a column no port on this path returns.
+//! no secret. Creation and rotation of an explicitly gated OIDC client add a
+//! generated `client_secret` to that write response only; reads through this
+//! renderer cannot recover it. Registration access tokens likewise exist only
+//! as digests in columns no port on this path returns.
 //!
 //! # What is deliberately absent
 //!
@@ -58,8 +59,8 @@
 
 use asterius_domain::keys::{PublicKeyRecord, signs_with};
 use asterius_domain::{
-    Client, ClientMetadataError, ClientRegistration, ClientStatus, JwksSource, RedirectUri,
-    ResourceIdentifier,
+    Client, ClientComplianceProfile, ClientMetadataError, ClientRegistration, ClientStatus,
+    JwksSource, RedirectUri, ResourceIdentifier,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -82,6 +83,7 @@ pub fn summarise(client: &Client) -> Value {
         "client_name": registration.client_name,
         "application_type": registration.application_type.as_str(),
         "status": client.status.as_str(),
+        "compliance_profile": registration.compliance_profile.as_str(),
         "token_endpoint_auth_method": registration.token_endpoint_auth_method.as_str(),
         "grant_types": registration
             .grant_types
@@ -109,6 +111,7 @@ pub fn summarise(client: &Client) -> Value {
 /// which conversation to have.
 fn jwks_source(source: &JwksSource) -> &'static str {
     match source {
+        JwksSource::None => "client_secret",
         JwksSource::Inline(_) => "jwks",
         JwksSource::Uri(_) => "jwks_uri",
     }
@@ -120,8 +123,8 @@ fn jwks_source(source: &JwksSource) -> &'static str {
 /// with, and it is rendered from the **stored** client in both cases: RFC 7591
 /// §3.2.1 requires "all registered metadata about this client, including any
 /// fields provisioned by the authorization server itself", and this profile
-/// provisions several — `require_pushed_authorization_requests` is always true
-/// (ADR-0002), `response_types` is derived from `grant_types`, and the auth
+/// provisions several — the compliance profile decides whether PAR is
+/// mandatory (ADR-0014), `response_types` is derived from `grant_types`, and the auth
 /// method and ID token algorithm have defaults that are not RFC 7591 §2's. A
 /// screen that echoed the administrator's request back would show a client that
 /// does not exist.
@@ -144,6 +147,7 @@ pub fn document(client: &Client) -> Value {
         "client_id_issued_at": client.created_at.unix_timestamp(),
         "updated_at": client.updated_at.unix_timestamp(),
         "status": client.status.as_str(),
+        "compliance_profile": registration.compliance_profile.as_str(),
 
         "client_name": registration.client_name,
         "application_type": registration.application_type.as_str(),
@@ -172,7 +176,7 @@ pub fn document(client: &Client) -> Value {
         "id_token_signed_response_alg": registration.id_token_signed_response_alg.as_str(),
         "subject_type": registration.subject_type.as_str(),
         "require_pushed_authorization_requests":
-            asterius_domain::ClientRegistration::REQUIRE_PUSHED_AUTHORIZATION_REQUESTS,
+            registration.compliance_profile.requires_par(),
         "dpop_bound_access_tokens": registration.token_binding.is_dpop_bound(),
         "tls_client_certificate_bound_access_tokens":
             registration.token_binding.is_certificate_bound(),
@@ -205,6 +209,7 @@ pub fn document(client: &Client) -> Value {
     // registration can hold only one, so this reproduces that rather than
     // deciding it again.
     match &registration.jwks {
+        JwksSource::None => None,
         JwksSource::Inline(keys) => object.insert("jwks".to_owned(), keys.clone()),
         JwksSource::Uri(uri) => object.insert("jwks_uri".to_owned(), json!(uri)),
     };
@@ -250,6 +255,65 @@ pub fn document(client: &Client) -> Value {
     }
 
     rendered
+}
+
+/// The profile an administrator explicitly selected. Absence lets creation
+/// default to FAPI and lets an older console preserve an existing value.
+pub fn requested_compliance_profile(
+    body: &[u8],
+) -> Result<Option<ClientComplianceProfile>, AdminError> {
+    let document: Value = serde_json::from_slice(body)
+        .map_err(|_| AdminError::Invalid("the request body is not valid JSON".to_owned()))?;
+    let object = document
+        .as_object()
+        .ok_or_else(|| AdminError::Invalid("the request body is not a JSON object".to_owned()))?;
+    match object.get("compliance_profile") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(profile)) => ClientComplianceProfile::parse(profile)
+            .map(Some)
+            .ok_or_else(|| {
+                AdminError::Invalid("compliance_profile: must be \"fapi\" or \"oidc\"".to_owned())
+            }),
+        Some(_) => Err(AdminError::Invalid(
+            "compliance_profile: must be a string".to_owned(),
+        )),
+    }
+}
+
+/// A one-shot command beside registration metadata. The secret itself is
+/// always generated by the server and never accepted from this document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecretCommand {
+    Rotate,
+    Revoke,
+}
+
+pub fn requested_secret_command(body: &[u8]) -> Result<Option<SecretCommand>, AdminError> {
+    let document: Value = serde_json::from_slice(body)
+        .map_err(|_| AdminError::Invalid("the request body is not valid JSON".to_owned()))?;
+    let object = document
+        .as_object()
+        .ok_or_else(|| AdminError::Invalid("the request body is not a JSON object".to_owned()))?;
+    if object.contains_key("client_secret") {
+        return Err(AdminError::Invalid(
+            "client_secret is generated by the server and cannot be supplied".to_owned(),
+        ));
+    }
+    let command_flag = |name: &'static str| match object.get(name) {
+        None => Ok(false),
+        Some(Value::Bool(value)) => Ok(*value),
+        Some(_) => Err(AdminError::Invalid(format!("{name}: must be a boolean"))),
+    };
+    let rotate = command_flag("rotate_client_secret")?;
+    let revoke = command_flag("revoke_client_secret")?;
+    match (rotate, revoke) {
+        (false, false) => Ok(None),
+        (true, false) => Ok(Some(SecretCommand::Rotate)),
+        (false, true) => Ok(Some(SecretCommand::Revoke)),
+        (true, true) => Err(AdminError::Invalid(
+            "client secret cannot be rotated and revoked in one request".to_owned(),
+        )),
+    }
 }
 
 /// The administrator-owned half of a client registration.

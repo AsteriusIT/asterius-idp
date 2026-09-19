@@ -14,12 +14,32 @@ interface SetupProps {
 }
 
 export function ClientSecurity({ draft, discovery, refusal, busy, onChange }: SetupProps): JSX.Element {
-  const methods = ['private_key_jwt', 'tls_client_auth', 'self_signed_tls_client_auth']
+  const methods = [
+    ...(draft.compliance_profile === 'oidc' ? ['client_secret_basic'] : []),
+    'private_key_jwt', 'tls_client_auth', 'self_signed_tls_client_auth',
+  ]
     .filter((method) => method === draft.token_endpoint_auth_method
       || (discovery?.token_endpoint_auth_methods_supported ?? ['private_key_jwt']).includes(method));
   return <>
+    <Field label="Security profile" error={clientFieldError(refusal, 'compliance_profile')}
+      hint="FAPI is the default hardened profile. Standard OIDC must first be enabled for this tenant and does not receive the FAPI badge.">
+      {(props) => <FormSelect {...props} disabled={busy} value={draft.compliance_profile}
+        options={[
+          { value: 'fapi', label: 'FAPI 2.0 Security Profile' },
+          { value: 'oidc', label: 'Standard OIDC (non-FAPI)' },
+        ]}
+        onValueChange={(value) => onChange({
+          ...draft,
+          compliance_profile: value as Draft['compliance_profile'],
+          token_endpoint_auth_method: value === 'oidc' ? 'client_secret_basic' : 'private_key_jwt',
+          jwks: value === 'oidc' ? '' : draft.jwks,
+          jwks_uri: value === 'oidc' ? '' : draft.jwks_uri,
+        })} />}
+    </Field>
     <Field label="Client authentication" error={clientFieldError(refusal, 'token_endpoint_auth_method')}
-      hint="Use private_key_jwt for a backend that signs assertions. Mutual TLS methods require this deployment’s certificate endpoints.">
+      hint={draft.token_endpoint_auth_method === 'client_secret_basic'
+        ? 'The server creates a secret and shows it once. Store it in your backend secret manager.'
+        : 'Use private_key_jwt for a backend that signs assertions. Mutual TLS methods require this deployment’s certificate endpoints.'}>
       {(props) => <FormSelect {...props} disabled={busy} value={draft.token_endpoint_auth_method}
         options={methods.map((value) => ({ value, label: value }))}
         onValueChange={(value) => onChange({ ...draft, token_endpoint_auth_method: value,
@@ -59,8 +79,8 @@ export function ClientSetup(props: SetupProps): JSX.Element {
   const { draft, refusal, onChange } = props;
   return <>
     <legend>Confidential application setup</legend>
-    <p>Connect a server-side application or backend for frontend. Keep its private signing key on that backend.
-      Authorization uses PAR, PKCE S256 and sender-constrained tokens.</p>
+    <p>Connect a server-side application or backend for frontend. FAPI clients use PAR and asymmetric client authentication.
+      Standard OIDC clients may use a shared secret and direct authorization requests. Both use PKCE S256 and sender-constrained tokens.</p>
     <h3>1. Name and callbacks</h3>
     <Field label="Client name" required error={clientFieldError(refusal, 'client_name')}>
       {(field) => <input {...field} value={draft.client_name}
@@ -80,7 +100,7 @@ export function ClientSetup(props: SetupProps): JSX.Element {
     </Field>
     <h3>2. Public keys and security</h3>
     <ClientSecurity {...props} />
-    <Field label="Inline JWK Set" error={clientFieldError(refusal, 'jwks') ?? publicKeyError(draft)}
+    {draft.token_endpoint_auth_method !== 'client_secret_basic' && <><Field label="Inline JWK Set" error={clientFieldError(refusal, 'jwks') ?? publicKeyError(draft)}
       hint="Generate an EdDSA, ES256 or PS256 key in your application. Paste its public keys array, with a kid for rotation. Never paste a private key.">
       {(field) => <textarea {...field} rows={5} value={draft.jwks}
         onChange={(event) => onChange({ ...draft, jwks: event.target.value })} />}
@@ -89,7 +109,7 @@ export function ClientSetup(props: SetupProps): JSX.Element {
       hint="Alternatively publish your public keys at a public HTTPS URL. Private addresses and localhost cannot be fetched; use inline keys for local development.">
       {(field) => <input {...field} type="url" value={draft.jwks_uri}
         onChange={(event) => onChange({ ...draft, jwks_uri: event.target.value })} />}
-    </Field>
+    </Field></>}
     <h3>3. Access and configuration</h3>
     <Field label="Scope" error={clientFieldError(refusal, 'scope')}
       hint="Space-separated scopes, starting with openid. Request only what the application needs.">

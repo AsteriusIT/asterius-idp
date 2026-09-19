@@ -64,13 +64,15 @@
 use asterius_domain::audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
 use asterius_domain::{
     Client, ClientId, ClientRepository, ClientUsageRecorder, DomainError, JwksSource, ReplayCheck,
-    ReplayGuard, ReplayPurpose, SigningAlgorithm, Tenant, TenantId, TokenEndpointAuthMethod,
+    ReplayGuard, ReplayPurpose, SigningAlgorithm, Tenant, TenantId, TokenEndpointAuthMethod, ct_eq,
+    sha256,
 };
 use asterius_jose::client_keys::ClientKeyCache;
 use asterius_jose::verify::{Policy, TypRule};
 use asterius_jose::{SigningKey, VerifyingKey, jws, verify};
 use asterius_oidc::client_auth::{
     Assertion, AssertionRules, Attempt, ClientAuthError, Method, check_assertion,
+    parse_basic_credentials,
 };
 use asterius_oidc::mtls::ClientCertificate;
 use std::sync::Arc;
@@ -186,6 +188,7 @@ fn reason_for(error: &ClientAuthError) -> &'static str {
         ClientAuthError::UnknownClient => "unknown_or_disabled_client",
         ClientAuthError::WrongMethodForClient => "client_registered_for_another_method",
         ClientAuthError::KeysUnavailable => "client_keys_unavailable",
+        ClientAuthError::MalformedBasic => "malformed_client_secret_basic",
         _ => "client_authentication_refused",
     }
 }
@@ -200,6 +203,7 @@ fn reason_for(error: &ClientAuthError) -> &'static str {
 /// those two worlds they are in.
 const fn jwks_source_of(source: &JwksSource) -> &'static str {
     match source {
+        JwksSource::None => "no jwks (client_secret_basic)",
         JwksSource::Inline(_) => "inline jwks",
         JwksSource::Uri(_) => "jwks_uri (dereferenced through the ADR-0006 outbound guard)",
     }
@@ -431,6 +435,11 @@ impl ClientAuthenticator {
         now: OffsetDateTime,
     ) -> Result<Client, Refusal> {
         match attempt.method()? {
+            Method::ClientSecretBasic => {
+                return self
+                    .authenticate_client_secret(tenant, clients, attempt, now)
+                    .await;
+            }
             Method::PrivateKeyJwt => {}
             Method::Mtls => {
                 let certificate = attempt.certificate.ok_or_else(|| {
@@ -542,6 +551,56 @@ impl ClientAuthenticator {
         // request.
         self.spend_the_jti(tenant, &client_id, &jti, expires_at, now)
             .await?;
+        Ok(client)
+    }
+
+    /// RFC 6749 §2.3.1 client authentication for an explicitly non-FAPI
+    /// client. The generated secret has 256 bits of entropy, so its SHA-256
+    /// digest is the at-rest form and the comparison is constant-time.
+    async fn authenticate_client_secret(
+        &self,
+        tenant: &Tenant,
+        clients: &dyn ClientRepository,
+        attempt: &Attempt<'_>,
+        now: OffsetDateTime,
+    ) -> Result<Client, Refusal> {
+        let (client_id, secret) = parse_basic_credentials(
+            attempt
+                .authorization_header
+                .ok_or_else(|| Refusal::new(ClientAuthError::MalformedBasic))?,
+        )
+        .ok_or_else(|| Refusal::new(ClientAuthError::MalformedBasic))?;
+        let client_id = ClientId::new(client_id);
+        let client = clients.find(&client_id).await.map_err(|error| {
+            Refusal::new(ClientAuthError::KeysUnavailable)
+                .by(&client_id)
+                .because(format!("the client repository failed: {error}"))
+        })?;
+        let stored = clients
+            .client_secret_digest(&client_id)
+            .await
+            .map_err(|error| {
+                Refusal::new(ClientAuthError::KeysUnavailable)
+                    .by(&client_id)
+                    .because(format!("the client repository failed: {error}"))
+            })?;
+        let presented = sha256(secret.expose().as_bytes());
+        let matches = ct_eq(&presented, &stored.unwrap_or([0_u8; 32])) & stored.is_some();
+        let Some(client) = client.filter(|client| {
+            client.is_active()
+                && client.registration.token_endpoint_auth_method
+                    == TokenEndpointAuthMethod::ClientSecretBasic
+        }) else {
+            return Err(Refusal::new(ClientAuthError::UnknownClient)
+                .by(&client_id)
+                .because("no active client registered for client_secret_basic"));
+        };
+        if !matches {
+            return Err(Refusal::new(ClientAuthError::AssertionNotVerified)
+                .by(&client_id)
+                .because("the presented client secret did not match"));
+        }
+        self.note_use(&tenant.id, &client_id, now).await;
         Ok(client)
     }
 
@@ -807,6 +866,14 @@ impl ClientAuthenticator {
         now: OffsetDateTime,
     ) -> Result<Client, Refusal> {
         match client.registration.token_endpoint_auth_method {
+            TokenEndpointAuthMethod::ClientSecretBasic => {
+                Err(Refusal::new(ClientAuthError::WrongMethodForClient)
+                    .by(client_id)
+                    .because(
+                        "the request presented a certificate but the client is registered for \
+                         client_secret_basic",
+                    ))
+            }
             TokenEndpointAuthMethod::PrivateKeyJwt => {
                 Err(Refusal::new(ClientAuthError::WrongMethodForClient)
                     .by(client_id)

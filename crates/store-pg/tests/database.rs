@@ -1313,7 +1313,8 @@ db_test! {
 // ---------------------------------------------------------------------------
 
 use asterius_domain::{
-    AgentLimits, Capabilities, Client, ClientId, ClientRegistration, ClientStatus, TokenBinding,
+    AgentLimits, Capabilities, Client, ClientComplianceProfile, ClientId, ClientRegistration,
+    ClientSecretUpdate, ClientStatus, TokenBinding,
 };
 use serde_json::json;
 
@@ -1340,6 +1341,28 @@ fn registration_document() -> serde_json::Value {
 
 fn client(tenant: &str, id: &str, document: &serde_json::Value) -> Client {
     client_with(tenant, id, document, Capabilities::default())
+}
+
+fn oidc_secret_client(tenant: &str, id: &str) -> Client {
+    Client {
+        tenant: TenantId::new(tenant),
+        id: ClientId::new(id),
+        registration: ClientRegistration::from_json_with_profile(
+            &serde_json::to_vec(&json!({
+                "client_name": "Conventional OIDC client",
+                "redirect_uris": ["https://rp.example/cb"],
+                "token_endpoint_auth_method": "client_secret_basic",
+                "require_pushed_authorization_requests": false,
+            }))
+            .expect("serialise"),
+            Capabilities::default(),
+            ClientComplianceProfile::Oidc,
+        )
+        .expect("a valid OIDC registration"),
+        status: ClientStatus::Active,
+        created_at: OffsetDateTime::UNIX_EPOCH,
+        updated_at: OffsetDateTime::UNIX_EPOCH,
+    }
 }
 
 /// One row of the trail, read as the chain sees it rather than as a record.
@@ -1439,6 +1462,45 @@ db_test! {
                 Err(asterius_domain::DomainError::NotFound)
             ),
             "deleting twice should report the second as missing"
+        );
+    }
+}
+
+db_test! {
+    /// ADR-0014: only a digest reaches PostgreSQL, and rotation/revocation are
+    /// atomic with the metadata replacement that the administration API makes.
+    async fn an_oidc_client_secret_is_stored_rotated_and_revoked_as_a_digest(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let store = Store::from_pool(db.pool.clone());
+        let repo = store.scope(TenantId::new("demo")).clients(Capabilities::default());
+        let client = oidc_secret_client("demo", "conventional");
+        let first = [7_u8; 32];
+        let second = [9_u8; 32];
+
+        repo.upsert_with_secret(&client, Some(&first))
+            .await
+            .expect("create with digest");
+        assert_eq!(
+            repo.client_secret_digest(&client.id).await.expect("read"),
+            Some(first)
+        );
+        let loaded = repo.find(&client.id).await.expect("find").expect("client");
+        assert_eq!(loaded.registration.compliance_profile, ClientComplianceProfile::Oidc);
+
+        repo.replace_with_secret(&client, ClientSecretUpdate::Set(second))
+            .await
+            .expect("rotate");
+        assert_eq!(
+            repo.client_secret_digest(&client.id).await.expect("read"),
+            Some(second)
+        );
+
+        repo.replace_with_secret(&client, ClientSecretUpdate::Revoke)
+            .await
+            .expect("revoke");
+        assert_eq!(
+            repo.client_secret_digest(&client.id).await.expect("read"),
+            None
         );
     }
 }
@@ -1948,11 +2010,10 @@ db_test! {
 }
 
 db_test! {
-    /// Only the key-authenticated shapes reach storage. The schema's check is
-    /// the last line of the rule the validator enforces first, so that a row
-    /// inserted by a seed script or by hand cannot create a secret-based client
-    /// the validator would have refused.
-    async fn the_schema_refuses_a_secret_based_authentication_method(db) {
+    /// FAPI rows remain asymmetric even when SQL bypasses the domain parser.
+    /// The standard OIDC profile is the only schema shape allowed to select
+    /// `client_secret_basic`.
+    async fn the_schema_refuses_a_secret_method_for_a_fapi_client(db) {
         seed_tenant(&db.pool, "demo").await;
         for method in ["client_secret_basic", "client_secret_post", "client_secret_jwt", "none"] {
             let inserted = sqlx::query(

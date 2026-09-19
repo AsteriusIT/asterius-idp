@@ -1040,6 +1040,7 @@ async fn discovery(
         settings.acr_policy(),
         &authorization_details_types,
         grant_management,
+        settings.allows_non_fapi_clients(),
     );
     cacheable_json(&document, METADATA_MAX_AGE)
 }
@@ -3787,6 +3788,12 @@ async fn run_authorize(
 
     let now = time::OffsetDateTime::now_utc();
     let scope = endpoints.store.scope(tenant.id.clone());
+    let effective_pairs =
+        match direct_authorization_pairs(endpoints, tenant, &settings, &scope, pairs, now).await {
+            Ok(Some(pairs)) => pairs,
+            Ok(None) => pairs.to_vec(),
+            Err(response) => return *response,
+        };
     let requests = scope.auth_requests();
     let sessions = scope.sessions();
     let clients = scope.clients(endpoints.capabilities);
@@ -3844,7 +3851,7 @@ async fn run_authorize(
             nonce,
             mount,
         },
-        pairs,
+        &effective_pairs,
         // OIDC Core §8.1: the `sub` this client sees, which is the identifier an
         // `id_token_hint` from this client would have named. Resolved only when
         // there is a hint to compare against.
@@ -3860,6 +3867,57 @@ async fn run_authorize(
         now,
     )
     .await
+}
+
+/// Turns an eligible direct OIDC request into the same opaque stored reference
+/// used by PAR. `None` leaves the ordinary FAPI request-uri path untouched.
+async fn direct_authorization_pairs(
+    endpoints: &ClientEndpoints,
+    tenant: &Tenant,
+    settings: &asterius_domain::TenantSettings,
+    scope: &asterius_store_pg::TenantScope<'_>,
+    pairs: &[(String, String)],
+    now: time::OffsetDateTime,
+) -> Result<Option<Vec<(String, String)>>, Box<Response>> {
+    if pairs.iter().any(|(name, _)| name == "request_uri") || !settings.allows_non_fapi_clients() {
+        return Ok(None);
+    }
+    let capabilities = settings.effective_capabilities(endpoints.capabilities);
+    let grant_management = grant_management_policy(endpoints, tenant, capabilities)
+        .await
+        .map_err(|error| {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            Box::new(unavailable())
+        })?;
+    let clients = scope.clients(endpoints.capabilities);
+    let requests = scope.auth_requests();
+    let resource_servers = scope.resource_servers();
+    let authorization_details_types = scope.authorization_details_types();
+    let grant_store = scope.grants();
+    let grants: Option<&dyn asterius_domain::GrantAmendments> =
+        grant_management.supported.then_some(&grant_store);
+    let (client_id, request_uri) = par::direct(
+        PushContext {
+            tenant,
+            clients: &clients,
+            requests: &requests,
+            resource_servers: &resource_servers,
+            authorization_details_types: &authorization_details_types,
+            keys: endpoints.keys.as_ref(),
+            policy: authorization_policy(capabilities).with_grant_management(grant_management),
+            lifetime: endpoints.par_lifetime,
+            certificate: None,
+            request_objects: None,
+            grants,
+        },
+        pairs,
+        now,
+    )
+    .await?;
+    Ok(Some(vec![
+        ("client_id".to_owned(), client_id),
+        ("request_uri".to_owned(), request_uri),
+    ]))
 }
 
 /// What this deployment does without being asked, at the authorization

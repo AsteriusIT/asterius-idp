@@ -1,9 +1,9 @@
 //! The client entity, and the validating parser that produces it.
 //!
-//! FAPI 2.0 SP §5.3.2.1 item 3: an authorization server "shall only support
-//! confidential clients". ADR-0002 makes that unconditional — there is no
-//! per-client profile to fall back to — which decides the shape of everything
-//! below: **a weaker value is rejected, never replaced with a safe one.**
+//! Every supported profile is confidential. FAPI is the default; ADR-0014
+//! permits an administrator to select standard OIDC only after the tenant has
+//! opted in. In either profile, **a weaker value is rejected, never silently
+//! replaced with a safe one.**
 //!
 //! Quietly upgrading a registration would leave the operator's records saying
 //! one thing and the server doing another. A client registered with
@@ -13,8 +13,8 @@
 //!
 //! The same reasoning applies to the defaults. RFC 7591 §2's defaults are the
 //! 2015 OAuth defaults; where one of them names something this server does not
-//! implement, the default here is the FAPI value and the RFC's value is an
-//! error. Each such deviation is marked at the point where it is taken.
+//! implement, the default remains the FAPI value. Each supported exemption is
+//! selected explicitly by the stored compliance profile.
 
 use crate::capabilities::{Capabilities, Feature};
 use crate::entities::agent::{AGENT_GRANT_TYPES, AgentLimits, AgentOwner, AgentProfile};
@@ -173,12 +173,14 @@ impl ClientMetadataError {
 /// How a client authenticates at the token endpoint and every other endpoint
 /// that requires client authentication.
 ///
-/// The set is closed, and closed is the point: `client_secret_basic`,
-/// `client_secret_post`, `client_secret_jwt` and `none` are not variants, so no
-/// amount of configuration can produce a client that authenticates with a
-/// shared secret or not at all (FAPI 2.0 SP §5.3.2.1 items 3 and 6, ADR-0002).
+/// The set is closed, and closed is the point: the one supported shared-secret
+/// method is explicit, while `client_secret_post`, `client_secret_jwt` and
+/// `none` cannot be accepted accidentally downstream (ADR-0014).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum TokenEndpointAuthMethod {
+    /// HTTP Basic authentication with a server-issued shared secret (RFC 6749
+    /// §2.3.1). Available only to an explicitly non-FAPI client.
+    ClientSecretBasic,
     /// Asymmetric client assertion (OIDC Core §9). The default here.
     PrivateKeyJwt,
     /// mTLS with a certificate issued by a trusted CA (RFC 8705 §2.1).
@@ -190,21 +192,22 @@ pub enum TokenEndpointAuthMethod {
 
 impl TokenEndpointAuthMethod {
     /// Every permitted method, in the order metadata should advertise them.
-    pub const ALL: [Self; 3] = [
+    pub const ALL: [Self; 4] = [
+        Self::ClientSecretBasic,
         Self::PrivateKeyJwt,
         Self::TlsClientAuth,
         Self::SelfSignedTlsClientAuth,
     ];
 
-    /// RFC 7591 §2 defaults this to `client_secret_basic`. That value does not
-    /// exist here, so the default is the profile's floor instead — a client
-    /// that says nothing gets the strongest method, not the historical one.
+    /// RFC 7591 §2 defaults this to `client_secret_basic`. Silence remains the
+    /// hardened profile's floor; standard OIDC must select its method.
     pub const DEFAULT: Self = Self::PrivateKeyJwt;
 
     /// The wire spelling, as it appears in client metadata.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::ClientSecretBasic => "client_secret_basic",
             Self::PrivateKeyJwt => "private_key_jwt",
             Self::TlsClientAuth => "tls_client_auth",
             Self::SelfSignedTlsClientAuth => "self_signed_tls_client_auth",
@@ -214,8 +217,7 @@ impl TokenEndpointAuthMethod {
     /// Parses a `token_endpoint_auth_method` value.
     ///
     /// Returns `None` for everything outside the allow-list, which is the whole
-    /// job: `client_secret_basic`, `client_secret_post`, `client_secret_jwt`
-    /// and `none` all land here.
+    /// job: `client_secret_post`, `client_secret_jwt` and `none` all land here.
     #[must_use]
     pub fn parse(value: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|m| m.as_str() == value)
@@ -225,6 +227,45 @@ impl TokenEndpointAuthMethod {
     #[must_use]
     pub const fn requires_mtls(self) -> bool {
         matches!(self, Self::TlsClientAuth | Self::SelfSignedTlsClientAuth)
+    }
+}
+
+/// The security profile enforced for one client.
+///
+/// FAPI remains the default. `Oidc` is deliberately explicit and can only be
+/// selected by the tenant administration API after it has checked the
+/// tenant-level permission; dynamic registration always calls the FAPI parser.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ClientComplianceProfile {
+    /// FAPI 2.0 Security Profile, including PAR and asymmetric client auth.
+    #[default]
+    Fapi,
+    /// Conventional confidential OIDC, still code + PKCE, but without the
+    /// FAPI-only PAR and asymmetric-authentication requirements.
+    Oidc,
+}
+
+impl ClientComplianceProfile {
+    pub const ALL: [Self; 2] = [Self::Fapi, Self::Oidc];
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Fapi => "fapi",
+            Self::Oidc => "oidc",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|profile| profile.as_str() == value)
+    }
+
+    #[must_use]
+    pub const fn requires_par(self) -> bool {
+        matches!(self, Self::Fapi)
     }
 }
 
@@ -564,6 +605,9 @@ impl TokenBinding {
 /// so a row without either is a row that describes nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JwksSource {
+    /// No client key set. Valid only for `client_secret_basic`, whose key is a
+    /// server-issued secret stored separately from registration metadata.
+    None,
     /// Keys given inline at registration.
     Inline(serde_json::Value),
     /// Keys fetched from the client. The fetch, its cache and its SSRF guard
@@ -1105,6 +1149,8 @@ pub struct ClientMetadata {
 /// bound to something.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientRegistration {
+    /// Which protocol-security profile is enforced for this client.
+    pub compliance_profile: ClientComplianceProfile,
     /// Shown on the consent screen.
     pub client_name: String,
     /// OIDC Registration §2.
@@ -1344,10 +1390,9 @@ impl ClientRegistration {
     /// exists).
     pub const RESPONSE_TYPES: [&'static str; 1] = ["code"];
 
-    /// RFC 9126 §6 `require_pushed_authorization_requests`, which is `true` for
-    /// every client and cannot be set otherwise. PAR is the only way to start
-    /// an authorization request (ADR-0002), so there is nothing for a `false`
-    /// to select.
+    /// RFC 9126 §6 `require_pushed_authorization_requests`, used by the
+    /// FAPI-only dynamic-registration response. Admin-managed standard OIDC
+    /// clients render the effective value from their profile instead.
     pub const REQUIRE_PUSHED_AUTHORIZATION_REQUESTS: bool = true;
 
     /// The most redirect URIs one client may register.
@@ -1381,6 +1426,19 @@ impl ClientRegistration {
         document: &[u8],
         capabilities: Capabilities,
     ) -> Result<Self, ClientMetadataError> {
+        Self::from_json_with_profile(document, capabilities, ClientComplianceProfile::Fapi)
+    }
+
+    /// Parses registration metadata under an explicitly selected profile.
+    ///
+    /// This is intentionally separate from [`Self::from_json`]: the dynamic
+    /// registration endpoint has no way to opt itself out of FAPI. Only the
+    /// tenant administration path calls this after checking tenant policy.
+    pub fn from_json_with_profile(
+        document: &[u8],
+        capabilities: Capabilities,
+        profile: ClientComplianceProfile,
+    ) -> Result<Self, ClientMetadataError> {
         let metadata: ClientMetadata = serde_json::from_slice(document).map_err(|error| {
             // The message is deliberately dropped: `serde_json` renders the
             // offending value into it ("invalid type: string \"…\""), and that
@@ -1397,7 +1455,7 @@ impl ClientRegistration {
                 column: error.column(),
             }
         })?;
-        metadata.validate(capabilities)
+        metadata.validate_for_profile(capabilities, profile)
     }
 
     /// The `sector_identifier_uri` this registration still owes a fetch, if
@@ -1590,7 +1648,16 @@ impl ClientMetadata {
         &self,
         capabilities: Capabilities,
     ) -> Result<ClientRegistration, ClientMetadataError> {
-        let token_endpoint_auth_method = self.auth_method(capabilities)?;
+        self.validate_for_profile(capabilities, ClientComplianceProfile::Fapi)
+    }
+
+    /// Validates metadata under the profile selected by tenant administration.
+    pub fn validate_for_profile(
+        &self,
+        capabilities: Capabilities,
+        compliance_profile: ClientComplianceProfile,
+    ) -> Result<ClientRegistration, ClientMetadataError> {
+        let token_endpoint_auth_method = self.auth_method(capabilities, compliance_profile)?;
         let tls_client_auth_subject =
             self.tls_client_auth_subject(token_endpoint_auth_method, capabilities)?;
         let application_type = self.application_type()?;
@@ -1598,7 +1665,7 @@ impl ClientMetadata {
         self.check_response_types(&grant_types)?;
         let redirect_uris = self.redirect_uris(application_type, &grant_types)?;
         let post_logout_redirect_uris = self.post_logout_redirect_uris(application_type)?;
-        let jwks = self.jwks()?;
+        let jwks = self.jwks(token_endpoint_auth_method)?;
         let (subject_type, sector_identifier_uri) = self.subject(&redirect_uris)?;
         let token_binding = self.token_binding(capabilities)?;
         let backchannel = self.backchannel(&grant_types)?;
@@ -1610,11 +1677,12 @@ impl ClientMetadata {
             &redirect_uris,
         )?;
 
-        self.check_par()?;
+        self.check_par(compliance_profile)?;
         let use_mtls_endpoint_aliases = self.mtls_endpoint_aliases(capabilities)?;
         let agent = self.agent(&grant_types, &redirect_uris)?;
 
         Ok(ClientRegistration {
+            compliance_profile,
             client_name: self.client_name()?,
             application_type,
             token_endpoint_auth_method,
@@ -1885,6 +1953,7 @@ impl ClientMetadata {
     fn auth_method(
         &self,
         capabilities: Capabilities,
+        profile: ClientComplianceProfile,
     ) -> Result<TokenEndpointAuthMethod, ClientMetadataError> {
         const FIELD: &str = "token_endpoint_auth_method";
         let Some(raw) = self.token_endpoint_auth_method.as_deref() else {
@@ -1896,11 +1965,19 @@ impl ClientMetadata {
         let method = TokenEndpointAuthMethod::parse(raw).ok_or_else(|| {
             ClientMetadataError::rejected(
                 FIELD,
-                "must be private_key_jwt, tls_client_auth or self_signed_tls_client_auth; \
-                 this server has no client secrets and does not accept unauthenticated \
-                 clients (FAPI 2.0 SP §5.3.2.1 item 3)",
+                "must be client_secret_basic, private_key_jwt, tls_client_auth or \
+                 self_signed_tls_client_auth",
             )
         })?;
+        if method == TokenEndpointAuthMethod::ClientSecretBasic
+            && profile == ClientComplianceProfile::Fapi
+        {
+            return Err(ClientMetadataError::rejected(
+                FIELD,
+                "client_secret_basic is available only to a client explicitly configured \
+                 with the non-FAPI OIDC profile",
+            ));
+        }
         if method.requires_mtls() && !capabilities.is_enabled(Feature::Mtls) {
             return Err(ClientMetadataError::needs(FIELD, Feature::Mtls));
         }
@@ -2140,7 +2217,10 @@ impl ClientMetadata {
         Ok(Some(uri))
     }
 
-    fn jwks(&self) -> Result<JwksSource, ClientMetadataError> {
+    fn jwks(
+        &self,
+        auth_method: TokenEndpointAuthMethod,
+    ) -> Result<JwksSource, ClientMetadataError> {
         match (&self.jwks, &self.jwks_uri) {
             // RFC 7591 §2: "The jwks_uri and jwks parameters MUST NOT both be
             // present in the same request or response."
@@ -2148,11 +2228,11 @@ impl ClientMetadata {
                 "jwks",
                 "must not be given together with jwks_uri (RFC 7591 §2)",
             )),
-            // Every client here is confidential and authenticates with a key,
-            // whether a client assertion or a certificate matched against its
-            // JWKS, so a client with no key source is a client that cannot
-            // authenticate. The schema says the same thing in
-            // `clients_exactly_one_key_source`.
+            // An asymmetric client needs exactly one public-key source. The
+            // shared-secret digest lives in a separate credential column.
+            (None, None) if auth_method == TokenEndpointAuthMethod::ClientSecretBasic => {
+                Ok(JwksSource::None)
+            }
             (None, None) => Err(ClientMetadataError::Missing { field: "jwks_uri" }),
             (Some(jwks), None) => {
                 // Reject secret material before registration can persist or echo
@@ -2266,16 +2346,20 @@ impl ClientMetadata {
     }
 
     /// RFC 9126 §6 defaults `require_pushed_authorization_requests` to false.
-    /// PAR is the only way to start an authorization request here (ADR-0002),
-    /// so `false` is not a weaker setting, it is a request for a code path that
-    /// does not exist — and answering it with a silent `true` would leave the
-    /// client's own record claiming otherwise.
-    fn check_par(&self) -> Result<(), ClientMetadataError> {
-        if self.require_pushed_authorization_requests == Some(false) {
+    /// PAR remains mandatory for FAPI clients. ADR-0014 permits an explicitly
+    /// gated standard OIDC client to use the direct authorization path.
+    fn check_par(&self, profile: ClientComplianceProfile) -> Result<(), ClientMetadataError> {
+        if profile.requires_par() && self.require_pushed_authorization_requests == Some(false) {
             return Err(ClientMetadataError::rejected(
                 "require_pushed_authorization_requests",
                 "must be true; the authorization endpoint accepts only a request_uri \
                  obtained from the pushed authorization request endpoint (RFC 9126 §2)",
+            ));
+        }
+        if !profile.requires_par() && self.require_pushed_authorization_requests == Some(true) {
+            return Err(ClientMetadataError::rejected(
+                "require_pushed_authorization_requests",
+                "must be false for the standard OIDC profile; PAR remains available but is not required",
             ));
         }
         Ok(())
@@ -2711,6 +2795,16 @@ mod tests {
         )
     }
 
+    fn validate_oidc(
+        document: &serde_json::Value,
+    ) -> Result<ClientRegistration, ClientMetadataError> {
+        ClientRegistration::from_json_with_profile(
+            serde_json::to_vec(document).expect("serialise").as_slice(),
+            caps(false),
+            ClientComplianceProfile::Oidc,
+        )
+    }
+
     /// A document built from [`minimal`] with `field` set to `value`.
     fn with(field: &str, value: serde_json::Value) -> serde_json::Value {
         let mut document = minimal();
@@ -2994,6 +3088,28 @@ mod tests {
                 "the rejected value was echoed back: {error}"
             );
         }
+    }
+
+    #[test]
+    fn only_the_explicit_oidc_profile_accepts_client_secret_basic() {
+        let document = json!({
+            "client_name": "Conventional OIDC client",
+            "redirect_uris": ["https://rp.example/cb"],
+            "token_endpoint_auth_method": "client_secret_basic",
+            "require_pushed_authorization_requests": false,
+        });
+
+        let fapi = validate(&document).expect_err("FAPI has no shared secrets");
+        assert_eq!(fapi.field(), "token_endpoint_auth_method");
+
+        let oidc = validate_oidc(&document).expect("explicit OIDC profile");
+        assert_eq!(oidc.compliance_profile, ClientComplianceProfile::Oidc);
+        assert_eq!(
+            oidc.token_endpoint_auth_method,
+            TokenEndpointAuthMethod::ClientSecretBasic
+        );
+        assert_eq!(oidc.jwks, JwksSource::None);
+        assert!(!oidc.compliance_profile.requires_par());
     }
 
     /// The mTLS methods exist only where the deployment has switched mTLS on.
@@ -4030,6 +4146,24 @@ mod tests {
         assert_eq!(error.field(), "require_pushed_authorization_requests");
         assert!(validate(&with("require_pushed_authorization_requests", json!(true))).is_ok());
         assert!(validate(&minimal()).is_ok());
+
+        let mut direct = minimal();
+        direct.as_object_mut().expect("object").insert(
+            "require_pushed_authorization_requests".to_owned(),
+            json!(false),
+        );
+        assert!(validate_oidc(&direct).is_ok());
+
+        direct.as_object_mut().expect("object").insert(
+            "require_pushed_authorization_requests".to_owned(),
+            json!(true),
+        );
+        assert_eq!(
+            validate_oidc(&direct)
+                .expect_err("OIDC profile cannot require PAR")
+                .field(),
+            "require_pushed_authorization_requests"
+        );
     }
 
     // -----------------------------------------------------------------------

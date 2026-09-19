@@ -1094,6 +1094,7 @@ pub(crate) fn client_information(
     // registration can only hold one, so this reproduces that rather than
     // deciding it again.
     match &registration.jwks {
+        JwksSource::None => None,
         JwksSource::Inline(keys) => object.insert("jwks".to_owned(), keys.clone()),
         JwksSource::Uri(uri) => object.insert("jwks_uri".to_owned(), json!(uri)),
     };

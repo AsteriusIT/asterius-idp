@@ -274,7 +274,9 @@ fn check_method_selection(input: &Input) {
         assertion: input.has_assertion.then_some(token),
         assertion_type: input.has_assertion_type.then_some(assertion_type),
         client_id: input.has_client_id.then_some(input.client_id_text.as_str()),
-        authorization_header: input.has_authorization_header,
+        authorization_header: input
+            .has_authorization_header
+            .then_some("Basic credential"),
         certificate: input.has_certificate.then_some(&certificate),
     };
 
@@ -292,6 +294,12 @@ fn check_method_selection(input: &Input) {
     );
 
     match method {
+        Method::ClientSecretBasic => {
+            assert!(
+                input.has_authorization_header,
+                "selected Basic without an Authorization header"
+            );
+        }
         Method::PrivateKeyJwt => {
             // Both halves, and the one registered type (RFC 7521 §4.2).
             assert!(input.has_assertion && input.has_assertion_type);
@@ -310,7 +318,10 @@ fn check_method_selection(input: &Input) {
 
     // A method is never selected from nothing.
     assert!(
-        attempt.method().is_err() || input.has_assertion || input.has_certificate,
+        attempt.method().is_err()
+            || input.has_assertion
+            || input.has_certificate
+            || input.has_authorization_header,
         "selected a method from a request with no credential"
     );
 

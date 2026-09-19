@@ -12,9 +12,9 @@
 use asterius_domain::audit::{AuditEvent, AuditSink, EventType, Outcome};
 use asterius_domain::ports::ClientUrlFetcher;
 use asterius_domain::{
-    Capabilities, Client, ClientId, ClientRegistration, ClientRepository, ClientStatus,
-    DomainError, Issuer, Kid, ReplayCheck, ReplayGuard, ReplayPurpose, SigningAlgorithm, Tenant,
-    TenantId, TenantStatus,
+    Capabilities, Client, ClientComplianceProfile, ClientId, ClientRegistration, ClientRepository,
+    ClientStatus, DomainError, Issuer, Kid, ReplayCheck, ReplayGuard, ReplayPurpose,
+    SigningAlgorithm, Tenant, TenantId, TenantStatus, sha256,
 };
 use asterius_jose::client_keys::ClientKeyCache;
 use asterius_jose::{SigningKey, jws};
@@ -32,12 +32,22 @@ const KID: &str = "client-key-1";
 // ---- fakes ---------------------------------------------------------------
 
 #[derive(Debug, Default)]
-struct FakeClients(HashMap<String, Client>);
+struct FakeClients {
+    clients: HashMap<String, Client>,
+    secret_digests: HashMap<String, [u8; 32]>,
+}
 
 #[async_trait::async_trait]
 impl ClientRepository for FakeClients {
     async fn find(&self, client_id: &ClientId) -> Result<Option<Client>, DomainError> {
-        Ok(self.0.get(client_id.as_str()).cloned())
+        Ok(self.clients.get(client_id.as_str()).cloned())
+    }
+
+    async fn client_secret_digest(
+        &self,
+        client_id: &ClientId,
+    ) -> Result<Option<[u8; 32]>, DomainError> {
+        Ok(self.secret_digests.get(client_id.as_str()).copied())
     }
 }
 
@@ -153,6 +163,30 @@ fn client_from(tenant_id: &str, id: &str, document: &Value, status: ClientStatus
             capabilities,
         )
         .expect("a valid registration"),
+        status,
+        created_at: OffsetDateTime::UNIX_EPOCH,
+        updated_at: OffsetDateTime::UNIX_EPOCH,
+    }
+}
+
+fn secret_client(tenant_id: &str, id: &str, status: ClientStatus) -> Client {
+    let document = json!({
+        "client_name": "Conventional OIDC client",
+        "redirect_uris": ["https://rp.example/cb"],
+        "grant_types": ["authorization_code"],
+        "scope": "openid",
+        "token_endpoint_auth_method": "client_secret_basic",
+        "require_pushed_authorization_requests": false,
+    });
+    Client {
+        tenant: TenantId::new(tenant_id),
+        id: ClientId::new(id),
+        registration: ClientRegistration::from_json_with_profile(
+            &serde_json::to_vec(&document).expect("serialise"),
+            Capabilities::default(),
+            ClientComplianceProfile::Oidc,
+        )
+        .expect("a valid non-FAPI registration"),
         status,
         created_at: OffsetDateTime::UNIX_EPOCH,
         updated_at: OffsetDateTime::UNIX_EPOCH,
@@ -276,7 +310,7 @@ impl World {
     fn recording(status: ClientStatus, auth_method: &str, usage: Arc<FakeUsage>) -> Self {
         let (key, jwks) = client_key();
         let mut clients = FakeClients::default();
-        clients.0.insert(
+        clients.clients.insert(
             CLIENT.to_owned(),
             client_from("demo", CLIENT, &registration(&jwks, auth_method), status),
         );
@@ -291,6 +325,29 @@ impl World {
             replay,
             usage,
             key,
+            tenant: tenant("demo", ISSUER),
+        }
+    }
+
+    fn with_secret(secret: &str, status: ClientStatus) -> Self {
+        let usage = Arc::new(FakeUsage::default());
+        let mut clients = FakeClients::default();
+        clients
+            .clients
+            .insert(CLIENT.to_owned(), secret_client("demo", CLIENT, status));
+        clients
+            .secret_digests
+            .insert(CLIENT.to_owned(), sha256(secret.as_bytes()));
+        let replay = Arc::new(FakeReplay::default());
+        let cache = Arc::new(ClientKeyCache::new(Arc::new(NoFetching)));
+        Self {
+            authenticator: ClientAuthenticator::new(cache, replay.clone())
+                .expect("build")
+                .recording_use(Arc::clone(&usage) as Arc<dyn asterius_domain::ClientUsageRecorder>),
+            clients,
+            replay,
+            usage,
+            key: SigningKey::generate(SigningAlgorithm::EdDsa).expect("generate"),
             tenant: tenant("demo", ISSUER),
         }
     }
@@ -311,6 +368,13 @@ impl World {
     async fn authenticate_claims(&self, claims: &Value) -> Result<Client, ClientAuthError> {
         let token = sign_with(&self.key, claims);
         self.authenticate(&attempt_with(&token)).await
+    }
+}
+
+fn basic_attempt(header: &str) -> Attempt<'_> {
+    Attempt {
+        authorization_header: Some(header),
+        ..Attempt::default()
     }
 }
 
@@ -343,6 +407,55 @@ async fn a_conforming_assertion_authenticates_the_client() {
         .expect("must authenticate");
     assert_eq!(client.id.as_str(), CLIENT);
     assert_eq!(world.replay.claim_count(), 1);
+}
+
+#[tokio::test]
+async fn client_secret_basic_authenticates_an_explicit_oidc_client() {
+    use base64::Engine as _;
+
+    let world = World::with_secret("correct horse battery staple", ClientStatus::Active);
+    let credential = base64::engine::general_purpose::STANDARD
+        .encode(format!("{CLIENT}:correct+horse+battery+staple"));
+    let header = format!("Basic {credential}");
+
+    let authenticated = world
+        .authenticate(&basic_attempt(&header))
+        .await
+        .expect("the stored secret digest matches");
+    assert_eq!(authenticated.id.as_str(), CLIENT);
+    assert_eq!(world.usage.recorded().len(), 1);
+}
+
+#[tokio::test]
+async fn client_secret_basic_refuses_a_wrong_revoked_or_disabled_credential() {
+    use base64::Engine as _;
+
+    let encoded = |secret: &str| {
+        let credential =
+            base64::engine::general_purpose::STANDARD.encode(format!("{CLIENT}:{secret}"));
+        format!("Basic {credential}")
+    };
+    let wrong = encoded("wrong");
+    assert_eq!(
+        World::with_secret("right", ClientStatus::Active)
+            .authenticate(&basic_attempt(&wrong))
+            .await,
+        Err(ClientAuthError::AssertionNotVerified)
+    );
+
+    let mut revoked = World::with_secret("right", ClientStatus::Active);
+    revoked.clients.secret_digests.clear();
+    let right = encoded("right");
+    assert_eq!(
+        revoked.authenticate(&basic_attempt(&right)).await,
+        Err(ClientAuthError::AssertionNotVerified)
+    );
+    assert_eq!(
+        World::with_secret("right", ClientStatus::Disabled)
+            .authenticate(&basic_attempt(&right))
+            .await,
+        Err(ClientAuthError::UnknownClient)
+    );
 }
 
 /// RFC 7523 defines no `typ`, so an assertion without one is ordinary.
@@ -454,7 +567,7 @@ async fn an_assertion_for_one_tenant_is_refused_at_another() {
     let mut clients = FakeClients::default();
     // Same id, same keys, different tenant. The worst case: an operator who
     // provisioned the identical client into both.
-    clients.0.insert(
+    clients.clients.insert(
         CLIENT.to_owned(),
         client_from(
             "other",

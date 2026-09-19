@@ -10,7 +10,7 @@ Copy [`0000-template.md`](0000-template.md) to start one.
 | # | Decision | Status |
 |---|---|---|
 | [0001](0001-modular-monolith.md) | Modular monolith, single binary, one PostgreSQL | Accepted |
-| [0002](0002-fapi-2-0-as-the-only-mode.md) | FAPI 2.0 is the baseline, not a mode | Accepted |
+| [0002](0002-fapi-2-0-as-the-only-mode.md) | FAPI 2.0 is the baseline, not a mode | Superseded by 0014 |
 | [0003](0003-signing-algorithm-set.md) | Signing algorithms: EdDSA, ES256, PS256; RS256 is non-FAPI | Accepted |
 | [0004](0004-jose-on-aws-lc-rs.md) | JOSE is built on aws-lc-rs, not on a JOSE library | Accepted |
 | [0005](0005-exact-redirect-uri-matching.md) | Redirect URIs match exactly against the registered set, including under PAR | Accepted |
@@ -22,3 +22,4 @@ Copy [`0000-template.md`](0000-template.md) to start one.
 | [0011](0011-a-declarative-rule-model-for-the-built-in-pdp.md) | The built-in PDP evaluates declarative rules, not a policy language | Accepted |
 | [0012](0012-mcp-clients-remain-confidential.md) | MCP compatibility is limited to confidential clients; CIMD is not implemented | Accepted |
 | [0013](0013-openid-federation-remains-out-of-v1.md) | OpenID Federation remains out of v1 without narrowing the client model | Accepted |
+| [0014](0014-explicitly-gated-standard-oidc-clients.md) | Standard OIDC clients are explicit tenant and application opt-ins | Accepted |

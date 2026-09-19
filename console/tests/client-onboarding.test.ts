@@ -5,6 +5,7 @@ import { clientConfiguration, clientFieldError, publicKeyError } from '../src/cl
 
 const saved: ClientDocument = {
   client_id: 'stored-client', client_name: 'Persisted app', status: 'active', application_type: 'web',
+  compliance_profile: 'fapi',
   token_endpoint_auth_method: 'tls_client_auth', redirect_uris: ['https://app.example/callback'],
   post_logout_redirect_uris: ['https://app.example/logout'], grant_types: ['authorization_code'],
   scope: 'openid profile', id_token_signed_response_alg: 'ES256', subject_type: 'public',

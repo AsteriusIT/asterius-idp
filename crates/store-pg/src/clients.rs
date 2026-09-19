@@ -33,8 +33,9 @@ use asterius_domain::SigningAlgorithm;
 use asterius_domain::audit::AuditEvent;
 use asterius_domain::ports::TenantScoped;
 use asterius_domain::{
-    Capabilities, Client, ClientId, ClientMetadata, ClientRegistration, ClientStatus, DomainError,
-    JwksSource, ManagedClient, PreviousRegistrationAccessToken, TenantId, TokenDeliveryMode,
+    Capabilities, Client, ClientComplianceProfile, ClientId, ClientMetadata, ClientRegistration,
+    ClientSecretUpdate, ClientStatus, DomainError, JwksSource, ManagedClient,
+    PreviousRegistrationAccessToken, TenantId, TokenDeliveryMode,
 };
 use sqlx::Acquire as _;
 use sqlx::Row as _;
@@ -59,6 +60,13 @@ pub struct PgClientRepository {
 impl asterius_domain::ClientRepository for PgClientRepository {
     async fn find(&self, client_id: &ClientId) -> Result<Option<Client>, DomainError> {
         Self::find(self, client_id).await
+    }
+
+    async fn client_secret_digest(
+        &self,
+        client_id: &ClientId,
+    ) -> Result<Option<[u8; 32]>, DomainError> {
+        Self::client_secret_digest(self, client_id).await
     }
 }
 
@@ -144,7 +152,7 @@ impl PgClientRepository {
     pub async fn find(&self, client_id: &ClientId) -> Result<Option<Client>, DomainError> {
         let row = sqlx::query_as!(
             Row,
-            "select client_id, client_name, token_endpoint_auth_method, redirect_uris,
+            "select client_id, client_name, compliance_profile, token_endpoint_auth_method, redirect_uris,
                     post_logout_redirect_uris, grant_types, response_types, scopes, resources, jwks, jwks_uri,
                     id_token_signed_response_alg, application_type, subject_type, sector_identifier_uri,
                     request_object_signing_alg, backchannel_authentication_request_signing_alg,
@@ -170,6 +178,27 @@ impl PgClientRepository {
             .transpose()
     }
 
+    /// Reads only the fixed-size digest needed by shared-secret authentication.
+    pub async fn client_secret_digest(
+        &self,
+        client_id: &ClientId,
+    ) -> Result<Option<[u8; 32]>, DomainError> {
+        let row = sqlx::query(
+            "select client_secret_hash from clients where tenant_id = $1 and client_id = $2",
+        )
+        .bind(self.tenant.as_str())
+        .bind(client_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+        let Some(bytes) = row.and_then(|row| row.get::<Option<Vec<u8>>, _>(0)) else {
+            return Ok(None);
+        };
+        bytes.try_into().map(Some).map_err(|_| {
+            DomainError::invalid("client_secret_hash", "stored digest is not 32 bytes")
+        })
+    }
+
     /// Every client in this tenant, ordered by `client_id`.
     ///
     /// # Errors
@@ -179,7 +208,7 @@ impl PgClientRepository {
     pub async fn list(&self) -> Result<Vec<Client>, DomainError> {
         sqlx::query_as!(
             Row,
-            "select client_id, client_name, token_endpoint_auth_method, redirect_uris,
+            "select client_id, client_name, compliance_profile, token_endpoint_auth_method, redirect_uris,
                     post_logout_redirect_uris, grant_types, response_types, scopes, resources, jwks, jwks_uri,
                     id_token_signed_response_alg, application_type, subject_type, sector_identifier_uri,
                     request_object_signing_alg, backchannel_authentication_request_signing_alg,
@@ -219,13 +248,23 @@ impl PgClientRepository {
     /// baseline schema cannot hold (see the module documentation), a
     /// [`DomainError::Conflict`] when the tenant does not exist, or a storage
     /// error.
+    pub async fn upsert(&self, client: &Client) -> Result<(), DomainError> {
+        self.upsert_with_secret(client, None).await
+    }
+
+    /// Creates or replaces metadata, optionally installing a newly generated
+    /// shared-secret digest in the same statement.
     #[expect(
         clippy::too_many_lines,
         reason = "one INSERT ... ON CONFLICT statement and the binds it needs, in the order \
                   the column list gives them; splitting it would put half a column list in \
                   another function, which is exactly how a bind drifts away from its column"
     )]
-    pub async fn upsert(&self, client: &Client) -> Result<(), DomainError> {
+    pub async fn upsert_with_secret(
+        &self,
+        client: &Client,
+        client_secret_digest: Option<&[u8; 32]>,
+    ) -> Result<(), DomainError> {
         if client.tenant != self.tenant {
             // The scope is the tenant. An entity from another one arriving here
             // is a bug in the caller, and writing it would put a row under the
@@ -244,7 +283,7 @@ impl PgClientRepository {
         let (agent, agent_policy) = agent_columns(registration);
 
         sqlx::query!(
-            "insert into clients (tenant_id, client_id, client_name,
+            "insert into clients (tenant_id, client_id, client_name, compliance_profile,
                                   token_endpoint_auth_method, redirect_uris, grant_types,
                                   response_types, scopes, resources, jwks, jwks_uri,
                                   id_token_signed_response_alg, application_type, subject_type,
@@ -261,12 +300,13 @@ impl PgClientRepository {
                                   backchannel_user_code_parameter,
                                   is_agent, agent_owner_user_id, agent_policy,
                                   backchannel_logout_uri, backchannel_logout_session_required,
-                                  roles_in_id_token, managed_groups_claim)
+                                  roles_in_id_token, managed_groups_claim, client_secret_hash)
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
                      $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31,
-                     $32, $33, $34, $35, $36)
+                     $32, $33, $34, $35, $36, $37, $38)
              on conflict (tenant_id, client_id) do update
              set client_name = excluded.client_name,
+                 compliance_profile = excluded.compliance_profile,
                  token_endpoint_auth_method = excluded.token_endpoint_auth_method,
                  redirect_uris = excluded.redirect_uris,
                  grant_types = excluded.grant_types,
@@ -307,6 +347,7 @@ impl PgClientRepository {
             self.tenant.as_str(),
             client.id.as_str(),
             registration.client_name,
+            registration.compliance_profile.as_str(),
             registration.token_endpoint_auth_method.as_str(),
             &lists.redirect_uris,
             &lists.grant_types,
@@ -344,6 +385,7 @@ impl PgClientRepository {
             backchannel_session_required,
             registration.roles_in_id_token.is_issued(),
             registration.managed_groups_claim.is_issued(),
+            client_secret_digest.map(|digest| &digest[..]),
         )
         .execute(&self.pool)
         .await
@@ -471,7 +513,7 @@ impl PgClientRepository {
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
                      $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31,
                      $32, $33, $34, $35, $36, $37)
-             returning client_id, client_name, token_endpoint_auth_method, redirect_uris,
+             returning client_id, client_name, compliance_profile, token_endpoint_auth_method, redirect_uris,
                        post_logout_redirect_uris, grant_types, response_types, scopes, resources, jwks, jwks_uri,
                        id_token_signed_response_alg, application_type, subject_type,
                        sector_identifier_uri, request_object_signing_alg,
@@ -654,11 +696,22 @@ impl PgClientRepository {
     /// [`DomainError::NotFound`] if there is no such client in this tenant,
     /// [`DomainError::Invalid`] if the entity belongs to another tenant or the
     /// stored row does not validate, or a storage error.
+    pub async fn replace(&self, client: &Client) -> Result<Client, DomainError> {
+        self.replace_with_secret(client, ClientSecretUpdate::Keep)
+            .await
+    }
+
+    /// Replaces metadata and applies a secret rotation or revocation in the
+    /// same statement, so neither half can become visible alone.
     #[expect(
         clippy::too_many_lines,
         reason = "compile-time checked client metadata columns stay in one atomic update"
     )]
-    pub async fn replace(&self, client: &Client) -> Result<Client, DomainError> {
+    pub async fn replace_with_secret(
+        &self,
+        client: &Client,
+        client_secret: ClientSecretUpdate,
+    ) -> Result<Client, DomainError> {
         if client.tenant != self.tenant {
             return Err(DomainError::invalid(
                 "tenant_id",
@@ -710,9 +763,11 @@ impl PgClientRepository {
                  backchannel_logout_uri = $28,
                  backchannel_logout_session_required = $29,
                  roles_in_id_token = $30,
-                 managed_groups_claim = $31
+                 managed_groups_claim = $31,
+                 compliance_profile = $32,
+                 client_secret_hash = case when $33 then $34 else client_secret_hash end
              where tenant_id = $1 and client_id = $2
-             returning client_id, client_name, token_endpoint_auth_method, redirect_uris,
+             returning client_id, client_name, compliance_profile, token_endpoint_auth_method, redirect_uris,
                        post_logout_redirect_uris, grant_types, response_types, scopes, resources, jwks, jwks_uri,
                        id_token_signed_response_alg, application_type, subject_type,
                        sector_identifier_uri, request_object_signing_alg,
@@ -760,6 +815,12 @@ impl PgClientRepository {
             backchannel_session_required,
             registration.roles_in_id_token.is_issued(),
             registration.managed_groups_claim.is_issued(),
+            registration.compliance_profile.as_str(),
+            !matches!(client_secret, ClientSecretUpdate::Keep),
+            match client_secret {
+                ClientSecretUpdate::Set(digest) => Some(digest.to_vec()),
+                ClientSecretUpdate::Keep | ClientSecretUpdate::Revoke => None,
+            },
         )
         .fetch_optional(&self.pool)
         .await
@@ -1194,6 +1255,7 @@ struct StoredAgent {
 /// cannot disagree about which column a key source lands in.
 fn key_columns(registration: &ClientRegistration) -> (Option<serde_json::Value>, Option<String>) {
     match &registration.jwks {
+        JwksSource::None => (None, None),
         JwksSource::Inline(value) => (Some(value.clone()), None),
         JwksSource::Uri(uri) => (None, Some(uri.clone())),
     }
@@ -1233,6 +1295,7 @@ fn agent_columns(
 struct Row {
     client_id: String,
     client_name: String,
+    compliance_profile: String,
     token_endpoint_auth_method: String,
     redirect_uris: Vec<String>,
     post_logout_redirect_uris: Vec<String>,
@@ -1342,12 +1405,21 @@ impl Row {
         {
             metadata.set_tls_client_auth_subject(&subject);
         }
-        let mut registration = metadata.validate(capabilities).map_err(|error| {
-            DomainError::invalid(
-                "clients",
-                format!("stored row is not a valid registration: {error}"),
-            )
-        })?;
+        let profile =
+            ClientComplianceProfile::parse(&self.compliance_profile).ok_or_else(|| {
+                DomainError::invalid(
+                    "compliance_profile",
+                    format!("unknown: {}", self.compliance_profile),
+                )
+            })?;
+        let mut registration = metadata
+            .validate_for_profile(capabilities, profile)
+            .map_err(|error| {
+                DomainError::invalid(
+                    "clients",
+                    format!("stored row is not a valid registration: {error}"),
+                )
+            })?;
         // Not part of the registration document: the per-client resource
         // allow-list is policy (`ast-m9c.6`), so it is restored from the column
         // rather than validated out of a document that never carried it.
