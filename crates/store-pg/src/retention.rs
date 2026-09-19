@@ -317,6 +317,16 @@ pub const POLICY: &[Retention] = &[
         ),
     },
     Retention {
+        table: "managed_groups",
+        rule: Rule::Kept(
+            "group catalogue is tenant configuration, removed only by explicit administration",
+        ),
+    },
+    Retention {
+        table: "group_memberships",
+        rule: Rule::Kept("direct membership persists until removal or group/user/tenant deletion"),
+    },
+    Retention {
         table: "tenant_roles",
         rule: Rule::Kept("a role catalogue is configuration, edited by a person"),
     },

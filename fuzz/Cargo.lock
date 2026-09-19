@@ -119,6 +119,7 @@ dependencies = [
  "thiserror",
  "time",
  "tracing",
+ "url",
  "uuid",
 ]
 
