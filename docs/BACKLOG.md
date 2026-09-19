@@ -33,6 +33,7 @@
 | Grant Management for OAuth 2.0 | Implementer's Draft 1 (2023-07, draft-03) | E07_02, E07_04, E07_05 behind `grant_management` flag |
 | Shared Signals Framework 1.0, CAEP 1.0, RISC 1.0 | Final (2025-09) | E12 |
 | CAEP Interoperability Profile | Implementer's Draft | track (E17_10) |
+| OpenID Connect Native SSO for Mobile Apps 1.0 | Implementer's Draft 2 (2025-10, draft-07) | track (E17_07); not implemented |
 | AuthZEN Authorization API 1.0 | Final (2026-01-12) | E13 |
 | JARM | Final incorporating errata set 1 (2025-08) | track with Message Signing |
 | MCP Authorization (2026-07-28) | MCP spec (references OAuth 2.1 draft and CIMD; DCR deprecated) | E11_08, decision E03_08 |
@@ -2295,7 +2296,7 @@ Specifications and features deliberately kept out of v1: working drafts (never b
 | E17_04 | Track: OpenID Federation 1.0 (Final) — out of v1 scope by product decision | task | P4 | — |
 | E17_05 | Track: Identity Assurance (IDA) verified claims — out of v1 scope; claims model must stay compatible | task | P4 | — |
 | E17_06 | Track: OID4VCI / OID4VP (verifiable credentials) — out of v1 scope | task | P4 | — |
-| E17_07 | Track: Native SSO for mobile apps (draft) | task | P4 | — |
+| E17_07 | Track: Native SSO for mobile apps (Implementer's Draft 2) | task | P4 | — |
 | E17_08 | Track: Provider Commands, IPSIE profiles, Enterprise Extensions (drafts) | task | P4 | — |
 | E17_09 | Track: Ephemeral Subject Identifier, Key Binding, Advanced Syntax for Claims, Claims Aggregation (drafts) | task | P4 | — |
 | E17_10 | Track: CAEP Interoperability Profile (Implementer's Draft) & SSF receiver role | task | P4 | E12_08 |
@@ -2404,17 +2405,37 @@ No implementation; issuer-agnostic claims model is the only hook.
 
 **Depends on:** —
 
-### E17_07 — Track: Native SSO for mobile apps (draft)
+### E17_07 — Track: Native SSO for mobile apps (Implementer's Draft 2)
 
-*task · P4 · labels: track, spec:openid-native-sso, status:draft*
+*task · P4 · labels: track, spec:openid-native-sso, status:impl-draft*
 
-**Spec:** OpenID Connect Native SSO for Mobile Apps 1.0 (draft) — device_secret + token exchange.
+**Spec:** OpenID Connect Native SSO for Mobile Apps 1.0, Second Implementer's
+Draft (ID2, approved 2025-10-17; draft-07 dated 2025-01-16) — `device_sso`,
+`device_secret` + `ds_hash`/`sid` binding, and an RFC 8693 profile using the
+device secret as `actor_token`.
 
-Track; token exchange (E11_02) would host it.
+The maturity trigger fired, but the implementation trigger did not. Keep it
+post-v1 until Final: ID2 still notes that its reuse of ID tokens relaxes normal
+audience and expiry validation, leaves device-secret construction and binding
+to the AS, and requires a session-wide revocation model. It also returns bearer
+access tokens and normally refresh tokens, while Asterius's E11_02 deliberately
+issues only DPoP-bound, narrowing-only access tokens and refuses
+`actor_token`. Those are protocol and product decisions, not a free extension
+of the current exchange handler.
+
+Compatibility remains fail-closed and cheap to revisit: discovery omits
+`native_sso_supported`; no device secret or `ds_hash` is issued; and E11_02
+rejects the profile's required actor token instead of silently treating the
+request as ordinary RFC 8693. The authorization-code and refresh handlers
+remain extension-tolerant, so a future feature can consume `device_secret`
+without changing the token endpoint's dispatch boundary.
 
 **Acceptance tests**
 
-- Revisit if it reaches Implementer's Draft/Final.
+- Revisited against ID2 on 2026-09-19; the exact Native SSO token-exchange
+  request shape has a fail-closed parser regression test.
+- Revisit implementation at Final, including the ID-token reuse, shared-device
+  trust, session revocation, consent, bearer/DPoP and refresh-token decisions.
 
 **Depends on:** —
 

@@ -33,7 +33,11 @@
 //!   that proved a key on *this* request, and a second, separately-obtained
 //!   actor token would let a client name an actor it is not. Refused rather
 //!   than ignored, because a client that sent one and got a token naming
-//!   somebody else has no way to tell.
+//!   somebody else has no way to tell. This also keeps OpenID Native SSO ID2
+//!   requests fail-closed: that profile puts a `device_secret` in
+//!   `actor_token`, and accepting the rest of its RFC 8693-shaped request
+//!   without validating that secret and its ID-token binding would be partial,
+//!   unsafe support.
 //! * A refresh token in the response. §2.2.1 makes it OPTIONAL; an exchanged
 //!   token is a delegation, and a long-lived credential that renews a
 //!   delegation without the delegator being present is the thing §5 warns
@@ -517,15 +521,26 @@ mod tests {
     }
 
     #[test]
-    fn an_actor_token_is_refused_rather_than_ignored() {
-        // Arrange: the actor is the authenticated client, so a request naming
-        // another one must not silently get a token naming the client.
+    fn the_native_sso_profile_is_not_partially_accepted() {
+        // Arrange: OpenID Native SSO ID2 profiles RFC 8693 with an ID token as
+        // subject and a device secret as actor. Asterius does not implement
+        // the device-secret / ds_hash / session binding, so this recognizable
+        // request shape must fail before the otherwise-supported ID token is
+        // considered. Ignoring the actor would turn an unsupported profile
+        // into an ordinary exchange with different security properties.
         let mut pairs = minimal();
-        pairs.push(("actor_token", "x.y.z"));
+        pairs[2] = ("subject_token_type", ID_TOKEN);
+        pairs.push(("audience", "https://issuer.example/"));
+        pairs.push(("actor_token", "opaque-device-secret"));
+        pairs.push((
+            "actor_token_type",
+            "urn:openid:params:token-type:device-secret",
+        ));
+        pairs.push(("scope", "openid"));
 
         // Act.
         let params = params(&pairs);
-        let error = parse(&params).expect_err("the actor is not the client's to choose");
+        let error = parse(&params).expect_err("Native SSO is not implemented");
 
         // Assert.
         assert_eq!(error, ExchangeError::ActorTokenRefused);
