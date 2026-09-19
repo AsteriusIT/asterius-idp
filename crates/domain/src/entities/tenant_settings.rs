@@ -158,10 +158,9 @@ impl TokenLifetimes {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "the same argument `Capabilities` makes: these are four independent \
-              switches a tenant sets separately, not four states of one thing, so \
-              the state enum clippy suggests cannot express them — it would have \
-              sixteen variants and no name for any of them. Each field is read \
+    reason = "the same argument `Capabilities` makes: these are independent \
+              switches a tenant sets separately, not states of one thing, so \
+              the state enum clippy suggests cannot express them. Each field is read \
               through its own accessor, which is where the meaning lives, and the \
               names are the JSON keys an operator writes."
 )]
@@ -244,6 +243,12 @@ pub struct TenantSettings {
     /// the end so that a parallel change adding another one does not have to
     /// be reconciled line by line.
     require_verified_email: bool,
+    /// Whether remembered consent may bypass the consent screen.
+    ///
+    /// `false` preserves the normal returning-user path. A tenant turns this
+    /// on when every authorization must give the person a fresh opportunity
+    /// to reject it, including an authorization whose scopes were remembered.
+    always_ask_consent: bool,
 }
 
 impl Default for TenantSettings {
@@ -264,6 +269,7 @@ impl Default for TenantSettings {
             grant_id_in_access_token: true,
             revoke_refresh_on_logout: false,
             require_verified_email: false,
+            always_ask_consent: false,
         }
     }
 }
@@ -292,6 +298,7 @@ impl TenantSettings {
             grant_id_in_access_token: true,
             revoke_refresh_on_logout: false,
             require_verified_email: false,
+            always_ask_consent: false,
         })
     }
 
@@ -406,6 +413,20 @@ impl TenantSettings {
         self.require_verified_email
     }
 
+    /// The same settings with remembered consent prevented from skipping the
+    /// consent screen.
+    #[must_use]
+    pub const fn with_always_ask_consent(mut self, always_ask: bool) -> Self {
+        self.always_ask_consent = always_ask;
+        self
+    }
+
+    /// Whether every interactive authorization asks for consent again.
+    #[must_use]
+    pub const fn always_ask_consent(&self) -> bool {
+        self.always_ask_consent
+    }
+
     /// Whether ending a session here also revokes the refresh tokens issued
     /// under it (`ast-o4u.2`).
     ///
@@ -515,6 +536,7 @@ impl TenantSettings {
             "grant_id_in_access_token": self.grant_id_in_access_token,
             "revoke_refresh_on_logout": self.revoke_refresh_on_logout,
             "require_verified_email": self.require_verified_email,
+            "always_ask_consent": self.always_ask_consent,
         })
     }
 
@@ -632,6 +654,14 @@ impl TenantSettings {
             }
         };
 
+        // Absent is `false`: rows written before this switch existed skipped
+        // consent when the same grant had already been remembered.
+        let always_ask_consent = match object.get("always_ask_consent") {
+            None | Some(serde_json::Value::Null) => false,
+            Some(serde_json::Value::Bool(always_ask)) => *always_ask,
+            Some(_) => return Err(TenantSettingsError::NotABoolean("always_ask_consent")),
+        };
+
         Ok(
             Self::validated(disabled_features, authorization_code, access_token)?
                 .with_registration(registration)
@@ -640,7 +670,8 @@ impl TenantSettings {
                 .with_messages(messages)
                 .with_grant_id_in_access_token(grant_id_in_access_token)
                 .with_revoke_refresh_on_logout(revoke_refresh_on_logout)
-                .requiring_a_verified_email(require_verified_email),
+                .requiring_a_verified_email(require_verified_email)
+                .with_always_ask_consent(always_ask_consent),
         )
     }
 }
@@ -851,6 +882,42 @@ mod tests {
             matches!(
                 error,
                 TenantSettingsError::NotABoolean("require_verified_email")
+            ),
+            "{error}"
+        );
+    }
+
+    /// Existing rows keep their returning-user shortcut: silence means the
+    /// consent remembered for a grant is still sufficient.
+    #[test]
+    fn a_tenant_that_never_mentioned_it_does_not_always_ask_for_consent() {
+        let stored = serde_json::json!({"disabled_features": []});
+
+        let settings = TenantSettings::from_json(Some(&stored)).expect("a readable row");
+
+        assert!(!settings.always_ask_consent());
+    }
+
+    #[test]
+    fn always_asking_for_consent_round_trips() {
+        let settings = TenantSettings::default().with_always_ask_consent(true);
+
+        let read_back =
+            TenantSettings::from_json(Some(&settings.to_json())).expect("this server wrote it");
+
+        assert!(read_back.always_ask_consent());
+    }
+
+    #[test]
+    fn a_non_boolean_always_ask_consent_setting_is_refused() {
+        let stored = serde_json::json!({"always_ask_consent": "yes"});
+
+        let error = TenantSettings::from_json(Some(&stored)).unwrap_err();
+
+        assert!(
+            matches!(
+                error,
+                TenantSettingsError::NotABoolean("always_ask_consent")
             ),
             "{error}"
         );

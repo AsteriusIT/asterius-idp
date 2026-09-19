@@ -883,7 +883,12 @@ impl Handling<'_> {
         .map_err(|refusal| AdminError::Invalid(refusal.to_string()))?
         .with_registration(registration)
         .with_default_locale(default_locale)
-        .with_messages(messages);
+        .with_messages(messages)
+        .with_always_ask_consent(
+            requested
+                .always_ask_consent
+                .unwrap_or(previous.always_ask_consent()),
+        );
 
         repository
             .save(&named, &settings)
@@ -3404,6 +3409,12 @@ struct RequestedSettings {
     /// one an administrator has to be able to give.
     #[serde(default)]
     messages: Option<serde_json::Value>,
+    /// Whether remembered grants still require a fresh consent decision.
+    ///
+    /// Optional for rolling upgrades: an older console saving unrelated
+    /// settings must preserve a value configured by a newer one.
+    #[serde(default)]
+    always_ask_consent: Option<bool>,
 }
 
 /// A settings document as this API renders it.
@@ -3436,6 +3447,7 @@ fn render_settings(tenant: &TenantId, settings: &TenantSettings) -> serde_json::
         // from a request, like the policy above.
         "default_locale": settings.default_locale().as_tag(),
         "messages": settings.messages().to_json(),
+        "always_ask_consent": settings.always_ask_consent(),
         "supported_locales": asterius_domain::Locale::SUPPORTED_TAGS,
         "limits": {
             "max_authorization_code_lifetime_seconds":
@@ -3483,6 +3495,11 @@ fn settings_diff(tenant: &TenantId, before: &TenantSettings, after: &TenantSetti
                 "access_token_lifetime_seconds.after",
                 after.lifetimes().access_token().whole_seconds(),
             );
+    }
+    if before.always_ask_consent() != after.always_ask_consent() {
+        detail = detail
+            .flag("always_ask_consent.before", before.always_ask_consent())
+            .flag("always_ask_consent.after", after.always_ask_consent());
     }
     detail
 }
@@ -10602,6 +10619,24 @@ mod tests {
         assert_eq!(
             unrelated["messages"]["consent.allow"], "Continuer",
             "a save that did not mention the wording deleted it: {unrelated}"
+        );
+    }
+
+    /// The consent switch is part of the public settings document, and an
+    /// older console that omits it cannot turn it off while saving a lifetime.
+    #[tokio::test]
+    async fn always_ask_consent_is_stored_rendered_and_preserved_when_omitted() {
+        let world = World::new();
+        let mut body = settings_body(60, 300);
+        body["always_ask_consent"] = serde_json::json!(true);
+
+        let stored = body_of(put_settings(&world, body).await).await;
+        let unrelated = body_of(put_settings(&world, settings_body(45, 300)).await).await;
+
+        assert_eq!(stored["always_ask_consent"], true, "{stored}");
+        assert_eq!(
+            unrelated["always_ask_consent"], true,
+            "a save that omitted the consent switch deleted it: {unrelated}"
         );
     }
 

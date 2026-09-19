@@ -38,6 +38,7 @@ import { ShieldCheck, KeyRound, Smartphone, ArrowRightLeft, Radio, Fingerprint, 
 import { Tabs, TabsList, TabsTrigger, TabsContent } from './components/ui/tabs';
 import { toast } from './components/ui/toast';
 import { Actions, Button, Field, LoadFailure, Message, Panel, Screen, Skeleton } from './ui';
+import { draftOf, isDirty, type Draft, type Settings } from './settings-model';
 
 /**
  * The optional features this console draws a switch for, mirroring
@@ -85,28 +86,6 @@ const FEATURE_PRESENTATION = {
   dpop_nonce: { label: 'Proof replay protection', icon: Fingerprint, description: 'Require a fresh challenge for DPoP proofs to prevent reuse.' },
 };
 
-/** The ceilings the server sends with the document. */
-export interface Limits {
-  readonly max_authorization_code_lifetime_seconds: number;
-  readonly max_access_token_lifetime_seconds: number;
-}
-
-/** One tenant's settings, as `GET /tenants/{tenant_id}/settings` describes it. */
-export interface Settings {
-  readonly tenant_id: string;
-  readonly disabled_features: readonly string[];
-  readonly authorization_code_lifetime_seconds: number;
-  readonly access_token_lifetime_seconds: number;
-  readonly limits: Limits;
-}
-
-/** What the form holds while it is being edited. */
-interface Draft {
-  readonly disabled: readonly string[];
-  readonly code: string;
-  readonly token: string;
-}
-
 /** What the screen is doing. */
 type Load =
   | { readonly kind: 'loading' }
@@ -116,15 +95,6 @@ type Load =
 /** The path of one tenant's settings, relative to the API base. */
 export function settingsPath(tenant: string): string {
   return `tenants/${encodeURIComponent(tenant)}/settings`;
-}
-
-/** The draft a freshly read document starts as. */
-export function draftOf(settings: Settings): Draft {
-  return {
-    disabled: [...settings.disabled_features],
-    code: String(settings.authorization_code_lifetime_seconds),
-    token: String(settings.access_token_lifetime_seconds),
-  };
 }
 
 /**
@@ -145,18 +115,6 @@ export function featureRows(
     ...KNOWN_FEATURES,
     ...unknown.map((name) => [name, 'A flag this console does not know about.'] as const),
   ];
-}
-
-/** Whether the draft differs from what the server last sent. */
-export function isDirty(settings: Settings, draft: Draft): boolean {
-  const same =
-    draft.disabled.length === settings.disabled_features.length &&
-    draft.disabled.every((name) => settings.disabled_features.includes(name));
-  return (
-    !same ||
-    draft.code !== String(settings.authorization_code_lifetime_seconds) ||
-    draft.token !== String(settings.access_token_lifetime_seconds)
-  );
 }
 
 /**
@@ -217,6 +175,7 @@ export function TenantSettings({
         // is the refusal an operator should see.
         authorization_code_lifetime_seconds: Number(current.code),
         access_token_lifetime_seconds: Number(current.token),
+        always_ask_consent: current.alwaysAskConsent,
       }).then(
         (document) => {
           // Re-read from the answer rather than from the form: the server's
@@ -306,7 +265,7 @@ export function TenantSettings({
           save(draft);
         }}
       >
-        <Tabs defaultValue="features"><TabsList aria-label="Tenant configuration"><TabsTrigger value="features">Capabilities</TabsTrigger><TabsTrigger value="tokens">Token lifetimes</TabsTrigger></TabsList>
+        <Tabs defaultValue="features"><TabsList aria-label="Tenant configuration"><TabsTrigger value="features">Capabilities</TabsTrigger><TabsTrigger value="tokens">Token lifetimes</TabsTrigger><TabsTrigger value="consent">Consent</TabsTrigger></TabsList>
         <TabsContent value="features"><fieldset className="settings-section" disabled={busy}>
           <legend>Sign-in and access capabilities</legend>
           <p className="muted">
@@ -366,6 +325,32 @@ export function TenantSettings({
               />
             )}
           </Field>
+        </fieldset></TabsContent>
+
+        <TabsContent value="consent"><fieldset className="settings-section" disabled={busy}>
+          <legend>Consent decisions</legend>
+          <p className="muted">
+            Decide whether a previous approval can take returning users directly back to an application.
+          </p>
+          <div className="capability-list">
+            <label className="capability-row">
+              <span className="capability-icon"><Users aria-hidden="true" /></span>
+              <span className="capability-copy">
+                <strong>Always show consent</strong>
+                <span>Ask on every interactive authorization, even when the same access was approved before. Users can review or deny each request; silent requests return consent_required.</span>
+              </span>
+              <span className="capability-state" aria-hidden="true">{draft.alwaysAskConsent ? 'Enabled' : 'Disabled'}</span>
+              <input
+                className="capability-switch"
+                type="checkbox"
+                role="switch"
+                name="always_ask_consent"
+                aria-label="Always show consent"
+                checked={draft.alwaysAskConsent}
+                onChange={(event) => setDraft({ ...draft, alwaysAskConsent: event.target.checked })}
+              />
+            </label>
+          </div>
         </fieldset></TabsContent></Tabs>
 
         <Actions>
