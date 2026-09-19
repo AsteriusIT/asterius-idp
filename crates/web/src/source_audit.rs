@@ -425,29 +425,32 @@ mod tests {
         );
     }
 
-    /// There is one error summary, and it still manages the focus.
+    /// There is one error summary, and it remains accessible without autofocus.
     ///
     /// `error_summary.html` is included by every page that can fail, so the
-    /// three attributes that make a failure announce itself and take the caret
-    /// (`role`, `tabindex`, `autofocus`) live in exactly one file — and a page
-    /// that quietly hand-rolled its own would get none of them checked. Both
-    /// halves are asserted: the partial keeps its attributes, and nobody else
-    /// declares an alert.
+    /// attributes that announce a failure and leave it programmatically
+    /// focusable (`role`, `tabindex`) live in exactly one file. Automatic focus
+    /// is deliberately forbidden because it can move a keyboard or screen
+    /// reader user away from their current context as the page loads.
     #[test]
-    fn the_error_summary_is_the_only_alert_and_keeps_its_focus_handling() {
+    fn the_error_summary_is_the_only_alert_and_does_not_force_focus() {
         let templates = templates();
         let (_, summary) = templates
             .iter()
             .find(|(name, _)| name == "error_summary.html")
             .expect("the shared error summary exists");
 
-        for required in ["role=\"alert\"", "tabindex=\"-1\"", "autofocus"] {
+        for required in ["role=\"alert\"", "tabindex=\"-1\""] {
             assert!(
                 summary.contains(required),
-                "the error summary lost {required}, so a failed submission no \
-                 longer announces itself or takes the focus"
+                "the error summary lost {required}, so a failed submission is \
+                 no longer announced or programmatically focusable"
             );
         }
+        assert!(
+            !summary.contains("autofocus"),
+            "the error summary must not force focus when a page loads"
+        );
 
         let hand_rolled: Vec<&String> = templates
             .iter()
@@ -461,6 +464,31 @@ mod tests {
             "these pages declare their own alert instead of including \
              error_summary.html: {hand_rolled:?}"
         );
+    }
+
+    /// WebAuthn's base64url helpers stay linear and use the modern string APIs.
+    #[test]
+    fn webauthn_base64url_helpers_avoid_legacy_and_backtracking_operations() {
+        let templates = templates();
+        for name in ["login.html", "passkey.html"] {
+            let (_, source) = templates
+                .iter()
+                .find(|(candidate, _)| candidate == name)
+                .unwrap_or_else(|| panic!("the WebAuthn template {name} exists"));
+
+            for legacy in [".replace(/", ".charCodeAt(", "String.fromCharCode("] {
+                assert!(
+                    !source.contains(legacy),
+                    "{name} uses the legacy or regex operation {legacy}"
+                );
+            }
+            for modern in [".replaceAll(", ".codePointAt(", "String.fromCodePoint("] {
+                assert!(
+                    source.contains(modern),
+                    "{name} lost the modern base64url operation {modern}"
+                );
+            }
+        }
     }
 
     /// The templates that may run script, each with the reason it must.

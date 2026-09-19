@@ -539,7 +539,7 @@ input.code {
 
 
 
-<div class="error" role="alert" tabindex="-1" autofocus>
+<div class="error" role="alert" tabindex="-1">
 <p><strong>Un problème est survenu</strong></p>
 <p>That username and password did not match.</p>
 </div>
@@ -607,20 +607,20 @@ input.code {
   }
 
   const decode = (value) => {
-    const padded = value.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = value.replaceAll("-", "+").replaceAll("_", "/");
     const raw = atob(padded + "===".slice((padded.length + 3) % 4));
     const bytes = new Uint8Array(raw.length);
     for (let index = 0; index < raw.length; index += 1) {
-      bytes[index] = raw.charCodeAt(index);
+      bytes[index] = raw.codePointAt(index);
     }
     return bytes;
   };
   const encode = (buffer) => {
     let raw = "";
     for (const byte of new Uint8Array(buffer)) {
-      raw += String.fromCharCode(byte);
+      raw += String.fromCodePoint(byte);
     }
-    return btoa(raw).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    return btoa(raw).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
   };
 
   const post = async (url, body) => {
