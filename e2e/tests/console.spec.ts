@@ -321,7 +321,16 @@ for (const theme of ['light', 'dark'] as const) {
  */
 async function openSettings(page: Page): Promise<void> {
   await page.getByRole('combobox', { name: /Switch tenant/ }).click();
-  await page.getByRole('link', { name: 'Tenant settings', exact: true }).click();
+  const settingsLink = page.getByRole('link', { name: 'Tenant settings', exact: true });
+  await expect(settingsLink).toBeVisible();
+  const linkStyle = await settingsLink.evaluate((link) => ({
+    color: getComputedStyle(link).color,
+    height: link.getBoundingClientRect().height,
+    menuColor: getComputedStyle(link.closest('.tenant-menu')!).color,
+  }));
+  expect(linkStyle.height).toBeLessThanOrEqual(44);
+  expect(linkStyle.color).toBe(linkStyle.menuColor);
+  await settingsLink.click();
   await expect(page.getByRole('heading', { name: 'Tenant settings' })).toBeVisible();
   // The form is drawn from the document the API answered with, so a visible
   // field means the read succeeded rather than that a skeleton rendered.
