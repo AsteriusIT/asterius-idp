@@ -3,6 +3,7 @@ import { Field } from './ui';
 import { FormSelect } from './components/ui/select';
 import {
   TLS_SUBJECT_FIELDS,
+  clientAuthenticationMethods,
   changeClientAuthentication,
   changeComplianceProfile,
   changeSenderConstraint,
@@ -21,12 +22,10 @@ interface SetupProps {
 }
 
 export function ClientSecurity({ draft, discovery, refusal, busy, onChange }: SetupProps): JSX.Element {
-  const methods = [
-    ...(draft.compliance_profile === 'oidc' ? ['client_secret_basic'] : []),
-    'private_key_jwt', 'tls_client_auth', 'self_signed_tls_client_auth',
-  ]
-    .filter((method) => method === draft.token_endpoint_auth_method
-      || (discovery?.token_endpoint_auth_methods_supported ?? ['private_key_jwt']).includes(method));
+  const methods = clientAuthenticationMethods(
+    draft,
+    discovery?.token_endpoint_auth_methods_supported,
+  );
   return <>
     <Field label="Security profile" error={clientFieldError(refusal, 'compliance_profile')}
       hint="FAPI is the default hardened profile. Standard OIDC must first be enabled for this tenant and does not receive the FAPI badge.">

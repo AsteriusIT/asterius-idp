@@ -1,0 +1,47 @@
+# Grafana Community Helm chart values for testing an Asterius OIDC client.
+#
+# The OIDC client secret is injected through a Kubernetes Secret by install.sh.
+
+service:
+  type: ClusterIP
+  port: 80
+
+persistence:
+  enabled: false
+
+admin:
+  existingSecret: ""
+
+ingress:
+  enabled: "true"
+  ingressClassName: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: asterius-local-ca
+  hosts:
+    - grafana.asterius.local
+  tls:
+    - secretName: grafana-asterius-local-tls
+      hosts:
+        - grafana.asterius.local
+grafana.ini:
+  server:
+    # This must be the URL used by the browser to reach Grafana.
+    root_url: https://grafana.asterius.local
+
+  auth:
+    disable_login_form: false
+
+  auth.generic_oauth:
+    enabled: true
+    name: asterius
+    allow_sign_up: true
+    client_id: c.epGyhgT1Vp8fQWvaSu7ubQ
+    client_secret: $__env{GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET}
+    scopes: openid profile email
+    auth_style: InHeader
+    auth_url: https://auth.asterius.local/t/demo/authorize
+    token_url: https://auth.asterius.local/t/demo/token
+    api_url: https://auth.asterius.local/t/demo/userinfo
+    use_pkce: true
+    validate_id_token: true
+    tls_skip_verify_insecure: true

@@ -156,6 +156,24 @@ export function emptyDraft(): Draft {
   };
 }
 
+/** Authentication methods the setup form can offer for this profile/deployment. */
+export function clientAuthenticationMethods(
+  draft: Draft,
+  discoveredMethods: readonly string[] = ['private_key_jwt'],
+): string[] {
+  return [
+    ...(draft.compliance_profile === 'oidc' ? ['client_secret_basic'] : []),
+    'private_key_jwt',
+    'tls_client_auth',
+    'self_signed_tls_client_auth',
+  ].filter((method) => method === draft.token_endpoint_auth_method
+    // Standard OIDC secret authentication is profile-gated by the server. It
+    // need not appear in discovery, whose hardened defaults can advertise only
+    // private_key_jwt even when this tenant explicitly enables Standard OIDC.
+    || method === 'client_secret_basic'
+    || discoveredMethods.includes(method));
+}
+
 /** Whether this authentication method itself sends a client certificate. */
 function authenticationUsesMtls(method: string): boolean {
   return method === 'tls_client_auth' || method === 'self_signed_tls_client_auth';

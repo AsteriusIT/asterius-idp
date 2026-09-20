@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  clientAuthenticationMethods,
   changeClientAuthentication,
   changeComplianceProfile,
   changeSenderConstraint,
@@ -78,6 +79,18 @@ test('standard OIDC payloads omit key metadata and never earn the FAPI badge', (
     fapiBadge: false,
   });
   assert.equal(profilePresentation('fapi').fapiBadge, true);
+});
+
+test('standard OIDC offers shared-secret authentication when discovery is hardened', () => {
+  const standard = changeComplianceProfile(emptyDraft(), 'oidc');
+
+  assert.deepEqual(clientAuthenticationMethods(standard, ['private_key_jwt']), [
+    'client_secret_basic',
+    'private_key_jwt',
+  ]);
+  assert.deepEqual(clientAuthenticationMethods(emptyDraft(), ['private_key_jwt']), [
+    'private_key_jwt',
+  ]);
 });
 
 test('security selections enable mTLS aliases only when they use mTLS', () => {
