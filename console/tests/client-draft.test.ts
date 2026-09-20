@@ -75,7 +75,7 @@ test('standard OIDC payloads omit key metadata and never earn the FAPI badge', (
   assert.equal('jwks' in payload, false);
   assert.equal('jwks_uri' in payload, false);
   assert.deepEqual(profilePresentation('oidc'), {
-    label: 'Standard OIDC',
+    label: 'Non-FAPI exception',
     fapiBadge: false,
   });
   assert.equal(profilePresentation('fapi').fapiBadge, true);

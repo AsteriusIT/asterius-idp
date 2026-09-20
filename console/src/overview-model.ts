@@ -20,6 +20,16 @@ export type MetricState =
   | { readonly kind: 'ready'; readonly document: MetricDocument }
   | { readonly kind: 'failed'; readonly message: string };
 
+/** The tenant-wide application profile policy, phrased for an at-a-glance badge. */
+export function applicationPolicyPresentation(allowNonFapiClients: boolean): {
+  readonly label: string;
+  readonly tone: 'ok' | 'warn';
+} {
+  return allowNonFapiClients
+    ? { label: 'Non-FAPI exceptions enabled', tone: 'warn' }
+    : { label: 'FAPI-only applications', tone: 'ok' };
+}
+
 export const OVERVIEW_METRICS: readonly MetricDefinition[] = [
   { path: 'overview/users', scope: 'admin.users:read', label: 'Active users', empty: 'No active accounts' },
   { path: 'overview/sessions', scope: 'admin.sessions:read', label: 'Active sessions', empty: 'No active sessions' },

@@ -50,8 +50,8 @@ export function profilePresentation(profile: 'fapi' | 'oidc'): {
   readonly fapiBadge: boolean;
 } {
   return profile === 'fapi'
-    ? { label: 'FAPI', fapiBadge: true }
-    : { label: 'Standard OIDC', fapiBadge: false };
+    ? { label: 'FAPI protected', fapiBadge: true }
+    : { label: 'Non-FAPI exception', fapiBadge: false };
 }
 
 /** What the form holds while it is being edited. */

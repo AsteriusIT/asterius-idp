@@ -35,7 +35,7 @@ export function OidcDetails({ tenant }: Readonly<{ tenant: string }>): JSX.Eleme
         const document = value as Record<string, unknown>;
         const issuer = typeof document.issuer === 'string' ? document.issuer : null;
         if (issuer === null) {
-          setLoad({ kind: 'failed', message: 'the OIDC document did not contain an issuer' });
+          setLoad({ kind: 'failed', message: 'the discovery document did not contain an issuer' });
           return;
         }
         setLoad({ kind: 'ready', issuer, links: oidcLinks(document) });
@@ -44,7 +44,7 @@ export function OidcDetails({ tenant }: Readonly<{ tenant: string }>): JSX.Eleme
         if (current) {
           setLoad({
             kind: 'failed',
-            message: error instanceof Error ? error.message : 'the OIDC document could not be read',
+            message: error instanceof Error ? error.message : 'the discovery document could not be read',
           });
         }
       });
@@ -55,15 +55,15 @@ export function OidcDetails({ tenant }: Readonly<{ tenant: string }>): JSX.Eleme
 
   if (load.kind === 'loading') {
     return (
-      <Panel title="OIDC endpoints" description="Loading the tenant's OpenID Connect discovery document.">
-        <Skeleton rows={5} label="Reading the OIDC document." />
+      <Panel title="Protocol endpoints" description="Loading the tenant's discovery document.">
+        <Skeleton rows={5} label="Reading the discovery document." />
       </Panel>
     );
   }
 
   if (load.kind === 'failed') {
     return (
-      <Panel title="OIDC endpoints" description="The tenant's discovery document could not be loaded.">
+      <Panel title="Protocol endpoints" description="The tenant's discovery document could not be loaded.">
         <LoadFailure message={load.message} onRetry={() => setAttempt((value) => value + 1)} />
       </Panel>
     );
@@ -71,8 +71,8 @@ export function OidcDetails({ tenant }: Readonly<{ tenant: string }>): JSX.Eleme
 
   return (
     <Panel
-      title="OIDC endpoints"
-      description="Every URL advertised by this tenant's live OpenID Connect discovery document."
+      title="Protocol endpoints"
+      description="Every URL advertised by this tenant's live discovery document."
     >
       <p>
         <strong>Discovery document</strong>{' '}

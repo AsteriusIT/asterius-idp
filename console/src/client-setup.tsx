@@ -10,8 +10,7 @@ import {
   type Draft,
   type TlsSubjectField,
 } from './client-draft';
-import { clientFieldError, publicKeyError, type ClientDiscovery } from './client-onboarding';
-import { redirectUris } from './validation';
+import { clientFieldError, type ClientDiscovery } from './client-onboarding';
 
 interface SetupProps {
   readonly draft: Draft;
@@ -28,11 +27,11 @@ export function ClientSecurity({ draft, discovery, refusal, busy, onChange }: Se
   );
   return <>
     <Field label="Security profile" error={clientFieldError(refusal, 'compliance_profile')}
-      hint="FAPI is the default hardened profile. Standard OIDC must first be enabled for this tenant and does not receive the FAPI badge.">
+      hint="FAPI is the default hardened profile. Compatibility exceptions must first be enabled for this tenant and do not receive the FAPI badge.">
       {(props) => <FormSelect {...props} disabled={busy} value={draft.compliance_profile}
         options={[
           { value: 'fapi', label: 'FAPI 2.0 Security Profile' },
-          { value: 'oidc', label: 'Standard OIDC (non-FAPI)' },
+          { value: 'oidc', label: 'Non-FAPI compatibility exception' },
         ]}
         onValueChange={(value) => onChange(changeComplianceProfile(
           draft,
@@ -61,7 +60,7 @@ export function ClientSecurity({ draft, discovery, refusal, busy, onChange }: Se
     </>}
     <Field label="Sender constraint"
       error={clientFieldError(refusal, 'dpop_bound_access_tokens') ?? clientFieldError(refusal, 'tls_client_certificate_bound_access_tokens')}
-      hint="DPoP requires proof keys; certificate binding requires mutual TLS. Bearer maximizes OIDC tool compatibility but tokens are usable by anyone who obtains them.">
+      hint="DPoP requires proof keys; certificate binding requires mutual TLS. Bearer maximizes client-library compatibility but tokens are usable by anyone who obtains them.">
       {(props) => <FormSelect {...props} disabled={busy}
         value={draft.tls_client_certificate_bound_access_tokens === true
           ? 'mtls'
@@ -78,50 +77,5 @@ export function ClientSecurity({ draft, discovery, refusal, busy, onChange }: Se
           value as 'dpop' | 'mtls' | 'bearer',
         ))} />}
     </Field>
-  </>;
-}
-
-export function ClientSetup(props: SetupProps): JSX.Element {
-  const { draft, refusal, onChange } = props;
-  return <>
-    <legend>Confidential application setup</legend>
-    <p>Connect a server-side application or backend for frontend. FAPI clients use PAR and asymmetric client authentication.
-      Standard OIDC clients may use a shared secret, direct authorization requests, and an explicit Bearer-token compatibility option. Both profiles use PKCE S256.</p>
-    <h3>1. Name and callbacks</h3>
-    <Field label="Client name" required error={clientFieldError(refusal, 'client_name')}>
-      {(field) => <input {...field} value={draft.client_name}
-        onChange={(event) => onChange({ ...draft, client_name: event.target.value })} />}
-    </Field>
-    <Field label="Redirect URIs (one per line)" required
-      hint="Enter exact HTTPS callback URLs handled by your backend, for example https://app.example/callback."
-      error={clientFieldError(refusal, 'redirect_uris') ?? redirectUris(draft.redirect_uris, draft.application_type)}>
-      {(field) => <textarea {...field} rows={3} value={draft.redirect_uris}
-        onChange={(event) => onChange({ ...draft, redirect_uris: event.target.value })} />}
-    </Field>
-    <Field label="Post-logout redirect URIs (one per line)"
-      hint="Optional exact HTTPS destinations after RP-initiated logout."
-      error={clientFieldError(refusal, 'post_logout_redirect_uris') ?? redirectUris(draft.post_logout_redirect_uris, draft.application_type)}>
-      {(field) => <textarea {...field} rows={2} value={draft.post_logout_redirect_uris}
-        onChange={(event) => onChange({ ...draft, post_logout_redirect_uris: event.target.value })} />}
-    </Field>
-    <h3>2. Public keys and security</h3>
-    <ClientSecurity {...props} />
-    {draft.token_endpoint_auth_method !== 'client_secret_basic' && <><Field label="Inline JWK Set" error={clientFieldError(refusal, 'jwks') ?? publicKeyError(draft)}
-      hint="Generate an EdDSA, ES256 or PS256 key in your application. Paste its public keys array, with a kid for rotation. Never paste a private key.">
-      {(field) => <textarea {...field} rows={5} value={draft.jwks}
-        onChange={(event) => onChange({ ...draft, jwks: event.target.value })} />}
-    </Field>
-    <Field label="JWK Set URL" error={clientFieldError(refusal, 'jwks_uri')}
-      hint="Alternatively publish your public keys at a public HTTPS URL. Private addresses and localhost cannot be fetched; use inline keys for local development.">
-      {(field) => <input {...field} type="url" value={draft.jwks_uri}
-        onChange={(event) => onChange({ ...draft, jwks_uri: event.target.value })} />}
-    </Field></>}
-    <h3>3. Access and configuration</h3>
-    <Field label="Scope" error={clientFieldError(refusal, 'scope')}
-      hint="Space-separated scopes, starting with openid. Request only what the application needs.">
-      {(field) => <input {...field} value={draft.scope}
-        onChange={(event) => onChange({ ...draft, scope: event.target.value })} />}
-    </Field>
-    <p>Use the advanced tabs for grant types, signing algorithms and token claims. Register to obtain your client ID and copy the saved connection configuration.</p>
   </>;
 }
