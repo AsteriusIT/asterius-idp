@@ -102,6 +102,13 @@ test('security selections enable mTLS aliases only when they use mTLS', () => {
   assert.equal(certificateBound.use_mtls_endpoint_aliases, true);
   const dpopBound = changeSenderConstraint(certificateBound, 'dpop');
   assert.equal(dpopBound.use_mtls_endpoint_aliases, false);
+  const bearer = changeSenderConstraint(dpopBound, 'bearer');
+  assert.equal(bearer.dpop_bound_access_tokens, false);
+  assert.equal(bearer.tls_client_certificate_bound_access_tokens, false);
+  assert.equal(bearer.use_mtls_endpoint_aliases, false);
+  const backToFapi = changeComplianceProfile(bearer, 'fapi');
+  assert.equal(backToFapi.dpop_bound_access_tokens, true);
+  assert.equal(backToFapi.tls_client_certificate_bound_access_tokens, false);
 
   const tlsAuthWithDpop = changeSenderConstraint(tlsAuth, 'dpop');
   assert.equal(tlsAuthWithDpop.use_mtls_endpoint_aliases, true);

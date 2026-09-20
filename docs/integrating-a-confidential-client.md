@@ -26,8 +26,9 @@ discovery document; certificate binding requires its mutual TLS endpoints.
 The existing Settings, Callbacks, Grant types, Credentials and Token claims
 tabs remain available for advanced registration. The API validates every save;
 its field refusals appear in the guide beside the corresponding input. FAPI
-requires PAR, PKCE S256 and sender-constrained tokens. Standard OIDC exempts
-PAR and asymmetric client authentication only.
+requires PAR, PKCE S256 and sender-constrained tokens. Standard OIDC may exempt
+PAR, asymmetric client authentication, and—only when explicitly selected for
+that application—sender constraint for Bearer-token compatibility.
 
 After registration, open **Saved configuration** and copy the JSON. It is built
 from the last successful API response, including the assigned client ID and
@@ -46,11 +47,12 @@ or save changes.
 | --- | --- |
 | **PAR for every FAPI authorization request** | ADR-0014. A FAPI application cannot opt out. An explicitly tenant-permitted standard OIDC application may send the same code + PKCE request directly to `/authorize`. |
 | **Explicit confidential-client authentication** | FAPI clients use `private_key_jwt` or mTLS. A standard OIDC client may use the server-generated `client_secret_basic`; `client_secret_post`, public clients and caller-chosen secrets remain unsupported. |
-| **A sender-constrained access token** | FAPI 2.0 SP §5.3.2.1. `dpop_bound_access_tokens` defaults to `true` for a registration that says nothing, so a DPoP proof is required at the token endpoint. |
+| **Token presentation** | FAPI 2.0 SP §5.3.2.1 requires sender constraint. `dpop_bound_access_tokens` defaults to `true`. A standard OIDC application may explicitly set both binding flags to `false`; its access token then uses `token_type: "Bearer"`, omits `cnf`, and needs no DPoP proof at the token or UserInfo endpoints. |
 
 If your client library lacks PAR or asymmetric client authentication, an
 administrator must first enable the tenant permission and then select Standard
-OIDC on that application. PKCE S256 and sender constraint still apply.
+OIDC on that application. PKCE S256 still applies. Keep DPoP selected when the
+client supports it; select Bearer only for libraries that do not.
 
 ## 1. Where the endpoints are, and what `aud` must say
 

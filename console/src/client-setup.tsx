@@ -62,17 +62,21 @@ export function ClientSecurity({ draft, discovery, refusal, busy, onChange }: Se
     </>}
     <Field label="Sender constraint"
       error={clientFieldError(refusal, 'dpop_bound_access_tokens') ?? clientFieldError(refusal, 'tls_client_certificate_bound_access_tokens')}
-      hint="DPoP requires a separate proof key and a fresh proof for token and resource requests. Certificate binding requires mutual TLS.">
+      hint="DPoP requires proof keys; certificate binding requires mutual TLS. Bearer maximizes OIDC tool compatibility but tokens are usable by anyone who obtains them.">
       {(props) => <FormSelect {...props} disabled={busy}
-        value={draft.tls_client_certificate_bound_access_tokens === true ? 'mtls' : 'dpop'}
+        value={draft.tls_client_certificate_bound_access_tokens === true
+          ? 'mtls'
+          : draft.dpop_bound_access_tokens === false ? 'bearer' : 'dpop'}
         options={[
           { value: 'dpop', label: 'DPoP-bound tokens' },
           ...((discovery?.mtls_endpoint_aliases || draft.tls_client_certificate_bound_access_tokens === true)
             ? [{ value: 'mtls', label: 'Certificate-bound tokens (mTLS)' }] : []),
+          ...(draft.compliance_profile === 'oidc'
+            ? [{ value: 'bearer', label: 'Bearer tokens (maximum compatibility)' }] : []),
         ]}
         onValueChange={(value) => onChange(changeSenderConstraint(
           draft,
-          value as 'dpop' | 'mtls',
+          value as 'dpop' | 'mtls' | 'bearer',
         ))} />}
     </Field>
   </>;
@@ -83,7 +87,7 @@ export function ClientSetup(props: SetupProps): JSX.Element {
   return <>
     <legend>Confidential application setup</legend>
     <p>Connect a server-side application or backend for frontend. FAPI clients use PAR and asymmetric client authentication.
-      Standard OIDC clients may use a shared secret and direct authorization requests. Both use PKCE S256 and sender-constrained tokens.</p>
+      Standard OIDC clients may use a shared secret, direct authorization requests, and an explicit Bearer-token compatibility option. Both profiles use PKCE S256.</p>
     <h3>1. Name and callbacks</h3>
     <Field label="Client name" required error={clientFieldError(refusal, 'client_name')}>
       {(field) => <input {...field} value={draft.client_name}

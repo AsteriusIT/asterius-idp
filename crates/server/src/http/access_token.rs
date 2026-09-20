@@ -233,8 +233,7 @@ pub enum NotBound {
 
 /// Holds the presentation to the token's own `cnf` (RFC 9449 §7.1, RFC 8705 §3).
 ///
-/// The `cnf` decides, and it holds exactly one member because
-/// `TokenBinding` admits exactly one:
+/// A present `cnf` decides which sender constraint applies:
 ///
 /// * `jkt` — a DPoP-bound token, usable only under the `DPoP` scheme and only
 ///   with a proof for the key it is bound to, whose `ath` hashes the token
@@ -244,11 +243,10 @@ pub enum NotBound {
 ///   certificate ... that was used for mutual TLS authentication" — here, the
 ///   certificate a trusted proxy forwarded on this request.
 ///
-/// Anything else is refused. A token carrying neither is not
-/// sender-constrained, which is not a token this profile has (FAPI 2.0 SP
-/// §5.3.2.1 item 4); a token carrying both is one no registration can produce,
-/// and honouring whichever half the caller can satisfy would make the binding
-/// the caller's choice.
+/// An absent `cnf` is the explicit standard OIDC Bearer shape and is accepted
+/// only under the Bearer scheme. A token carrying both members is one no
+/// registration can produce, and honouring whichever half the caller can
+/// satisfy would make the binding the caller's choice.
 ///
 /// Shared between UserInfo and the Grant Management endpoint for the reason
 /// [`verify`] is shared: two copies of this would not be wrong today, they
@@ -273,6 +271,7 @@ pub async fn check_sender_constraint(
     let jkt = match (jkt, x5t) {
         (Some(jkt), None) => jkt,
         (None, Some(x5t)) => return check_certificate(request, x5t),
+        (None, None) if !request.presented.is_dpop() => return Ok(()),
         (Some(_), Some(_)) | (None, None) => return Err(NotBound::Refused),
     };
 

@@ -1,5 +1,5 @@
-//! The JWT access token profile: RFC 9068, always audience- and
-//! sender-constrained.
+//! The JWT access token profile: RFC 9068, always audience-constrained and,
+//! for the FAPI profile, sender-constrained.
 //!
 //! Self-contained and signed. Opaque reference tokens are not implemented:
 //! they would need a lookup on every resource call and a second revocation
@@ -10,7 +10,7 @@
 //! Three properties are structural rather than checked, which is the whole
 //! design of this module.
 //!
-//! ## There is no such thing as an access token without `cnf`
+//! ## Sender constraint is explicit
 //!
 //! FAPI 2.0 SP §5.3.2.1 item 4: an authorization server "shall only issue
 //! sender-constrained access tokens". Not "should", and not "unless the client
@@ -18,11 +18,10 @@
 //! whoever finds it in a log, a proxy or a browser history, which is FAPI 2.0's
 //! attacker A5 and half of the reason the profile exists.
 //!
-//! So [`AccessToken::new`] takes a [`Confirmation`] by value, as a positional
-//! argument. Not an `Option`, not a builder method a caller might not call, and
-//! [`Confirmation`] has no `Default` and no empty constructor: every variant
-//! carries at least one thumbprint. A token with no `cnf` is not a token this
-//! module rejects — it is a call that does not compile.
+//! [`AccessToken::new`] takes a [`Confirmation`] by value as a positional
+//! argument. FAPI callers provide DPoP or certificate confirmation; the
+//! explicitly gated standard OIDC profile can provide [`Confirmation::bearer`]
+//! and receives an RFC 6750 token without `cnf`.
 //!
 //! ## `aud` is the resource, never the client
 //!
@@ -162,6 +161,8 @@ enum Method {
     Dpop(String),
     /// RFC 8705 §3.1's `x5t#S256`.
     Certificate(String),
+    /// No `cnf`; the credential is presented under RFC 6750 Bearer.
+    Bearer,
 }
 
 impl Confirmation {
@@ -198,6 +199,14 @@ impl Confirmation {
         })
     }
 
+    /// Builds the unbound token shape used by explicitly non-FAPI OIDC clients.
+    #[must_use]
+    pub const fn bearer() -> Self {
+        Self {
+            method: Method::Bearer,
+        }
+    }
+
     /// Which binding this confirmation expresses.
     ///
     /// So that a caller can check it against the client's registered
@@ -209,18 +218,20 @@ impl Confirmation {
         match self.method {
             Method::Dpop(_) => TokenBinding::Dpop,
             Method::Certificate(_) => TokenBinding::Certificate,
+            Method::Bearer => TokenBinding::Bearer,
         }
     }
 
     /// The `cnf` claim value.
-    fn claim(&self) -> Value {
+    fn claim(&self) -> Option<Value> {
         let mut members = Map::new();
         let (name, value) = match &self.method {
             Method::Dpop(jkt) => ("jkt", jkt),
             Method::Certificate(x5t) => ("x5t#S256", x5t),
+            Method::Bearer => return None,
         };
         members.insert(name.to_owned(), Value::String(value.clone()));
-        Value::Object(members)
+        Some(Value::Object(members))
     }
 }
 
@@ -642,8 +653,9 @@ impl<'a> AccessToken<'a> {
             Value::String(self.jti.as_str().to_owned()),
         );
 
-        // Not optional here, however optional RFC 7800 makes it in general.
-        claims.insert("cnf".to_owned(), self.confirmation.claim());
+        if let Some(confirmation) = self.confirmation.claim() {
+            claims.insert("cnf".to_owned(), confirmation);
+        }
 
         // §2.2.3: "If an authorization request includes a scope parameter, the
         // corresponding issued JWT access token SHOULD include a `scope` claim
@@ -1072,12 +1084,30 @@ mod tests {
         assert_eq!(claims["scope"], json!("accounts openid"));
     }
 
-    /// The one claim FAPI 2.0 SP §5.3.2.1 item 4 makes non-negotiable. There is
-    /// no test for "a token without `cnf`" because there is no way to write the
-    /// call: [`AccessToken::new`] takes a [`Confirmation`] by value.
+    /// The claim FAPI 2.0 SP §5.3.2.1 item 4 makes non-negotiable for FAPI
+    /// callers. The standard OIDC Bearer test below pins the explicit exception.
     #[test]
     fn an_access_token_always_carries_cnf() {
         assert_eq!(built()["cnf"], json!({ "jkt": JKT }));
+    }
+
+    #[test]
+    fn a_bearer_access_token_omits_cnf() {
+        let grant = grant();
+        let claimed = grant.claim(now()).expect("a live grant");
+        let claims = AccessToken::new(
+            &issuer(),
+            &grant,
+            &claimed,
+            Audience::of_grant(&grant).expect("a resource"),
+            Confirmation::bearer(),
+            JwtId::from_bytes([3; 16]),
+            now(),
+        )
+        .build()
+        .expect("a buildable token")
+        .into_claims();
+        assert!(claims.get("cnf").is_none());
     }
 
     #[test]
@@ -1102,13 +1132,15 @@ mod tests {
     #[test]
     fn a_confirmation_reports_the_binding_it_expresses() {
         assert_eq!(dpop().binding(), TokenBinding::Dpop);
-        assert_eq!(dpop().claim(), json!({ "jkt": JKT }));
+        assert_eq!(dpop().claim(), Some(json!({ "jkt": JKT })));
         assert_eq!(
             Confirmation::certificate(X5T)
                 .expect("a thumbprint")
                 .binding(),
             TokenBinding::Certificate
         );
+        assert_eq!(Confirmation::bearer().binding(), TokenBinding::Bearer);
+        assert_eq!(Confirmation::bearer().claim(), None);
     }
 
     /// A `cnf` holding a thumbprint of the wrong shape is a binding no resource

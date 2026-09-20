@@ -169,6 +169,8 @@ export function changeComplianceProfile(
   const tokenEndpointAuthMethod = complianceProfile === 'oidc'
     ? 'client_secret_basic'
     : 'private_key_jwt';
+  const bearerWasSelected = draft.dpop_bound_access_tokens === false
+    && draft.tls_client_certificate_bound_access_tokens !== true;
   return {
     ...draft,
     compliance_profile: complianceProfile,
@@ -176,6 +178,9 @@ export function changeComplianceProfile(
     jwks: complianceProfile === 'oidc' ? '' : draft.jwks,
     jwks_uri: complianceProfile === 'oidc' ? '' : draft.jwks_uri,
     tls_subject_value: '',
+    dpop_bound_access_tokens: complianceProfile === 'fapi' && bearerWasSelected
+      ? true
+      : draft.dpop_bound_access_tokens,
     use_mtls_endpoint_aliases: authenticationUsesMtls(tokenEndpointAuthMethod)
       || draft.tls_client_certificate_bound_access_tokens === true,
   };
@@ -193,7 +198,7 @@ export function changeClientAuthentication(draft: Draft, method: string): Draft 
 }
 
 /** Applies the selected sender constraint and derives its mTLS metadata. */
-export function changeSenderConstraint(draft: Draft, constraint: 'dpop' | 'mtls'): Draft {
+export function changeSenderConstraint(draft: Draft, constraint: 'dpop' | 'mtls' | 'bearer'): Draft {
   const certificateBound = constraint === 'mtls';
   return {
     ...draft,

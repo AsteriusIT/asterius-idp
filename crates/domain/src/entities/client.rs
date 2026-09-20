@@ -531,13 +531,9 @@ impl SubjectType {
 
 /// How a client's access tokens are bound to a key it holds.
 ///
-/// Exactly one of the two, and that is the point twice over.
-///
-/// There is no `Neither` variant: FAPI 2.0 SP §5.3.2.1 requires
-/// sender-constrained access tokens, so "this client gets bearer tokens" is not
-/// a state this type can hold. RFC 9449 §5.2 (`dpop_bound_access_tokens`) and
-/// RFC 8705 §3.4 (`tls_client_certificate_bound_access_tokens`) are the two
-/// ways in, and the pair `false, false` is refused.
+/// FAPI clients select exactly one sender constraint. An explicitly selected
+/// standard OIDC client may instead use bearer tokens for compatibility with
+/// clients that do not implement DPoP or mTLS.
 ///
 /// There is no `Both` variant either. A `cnf` carrying a `jkt` *and* an
 /// `x5t#S256` is a token whose resource servers have to agree on whether one
@@ -556,6 +552,9 @@ pub enum TokenBinding {
     /// mTLS certificate binding (RFC 8705 §3), for a client that presents a
     /// certificate anyway and has no DPoP implementation.
     Certificate,
+    /// An RFC 6750 bearer token. Available only to the explicitly gated
+    /// standard OIDC profile; FAPI clients can never reach this variant.
+    Bearer,
 }
 
 impl TokenBinding {
@@ -571,18 +570,26 @@ impl TokenBinding {
         matches!(self, Self::Certificate)
     }
 
+    /// Whether tokens are ordinary RFC 6750 bearer tokens.
+    #[must_use]
+    pub const fn is_bearer(self) -> bool {
+        matches!(self, Self::Bearer)
+    }
+
     /// Builds the binding from the two RFC booleans, or explains the refusal.
-    fn from_flags(dpop: bool, certificate: bool) -> Result<Self, ClientMetadataError> {
+    fn from_flags(
+        dpop: bool,
+        certificate: bool,
+        profile: ClientComplianceProfile,
+    ) -> Result<Self, ClientMetadataError> {
         match (dpop, certificate) {
             (true, false) => Ok(Self::Dpop),
             (false, true) => Ok(Self::Certificate),
-            // A client asking for tokens bound to nothing. Such a token is a
-            // bearer token, and a bearer token stolen from a log or a proxy is
-            // usable by whoever finds it (Attacker Model §7.7, A5).
+            (false, false) if profile == ClientComplianceProfile::Oidc => Ok(Self::Bearer),
             (false, false) => Err(ClientMetadataError::rejected(
                 "dpop_bound_access_tokens",
-                "may only be false when tls_client_certificate_bound_access_tokens is true; \
-                 this server does not issue bearer access tokens",
+                "may only be false without certificate binding for a client explicitly \
+                 configured with the non-FAPI OIDC profile",
             )),
             // A client asking for both. See the type's own note: the token
             // would carry two confirmations and no rule about which of them a
@@ -1667,7 +1674,7 @@ impl ClientMetadata {
         let post_logout_redirect_uris = self.post_logout_redirect_uris(application_type)?;
         let jwks = self.jwks(token_endpoint_auth_method)?;
         let (subject_type, sector_identifier_uri) = self.subject(&redirect_uris)?;
-        let token_binding = self.token_binding(capabilities)?;
+        let token_binding = self.token_binding(capabilities, compliance_profile)?;
         let backchannel = self.backchannel(&grant_types)?;
         check_ciba_sector(
             &grant_types,
@@ -2329,6 +2336,7 @@ impl ClientMetadata {
     fn token_binding(
         &self,
         capabilities: Capabilities,
+        profile: ClientComplianceProfile,
     ) -> Result<TokenBinding, ClientMetadataError> {
         const CERT_FIELD: &str = "tls_client_certificate_bound_access_tokens";
         // RFC 9449 §5.2 gives this a default of false. Here the default is true:
@@ -2342,7 +2350,7 @@ impl ClientMetadata {
         if certificate && !capabilities.is_enabled(Feature::Mtls) {
             return Err(ClientMetadataError::needs(CERT_FIELD, Feature::Mtls));
         }
-        TokenBinding::from_flags(dpop, certificate)
+        TokenBinding::from_flags(dpop, certificate, profile)
     }
 
     /// RFC 9126 §6 defaults `require_pushed_authorization_requests` to false.
@@ -4115,6 +4123,26 @@ mod tests {
         assert_eq!(client.token_binding, TokenBinding::Certificate);
         assert!(!client.token_binding.is_dpop_bound());
         assert!(client.token_binding.is_certificate_bound());
+    }
+
+    /// The compatibility escape hatch is attached to the already explicit
+    /// non-FAPI profile, never inferred from two false binding flags.
+    #[test]
+    fn only_the_standard_oidc_profile_may_select_bearer_tokens() {
+        let document = with("dpop_bound_access_tokens", json!(false));
+
+        let fapi = rejection(&document);
+        assert_eq!(fapi.field(), "dpop_bound_access_tokens");
+
+        let encoded = serde_json::to_vec(&document).expect("serialise");
+        let oidc = ClientRegistration::from_json_with_profile(
+            &encoded,
+            Capabilities::default(),
+            ClientComplianceProfile::Oidc,
+        )
+        .expect("the explicitly non-FAPI profile permits bearer tokens");
+        assert_eq!(oidc.token_binding, TokenBinding::Bearer);
+        assert!(oidc.token_binding.is_bearer());
     }
 
     /// RFC 8705 §3.4 and RFC 9449 §5.2 each define their own member and
