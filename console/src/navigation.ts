@@ -127,6 +127,7 @@ export const DESTINATIONS: readonly Destination[] = [
   // A form nobody may save is worse than an absent link, so the settings
   // screen asks for the write scope its only button needs.
   { route: 'settings', menuOnly: true, label: 'Tenant settings', reach: 'tenant', scope: 'admin.tenants:write', bead: 'ast-bfn', group: 'Deployment' },
+  { route: 'branding', menuOnly: true, label: 'Branding', reach: 'tenant', scope: 'admin.theme:read', bead: 'ast-6uqw.7', group: 'Deployment' },
   // Local-only browser preferences. It makes no API call, so there is no
   // server scope to require and every signed-in console user can reach it.
   { route: 'preferences', menuOnly: true, label: 'Preferences', reach: 'tenant', scope: null, bead: 'ast-f7m.10', group: 'Deployment' },

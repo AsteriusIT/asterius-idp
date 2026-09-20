@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { ApiError, endSession, loadSession, type Session } from './api';
 import { AuditExplorer } from './audit';
+import { Branding } from './branding';
 import { AuthorizationDetailsTypes } from './authorizationDetailsTypes';
 import { Roles } from './appRoles';
 import { Clients } from './clients';
@@ -174,6 +175,9 @@ function RouteScreen({
     // The subject is the session's own tenant unless the Tenants screen named
     // another one, which only a deployment-scoped caller can have reached.
     return <TenantSettings session={session} tenant={paramsOf(fragment).get('tenant')} />;
+  }
+  if (route === 'branding') {
+    return <Branding session={session} />;
   }
   if (route === 'preferences') {
     return <Preferences />;

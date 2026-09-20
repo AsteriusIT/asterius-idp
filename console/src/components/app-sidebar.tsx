@@ -10,6 +10,7 @@ import {
   ShieldCheckIcon,
   ScrollTextIcon,
   ShapesIcon,
+  PaletteIcon,
   Settings2Icon,
   SlidersHorizontalIcon,
   UsersIcon,
@@ -47,6 +48,7 @@ export const NAVIGATION_ICONS: Readonly<Record<string, LucideIcon>> = {
   audit: ScrollTextIcon,
   tenants: Building2Icon,
   settings: SlidersHorizontalIcon,
+  branding: PaletteIcon,
   preferences: Settings2Icon,
 };
 

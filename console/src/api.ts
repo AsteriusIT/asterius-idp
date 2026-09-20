@@ -165,6 +165,19 @@ export async function mutate(
   }, path);
 }
 
+/** Uploads same-origin bytes to a state-changing API endpoint. */
+export async function upload(path: string, session: Session, file: File): Promise<unknown> {
+  return request(API_BASE + path, {
+    method: 'POST',
+    headers: {
+      [CSRF_HEADER]: session.csrf_token,
+      [IDEMPOTENCY_HEADER]: idempotencyKey(),
+      'Content-Type': file.type,
+    },
+    body: file,
+  }, path);
+}
+
 /**
  * Asks a question whose parameters do not fit in a query string (`ast-f7m.9`).
  *
