@@ -9722,20 +9722,6 @@ mod tests {
         // Arrange
         let world = World::new().routed_at("asterius-admin");
         let cookie = world.sign_in("asterius-admin", &[Role::DeploymentAdmin]);
-        world
-            .handle
-            .0
-            .group_role_assignments
-            .lock()
-            .expect("an uncontended lock")
-            .push(SeededGroupAssignment {
-                tenant: TenantId::new("asterius-admin"),
-                group: asterius_domain::GroupId::from_uuid(
-                    uuid::Uuid::parse_str(SEEDED_GROUP_ID).expect("a fixed group uuid"),
-                ),
-                owner: RoleOwner::Tenant,
-                name: asterius_domain::RoleName::parse(HELD_ROLE).expect("a fixed role name"),
-            });
 
         // Act
         let response = world
@@ -10437,6 +10423,20 @@ mod tests {
         // Arrange
         let world = World::new().routed_at("asterius-admin");
         let cookie = world.sign_in("asterius-admin", &[Role::DeploymentAdmin]);
+        world
+            .handle
+            .0
+            .group_role_assignments
+            .lock()
+            .expect("an uncontended lock")
+            .push(SeededGroupAssignment {
+                tenant: TenantId::new("asterius-admin"),
+                group: asterius_domain::GroupId::from_uuid(
+                    uuid::Uuid::parse_str(SEEDED_GROUP_ID).expect("a fixed group uuid"),
+                ),
+                owner: RoleOwner::Tenant,
+                name: asterius_domain::RoleName::parse(HELD_ROLE).expect("a fixed role name"),
+            });
 
         // Act
         let response = world

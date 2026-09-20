@@ -49,8 +49,10 @@ and removes the membership without presenting a group UUID. Its one targeted
 verifier completed formatting and strict Clippy, then reported 32 passing
 source audits and one failing route assertion because the assertion had not
 seeded a group-role assignment. The fixture and assertion were corrected and
-`cargo check -p asterius-admin-api` passed; under the one-verifier rule it was
-not rerun, so this follow-up also does not claim a green targeted Rust result.
+the corrected focused assertion passed (one passed, zero failed), followed by
+`cargo check -p asterius-admin-api`; under the one-verifier rule the verifier
+itself was not rerun, so this follow-up does not claim a green full targeted
+Rust result.
 
 ## Remote evidence and disposition
 
