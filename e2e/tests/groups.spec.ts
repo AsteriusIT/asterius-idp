@@ -52,7 +52,10 @@ test('group membership changes effective application roles', async ({ page }) =>
   await open(page, 'Groups', 'Groups');
   await page.getByLabel('Search groups').fill(group);
   await page.getByRole('button', { name: 'Search' }).click();
-  await page.getByRole('button', { name: /Manage/ }).click();
+  await page
+    .getByRole('row', { name: new RegExp(group) })
+    .getByRole('button', { name: /Manage/ })
+    .click();
   await page.getByRole('button', { name: new RegExp(`Remove ${USER_ID}`) }).click();
 
   await open(page, 'Users', 'Users');
