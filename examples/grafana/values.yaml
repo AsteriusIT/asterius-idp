@@ -45,3 +45,4 @@ grafana.ini:
     use_pkce: true
     validate_id_token: true
     tls_skip_verify_insecure: true
+    role_attribute_path: contains(roles[*], 'grafana-admin') && 'Admin' || 'Viewer'
