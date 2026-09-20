@@ -74,15 +74,14 @@ td, [data-slot='table-cell'] { padding: calc(var(--table-cell-y) + 6px) 16px; fo
 .stat dd { font-size: 14px; font-weight: 400; margin-top: 5px; }
 .stats { gap: 20px; }
 .overview-bento { display: flex; flex-direction: column; gap: 28px; }
-.overview-identity { position: static; width: 100%; background: var(--surface-sunken); }
-.overview-access { width: 100%; border: 0; padding: 0; }
-.overview-access > [data-slot='card-header'], .overview-access > [data-slot='card-content'] { padding: 0; }
-.workspace-grid { gap: 14px; }
-.workspace-card { min-height: 100px; padding: 22px; background: var(--bg); gap: 18px; border-radius: 8px; }
-.workspace-card strong { font-size: 15px; font-weight: 500; }
-.workspace-card small { margin-top: 5px; font-size: 13px; }
-.workspace-icon { width: 40px; height: 40px; background: var(--tint-accent); color: var(--accent); border: 0; }
-.workspace-icon svg { width: 20px; height: 20px; }
+.overview-identity { width: 100%; }
+.overview-identity .panel-title h3 { font-size: clamp(2.5rem, 6vw, 4.75rem); font-weight: 650; }
+.overview-context { max-width: 900px; }
+.overview-context .stat { padding: 14px 16px; border: 1px solid color-mix(in srgb, var(--accent) 14%, var(--line)); border-radius: 8px; background: color-mix(in srgb, var(--card) 74%, transparent); }
+.overview-activity > [data-slot='card-content'] { padding-top: 4px; }
+.overview-metrics { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+.overview-metrics .stat { min-height: 180px; padding: 22px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-sunken); }
+.overview-metrics .stat dd { margin-top: 12px; font-size: clamp(1.75rem, 3vw, 2.5rem); font-weight: 600; }
 .back-link { align-self: flex-start; color: var(--muted); font-size: 13px; cursor: pointer; }
 .back-link:hover { color: var(--accent); }
 .identity-heading { align-items: center; gap: 18px; }
@@ -176,7 +175,7 @@ td, [data-slot='table-cell'] { padding: calc(var(--table-cell-y) + 6px) 16px; fo
   .screen-head { flex-direction: column; }
   .screen-title h2 { font-size: 27px; }
   .screen-actions { width: 100%; }
-  .workspace-grid, .settings-grid, .stats, .account-summary { grid-template-columns: 1fr; }
+  .settings-grid, .stats, .account-summary { grid-template-columns: 1fr; }
   .stats { gap: 10px; }
   [data-slot='card-header'], [data-slot='card-content'] { padding-inline: 18px; }
   [data-slot='card-header']:has([data-slot='card-action']) { grid-template-columns: 1fr; }

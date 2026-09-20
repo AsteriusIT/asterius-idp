@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { read, type Session } from './api';
-import { NAVIGATION_ICONS } from './components/app-sidebar';
-import { visibleTo } from './navigation';
 import {
   loadingMetrics,
   updateMetric,
@@ -11,14 +9,12 @@ import {
   type MetricDocument,
   type MetricState,
 } from './overview-model';
-import { hrefOf } from './routes';
 import { Badge, Button, EmptyState, LoadFailure, Panel, Screen, Skeleton, Timestamp } from './ui';
 
 export function Overview({ session }: Readonly<{ session: Session }>): JSX.Element {
   const definitions = visibleMetrics(session);
   const [metrics, setMetrics] = useState<ReadonlyMap<string, MetricState>>(() => new Map());
   const [refresh, setRefresh] = useState(0);
-  const destinations = visibleTo(session).filter((destination) => destination.route !== 'overview' && !destination.menuOnly);
 
   const reload = useCallback(() => setRefresh((value) => value + 1), []);
   useEffect(() => {
@@ -47,15 +43,14 @@ export function Overview({ session }: Readonly<{ session: Session }>): JSX.Eleme
       actions={<Button onClick={reload}>Refresh summaries</Button>}
     >
       <div className="overview-bento">
-        <Panel className="overview-identity" title="Workspace" description="The active tenant and your effective access.">
-          <dl className="stats">
-            <div className="stat"><dt>Tenant</dt><dd>{session.workspace}</dd></div>
+        <Panel className="overview-identity" title={session.workspace} description="Active workspace">
+          <dl className="stats overview-context">
             <div className="stat"><dt>User</dt><dd className="wrap-anywhere">{session.user}</dd></div>
             <div className="stat"><dt>Roles</dt><dd>{session.roles.length > 0 ? <span className="row">{session.roles.map((role) => <Badge key={role} tone="neutral">{role}</Badge>)}</span> : 'none'}</dd></div>
           </dl>
         </Panel>
 
-        <Panel title="Tenant activity and health" description="Each figure is independently authorized and collected from this tenant.">
+        <Panel className="overview-activity" title="Tenant activity and health" description="Each figure is independently authorized and collected from this tenant.">
           {definitions.length === 0 ? (
             <EmptyState title="No summaries available" body="This session has no permission to read tenant activity or operational health." />
           ) : (
@@ -63,15 +58,6 @@ export function Overview({ session }: Readonly<{ session: Session }>): JSX.Eleme
               {definitions.map((definition) => <MetricCard key={definition.path} definition={definition} state={metrics.get(definition.path) ?? { kind: 'loading' }} retry={reload} />)}
             </div>
           )}
-        </Panel>
-
-        <Panel className="overview-access" title="Available areas" description={`${destinations.length} areas are available with your current permissions.`}>
-          <div className="workspace-grid">
-            {destinations.map((destination) => {
-              const Icon = NAVIGATION_ICONS[destination.route];
-              return <a className="workspace-card" key={destination.route} href={hrefOf(destination.route)}><span className="workspace-icon" aria-hidden="true">{Icon !== undefined && <Icon />}</span><span><strong>{destination.label}</strong><small>{destination.group}</small></span></a>;
-            })}
-          </div>
         </Panel>
       </div>
     </Screen>
