@@ -46,7 +46,7 @@ import {
 import { FormSelect } from './components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from './components/ui/dialog';
 import { roleDescription, roleName } from './validation';
-import { hasDirectSource, sourceLabel, type EffectiveAssignment, type RoleSource } from './groups-model';
+import { GROUP_MEMBERSHIP_CHANGED_EVENT, hasDirectSource, sourceLabel, type EffectiveAssignment, type RoleSource } from './groups-model';
 
 /** The scope a catalogue is read with. */
 export const READ_SCOPE = 'admin.app_roles:read';
@@ -401,6 +401,13 @@ export function UserAppRoles({
   }, [path]);
 
   useEffect(refresh, [refresh]);
+  useEffect(() => {
+    const onMembershipChanged = (event: Event): void => {
+      if (event instanceof CustomEvent && event.detail?.userId === userId) refresh();
+    };
+    window.addEventListener(GROUP_MEMBERSHIP_CHANGED_EVENT, onMembershipChanged);
+    return () => window.removeEventListener(GROUP_MEMBERSHIP_CHANGED_EVENT, onMembershipChanged);
+  }, [refresh, userId]);
 
   // The catalogue the form picks from, which follows the chosen owner. Read
   // rather than typed: a name that is not in the catalogue is a 409 — never a

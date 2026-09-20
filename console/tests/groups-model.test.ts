@@ -16,10 +16,13 @@ test('group and member paths encode identifiers independently', () => {
 });
 
 test('inherited-only assignments cannot be withdrawn as direct grants', () => {
-  const inherited = { name: 'reader', client_id: null, sources: [{ type: 'group' as const, group_id: 'g-1' }] };
+  const inherited = { name: 'reader', client_id: null, sources: [{
+    type: 'group' as const, group_id: 'g-1', group_name: 'engineering', group_display_name: 'Engineering',
+  }] };
   const mixed = { ...inherited, sources: [{ type: 'direct' as const }, ...inherited.sources] };
 
   assert.equal(hasDirectSource(inherited), false);
   assert.equal(hasDirectSource(mixed), true);
-  assert.equal(sourceLabel(inherited.sources[0]), 'Group g-1');
+  assert.equal(sourceLabel(inherited.sources[0]), 'Engineering (engineering)');
+  assert.equal(sourceLabel({ type: 'group', group_id: 'g-1' }), 'Managed group');
 });

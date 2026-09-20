@@ -3498,8 +3498,33 @@ impl Handling<'_> {
             .await
             .map_err(|error| AdminError::from_storage(crate::USER_APP_ROLES_LIST_ID, &error))?;
 
+        let mut source_groups = std::collections::BTreeMap::new();
+        for group in effective
+            .iter()
+            .flat_map(|role| role.sources.iter())
+            .filter_map(|source| match source {
+                asterius_domain::RoleSource::Direct => None,
+                asterius_domain::RoleSource::Group(group) => Some(*group),
+            })
+        {
+            if source_groups.contains_key(&group) {
+                continue;
+            }
+            if let Some(document) = self
+                .state
+                .backend
+                .groups()
+                .get(&self.tenant.id, group)
+                .await
+                .map_err(|error| AdminError::from_storage(crate::USER_APP_ROLES_LIST_ID, &error))?
+            {
+                source_groups.insert(group, document);
+            }
+        }
+
         let mut document = crate::roles::held_document(&held);
-        document["effective_assignments"] = crate::roles::effective_document(&effective);
+        document["effective_assignments"] =
+            crate::roles::effective_document(&effective, &source_groups);
 
         Ok(json_no_store(StatusCode::OK, &document))
     }
@@ -10398,6 +10423,20 @@ mod tests {
         // Arrange
         let world = World::new().routed_at("asterius-admin");
         let cookie = world.sign_in("asterius-admin", &[Role::DeploymentAdmin]);
+        world
+            .handle
+            .0
+            .group_role_assignments
+            .lock()
+            .expect("an uncontended lock")
+            .push(SeededGroupAssignment {
+                tenant: TenantId::new("asterius-admin"),
+                group: asterius_domain::GroupId::from_uuid(
+                    uuid::Uuid::parse_str(SEEDED_GROUP_ID).expect("a fixed group uuid"),
+                ),
+                owner: RoleOwner::Tenant,
+                name: asterius_domain::RoleName::parse(HELD_ROLE).expect("a fixed role name"),
+            });
 
         // Act
         let response = world
@@ -10429,6 +10468,19 @@ mod tests {
             body["resource_access"][SEEDED_CLIENT_ID]["roles"],
             serde_json::json!([HELD_ROLE])
         );
+        let inherited = body["effective_assignments"]
+            .as_array()
+            .expect("effective assignments")
+            .iter()
+            .flat_map(|assignment| {
+                assignment["sources"]
+                    .as_array()
+                    .expect("assignment sources")
+            })
+            .find(|source| source["type"] == "group")
+            .expect("group role provenance");
+        assert_eq!(inherited["group_name"], "engineering");
+        assert_eq!(inherited["group_display_name"], "Engineering");
     }
 
     /// ADR-0009 and ADR-0010: the actor is a user identifier, and it is

@@ -41,6 +41,19 @@ were corrected, and `cargo check` then passed. The verifier was not run a
 second time because repository policy permits exactly one final invocation;
 therefore this snapshot does not call the targeted Rust result green.
 
+The subsequent group-name usability follow-up passed all 48 console unit tests,
+the production TypeScript/Vite build, and the focused Chromium group lifecycle
+(one passed, zero failed). That journey now searches and assigns a group by its
+display and machine names, observes those names in effective-role provenance,
+and removes the membership without presenting a group UUID. Its one targeted
+verifier completed formatting and strict Clippy, then reported 32 passing
+source audits and one failing route assertion because the assertion had not
+seeded a group-role assignment. The fixture and assertion were corrected and
+the corrected focused assertion passed (one passed, zero failed), followed by
+`cargo check -p asterius-admin-api`; under the one-verifier rule the verifier
+itself was not rerun, so this follow-up does not claim a green full targeted
+Rust result.
+
 ## Remote evidence and disposition
 
 | Evidence | Revision and time | Observed outcome | Release meaning |

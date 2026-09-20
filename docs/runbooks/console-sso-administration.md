@@ -18,7 +18,10 @@ renamed: policies should use the stable `group:<uuid>` reference described in
 
 Open a group and use its **Members** and **Roles** tabs to change membership and
 application-role assignments. The **Users → Roles** tab shows the effective
-union and identifies each direct or group source. Removing one source does not
+union and identifies each direct or group source by display name and machine
+name. From **Users → Groups**, search either name and select the labelled group;
+the stable UUID stays internal to the API and is never an operator input.
+Removing one source does not
 remove a role that is still supplied by another source. If another operator
 changes the group first, the saved revision no longer matches; reload the group,
 review their change and apply yours again instead of overwriting it.

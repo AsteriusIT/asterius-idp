@@ -24,6 +24,8 @@ export interface MemberPage {
 export interface RoleSource {
   readonly type: 'direct' | 'group';
   readonly group_id?: string;
+  readonly group_name?: string | null;
+  readonly group_display_name?: string | null;
 }
 
 export interface EffectiveAssignment {
@@ -31,6 +33,9 @@ export interface EffectiveAssignment {
   readonly client_id: string | null;
   readonly sources: readonly RoleSource[];
 }
+
+/** Invalidates an account's effective-role view after a membership mutation. */
+export const GROUP_MEMBERSHIP_CHANGED_EVENT = 'asterius:group-membership-changed';
 
 export function groupPath(id: string): string {
   return `groups/${encodeURIComponent(id)}`;
@@ -57,7 +62,11 @@ export function groupRoleWithdrawPath(
 }
 
 export function sourceLabel(source: RoleSource): string {
-  return source.type === 'direct' ? 'Direct' : `Group ${source.group_id ?? 'unknown'}`;
+  if (source.type === 'direct') return 'Direct';
+  if (source.group_display_name && source.group_name) {
+    return `${source.group_display_name} (${source.group_name})`;
+  }
+  return source.group_display_name ?? source.group_name ?? 'Managed group';
 }
 
 export function hasDirectSource(assignment: EffectiveAssignment): boolean {
