@@ -160,7 +160,7 @@ td, [data-slot='table-cell'] { padding: calc(var(--table-cell-y) + 6px) 16px; fo
 .tenant-menu-heading { display: flex; flex-direction: column; gap: 6px; padding: 20px; border-bottom: 1px solid var(--line); }
 .tenant-menu-heading strong { font-size: 15px; font-weight: 550; }
 .tenant-menu-heading span { color: var(--muted); font-size: 12px; }
-.tenant-menu-settings { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 20px; border-top: 1px solid var(--line); color: var(--fg); text-decoration: none; font-size: 14px; }
+.tenant-menu-settings { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 20px; border-top: 1px solid var(--line); border-radius: 0 0 10px 10px; color: var(--fg); text-decoration: none; font-size: 14px; }
 .tenant-menu-settings svg { width: 16px; height: 16px; flex: none; color: var(--muted); }
 .tenant-menu-settings:hover { background: var(--tint-accent); }
 .tenant-menu-settings:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
