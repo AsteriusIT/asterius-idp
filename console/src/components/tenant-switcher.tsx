@@ -57,7 +57,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { hrefOf } from '@/routes';
 import { sessionRoleLabel } from '@/session-label';
-import { BuildingIcon, CheckIcon, ChevronsUpDownIcon, SettingsIcon } from 'lucide-react';
+import { BuildingIcon, CheckIcon, ChevronsUpDownIcon, PaletteIcon, SettingsIcon } from 'lucide-react';
 import { read, type Session } from '@/api';
 import { Button } from '@/components/ui/button';
 import {
@@ -228,6 +228,12 @@ export function TenantSwitcher({
           >
             <SettingsIcon aria-hidden="true" />
             Tenant settings
+          </a>
+        )}
+        {session.scopes.includes('admin.theme:read') && (
+          <a className="tenant-menu-settings" href={hrefOf('branding')} onClick={() => setOpen(false)}>
+            <PaletteIcon aria-hidden="true" />
+            Branding
           </a>
         )}
       </PopoverContent>

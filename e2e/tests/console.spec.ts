@@ -261,6 +261,7 @@ const ASSEMBLED_SCREENS = [
   'Access policy',
   'Tenants',
   'Tenant settings',
+  'Branding',
   'Preferences',
   'Roles',
 ] as const;
@@ -280,6 +281,8 @@ for (const theme of ['light', 'dark'] as const) {
       for (const screen of ASSEMBLED_SCREENS) {
         if (screen === 'Tenant settings') {
           await openSettings(page);
+        } else if (screen === 'Branding') {
+          await openBranding(page);
         } else if (screen === 'Preferences') {
           await page.getByRole('button', { name: 'Account menu', exact: true }).click();
           await page.getByRole('menuitem', { name: 'Preferences', exact: true }).click();
@@ -347,6 +350,79 @@ async function openSettings(page: Page): Promise<void> {
   await page.getByRole('tab', { name: 'Token lifetimes', exact: true }).click();
   await expect(page.getByLabel('Authorization code lifetime (seconds)')).toBeVisible();
 }
+
+/** Opens the workspace branding editor through the tenant context menu. */
+async function openBranding(page: Page): Promise<void> {
+  await page.getByRole('combobox', { name: /Switch tenant/ }).click();
+  await page.getByRole('link', { name: 'Branding', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Branding', exact: true })).toBeVisible();
+  await expect(page.getByLabel('Product name', { exact: true })).toBeVisible();
+}
+
+test('branding previews locally, persists to a real sign-in page and resets', async ({
+  browser,
+  context,
+  page,
+}, testInfo) => {
+  const watcher = await CspWatcher.attach(context, true);
+  const offOrigin: string[] = [];
+  context.on('request', (request) => {
+    if (!request.url().startsWith(ORIGIN)) offOrigin.push(`${request.method()} ${request.url()}`);
+  });
+  await page.setViewportSize({ width: 400, height: 900 });
+  await signIn(page);
+  await openBranding(page);
+
+  const consoleAccent = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--accent').trim());
+  await page.getByLabel('Product name', { exact: true }).fill('Sweep Identity');
+  await page.getByLabel('Primary action', { exact: true }).fill('#005fcc');
+  await expect(page.getByRole('status')).toContainText('unsaved');
+  await expect(page.getByText('Sweep Identity', { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--accent').trim())).toBe(consoleAccent);
+
+  await page.getByRole('button', { name: 'Save branding', exact: true }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'effective server model' })).toBeVisible();
+  await page.getByLabel('Product name', { exact: true }).fill('Unsaved name');
+  await page.getByRole('button', { name: 'Reload saved', exact: true }).click();
+  await expect(page.getByLabel('Product name', { exact: true })).toHaveValue('Sweep Identity');
+
+  const visitor = await browser.newContext({ ignoreHTTPSErrors: true });
+  const signInPage = await visitor.newPage();
+  await signInPage.goto(CONSOLE_URL);
+  await expect(signInPage.getByRole('button', { name: 'Sign in', exact: true })).toBeVisible();
+  expect(await signInPage.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--accent').trim())).toBe('#005fcc');
+  await visitor.close();
+
+  const audit = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+  await testInfo.attach('branding-axe', { body: JSON.stringify(audit.violations, null, 2), contentType: 'application/json' });
+  expect(audit.violations).toEqual([]);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(400);
+  expect(offOrigin, 'the branding editor reached a third party').toEqual([]);
+  watcher.assertClean('the branding editor');
+
+  await page.getByRole('button', { name: 'Reset defaults', exact: true }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Reset branding', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('shipped defaults');
+});
+
+test('branding reports local image errors and a server refusal without losing the draft', async ({ page }) => {
+  await signIn(page);
+  await openBranding(page);
+  await page.getByLabel('Logo', { exact: true }).setInputFiles({ name: 'brand.svg', mimeType: 'image/svg+xml', buffer: Buffer.from('<svg/>') });
+  await expect(page.getByText(/PNG, JPEG or WebP image/)).toBeVisible();
+
+  await page.getByLabel('Product name', { exact: true }).fill('Still unsaved');
+  await page.route('**/admin/api/v1/theme', async (route) => {
+    if (route.request().method() === 'PUT') {
+      await route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: { code: 'conflict', message: 'the stored theme changed; reload and try again' } }) });
+    } else {
+      await route.continue();
+    }
+  });
+  await page.getByRole('button', { name: 'Save branding', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('reload and try again');
+  await expect(page.getByLabel('Product name', { exact: true })).toHaveValue('Still unsaved');
+});
 
 test('the tenant settings screen is reachable and reads the admin API', async ({
   context,
