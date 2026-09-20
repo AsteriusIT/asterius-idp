@@ -274,7 +274,7 @@ export function TenantSettings({
           save(draft);
         }}
       >
-        <Tabs defaultValue="features"><TabsList aria-label="Tenant configuration"><TabsTrigger value="features">Capabilities</TabsTrigger><TabsTrigger value="tokens">Token lifetimes</TabsTrigger><TabsTrigger value="consent">Consent</TabsTrigger><TabsTrigger value="sessions">Sessions</TabsTrigger>{draft.acrPolicy && <TabsTrigger value="assurance">Authentication</TabsTrigger>}{settings.rate_limit_bounds !== undefined && <TabsTrigger value="rate-limits">Rate limits</TabsTrigger>}<TabsTrigger value="oidc">OIDC endpoints</TabsTrigger></TabsList>
+        <Tabs defaultValue="features"><TabsList aria-label="Tenant configuration"><TabsTrigger value="features">Capabilities</TabsTrigger><TabsTrigger value="tokens">Token lifetimes</TabsTrigger><TabsTrigger value="consent">Consent</TabsTrigger><TabsTrigger value="sessions">Sessions</TabsTrigger>{draft.acrPolicy && <TabsTrigger value="assurance">Authentication</TabsTrigger>}{settings.rate_limit_bounds !== undefined && <TabsTrigger value="rate-limits">Rate limits</TabsTrigger>}<TabsTrigger value="oidc">Protocol endpoints</TabsTrigger></TabsList>
         <TabsContent value="features"><fieldset className="settings-section" disabled={busy}>
           <legend>Sign-in and access capabilities</legend>
           <p className="muted">
@@ -284,12 +284,12 @@ export function TenantSettings({
             <label className="capability-row">
               <span className="capability-icon"><ShieldCheck aria-hidden="true" /></span>
               <span className="capability-copy">
-                <strong>Allow standard OIDC applications</strong>
+                <strong>Allow non-FAPI application exceptions</strong>
                 <span>Permit administrators to opt individual applications out of FAPI. Applications remain FAPI unless explicitly changed.</span>
               </span>
               <span className="capability-state" aria-hidden="true">{draft.allowNonFapiClients ? 'Enabled' : 'Disabled'}</span>
               <input className="capability-switch" type="checkbox" role="switch"
-                name="allow_non_fapi_clients" aria-label="Allow standard OIDC applications"
+                name="allow_non_fapi_clients" aria-label="Allow non-FAPI application exceptions"
                 checked={draft.allowNonFapiClients}
                 onChange={(event) => setDraft({ ...draft, allowNonFapiClients: event.target.checked })} />
             </label>

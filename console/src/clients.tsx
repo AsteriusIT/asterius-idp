@@ -71,7 +71,7 @@ import {
   Skeleton,
 } from './ui';
 import { redirectUris } from './validation';
-import { ClientSetup, ClientSecurity } from './client-setup';
+import { ClientSecurity } from './client-setup';
 import { clientConfiguration, clientFieldError, publicKeyError, readClientDiscovery, type ClientDiscovery } from './client-onboarding';
 import { resourceChoices, type ResourceServerSummary } from './client-resources';
 import {
@@ -304,7 +304,6 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
     setRefusal(null);
     setIssuedSecret(null);
     setTab('settings');
-    setTab('guide');
     setEditing({ kind: 'new' });
     setDraft(emptyDraft());
   }, []);
@@ -410,6 +409,7 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
           const response = body as ClientDocument;
           const { client_secret: issuedSecret, ...stored } = response;
           setIssuedSecret(issuedSecret ?? null);
+          if (issuedSecret !== undefined) setTab('credentials');
           // Keep the one-time plaintext only in the dedicated panel state. The
           // editable registration and saved-configuration state never need it.
           setEditing({ kind: 'existing', document: stored });
@@ -449,54 +449,49 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
 
   if (draft !== null && editing.kind !== 'none') {
     const title = editing.kind === 'existing'
-      ? `Edit ${editing.document.client_name}`
+      ? editing.document.client_name
       : 'Register an application';
+    const profile = profilePresentation(draft.compliance_profile);
+    const discoveryUrl = discovery === null
+      ? null
+      : `${discovery.issuer.replace(/\/$/, '')}/.well-known/openid-configuration`;
     return (
       <Screen
         title={title}
         identity={editing.kind === 'existing' ? editing.document.client_name : undefined}
-        description={editing.kind === 'existing' ? <>Client ID: <code>{editing.document.client_id}</code></> : 'Configure authentication, callbacks, and access for your application.'}
+        description={editing.kind === 'existing' ? 'Connection information and configuration for this application.' : 'Configure authentication, callbacks, and access for your application.'}
+        actions={<Badge tone={profile.fapiBadge ? 'ok' : 'warn'}>{profile.label}</Badge>}
         back={{ label: 'Back to applications', onClick: close }}
       >
         {editing.kind === 'existing' && mayReadAppRoles(session) && <a className="application-roles-link" href={hrefOf('roles', { client: editing.document.client_id })}>Manage application roles →</a>}
         {notice !== null && <Message tone="success">{notice}</Message>}
         {refusal !== null && <Message tone="error">{refusal}</Message>}
-        {issuedSecret !== null && <Panel title="New client secret — shown once">
-          <Message tone="info">Copy this value into the application&rsquo;s secret manager now. Asterius stores only its SHA-256 digest and cannot show it again.</Message>
-          <p><code>{issuedSecret}</code></p>
-        </Panel>}
-        {discovery !== null && <Panel title="Connection details">
-          <dl><dt>Issuer</dt><dd><code>{discovery.issuer}</code></dd>
-            <dt>Discovery</dt><dd><code>{discovery.issuer.replace(/\/$/, '')}/.well-known/openid-configuration</code></dd></dl>
-          <p>For private_key_jwt assertions, use the issuer as the audience, your client ID as iss and sub, and a fresh jti for every PAR and token request.</p>
+        {editing.kind === 'existing' && discovery !== null && discoveryUrl !== null && <Panel
+          className="application-connection-card"
+          title="Connect to this application"
+          description="Use these values in the application’s authentication library or deployment configuration."
+          actions={<Badge tone={editing.document.status === 'active' ? 'ok' : 'bad'}>{editing.document.status}</Badge>}
+        >
+          <dl className="application-connection-grid">
+            <div><dt>Client ID</dt><dd><code>{editing.document.client_id}</code></dd></div>
+            <div><dt>Authentication</dt><dd><code>{draft.token_endpoint_auth_method}</code></dd></div>
+            <div className="application-connection-wide"><dt>Issuer</dt><dd><code>{discovery.issuer}</code></dd></div>
+            <div className="application-connection-wide"><dt>Discovery document</dt><dd><code>{discoveryUrl}</code></dd></div>
+          </dl>
+          {draft.token_endpoint_auth_method === 'private_key_jwt' && <p className="muted">Use the issuer as the assertion audience, the client ID as <code>iss</code> and <code>sub</code>, and a fresh <code>jti</code> for every request.</p>}
+          {!profile.fapiBadge && <Message tone="info">This application is a non-FAPI compatibility exception. Review its authentication and sender constraints before production use.</Message>}
         </Panel>}
         {discoveryError !== null && <Message tone="error">{discoveryError}</Message>}
         {!canWrite && <Message tone="info">Read-only access. Registering and saving applications requires admin.clients:write.</Message>}
-        {editing.kind === 'existing' && draft.token_endpoint_auth_method === 'client_secret_basic' && canWrite && <Panel title="Client secret">
-          <p>Rotate to issue a replacement once, or revoke to stop shared-secret authentication until a new secret is issued.</p>
-          <Actions>
-            <Button type="button" disabled={busy} onClick={() => save(draft, editing, 'rotate')}>Rotate secret</Button>
-            <Button type="button" disabled={busy} onClick={() => save(draft, editing, 'revoke')}>Revoke secret</Button>
-          </Actions>
-        </Panel>}
-        {editing.kind === 'existing' && <ResourceAllowList
-          load={resourceLoad}
-          selected={selectedResources}
-          busy={busy}
-          canWrite={canWrite}
-          onRetry={loadResourceServers}
-          onChange={setSelectedResources}
-          onSave={() => saveResources(editing.document.client_id)}
-        />}
         <Tabs value={tab} onValueChange={setTab}>
           <TabsList aria-label="Application sections">
-            <TabsTrigger value="guide">Setup guide</TabsTrigger>
-            <TabsTrigger value="settings">Settings</TabsTrigger>
+            <TabsTrigger value="settings">General</TabsTrigger>
             <TabsTrigger value="callbacks">Callbacks</TabsTrigger>
-            <TabsTrigger value="grants">Grant types</TabsTrigger>
             <TabsTrigger value="credentials">Credentials</TabsTrigger>
+            <TabsTrigger value="grants">Access &amp; grants</TabsTrigger>
+            {editing.kind === 'existing' && <TabsTrigger value="resources">Resources</TabsTrigger>}
             <TabsTrigger value="tokens">Token claims</TabsTrigger>
-            {editing.kind === 'existing' && <TabsTrigger value="configuration">Saved configuration</TabsTrigger>}
+            {editing.kind === 'existing' && <TabsTrigger value="configuration">Configuration JSON</TabsTrigger>}
 
           </TabsList>
         <div><Editor
@@ -506,13 +501,25 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
           canWrite={canWrite}
           discovery={discovery}
           refusal={refusal}
+          issuedSecret={issuedSecret}
           onChange={setDraft}
           onSubmit={() => save(draft, editing)}
+          onRotateSecret={() => save(draft, editing, 'rotate')}
+          onRevokeSecret={() => save(draft, editing, 'revoke')}
           onClose={close}
         /></div>
+        {editing.kind === 'existing' && <TabsContent value="resources"><ResourceAllowList
+          load={resourceLoad}
+          selected={selectedResources}
+          busy={busy}
+          canWrite={canWrite}
+          onRetry={loadResourceServers}
+          onChange={setSelectedResources}
+          onSave={() => saveResources(editing.document.client_id)}
+        /></TabsContent>}
         {editing.kind === 'existing' && <TabsContent value="configuration">
-          <Panel title="Saved client configuration">
-            <p>This configuration reflects the last saved registration. Save changes before copying. Keep private signing and DPoP keys in your backend’s key store; they are not included here.</p>
+          <Panel title="Application configuration JSON">
+            <p>This reflects the last saved registration. Save edits before copying it. Private signing keys, proof keys, and client secrets are never included.</p>
             {discovery !== null ? <JsonView value={clientConfiguration(editing.document, discovery)} label="Saved client configuration" />
               : <p>Discovery must load before a connection configuration can be exported.</p>}
           </Panel>
@@ -693,9 +700,7 @@ function Inventory({
           sortBy: (row) => row.compliance_profile,
           cell: (row) => {
             const profile = profilePresentation(row.compliance_profile);
-            return profile.fapiBadge
-              ? <Badge tone="ok">{profile.label}</Badge>
-              : <span>{profile.label}</span>;
+            return <Badge tone={profile.fapiBadge ? 'ok' : 'warn'}>{profile.label}</Badge>;
           },
         },
         {
@@ -727,8 +732,11 @@ function Editor({
   canWrite,
   discovery,
   refusal,
+  issuedSecret,
   onChange,
   onSubmit,
+  onRotateSecret,
+  onRevokeSecret,
   onClose,
 }: Readonly<{
   draft: Draft;
@@ -737,8 +745,11 @@ function Editor({
   canWrite: boolean;
   discovery: ClientDiscovery | null;
   refusal: string | null;
+  issuedSecret: string | null;
   onChange: (draft: Draft) => void;
   onSubmit: () => void;
+  onRotateSecret: () => void;
+  onRevokeSecret: () => void;
   onClose: () => void;
 }>): JSX.Element {
   const heading =
@@ -766,9 +777,6 @@ function Editor({
           onSubmit();
         }}
       >
-        <TabsContent value="guide"><fieldset disabled={busy || !canWrite}>
-          <ClientSetup draft={draft} discovery={discovery} refusal={refusal} busy={busy || !canWrite} onChange={onChange} />
-        </fieldset></TabsContent>
         <TabsContent value="settings"><fieldset disabled={busy || !canWrite}>
           <legend id="client-identity">Identity</legend>
           <Field label="Client name" required>
@@ -892,9 +900,22 @@ function Editor({
           <p className="muted">The scope names this client may ask for, separated by spaces.</p>
         </fieldset></TabsContent>
 
-        <TabsContent value="credentials"><fieldset disabled={busy || !canWrite}>
+        <TabsContent value="credentials">
+          {issuedSecret !== null && <Panel className="credential-secret-panel" title="New client secret — shown once">
+            <Message tone="info">Copy this value into the application&rsquo;s secret manager now. Asterius stores only its SHA-256 digest and cannot show it again.</Message>
+            <p className="credential-secret-value"><code>{issuedSecret}</code></p>
+          </Panel>}
+          <fieldset disabled={busy || !canWrite}>
           <legend id="client-keys-subjects">Keys and subjects</legend>
           <ClientSecurity draft={draft} discovery={discovery} refusal={refusal} busy={busy || !canWrite} onChange={onChange} />
+          {draft.token_endpoint_auth_method === 'client_secret_basic' && editing.kind === 'existing' && canWrite && <div className="credential-secret-actions">
+            <h3>Client secret</h3>
+            <p className="muted">Rotate to issue a replacement once, or revoke to stop shared-secret authentication until a new secret is issued.</p>
+            <Actions>
+              <Button type="button" disabled={busy} onClick={onRotateSecret}>Rotate secret</Button>
+              <Button type="button" variant="danger" disabled={busy} onClick={onRevokeSecret}>Revoke secret</Button>
+            </Actions>
+          </div>}
           {draft.token_endpoint_auth_method !== 'client_secret_basic' && editing.kind === 'existing' && editing.document.jwks !== undefined && (
             <JsonView value={editing.document.jwks} label="Registered inline JWK Set JSON" />
           )}

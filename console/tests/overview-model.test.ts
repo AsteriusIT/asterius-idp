@@ -1,6 +1,15 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { loadingMetrics, updateMetric, visibleMetrics } from '../src/overview-model.ts';
+import { applicationPolicyPresentation, loadingMetrics, updateMetric, visibleMetrics } from '../src/overview-model.ts';
+
+test('presents the tenant application policy as a compliance state', () => {
+  assert.deepEqual(applicationPolicyPresentation(false), {
+    label: 'FAPI-only applications', tone: 'ok',
+  });
+  assert.deepEqual(applicationPolicyPresentation(true), {
+    label: 'Non-FAPI exceptions enabled', tone: 'warn',
+  });
+});
 
 test('offers only overview requests independently authorized by the session', () => {
   const metrics = visibleMetrics({ scopes: ['admin.users:read', 'admin.sessions:read'] });
