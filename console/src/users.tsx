@@ -59,6 +59,7 @@ import {
   Truncate,
 } from './ui';
 import { emailAddress, username as usernameComplaint } from './validation';
+import { UserGroups, mayReadMemberships } from './groups';
 
 /** Whether an account may authenticate, mirroring `UserStatus`. */
 export type UserStatus = 'active' | 'disabled' | 'locked';
@@ -717,6 +718,7 @@ function Account({
           <TabsTrigger value="sessions">Sessions</TabsTrigger>
           <TabsTrigger value="grants">Authorizations</TabsTrigger>
           {(mayReadAppRoles(session) || roles !== null) && <TabsTrigger value="roles">Roles</TabsTrigger>}
+          {mayReadMemberships(session) && <TabsTrigger value="groups">Groups</TabsTrigger>}
         </TabsList>
         <TabsContent value="details">
       <Panel
@@ -808,6 +810,9 @@ function Account({
         />
       )}
 
+        </TabsContent>
+        <TabsContent value="groups">
+          {mayReadMemberships(session) && <UserGroups session={session} userId={user.user_id} />}
         </TabsContent>
         <TabsContent value="credentials">
       <Panel className="flat-section"

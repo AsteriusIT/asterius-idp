@@ -94,6 +94,7 @@ export const DESTINATIONS: readonly Destination[] = [
   // this session lacks that resource's read scope (`ast-6uqw.8`).
   { route: 'overview', label: 'Overview', reach: 'tenant', scope: 'admin.session:read', bead: 'ast-6uqw.8', group: 'Overview' },
   { route: 'users', label: 'Users', reach: 'tenant', scope: 'admin.users:read', bead: 'ast-f7m.6', group: 'Directory' },
+  { route: 'groups', label: 'Groups', reach: 'tenant', scope: 'admin.groups:read', bead: 'ast-6uqw.13', group: 'Directory' },
   { route: 'clients', label: 'Applications', reach: 'tenant', scope: 'admin.clients:read', bead: 'ast-f7m.5', group: 'Directory' },
   { route: 'resources', label: 'Resource servers', reach: 'tenant', scope: 'admin.resource_servers:read', bead: 'ast-f7m.12', group: 'Directory' },
   { route: 'authorization-details', label: 'Authorization details', reach: 'tenant', scope: 'admin.authorization_details_types:read', bead: 'ast-f7m.14', group: 'Trust' },

@@ -254,6 +254,7 @@ test('the console screen has no accessibility violation', async ({ page }, testI
 const ASSEMBLED_SCREENS = [
   'Overview',
   'Users',
+  'Groups',
   'Applications',
   'Signing keys',
   'Shared signals',

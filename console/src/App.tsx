@@ -22,6 +22,7 @@ import { SharedSignals } from './ssf';
 import { Button, CenteredCard, Panel, Screen } from './ui';
 import { Users } from './users';
 import { Overview } from './overview';
+import { Groups } from './groups';
 
 /**
  * What the shell is doing, as one value.
@@ -159,6 +160,7 @@ function RouteScreen({
   if (route === 'users') {
     return <Users session={session} />;
   }
+  if (route === 'groups') return <Groups session={session} />;
   if (route === 'clients') {
     return <Clients session={session} />;
   }
