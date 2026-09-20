@@ -190,11 +190,11 @@ export async function upload(path: string, session: Session, file: File): Promis
  * cross-site form can emit.
  */
 export async function probe(path: string, session: Session, body: unknown): Promise<unknown> {
-  return request(path, {
+  return request(API_BASE + path, {
     method: 'POST',
     headers: { [CSRF_HEADER]: session.csrf_token, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-  });
+  }, path);
 }
 
 /**

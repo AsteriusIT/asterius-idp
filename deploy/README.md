@@ -77,6 +77,12 @@ DPoP-bound — and a client that gets any of that wrong is told
 `401 invalid_client` and nothing more, because RFC 6749 §5.2 gives it nothing
 more.
 
+After deployment, use the
+[console, groups and SSO administration runbook](../docs/runbooks/console-sso-administration.md)
+for tenant changes. Release reviewers should use the dated
+[console and SSO milestone evidence](../docs/deployment/console-sso-milestone-evidence.md)
+as an audit snapshot, not as a substitute for checks on the exact candidate.
+
 Two things catch almost everybody, so they are worth repeating here:
 
 * **`aud` in the client assertion is the tenant's issuer identifier, as a JSON
