@@ -45,12 +45,11 @@ use time::{Duration, OffsetDateTime};
 
 /// What a refresh token is bound to (RFC 9449 §5, RFC 8705 §3).
 ///
-/// One of the two, never neither and never both, which is the schema's
-/// `refresh_tokens_are_sender_constrained` — `(dpop_jkt is null) <>
-/// (cert_thumbprint is null)` — said in the type that writes the row. A
-/// refresh token bound to nothing is a bearer refresh token, which FAPI 2.0 SP
-/// §5.3.2.1 does not admit, and the binding is always *recorded* even where a
-/// tenant does not *enforce* it: a deployment that turns
+/// DPoP or certificate for a FAPI client, and Bearer only for an explicitly
+/// non-FAPI OIDC client. The schema refuses two simultaneous bindings; the
+/// client profile validator is what refuses an unbound FAPI registration. A
+/// binding is always *recorded* even where a tenant does not *enforce* it: a
+/// deployment that turns
 /// `bind_to_dpop_key` on later must find the bindings already there.
 ///
 /// The binding of a refresh token is the binding of the access token it was
@@ -66,6 +65,8 @@ pub enum RefreshBinding {
     /// bytes rather than base64url because that is the column's type: a digest
     /// stored as text is a digest two spellings of which compare unequal.
     Certificate([u8; 32]),
+    /// An unbound refresh token for an explicitly non-FAPI OIDC client.
+    Bearer,
 }
 
 impl RefreshBinding {
@@ -73,19 +74,19 @@ impl RefreshBinding {
     fn dpop_jkt(&self) -> Option<&str> {
         match self {
             Self::Dpop(jkt) => Some(jkt),
-            Self::Certificate(_) => None,
+            Self::Certificate(_) | Self::Bearer => None,
         }
     }
 
     /// The `cert_thumbprint` column's value.
     fn cert_thumbprint(&self) -> Option<&[u8]> {
         match self {
-            Self::Dpop(_) => None,
             Self::Certificate(digest) => Some(digest),
+            Self::Dpop(_) | Self::Bearer => None,
         }
     }
 
-    /// Reads the pair of columns back, refusing a row that is neither.
+    /// Reads the pair of columns back; two nulls represent Bearer.
     fn from_columns(
         dpop_jkt: Option<String>,
         cert_thumbprint: Option<Vec<u8>>,
@@ -97,15 +98,15 @@ impl RefreshBinding {
         if let Some(jkt) = dpop_jkt {
             return Ok(Self::Dpop(jkt));
         }
-        let digest: [u8; 32] = cert_thumbprint
-            .and_then(|bytes| bytes.try_into().ok())
-            .ok_or_else(|| {
-                DomainError::invalid(
-                    "refresh_token",
-                    "a stored refresh token is not sender-constrained",
-                )
-            })?;
-        Ok(Self::Certificate(digest))
+        match cert_thumbprint {
+            Some(bytes) => {
+                let digest: [u8; 32] = bytes.try_into().map_err(|_| {
+                    DomainError::invalid("refresh_token", "invalid certificate thumbprint")
+                })?;
+                Ok(Self::Certificate(digest))
+            }
+            None => Ok(Self::Bearer),
+        }
     }
 }
 
@@ -127,7 +128,8 @@ pub struct NewRefreshToken {
     /// The scopes it may be refreshed for. A narrowed refresh writes a
     /// narrowed set, and the narrowing is then permanent for that token.
     pub scopes: BTreeSet<String>,
-    /// What holds it: a DPoP key or a client certificate.
+    /// What holds it: a DPoP key, a client certificate, or the authenticated
+    /// OIDC client alone for Bearer compatibility.
     ///
     /// Not optional, and not two nullable fields. See [`RefreshBinding`].
     pub binding: RefreshBinding,

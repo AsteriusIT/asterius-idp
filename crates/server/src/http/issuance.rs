@@ -50,8 +50,9 @@ use asterius_store_pg::{PgUserRepository, RefreshBinding};
 ///
 /// This type is the reason all three grants agree. Each of them mints under
 /// [`Self::confirmation`], so a grant added later cannot arrive at a different
-/// reading of the same registration — and none of them can arrive at no
-/// reading at all, because [`Confirmation`] has no unbound value.
+/// reading of the same registration. The explicit standard OIDC Bearer choice
+/// is represented by [`Confirmation::bearer`], not inferred from a missing
+/// request header.
 #[derive(Debug, Clone, Copy)]
 pub struct SenderConstraint<'a> {
     /// The thumbprint of the DPoP proof presented with this request, if one
@@ -66,9 +67,8 @@ pub struct SenderConstraint<'a> {
 ///
 /// `DPoP` for a DPoP-bound token (RFC 9449 §5: it "is not a bearer token", and
 /// a resource server must refuse one sent as though it were), `Bearer` for a
-/// certificate-bound one (RFC 8705 §3.1, whose example response carries
-/// `"token_type":"Bearer"` — §3 binds the token without defining a scheme for
-/// it).
+/// certificate-bound one (RFC 8705 §3.1) and for an unbound standard OIDC
+/// token (RFC 6750).
 ///
 /// Read from the registration rather than from the `cnf` the handler just
 /// built, because they are the same decision and the registration is the one
@@ -77,7 +77,7 @@ pub struct SenderConstraint<'a> {
 pub const fn token_type(client: &Client) -> &'static str {
     match client.registration.token_binding {
         TokenBinding::Dpop => "DPoP",
-        TokenBinding::Certificate => "Bearer",
+        TokenBinding::Certificate | TokenBinding::Bearer => "Bearer",
     }
 }
 
@@ -133,6 +133,12 @@ impl SenderConstraint<'_> {
                     ConstraintError::Unusable(DomainError::invalid("cnf", error.to_string()))
                 })
             }
+            TokenBinding::Bearer => {
+                if self.proof_key.is_some() {
+                    return Err(ConstraintError::TwoBindingsOffered);
+                }
+                Ok(Confirmation::bearer())
+            }
         }
     }
 
@@ -160,6 +166,12 @@ impl SenderConstraint<'_> {
                     .certificate
                     .ok_or(ConstraintError::CertificateRequired)?;
                 Ok(RefreshBinding::Certificate(certificate.thumbprint()))
+            }
+            TokenBinding::Bearer => {
+                if self.proof_key.is_some() {
+                    return Err(ConstraintError::TwoBindingsOffered);
+                }
+                Ok(RefreshBinding::Bearer)
             }
         }
     }
@@ -1076,6 +1088,53 @@ mod tests {
             created_at: epoch(),
             updated_at: epoch(),
         }
+    }
+
+    fn bearer_client() -> Client {
+        let document = json!({
+            "client_name": "compatible",
+            "redirect_uris": ["https://client.example/cb"],
+            "token_endpoint_auth_method": "client_secret_basic",
+            "dpop_bound_access_tokens": false,
+            "tls_client_certificate_bound_access_tokens": false,
+            "require_pushed_authorization_requests": false,
+        });
+        let registration = ClientRegistration::from_json_with_profile(
+            &serde_json::to_vec(&document).expect("serialise"),
+            Capabilities::default(),
+            asterius_domain::ClientComplianceProfile::Oidc,
+        )
+        .expect("an OIDC bearer registration");
+        Client {
+            tenant: TenantId::new("demo"),
+            id: ClientId::new("compatible"),
+            registration,
+            status: ClientStatus::Active,
+            created_at: epoch(),
+            updated_at: epoch(),
+        }
+    }
+
+    #[test]
+    fn an_oidc_bearer_client_needs_no_sender_constraint() {
+        let constraint = SenderConstraint {
+            proof_key: None,
+            certificate: None,
+        };
+        let client = bearer_client();
+
+        assert_eq!(
+            constraint
+                .confirmation(&client)
+                .expect("bearer confirmation")
+                .binding(),
+            TokenBinding::Bearer
+        );
+        assert_eq!(
+            constraint.refresh_binding(&client).expect("bearer refresh"),
+            RefreshBinding::Bearer
+        );
+        assert_eq!(token_type(&client), "Bearer");
     }
 
     /// A DER `Certificate` with the shape `ClientCertificate::from_der` reads

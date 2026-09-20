@@ -538,6 +538,7 @@ impl RefreshToken<'_> {
                 }
                 Ok(())
             }
+            RefreshBinding::Bearer => Ok(()),
         }
     }
 
@@ -559,7 +560,7 @@ impl RefreshToken<'_> {
             ),
             issuance::ConstraintError::TwoBindingsOffered => Failure::Client(
                 "invalid_request",
-                "this client binds its tokens to a certificate; a DPoP proof must not be sent",
+                "this client does not use DPoP; a DPoP proof must not be sent",
             ),
             issuance::ConstraintError::Unusable(error) => Failure::Server(error),
         }

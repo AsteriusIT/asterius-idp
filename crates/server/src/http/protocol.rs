@@ -2905,6 +2905,7 @@ impl introspection::IntrospectionSource for StoredIntrospection {
                             .encode(digest),
                     }))
                 }
+                asterius_store_pg::RefreshBinding::Bearer => None,
             },
         }))
     }

@@ -22,9 +22,9 @@ use asterius_domain::entities::session::{AuthenticationMethod, Lifetimes, Sessio
 use asterius_domain::entities::user::{User, UserStatus};
 use asterius_domain::ports::{SessionRepository, TenantRepository};
 use asterius_domain::{
-    Capabilities, Client, ClientId, ClientRegistration, ClientStatus, CodeBinding, Grant, GrantId,
-    Issuer, KeyStore, Kid, RevocationReason, RoleOwner, SubjectId, Tenant, TenantId, TenantStatus,
-    UserId,
+    Capabilities, Client, ClientComplianceProfile, ClientId, ClientRegistration, ClientStatus,
+    CodeBinding, Grant, GrantId, Issuer, KeyStore, Kid, RevocationReason, RoleOwner, SubjectId,
+    Tenant, TenantId, TenantStatus, UserId,
 };
 use asterius_jose::kek::Kek;
 use asterius_jose::{LocalKek, jws, keys_from_jwk_set};
@@ -224,6 +224,41 @@ impl Fixture {
         self.store
             .scope(self.tenant.id.clone())
             .clients(mtls_on())
+            .upsert(&client)
+            .await
+            .expect("store the client");
+        client
+    }
+
+    /// The explicitly non-FAPI compatibility shape: no DPoP and no mTLS
+    /// binding. The FAPI parser cannot construct this registration.
+    async fn bearer_client(&self) -> Client {
+        let client = Client {
+            tenant: self.tenant.id.clone(),
+            id: ClientId::new(CLIENT),
+            registration: ClientRegistration::from_json_with_profile(
+                &serde_json::to_vec(&json!({
+                    "client_name": "Compatible billing",
+                    "redirect_uris": [REDIRECT],
+                    "grant_types": ["authorization_code", "refresh_token"],
+                    "scope": "openid offline_access",
+                    "token_endpoint_auth_method": "client_secret_basic",
+                    "require_pushed_authorization_requests": false,
+                    "dpop_bound_access_tokens": false,
+                    "tls_client_certificate_bound_access_tokens": false,
+                }))
+                .expect("serialise"),
+                Capabilities::default(),
+                ClientComplianceProfile::Oidc,
+            )
+            .expect("a valid OIDC bearer registration"),
+            status: ClientStatus::Active,
+            created_at: self.now,
+            updated_at: self.now,
+        };
+        self.store
+            .scope(self.tenant.id.clone())
+            .clients(Capabilities::default())
             .upsert(&client)
             .await
             .expect("store the client");
@@ -1356,6 +1391,44 @@ db_test! {
 }
 
 // ---- DPoP ----------------------------------------------------------------
+
+db_test! {
+    /// The compatibility option crosses the storage and issuance boundary:
+    /// no proof is required, the response uses RFC 6750 Bearer, the JWT has no
+    /// `cnf`, and an offline grant stores an unbound refresh credential.
+    async fn an_oidc_bearer_client_redeems_without_dpop(fixture) {
+        let client = fixture.bearer_client().await;
+        let pkce = Pkce::generate();
+        let grant = fixture.grant(&["openid", "offline_access"]).await;
+        let code = fixture.issue(&grant, &pkce, None).await;
+
+        let (status, body) = fixture
+            .redeem(&client, &borrowed(&base_form(&code, &pkce)), None)
+            .await;
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["token_type"], "Bearer");
+        let access = fixture
+            .verify(body["access_token"].as_str().expect("access_token"))
+            .await;
+        assert!(access.get("cnf").is_none(), "{access}");
+
+        let refresh = body["refresh_token"].as_str().expect("refresh_token");
+        let digest = asterius_oidc::refresh::digest_of(refresh)
+            .expect("the value this server issued can be digested");
+        let record = fixture
+            .refresh_tokens()
+            .redeem(&digest, fixture.now, time::Duration::ZERO, None)
+            .await
+            .expect("read refresh token");
+        let asterius_store_pg::Presentation::Accepted(record) = record else {
+            panic!("the bearer refresh token was not stored");
+        };
+        assert_eq!(record.binding, RefreshBinding::Bearer);
+
+        fixture.tear_down().await;
+    }
+}
 
 db_test! {
     /// RFC 9449 §10 and FAPI 2.0 SP §5.3.2.1 item 12. A code pinned at PAR to
