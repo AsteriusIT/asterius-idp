@@ -1863,10 +1863,10 @@ mod tests {
     }
 
     #[test]
-    fn a_client_secret_auth_method_in_a_policy_is_refused() {
+    fn an_unsupported_client_secret_auth_method_in_a_policy_is_refused() {
         // Arrange
         let document =
-            serde_json::json!({ "token_endpoint_auth_methods": ["client_secret_basic"] });
+            serde_json::json!({ "token_endpoint_auth_methods": ["client_secret_post"] });
 
         // Act
         let outcome = RegistrationPolicy::from_json(Some(&document));

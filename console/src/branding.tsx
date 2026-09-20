@@ -253,7 +253,7 @@ export function Branding({ session }: Readonly<{ session: Session }>): JSX.Eleme
             </div>
           </Panel>
           <Panel title="Support links" description="Optional HTTPS destinations shown beneath the sign-in card.">
-            {([['Help URL', 'helpUrl'], ['Privacy URL', 'privacyUrl'], ['Terms URL', 'termsUrl']] as const).map(([label, field]) => <Field key={field} label={label} error={errors[field] ?? null}>{(props) => <input {...props} type="url" placeholder="https://" value={draft[field]} disabled={!canWrite || busy} onChange={(event) => change(field, event.target.value)} />}</Field>)}
+            {([['Help URL', 'helpUrl'], ['Privacy URL', 'privacyUrl'], ['Terms URL', 'termsUrl']] as const).map(([label, field]) => <Field key={field} label={label} error={errors[field] ?? null}>{(props) => <input {...props} type="url" placeholder="Enter a secure URL" value={draft[field]} disabled={!canWrite || busy} onChange={(event) => change(field, event.target.value)} />}</Field>)}
           </Panel>
           <Actions end>
             <Button onClick={refresh} disabled={busy || !dirty}>Reload saved</Button>

@@ -122,6 +122,8 @@ the confidential-client flow and the protected-resource checks.
 To see two confidential BFFs exercise browser SSO, independent consent,
 refresh, UserInfo, step-up and logout against the example deployment, run the
 [two-application SSO demonstration](docs/sso-demo.md).
+Tenant operators can apply the milestone safely with the
+[console, groups and SSO administration runbook](docs/runbooks/console-sso-administration.md).
 
 [`docs/performance.md`](docs/performance.md) is the measured baseline — token
 endpoint throughput and latency, the code flow, SSF poll — with the pool and
