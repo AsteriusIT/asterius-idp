@@ -46,6 +46,7 @@ import {
 import { FormSelect } from './components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from './components/ui/dialog';
 import { roleDescription, roleName } from './validation';
+import { hasDirectSource, sourceLabel, type EffectiveAssignment, type RoleSource } from './groups-model';
 
 /** The scope a catalogue is read with. */
 export const READ_SCOPE = 'admin.app_roles:read';
@@ -77,6 +78,7 @@ export interface Catalogue {
 export interface HeldRoles {
   readonly roles: readonly string[];
   readonly resource_access: Readonly<Record<string, { readonly roles: readonly string[] }>>;
+  readonly effective_assignments?: readonly EffectiveAssignment[];
 }
 
 /** The tenant catalogue's path, relative to the API base. */
@@ -131,10 +133,16 @@ export function mayWrite(session: Session): boolean {
  */
 export function assignmentsOf(
   held: HeldRoles,
-): readonly { readonly role: string; readonly clientId: string | null }[] {
-  const tenant = held.roles.map((role) => ({ role, clientId: null }));
+): readonly { readonly role: string; readonly clientId: string | null; readonly sources: readonly RoleSource[] }[] {
+  if (held.effective_assignments !== undefined) {
+    return held.effective_assignments.map(assignment => ({
+      role: assignment.name, clientId: assignment.client_id, sources: assignment.sources,
+    }));
+  }
+  const direct: readonly RoleSource[] = [{ type: 'direct' }];
+  const tenant = held.roles.map((role) => ({ role, clientId: null, sources: direct }));
   const clients = Object.entries(held.resource_access).flatMap(([clientId, entry]) =>
-    entry.roles.map((role) => ({ role, clientId })),
+    entry.roles.map((role) => ({ role, clientId, sources: direct })),
   );
   return [...tenant, ...clients];
 }
@@ -511,14 +519,18 @@ export function UserAppRoles({
                   <code>{assignment.clientId}</code>
                 ),
             },
-            { key: 'assignment', header: 'Assignment', cell: () => 'Direct' },
+            { key: 'assignment', header: 'Assignment', cell: (assignment) => <span className="role-sources">
+              {assignment.sources.map(source => <span className="role-source" key={`${source.type}:${source.group_id ?? ''}`}>{sourceLabel(source)}</span>)}
+            </span> },
             ...(writable
               ? [
                   {
                     key: 'withdraw',
                     header: 'Withdraw',
                     actions: true,
-                    cell: (assignment: { role: string; clientId: string | null }) => (
+                    cell: (assignment: { role: string; clientId: string | null; sources: readonly RoleSource[] }) => hasDirectSource({
+                      name: assignment.role, client_id: assignment.clientId, sources: assignment.sources,
+                    }) ? (
                       <Button
                         small
                         disabled={busy || saving}
@@ -526,7 +538,7 @@ export function UserAppRoles({
                       >
                         Withdraw <span className="visually-hidden">{assignment.role}</span>
                       </Button>
-                    ),
+                    ) : <span className="muted">Remove from its group</span>,
                   },
                 ]
               : []),

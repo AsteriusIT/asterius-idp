@@ -11,6 +11,7 @@ import {
   ScrollTextIcon,
   ShapesIcon,
   PaletteIcon,
+  UsersRoundIcon,
   Settings2Icon,
   SlidersHorizontalIcon,
   UsersIcon,
@@ -38,6 +39,7 @@ import { hrefOf } from '@/routes';
 export const NAVIGATION_ICONS: Readonly<Record<string, LucideIcon>> = {
   overview: LayoutDashboardIcon,
   users: UsersIcon,
+  groups: UsersRoundIcon,
   roles: ShieldCheckIcon,
   clients: AppWindowIcon,
   resources: ServerIcon,

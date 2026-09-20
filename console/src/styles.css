@@ -1535,5 +1535,20 @@
       max-width: none;
     }
 
+    [role='tablist'] {
+      max-width: 100%;
+      overflow-x: auto;
+      justify-content: flex-start;
+    }
+  }
+
+  /* Group administration keeps assignment sources readable without making
+     the table wider than a phone. Native forms remain keyboard-operable. */
+  .role-sources { display: flex; flex-wrap: wrap; gap: .35rem; }
+  .role-source { border: 1px solid var(--line); border-radius: 999px; padding: .15rem .45rem; font-size: .78rem; }
+  .group-role-form { display: grid; grid-template-columns: minmax(12rem, 1fr) minmax(12rem, 1fr) auto; gap: .75rem; align-items: end; }
+  @media (max-width: 45rem) {
+    .group-role-form { grid-template-columns: 1fr; }
+    .group-role-form button { width: 100%; }
   }
 }
