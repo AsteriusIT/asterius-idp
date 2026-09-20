@@ -17,8 +17,10 @@
 //! there is no field for it in a registration document and no code path from
 //! `POST /register` to this module.
 
+use std::collections::BTreeMap;
+
 use asterius_domain::{
-    ApplicationRole, ApplicationRoleError, ClientId, RoleName, RoleOwner, TenantId,
+    ApplicationRole, ApplicationRoleError, ClientId, Group, GroupId, RoleName, RoleOwner, TenantId,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -150,7 +152,10 @@ pub fn held_document(held: &asterius_domain::HeldRoles) -> Value {
 
 /// Effective roles with explicit direct/group provenance for administration.
 #[must_use]
-pub fn effective_document(roles: &[asterius_domain::EffectiveRole]) -> Value {
+pub fn effective_document(
+    roles: &[asterius_domain::EffectiveRole],
+    groups: &BTreeMap<GroupId, Group>,
+) -> Value {
     Value::Array(
         roles
             .iter()
@@ -160,10 +165,17 @@ pub fn effective_document(roles: &[asterius_domain::EffectiveRole]) -> Value {
                     "client_id": role.owner.client().map(ClientId::as_str),
                     "sources": role.sources.iter().map(|source| match source {
                         asterius_domain::RoleSource::Direct => json!({"type": "direct"}),
-                        asterius_domain::RoleSource::Group(group) => json!({
-                            "type": "group",
-                            "group_id": group.as_uuid().to_string(),
-                        }),
+                        asterius_domain::RoleSource::Group(group) => {
+                            let metadata = groups.get(group).map(|entry| &entry.metadata);
+                            json!({
+                                // The UUID remains the internal key used by API paths. The
+                                // console labels provenance with these tenant-scoped names.
+                                "type": "group",
+                                "group_id": group.as_uuid().to_string(),
+                                "group_name": metadata.map(|value| value.name().as_str()),
+                                "group_display_name": metadata.map(asterius_domain::GroupMetadata::display_name),
+                            })
+                        }
                     }).collect::<Vec<_>>(),
                 })
             })

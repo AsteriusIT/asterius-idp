@@ -6,7 +6,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './components/ui/tabs';
 import { toast } from './components/ui/toast';
 import {
-  groupPath, groupRolesPath, groupRoleWithdrawPath, memberPath,
+  GROUP_MEMBERSHIP_CHANGED_EVENT, groupPath, groupRolesPath, groupRoleWithdrawPath, memberPath,
   type GroupPage, type GroupRow, type MemberPage,
 } from './groups-model';
 import {
@@ -60,7 +60,7 @@ function GroupDirectory({ session, onOpen }: Readonly<{
 
   return <Screen title="Groups" description="Manage reusable membership and application access for this workspace."
     actions={writable ? <Button variant="primary" onClick={() => setCreating(true)}>Create group</Button> : undefined}>
-    <Panel title="Group directory" description="Search machine names or display names. Results are paginated by stable group identity.">
+    <Panel title="Group directory" description="Search machine names or display names. Both names stay visible wherever a group is used.">
       <form className="toolbar" onSubmit={(event) => { event.preventDefault(); setCursor(null); setTerm(typed.trim()); }}>
         <Field label="Search groups">{props => <input {...props} type="search" value={typed}
           placeholder="Search groups" onChange={event => setTyped(event.target.value)} />}</Field>
@@ -141,7 +141,7 @@ function GroupDetail({ session, id, onBack }: Readonly<{ session: Session; id: s
     );
   };
   return <Screen title={group.display_name} identity={group.display_name} back={{ label: 'Back to groups', onClick: onBack }}
-    description={<>Stable ID: <code>{group.id}</code></>} actions={writable ? <><Button onClick={() => setEditing(true)}>Edit</Button>
+    description={<>Machine name: <code>{group.name}</code></>} actions={writable ? <><Button onClick={() => setEditing(true)}>Edit</Button>
       <Button variant="danger" onClick={() => setDeleting(true)}>Delete</Button></> : undefined}>
     {refusal !== null && <Message tone="error">{refusal}</Message>}
     <Tabs defaultValue={session.scopes.includes(MEMBERS_READ) ? 'members' : session.scopes.includes(ROLES_READ) ? 'roles' : 'details'}><TabsList aria-label="Group sections">
@@ -237,18 +237,58 @@ function GroupRoles({ session, group }: Readonly<{ session: Session; group: Grou
 export function UserGroups({ session, userId }: Readonly<{ session: Session; userId: string }>): JSX.Element {
   const [load, setLoad] = useState<Load<GroupPage>>({ kind: 'loading' });
   const [cursor, setCursor] = useState<string | null>(null);
+  const [typed, setTyped] = useState('');
+  const [matches, setMatches] = useState<Load<GroupPage> | null>(null);
+  const [chosen, setChosen] = useState<GroupRow | null>(null);
+  const [saving, setSaving] = useState(false);
   const [refusal, setRefusal] = useState<string | null>(null);
   const writable = session.scopes.includes(MEMBERS_WRITE);
+  const searchable = writable && session.scopes.includes(GROUPS_READ);
   const refresh = useCallback(() => { setLoad({ kind: 'loading' }); read(`users/${encodeURIComponent(userId)}/groups${cursor === null ? '' : `?cursor=${encodeURIComponent(cursor)}`}`).then(
     value => setLoad({ kind: 'ready', value: value as GroupPage }), error => setLoad({ kind: 'failed', message: failure(error, 'Groups could not be read') })); }, [cursor, userId]);
   useEffect(refresh, [refresh]);
+  const search = (): void => {
+    setMatches({ kind: 'loading' }); setChosen(null);
+    const query = new URLSearchParams();
+    if (typed.trim() !== '') query.set('q', typed.trim());
+    read(query.size === 0 ? 'groups' : `groups?${query}`).then(
+      value => setMatches({ kind: 'ready', value: value as GroupPage }),
+      error => setMatches({ kind: 'failed', message: failure(error, 'Groups could not be searched') }),
+    );
+  };
+  const assign = (): void => {
+    if (chosen === null) return;
+    setSaving(true); setRefusal(null);
+    mutate(memberPath(chosen.id, userId), 'PUT', session).then(() => {
+      toast.success('Membership added', `${chosen.display_name} (${chosen.name})`);
+      window.dispatchEvent(new CustomEvent(GROUP_MEMBERSHIP_CHANGED_EVENT, { detail: { userId } }));
+      setSaving(false); setChosen(null); setMatches(null); setTyped(''); refresh();
+    }, error => { setSaving(false); setRefusal(failure(error, 'Membership could not be added')); });
+  };
   return <Panel title="Groups" description="Direct managed-group memberships. Role inheritance is shown on the Roles tab with its source.">
     {refusal !== null && <Message tone="error">{refusal}</Message>}
+    {searchable && <form onSubmit={event => { event.preventDefault(); search(); }}>
+      <div className="toolbar"><Field label="Find a group">{props => <input {...props} type="search" value={typed}
+        placeholder="Search display or machine name" onChange={event => setTyped(event.target.value)} />}</Field>
+        <Button type="submit" disabled={saving}>Search groups</Button></div>
+      {matches?.kind === 'loading' && <Skeleton rows={2} label="Searching groups." />}
+      {matches?.kind === 'failed' && <LoadFailure message={matches.message} onRetry={search} />}
+      {matches?.kind === 'ready' && <div className="role-picker" role="radiogroup" aria-label="Matching groups">
+        {matches.value.items.filter(group => load.kind !== 'ready' || !load.value.items.some(member => member.id === group.id)).map(group =>
+          <label className="role-choice" key={group.id}><input type="radio" name="group" value={group.id}
+            checked={chosen?.id === group.id} disabled={saving} onChange={() => setChosen(group)} />
+            <span><strong>{group.display_name}</strong><small><code>{group.name}</code></small></span></label>)}
+        {matches.value.items.length === 0 && <p className="muted">No group matches that search.</p>}
+      </div>}
+      {matches?.kind === 'ready' && <Actions end><Button type="button" variant="primary" disabled={chosen === null || saving} onClick={assign}>Add to group</Button></Actions>}
+    </form>}
     {load.kind === 'loading' && <Skeleton rows={3} label="Reading user groups." />}{load.kind === 'failed' && <LoadFailure message={load.message} onRetry={refresh} />}
     {load.kind === 'ready' && <><DataTable rows={load.value.items} rowKey={row => row.id} empty={<EmptyState title="No group memberships." body="Add this user from a group’s Members tab." />}
       columns={[{ key: 'group', header: 'Group', cell: row => <><strong>{row.display_name}</strong><br /><code>{row.name}</code></> },
         ...(writable ? [{ key: 'remove', header: 'Remove', actions: true, cell: (row: GroupRow) => <Button small variant="danger" onClick={() => {
-          setRefusal(null); mutate(memberPath(row.id, userId), 'DELETE', session).then(() => refresh(), error => setRefusal(failure(error, 'Membership could not be removed')));
+          setRefusal(null); mutate(memberPath(row.id, userId), 'DELETE', session).then(() => {
+            window.dispatchEvent(new CustomEvent(GROUP_MEMBERSHIP_CHANGED_EVENT, { detail: { userId } })); refresh();
+          }, error => setRefusal(failure(error, 'Membership could not be removed')));
         }}>Remove <span className="visually-hidden">{row.display_name}</span></Button> }] : [])]} />
       <Actions><Button disabled={cursor === null} onClick={() => setCursor(null)}>First page</Button><Button disabled={load.value.next_cursor === null} onClick={() => setCursor(load.value.next_cursor)}>Next page</Button></Actions></>}
   </Panel>;
