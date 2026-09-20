@@ -50,7 +50,7 @@ import { hrefOf } from './routes';
  */
 import { Tabs, TabsList, TabsTrigger, TabsContent } from './components/ui/tabs';
 import { FormSelect } from './components/ui/select';
-import { ArrowRightLeftIcon, KeyRoundIcon, MonitorSmartphoneIcon, RefreshCwIcon, ServerIcon, SmartphoneIcon } from 'lucide-react';
+import { ArrowRightLeftIcon, KeyRoundIcon, MonitorSmartphoneIcon, PencilIcon, RefreshCwIcon, ServerIcon, SmartphoneIcon } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { ApiError, mutate, read, type Session } from './api';
@@ -710,8 +710,8 @@ function Inventory({
           header: 'Actions',
           actions: true,
           cell: (row) => (
-            <Button small disabled={busy} onClick={() => onOpen(row.client_id)}>
-              Edit <span className="visually-hidden">{row.client_name}</span>
+            <Button small className="size-8 p-0" disabled={busy} aria-label={`Edit ${row.client_name}`} title="Edit" onClick={() => onOpen(row.client_id)}>
+              <PencilIcon aria-hidden="true" />
             </Button>
           ),
         },
