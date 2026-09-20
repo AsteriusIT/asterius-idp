@@ -223,7 +223,7 @@ cargo-fuzz workspace + proptest conventions. A script maps every module under `p
 
 **Spec:** FAPI 2.0 SP §6.6 (use certified/complete implementations); OIDF conformance suite plan `fapi2-security-profile-final` (client auth private_key_jwt, sender-constraining DPoP).
 
-docker-compose that runs the OpenID conformance suite against a local instance with a seeded tenant + two test clients (private_key_jwt + DPoP); CI job runs the FAPI2 SP plan and archives the report. Plans for OIDC Core are gated by decision E16_02.
+docker-compose that runs the OpenID conformance suite against a local instance with a seeded tenant + two test clients (private_key_jwt + DPoP); CI job runs the FAPI2 SP plan and archives the report. [ADR-0015](adr/0015-certify-the-fapi-profile-only.md) resolves E16_02 in favour of FAPI-only certification; OIDC Core plans are not run.
 
 **Acceptance tests**
 
@@ -2198,6 +2198,12 @@ Run the full plan nightly and on release branches; publish report; track waivers
 **Spec:** OIDF OpenID Provider certification plans (Basic OP, Config OP, Dynamic OP, Form Post, Logout profiles) send non-PAR authorization requests; FAPI 2.0 SP §5.3.2.2 item 3 requires rejecting them.
 
 Options: (a) certify FAPI 2.0 only (+ logout profiles where compatible); (b) add a tenant-scoped `conformance_mode` that accepts non-PAR requests solely for certification runs, clearly non-FAPI; (c) skip OIDC certification. Recommendation: (a) now, (b) only if a customer requires the OP marks; never enable (b) on a FAPI tenant.
+
+Decision: option (a), recorded by
+[ADR-0015](adr/0015-certify-the-fapi-profile-only.md). Certification covers the
+production FAPI path only. No `conformance_mode` or other non-PAR exception is
+added, and the standard OIDC compatibility profile from ADR-0014 does not
+broaden the FAPI certification claim.
 
 **Acceptance tests**
 
