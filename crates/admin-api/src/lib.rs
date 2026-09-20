@@ -1179,6 +1179,14 @@ pub const USER_APP_ROLE_ASSIGN_ID: &str = "users.app_roles.assign";
 pub const USER_APP_ROLE_WITHDRAW_ID: &str = "users.app_roles.tenant.withdraw";
 /// The `operationId` of [`USER_CLIENT_APP_ROLE_WITHDRAW`].
 pub const USER_CLIENT_APP_ROLE_WITHDRAW_ID: &str = "users.app_roles.client.withdraw";
+/// The `operationId` of `GET /groups/{group_id}/app-roles`.
+pub const GROUP_APP_ROLES_LIST_ID: &str = "groups.app_roles.list";
+/// The `operationId` of `POST /groups/{group_id}/app-roles`.
+pub const GROUP_APP_ROLE_ASSIGN_ID: &str = "groups.app_roles.assign";
+/// The tenant-role group withdrawal operation.
+pub const GROUP_APP_ROLE_WITHDRAW_ID: &str = "groups.app_roles.tenant.withdraw";
+/// The client-role group withdrawal operation.
+pub const GROUP_CLIENT_APP_ROLE_WITHDRAW_ID: &str = "groups.app_roles.client.withdraw";
 /// The `operationId` of [`POLICY_READ`].
 pub const POLICY_READ_ID: &str = "policies.read";
 /// The `operationId` of [`POLICY_UPDATE`].
@@ -1314,12 +1322,48 @@ pub const USER_CLIENT_APP_ROLE_WITHDRAW: Operation = Operation::mutation(
     "Takes one client's application role away from one account",
 );
 
+/// Lists application roles assigned directly to one managed group.
+pub const GROUP_APP_ROLES_LIST: Operation = Operation::read(
+    GROUP_APP_ROLES_LIST_ID,
+    "/groups/{group_id}/app-roles",
+    S::Get,
+    A::new(R::Tenant, "admin.app_roles:read"),
+    "Lists application roles assigned directly to one managed group",
+);
+
+/// Gives one managed group an application role.
+pub const GROUP_APP_ROLE_ASSIGN: Operation = Operation::mutation(
+    GROUP_APP_ROLE_ASSIGN_ID,
+    "/groups/{group_id}/app-roles",
+    M::Post,
+    A::new(R::Tenant, "admin.app_roles:write"),
+    "Gives one managed group an application role",
+);
+
+/// Takes a tenant application role away from one managed group.
+pub const GROUP_APP_ROLE_WITHDRAW: Operation = Operation::mutation(
+    GROUP_APP_ROLE_WITHDRAW_ID,
+    "/groups/{group_id}/app-roles/{role_name}",
+    M::Delete,
+    A::new(R::Tenant, "admin.app_roles:write"),
+    "Takes a tenant application role away from one managed group",
+);
+
+/// Takes a client application role away from one managed group.
+pub const GROUP_CLIENT_APP_ROLE_WITHDRAW: Operation = Operation::mutation(
+    GROUP_CLIENT_APP_ROLE_WITHDRAW_ID,
+    "/groups/{group_id}/clients/{client_id}/app-roles/{role_name}",
+    M::Delete,
+    A::new(R::Tenant, "admin.app_roles:write"),
+    "Takes a client application role away from one managed group",
+);
+
 /// Every route this API serves.
 ///
 /// A `static` rather than a function building a `Vec`, so that the router, the
 /// document and the tests are looking at one object and cannot be handed
 /// different copies of it.
-static REGISTRY: [Operation; 86] = [
+static REGISTRY: [Operation; 90] = [
     SESSION_READ,
     SESSION_END,
     OVERVIEW_USERS,
@@ -1402,6 +1446,10 @@ static REGISTRY: [Operation; 86] = [
     USER_APP_ROLE_ASSIGN,
     USER_APP_ROLE_WITHDRAW,
     USER_CLIENT_APP_ROLE_WITHDRAW,
+    GROUP_APP_ROLES_LIST,
+    GROUP_APP_ROLE_ASSIGN,
+    GROUP_APP_ROLE_WITHDRAW,
+    GROUP_CLIENT_APP_ROLE_WITHDRAW,
     POLICY_READ,
     POLICY_UPDATE,
     POLICY_DELETE,

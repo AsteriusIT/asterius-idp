@@ -148,6 +148,29 @@ pub fn held_document(held: &asterius_domain::HeldRoles) -> Value {
     })
 }
 
+/// Effective roles with explicit direct/group provenance for administration.
+#[must_use]
+pub fn effective_document(roles: &[asterius_domain::EffectiveRole]) -> Value {
+    Value::Array(
+        roles
+            .iter()
+            .map(|role| {
+                json!({
+                    "name": role.name.as_str(),
+                    "client_id": role.owner.client().map(ClientId::as_str),
+                    "sources": role.sources.iter().map(|source| match source {
+                        asterius_domain::RoleSource::Direct => json!({"type": "direct"}),
+                        asterius_domain::RoleSource::Group(group) => json!({
+                            "type": "group",
+                            "group_id": group.as_uuid().to_string(),
+                        }),
+                    }).collect::<Vec<_>>(),
+                })
+            })
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

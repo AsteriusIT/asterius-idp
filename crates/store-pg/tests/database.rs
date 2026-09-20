@@ -14879,8 +14879,10 @@ mod device_codes {
 mod application_roles {
     use super::*;
     use asterius_domain::ports::ApplicationRoleDirectory;
-    use asterius_domain::{ApplicationRole, RoleName, RoleOwner};
-    use asterius_store_pg::PgApplicationRoles;
+    use asterius_domain::{
+        ApplicationRole, GroupDirectory, GroupMetadata, RoleName, RoleOwner, RoleSource,
+    };
+    use asterius_store_pg::{PgApplicationRoles, PgGroups};
 
     use super::grants::seed_client;
 
@@ -14907,6 +14909,68 @@ mod application_roles {
             .await
             .expect("seed user");
         user
+    }
+
+    async fn a_group(pool: &PgPool, tenant: &str, name: &str) -> asterius_domain::GroupId {
+        PgGroups::new(pool.clone())
+            .create(
+                &TenantId::new(tenant),
+                &GroupMetadata::parse(name, "Role group").expect("metadata"),
+                epoch(),
+            )
+            .await
+            .expect("create group")
+            .id
+    }
+
+    db_test! {
+        /// Every source is retained while the effective authority is emitted
+        /// only once; membership and assignment edits affect the next read.
+        async fn direct_and_group_roles_resolve_with_lifecycle_provenance(db) {
+            seed_tenant(&db.pool, "demo").await;
+            let repo = repo(&db.pool);
+            let groups = PgGroups::new(db.pool.clone());
+            let user = an_account(&db.pool, "demo").await;
+            let first = a_group(&db.pool, "demo", "finance").await;
+            let second = a_group(&db.pool, "demo", "reviewers").await;
+            repo.define(&role("demo", RoleOwner::Tenant, "auditor")).await.expect("define");
+            repo.assign(&TenantId::new("demo"), user, &RoleOwner::Tenant, &name("auditor"), epoch()).await.expect("direct");
+            for group in [first, second] {
+                groups.add_member(&TenantId::new("demo"), group, user, epoch()).await.expect("member");
+                repo.assign_group(&TenantId::new("demo"), group, &RoleOwner::Tenant, &name("auditor"), epoch()).await.expect("group role");
+            }
+
+            let effective = repo.effective_roles(&TenantId::new("demo"), user).await.expect("effective");
+            assert_eq!(effective.len(), 1);
+            assert_eq!(effective[0].sources.len(), 3);
+            assert!(effective[0].sources.contains(&RoleSource::Direct));
+            assert!(effective[0].sources.contains(&RoleSource::Group(first)));
+
+            repo.withdraw(&TenantId::new("demo"), user, &RoleOwner::Tenant, &name("auditor")).await.expect("withdraw direct");
+            repo.withdraw_group(&TenantId::new("demo"), first, &RoleOwner::Tenant, &name("auditor")).await.expect("withdraw group");
+            assert!(repo.held_by(&TenantId::new("demo"), user).await.expect("held").tenant.contains(&name("auditor")));
+
+            groups.remove_member(&TenantId::new("demo"), second, user, epoch()).await.expect("remove member");
+            assert!(repo.held_by(&TenantId::new("demo"), user).await.expect("held").is_empty());
+        }
+    }
+
+    db_test! {
+        /// Composite keys reject foreign groups and foreign client catalogues.
+        async fn group_role_assignment_cannot_cross_tenant_or_client(db) {
+            seed_client(&db.pool, "demo", "billing").await;
+            seed_tenant(&db.pool, "other").await;
+            let repo = repo(&db.pool);
+            let group = a_group(&db.pool, "other", "foreign").await;
+            let owner = RoleOwner::Client(ClientId::new("billing"));
+            repo.define(&role("demo", owner.clone(), "refund")).await.expect("define");
+
+            let refused = repo.assign_group(
+                &TenantId::new("demo"), group, &owner, &name("refund"), epoch()
+            ).await;
+
+            assert!(matches!(refused, Err(DomainError::Conflict(_))));
+        }
     }
 
     db_test! {

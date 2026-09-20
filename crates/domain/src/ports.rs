@@ -8,12 +8,12 @@ use crate::policy::{Decision, EvaluationRequest, RuleSet, StoredPolicy};
 use crate::{
     ApplicationRole, AuthenticationMethod, AuthorizationDetailsType, Client, ClientId,
     ClientMetadataError, ClientRegistration, ClientStatus, CodeBinding, Consumed, DomainError,
-    Enrolment, FirstPartyDestination, Grant, InitialAccessToken, InitialAccessTokenReservation,
-    InteractionRecord, IssuedEmailVerification, IssuedRecovery, Issuer, NewInitialAccessToken,
-    NewPasskey, Participant, PushedRequest, RegisteredPasskey, ResourceServer, RoleName, RoleOwner,
-    Secret, SectorIdentifier, Session, SessionRevocation, SubjectId, Tenant, TenantId,
-    TenantSettings, Theme, User, UserId, VerifiedAddress, entities::application_role::HeldRoles,
-    entities::theme::ImageFormat,
+    EffectiveRole, Enrolment, FirstPartyDestination, Grant, GroupId, InitialAccessToken,
+    InitialAccessTokenReservation, InteractionRecord, IssuedEmailVerification, IssuedRecovery,
+    Issuer, NewInitialAccessToken, NewPasskey, Participant, PushedRequest, RegisteredPasskey,
+    ResourceServer, RoleName, RoleOwner, Secret, SectorIdentifier, Session, SessionRevocation,
+    SubjectId, Tenant, TenantId, TenantSettings, Theme, User, UserId, VerifiedAddress,
+    entities::application_role::HeldRoles, entities::theme::ImageFormat,
 };
 use serde_json::Value;
 use std::fmt::Debug;
@@ -2042,6 +2042,39 @@ pub trait ApplicationRoleDirectory: Debug + Send + Sync {
         owner: &RoleOwner,
         name: &RoleName,
     ) -> Result<bool, DomainError>;
+
+    /// Gives a managed group a role. Both objects must belong to `tenant`.
+    async fn assign_group(
+        &self,
+        tenant: &TenantId,
+        group: GroupId,
+        owner: &RoleOwner,
+        name: &RoleName,
+        now: OffsetDateTime,
+    ) -> Result<bool, DomainError>;
+
+    /// Takes a role away from a managed group.
+    async fn withdraw_group(
+        &self,
+        tenant: &TenantId,
+        group: GroupId,
+        owner: &RoleOwner,
+        name: &RoleName,
+    ) -> Result<bool, DomainError>;
+
+    /// Roles assigned directly to a group, ordered by owner and name.
+    async fn held_by_group(
+        &self,
+        tenant: &TenantId,
+        group: GroupId,
+    ) -> Result<HeldRoles, DomainError>;
+
+    /// Effective, deduplicated roles and all direct/group sources.
+    async fn effective_roles(
+        &self,
+        tenant: &TenantId,
+        user: UserId,
+    ) -> Result<Vec<EffectiveRole>, DomainError>;
 
     /// Everything one account holds, in the shape a token needs it.
     ///
