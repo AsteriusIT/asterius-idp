@@ -32,6 +32,25 @@ another tenant's directory. The server writes `group_ids` after stored claims,
 preventing claim shadowing. Membership edits affect the next decision or response.
 Signed tokens remain snapshots until `exp`, bounded by the token lifetime caps.
 
+## Group application roles and revocation
+
+Application roles may be assigned to a managed group. Effective roles are the
+deduplicated union of direct assignments and assignments from every direct
+group membership. The administration API reports every source (`direct` or a
+stable group UUID), so removing one source does not disguise authority that is
+still granted by another. Tenant and client ownership is enforced by composite
+foreign keys; group grants use only `RoleName` and can never grant the server's
+built-in console/deployment administrator `Role` values.
+
+Membership and assignment edits are read live for every authorization
+decision, authorization-code exchange, refresh, device/CIBA issuance and
+UserInfo response. They therefore affect the next operation. Already-issued
+JWTs are signed snapshots and remain valid until `exp`; deleting a membership
+or assignment cannot rewrite them. Operators needing immediate revocation must
+also revoke the user's grants/sessions (which advances token cutoffs and ends
+refresh) or use opaque-token introspection at the resource server. Short access
+token lifetimes remain the bounded fallback for offline JWT validation.
+
 ## Transactions and concurrency
 
 Each create is one atomic INSERT; duplicate tenant/name or identity conflicts
@@ -62,8 +81,8 @@ authority expansion through legacy-name normalization, misleading display text,
 and unbounded enumeration responses. Composite keys, row-lock/revision checks,
 strict parsers and bounded keyset reads address those risks. Stable identities
 prevent rename from becoming delete/recreate or transferring existing members to
-an unrelated group. Nested groups, dynamic rules, SCIM and inherited roles are
-outside this persistence ticket. No HTTP routes are added, so OpenAPI is unchanged.
+an unrelated group. Nested groups, dynamic rules and SCIM are outside this
+persistence ticket.
 
 Domain tests cover parser limits, exact names and identity. The `group_metadata`
 fuzz target checks accepted byte/alphabet invariants and round trips. Ignored

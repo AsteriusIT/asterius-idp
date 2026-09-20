@@ -37,7 +37,7 @@
 //! `Admin` and `admin` the same role, and a parser that changes its input is a
 //! parser whose output nobody predicted.
 
-use crate::{ClientId, TenantId, UserId};
+use crate::{ClientId, GroupId, TenantId, UserId};
 use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 use time::OffsetDateTime;
@@ -389,6 +389,30 @@ pub struct RoleAssignment {
     pub name: RoleName,
     /// When it was granted. The audit trail carries who.
     pub granted_at: OffsetDateTime,
+}
+
+/// One independent source of an effective application-role assignment.
+///
+/// Keeping every source (rather than only saying "inherited") is what lets an
+/// administrator remove a group grant without accidentally believing a
+/// surviving direct or second-group grant was revoked.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RoleSource {
+    /// Assigned to the account itself.
+    Direct,
+    /// Inherited through a direct managed-group membership.
+    Group(GroupId),
+}
+
+/// A deduplicated effective role together with every source that grants it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectiveRole {
+    /// Whose catalogue defines the role.
+    pub owner: RoleOwner,
+    /// The role name.
+    pub name: RoleName,
+    /// Non-empty, ordered assignment provenance.
+    pub sources: BTreeSet<RoleSource>,
 }
 
 #[cfg(test)]

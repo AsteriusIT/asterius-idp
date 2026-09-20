@@ -30,8 +30,8 @@ pub use agent::{
     DEFAULT_MAX_DELEGATION_DEPTH, MAX_DELEGATION_DEPTH,
 };
 pub use application_role::{
-    ApplicationRole, ApplicationRoleError, HeldRoles, MAX_ROLE_DESCRIPTION_LEN, RoleAssignment,
-    RoleClaim, RoleName, RoleNameError, RoleOwner,
+    ApplicationRole, ApplicationRoleError, EffectiveRole, HeldRoles, MAX_ROLE_DESCRIPTION_LEN,
+    RoleAssignment, RoleClaim, RoleName, RoleNameError, RoleOwner, RoleSource,
 };
 pub use authorization_details::{
     AuthorizationDetail, AuthorizationDetails, AuthorizationDetailsRegistry,

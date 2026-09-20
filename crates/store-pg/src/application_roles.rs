@@ -26,9 +26,12 @@
 use crate::error::to_domain_error;
 use asterius_domain::ports::ApplicationRoleDirectory;
 use asterius_domain::{
-    ApplicationRole, ClientId, DomainError, HeldRoles, RoleName, RoleOwner, TenantId, UserId,
+    ApplicationRole, ClientId, DomainError, EffectiveRole, GroupId, HeldRoles, RoleName, RoleOwner,
+    RoleSource, TenantId, UserId,
 };
+use sqlx::Row as _;
 use sqlx::postgres::PgPool;
+use std::collections::{BTreeMap, BTreeSet};
 use time::OffsetDateTime;
 
 /// [`ApplicationRoleDirectory`] over `PostgreSQL`.
@@ -253,40 +256,182 @@ impl ApplicationRoleDirectory for PgApplicationRoles {
         Ok(affected > 0)
     }
 
-    async fn held_by(&self, tenant: &TenantId, user: UserId) -> Result<HeldRoles, DomainError> {
-        let mut held = HeldRoles::default();
+    async fn assign_group(
+        &self,
+        tenant: &TenantId,
+        group: GroupId,
+        owner: &RoleOwner,
+        name: &RoleName,
+        now: OffsetDateTime,
+    ) -> Result<bool, DomainError> {
+        let affected = match owner {
+            RoleOwner::Tenant => sqlx::query(
+                "insert into group_tenant_roles (tenant_id, group_id, name, granted_at)
+                 values ($1, $2, $3, $4)
+                 on conflict (tenant_id, group_id, name) do nothing",
+            )
+            .bind(tenant.as_str())
+            .bind(group.as_uuid())
+            .bind(name.as_str())
+            .bind(now)
+            .execute(&self.pool)
+            .await
+            .map_err(to_domain_error)?
+            .rows_affected(),
+            RoleOwner::Client(client) => sqlx::query(
+                "insert into group_client_roles (tenant_id, group_id, client_id, name, granted_at)
+                 values ($1, $2, $3, $4, $5)
+                 on conflict (tenant_id, group_id, client_id, name) do nothing",
+            )
+            .bind(tenant.as_str())
+            .bind(group.as_uuid())
+            .bind(client.as_str())
+            .bind(name.as_str())
+            .bind(now)
+            .execute(&self.pool)
+            .await
+            .map_err(to_domain_error)?
+            .rows_affected(),
+        };
+        Ok(affected > 0)
+    }
 
-        let tenant_rows = sqlx::query!(
-            "select name from user_tenant_roles
-              where tenant_id = $1 and user_id = $2
-              order by name",
-            tenant.as_str(),
-            user.as_uuid()
+    async fn withdraw_group(
+        &self,
+        tenant: &TenantId,
+        group: GroupId,
+        owner: &RoleOwner,
+        name: &RoleName,
+    ) -> Result<bool, DomainError> {
+        let affected = match owner {
+            RoleOwner::Tenant => sqlx::query(
+                "delete from group_tenant_roles
+                 where tenant_id = $1 and group_id = $2 and name = $3",
+            )
+            .bind(tenant.as_str())
+            .bind(group.as_uuid())
+            .bind(name.as_str())
+            .execute(&self.pool)
+            .await
+            .map_err(to_domain_error)?
+            .rows_affected(),
+            RoleOwner::Client(client) => sqlx::query(
+                "delete from group_client_roles
+                 where tenant_id = $1 and group_id = $2 and client_id = $3 and name = $4",
+            )
+            .bind(tenant.as_str())
+            .bind(group.as_uuid())
+            .bind(client.as_str())
+            .bind(name.as_str())
+            .execute(&self.pool)
+            .await
+            .map_err(to_domain_error)?
+            .rows_affected(),
+        };
+        Ok(affected > 0)
+    }
+
+    async fn held_by_group(
+        &self,
+        tenant: &TenantId,
+        group: GroupId,
+    ) -> Result<HeldRoles, DomainError> {
+        let mut held = HeldRoles::default();
+        let tenant_rows = sqlx::query(
+            "select name from group_tenant_roles
+             where tenant_id = $1 and group_id = $2 order by name",
         )
+        .bind(tenant.as_str())
+        .bind(group.as_uuid())
         .fetch_all(&self.pool)
         .await
         .map_err(to_domain_error)?;
         for row in tenant_rows {
-            held.tenant.insert(parse_stored(&row.name)?);
+            held.tenant.insert(parse_stored(row.get("name"))?);
         }
-
-        let client_rows = sqlx::query!(
-            "select client_id, name from user_client_roles
-              where tenant_id = $1 and user_id = $2
-              order by client_id, name",
-            tenant.as_str(),
-            user.as_uuid()
+        let client_rows = sqlx::query(
+            "select client_id, name from group_client_roles
+             where tenant_id = $1 and group_id = $2 order by client_id, name",
         )
+        .bind(tenant.as_str())
+        .bind(group.as_uuid())
         .fetch_all(&self.pool)
         .await
         .map_err(to_domain_error)?;
         for row in client_rows {
             held.clients
-                .entry(ClientId::new(row.client_id))
+                .entry(ClientId::new(row.get::<String, _>("client_id")))
                 .or_default()
-                .insert(parse_stored(&row.name)?);
+                .insert(parse_stored(row.get("name"))?);
         }
+        Ok(held)
+    }
 
+    async fn effective_roles(
+        &self,
+        tenant: &TenantId,
+        user: UserId,
+    ) -> Result<Vec<EffectiveRole>, DomainError> {
+        let rows = sqlx::query(
+            "select null::text as client_id, name, null::uuid as group_id
+               from user_tenant_roles where tenant_id = $1 and user_id = $2
+             union all
+             select client_id, name, null::uuid
+               from user_client_roles where tenant_id = $1 and user_id = $2
+             union all
+             select null::text, r.name, r.group_id
+               from group_memberships m
+               join group_tenant_roles r using (tenant_id, group_id)
+              where m.tenant_id = $1 and m.user_id = $2
+             union all
+             select r.client_id, r.name, r.group_id
+               from group_memberships m
+               join group_client_roles r using (tenant_id, group_id)
+              where m.tenant_id = $1 and m.user_id = $2",
+        )
+        .bind(tenant.as_str())
+        .bind(user.as_uuid())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+
+        let mut effective: BTreeMap<(RoleOwner, RoleName), BTreeSet<RoleSource>> = BTreeMap::new();
+        for row in rows {
+            let owner = row
+                .get::<Option<String>, _>("client_id")
+                .map_or(RoleOwner::Tenant, |client| {
+                    RoleOwner::Client(ClientId::new(client))
+                });
+            let name = parse_stored(row.get("name"))?;
+            let source = row
+                .get::<Option<uuid::Uuid>, _>("group_id")
+                .map_or(RoleSource::Direct, |id| {
+                    RoleSource::Group(GroupId::from_uuid(id))
+                });
+            effective.entry((owner, name)).or_default().insert(source);
+        }
+        Ok(effective
+            .into_iter()
+            .map(|((owner, name), sources)| EffectiveRole {
+                owner,
+                name,
+                sources,
+            })
+            .collect())
+    }
+
+    async fn held_by(&self, tenant: &TenantId, user: UserId) -> Result<HeldRoles, DomainError> {
+        let mut held = HeldRoles::default();
+        for role in self.effective_roles(tenant, user).await? {
+            match role.owner {
+                RoleOwner::Tenant => {
+                    held.tenant.insert(role.name);
+                }
+                RoleOwner::Client(client) => {
+                    held.clients.entry(client).or_default().insert(role.name);
+                }
+            }
+        }
         Ok(held)
     }
 }

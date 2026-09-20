@@ -418,6 +418,10 @@ fn is_group_route(id: &str) -> bool {
             | crate::GROUP_MEMBER_ADD_ID
             | crate::GROUP_MEMBER_REMOVE_ID
             | crate::USER_GROUPS_LIST_ID
+            | crate::GROUP_APP_ROLES_LIST_ID
+            | crate::GROUP_APP_ROLE_ASSIGN_ID
+            | crate::GROUP_APP_ROLE_WITHDRAW_ID
+            | crate::GROUP_CLIENT_APP_ROLE_WITHDRAW_ID
     )
 }
 
@@ -436,6 +440,14 @@ async fn route_groups(
         crate::GROUP_MEMBER_ADD_ID => context.add_group_member().await,
         crate::GROUP_MEMBER_REMOVE_ID => context.remove_group_member().await,
         crate::USER_GROUPS_LIST_ID => context.list_user_groups().await,
+        crate::GROUP_APP_ROLES_LIST_ID => context.list_group_roles().await,
+        crate::GROUP_APP_ROLE_ASSIGN_ID => context.assign_group_role(body).await,
+        crate::GROUP_APP_ROLE_WITHDRAW_ID => context.withdraw_group_role(RoleOwner::Tenant).await,
+        crate::GROUP_CLIENT_APP_ROLE_WITHDRAW_ID => {
+            context
+                .withdraw_group_role(context.client_owner_in_path()?)
+                .await
+        }
         _ => Err(AdminError::Unavailable),
     }
 }
@@ -3476,17 +3488,116 @@ impl Handling<'_> {
         // is a 404 here for the same reason it is everywhere else.
         let user = self.load_user(id, crate::USER_APP_ROLES_LIST_ID).await?;
 
+        let directory = self.state.backend.application_roles();
+        let held = directory
+            .held_by(&self.tenant.id, user.id)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::USER_APP_ROLES_LIST_ID, &error))?;
+        let effective = directory
+            .effective_roles(&self.tenant.id, user.id)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::USER_APP_ROLES_LIST_ID, &error))?;
+
+        let mut document = crate::roles::held_document(&held);
+        document["effective_assignments"] = crate::roles::effective_document(&effective);
+
+        Ok(json_no_store(StatusCode::OK, &document))
+    }
+
+    async fn list_group_roles(&self) -> Result<Response, AdminError> {
+        let group = self.group_in_path()?;
+        self.load_group(group, crate::GROUP_APP_ROLES_LIST_ID)
+            .await?;
         let held = self
             .state
             .backend
             .application_roles()
-            .held_by(&self.tenant.id, user.id)
+            .held_by_group(&self.tenant.id, group)
             .await
-            .map_err(|error| AdminError::from_storage(crate::USER_APP_ROLES_LIST_ID, &error))?;
-
+            .map_err(|error| AdminError::from_storage(crate::GROUP_APP_ROLES_LIST_ID, &error))?;
         Ok(json_no_store(
             StatusCode::OK,
             &crate::roles::held_document(&held),
+        ))
+    }
+
+    async fn assign_group_role(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let group = self.group_in_path()?;
+        self.load_group(group, crate::GROUP_APP_ROLE_ASSIGN_ID)
+            .await?;
+        let requested: crate::roles::RequestedAssignment = self.parse_body(body).await?;
+        let name = crate::roles::accept_name(&requested.name)?;
+        let owner = crate::roles::accept_owner(requested.client_id.as_deref())?;
+        let assigned = self
+            .state
+            .backend
+            .application_roles()
+            .assign_group(&self.tenant.id, group, &owner, &name, self.now)
+            .await
+            .map_err(|error| match error {
+                DomainError::Conflict(_) => AdminError::Conflict(
+                    "the group or role does not exist in this tenant and catalogue".to_owned(),
+                ),
+                other => AdminError::from_storage(crate::GROUP_APP_ROLE_ASSIGN_ID, &other),
+            })?;
+        if assigned {
+            self.record(
+                EventType::APP_ROLE_ASSIGNED,
+                Detail::new()
+                    .label("operation", crate::GROUP_APP_ROLE_ASSIGN_ID)
+                    .text("group_id", group.as_uuid().to_string())
+                    .text("role", name.as_str())
+                    .text(
+                        "client_id",
+                        owner.client().map_or("", asterius_domain::ClientId::as_str),
+                    ),
+            )
+            .await;
+        }
+        Ok(json_no_store(
+            if assigned {
+                StatusCode::CREATED
+            } else {
+                StatusCode::OK
+            },
+            &serde_json::json!({"assigned": true}),
+        ))
+    }
+
+    async fn withdraw_group_role(&self, owner: RoleOwner) -> Result<Response, AdminError> {
+        let group = self.group_in_path()?;
+        self.load_group(group, crate::GROUP_APP_ROLE_WITHDRAW_ID)
+            .await?;
+        let name = self.role_in_path()?;
+        let operation = match owner {
+            RoleOwner::Tenant => crate::GROUP_APP_ROLE_WITHDRAW_ID,
+            RoleOwner::Client(_) => crate::GROUP_CLIENT_APP_ROLE_WITHDRAW_ID,
+        };
+        let withdrawn = self
+            .state
+            .backend
+            .application_roles()
+            .withdraw_group(&self.tenant.id, group, &owner, &name)
+            .await
+            .map_err(|error| AdminError::from_storage(operation, &error))?;
+        if !withdrawn {
+            return Err(AdminError::NotFound);
+        }
+        self.record(
+            EventType::APP_ROLE_WITHDRAWN,
+            Detail::new()
+                .label("operation", operation)
+                .text("group_id", group.as_uuid().to_string())
+                .text("role", name.as_str())
+                .text(
+                    "client_id",
+                    owner.client().map_or("", asterius_domain::ClientId::as_str),
+                ),
+        )
+        .await;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({"withdrawn": true}),
         ))
     }
 
@@ -4542,6 +4653,8 @@ mod tests {
         /// that read them are about a handful of rows and a scan is clearer
         /// than an index that could be wrong.
         role_assignments: Mutex<Vec<SeededAssignment>>,
+        /// Application roles granted to managed groups.
+        group_role_assignments: Mutex<Vec<SeededGroupAssignment>>,
         /// Tenant-scoped managed groups used by the administration tests.
         groups: Mutex<Vec<asterius_domain::Group>>,
         /// Direct memberships as `(tenant, group, user)` tuples.
@@ -4554,6 +4667,14 @@ mod tests {
     struct SeededAssignment {
         tenant: TenantId,
         user: UserId,
+        owner: RoleOwner,
+        name: asterius_domain::RoleName,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct SeededGroupAssignment {
+        tenant: TenantId,
+        group: asterius_domain::GroupId,
         owner: RoleOwner,
         name: asterius_domain::RoleName,
     }
@@ -6182,7 +6303,14 @@ mod tests {
                 .expect("an uncontended lock")
                 .iter()
                 .any(|row| &row.tenant == tenant && &row.owner == owner && &row.name == name);
-            if held {
+            let held_by_group = self
+                .0
+                .group_role_assignments
+                .lock()
+                .expect("an uncontended lock")
+                .iter()
+                .any(|row| &row.tenant == tenant && &row.owner == owner && &row.name == name);
+            if held || held_by_group {
                 // What `on delete restrict` produces.
                 return Err(DomainError::Conflict("user_tenant_roles".to_owned()));
             }
@@ -6245,19 +6373,86 @@ mod tests {
             Ok(assignments.len() < before)
         }
 
-        async fn held_by(
+        async fn assign_group(
             &self,
             tenant: &TenantId,
-            user: UserId,
+            group: asterius_domain::GroupId,
+            owner: &RoleOwner,
+            name: &asterius_domain::RoleName,
+            _now: OffsetDateTime,
+        ) -> Result<bool, DomainError> {
+            let group_exists = self
+                .0
+                .groups
+                .lock()
+                .expect("an uncontended lock")
+                .iter()
+                .any(|candidate| &candidate.tenant == tenant && candidate.id == group);
+            let role_exists = self
+                .0
+                .role_catalogue
+                .lock()
+                .expect("an uncontended lock")
+                .iter()
+                .any(|role| &role.tenant == tenant && &role.owner == owner && &role.name == name);
+            if !group_exists || !role_exists {
+                return Err(DomainError::Conflict(
+                    "group application role foreign key".to_owned(),
+                ));
+            }
+            let row = SeededGroupAssignment {
+                tenant: tenant.clone(),
+                group,
+                owner: owner.clone(),
+                name: name.clone(),
+            };
+            let mut assignments = self
+                .0
+                .group_role_assignments
+                .lock()
+                .expect("an uncontended lock");
+            if assignments.contains(&row) {
+                return Ok(false);
+            }
+            assignments.push(row);
+            Ok(true)
+        }
+
+        async fn withdraw_group(
+            &self,
+            tenant: &TenantId,
+            group: asterius_domain::GroupId,
+            owner: &RoleOwner,
+            name: &asterius_domain::RoleName,
+        ) -> Result<bool, DomainError> {
+            let mut assignments = self
+                .0
+                .group_role_assignments
+                .lock()
+                .expect("an uncontended lock");
+            let before = assignments.len();
+            assignments.retain(|row| {
+                !(&row.tenant == tenant
+                    && row.group == group
+                    && &row.owner == owner
+                    && &row.name == name)
+            });
+            Ok(assignments.len() < before)
+        }
+
+        async fn held_by_group(
+            &self,
+            tenant: &TenantId,
+            group: asterius_domain::GroupId,
         ) -> Result<asterius_domain::HeldRoles, DomainError> {
             let mut held = asterius_domain::HeldRoles::default();
             for row in self
                 .0
-                .role_assignments
+                .group_role_assignments
                 .lock()
                 .expect("an uncontended lock")
                 .iter()
-                .filter(|row| &row.tenant == tenant && row.user == user)
+                .filter(|row| &row.tenant == tenant && row.group == group)
             {
                 match &row.owner {
                     RoleOwner::Tenant => {
@@ -6268,6 +6463,80 @@ mod tests {
                             .entry(client.clone())
                             .or_default()
                             .insert(row.name.clone());
+                    }
+                }
+            }
+            Ok(held)
+        }
+
+        async fn effective_roles(
+            &self,
+            tenant: &TenantId,
+            user: UserId,
+        ) -> Result<Vec<asterius_domain::EffectiveRole>, DomainError> {
+            use std::collections::{BTreeMap, BTreeSet};
+            let mut result: BTreeMap<
+                (RoleOwner, asterius_domain::RoleName),
+                BTreeSet<asterius_domain::RoleSource>,
+            > = BTreeMap::new();
+            for row in self
+                .0
+                .role_assignments
+                .lock()
+                .expect("an uncontended lock")
+                .iter()
+                .filter(|row| &row.tenant == tenant && row.user == user)
+            {
+                result
+                    .entry((row.owner.clone(), row.name.clone()))
+                    .or_default()
+                    .insert(asterius_domain::RoleSource::Direct);
+            }
+            let groups: std::collections::BTreeSet<_> = self
+                .0
+                .group_memberships
+                .lock()
+                .expect("an uncontended lock")
+                .iter()
+                .filter(|(row_tenant, _, row_user)| row_tenant == tenant && *row_user == user)
+                .map(|(_, group, _)| *group)
+                .collect();
+            for row in self
+                .0
+                .group_role_assignments
+                .lock()
+                .expect("an uncontended lock")
+                .iter()
+                .filter(|row| &row.tenant == tenant && groups.contains(&row.group))
+            {
+                result
+                    .entry((row.owner.clone(), row.name.clone()))
+                    .or_default()
+                    .insert(asterius_domain::RoleSource::Group(row.group));
+            }
+            Ok(result
+                .into_iter()
+                .map(|((owner, name), sources)| asterius_domain::EffectiveRole {
+                    owner,
+                    name,
+                    sources,
+                })
+                .collect())
+        }
+
+        async fn held_by(
+            &self,
+            tenant: &TenantId,
+            user: UserId,
+        ) -> Result<asterius_domain::HeldRoles, DomainError> {
+            let mut held = asterius_domain::HeldRoles::default();
+            for role in self.effective_roles(tenant, user).await? {
+                match role.owner {
+                    RoleOwner::Tenant => {
+                        held.tenant.insert(role.name);
+                    }
+                    RoleOwner::Client(client) => {
+                        held.clients.entry(client).or_default().insert(role.name);
                     }
                 }
             }
