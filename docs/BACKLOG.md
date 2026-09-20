@@ -10,6 +10,22 @@
 4. Labels: `area:*` (module), `spec:*` (normative source), `status:final|impl-draft|draft` (spec maturity), `flag:*` (feature flag), `differentiator:*`, `adr` (decision beads), `track` (not implemented in v1).
 5. Definition of done (project rule): spec-derived or conformance-suite test passes; fuzz target exists for every new parser/validator; threat-model note updated when the change moves a trust boundary; no new `unsafe`; generated crypto/parsing code is not done until a human has read the cited spec sections.
 
+### Implementation reconciliation (2026-09-20)
+
+This document preserves the original product stories and acceptance tests; Beads is the
+source of truth for current implementation status. The legacy E06 (`ast-2vk`), E14
+(`ast-f7m`) and E15 (`ast-ndk`) epics are closed after all of their implementation
+children completed. Their historical partial-delivery records remain on the child
+tickets instead of being rewritten.
+
+The console/SSO milestone owns the follow-through that those records identified:
+tenant assurance, session and rate-limit settings are delivered by `ast-6uqw.3`,
+`ast-6uqw.4` and `ast-6uqw.5`; runtime branding is delivered by `ast-6uqw.6`; and the
+remaining branding editor is `ast-6uqw.7`. Resource-server, client-metadata and
+restricted-role work is complete under `ast-f7m.11`–`ast-f7m.13` and `ast-3t8`.
+`ast-6uqw.15` owns integrated release validation and the new Sonar scan. It depends on
+the existing `ast-p2l.2`, which remains the sole certification-profile decision.
+
 ## Fixed product decisions this backlog encodes
 
 - FAPI 2.0 Security Profile (Final) is the only mode: PAR-only, `response_type=code`, PKCE S256, private_key_jwt (mTLS optional), DPoP-bound access tokens always, exact redirect URIs, codes ≤ 60 s, `iss` in responses, **no refresh-token rotation** (SP §5.3.2.1 item 9), confidential clients only.
