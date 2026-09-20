@@ -29,7 +29,12 @@ Not submitted, and why:
   the flag is on, so the day it ships the plan is one line away.
 - **Message signing (JAR/JARM)**: a separate plan;
   `request_parameter_supported` is `false`.
-- **OpenID Connect Core plans**: gated by decision E16_02.
+- **OpenID Connect Core plans**: not submitted.
+  [ADR-0015](adr/0015-certify-the-fapi-profile-only.md) selects FAPI-only
+  certification and rejects a `conformance_mode` or other test-only exception
+  for non-PAR requests. The standard OIDC compatibility profile from
+  [ADR-0014](adr/0014-explicitly-gated-standard-oidc-clients.md) remains outside
+  the FAPI certification claim.
 
 ## Running it
 

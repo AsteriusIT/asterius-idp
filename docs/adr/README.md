@@ -23,3 +23,4 @@ Copy [`0000-template.md`](0000-template.md) to start one.
 | [0012](0012-mcp-clients-remain-confidential.md) | MCP compatibility is limited to confidential clients; CIMD is not implemented | Accepted |
 | [0013](0013-openid-federation-remains-out-of-v1.md) | OpenID Federation remains out of v1 without narrowing the client model | Accepted |
 | [0014](0014-explicitly-gated-standard-oidc-clients.md) | Standard OIDC clients are explicit tenant and application opt-ins | Accepted |
+| [0015](0015-certify-the-fapi-profile-only.md) | Certify the FAPI profile only; do not add a conformance mode | Accepted |
