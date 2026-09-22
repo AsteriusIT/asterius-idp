@@ -1,0 +1,96 @@
+# Local OrbStack Kubernetes values.
+#
+# Development only: self-signed TLS, one replica, a single-instance CNPG
+# database in the same namespace, and an image pulled from the local Docker
+# daemon rather than a registry. Nothing here is a production value.
+#
+# Host: auth.k8s.orb.local. OrbStack resolves every name under *.k8s.orb.local
+# to the cluster's ingress on its own, so there is no /etc/hosts entry to make
+# and no address hard-coded anywhere — which is the whole reason to prefer it
+# over a name of our own choosing.
+#
+# Install/upgrade (see deploy/helm/orbstack/ for the objects the chart does
+# not own — the database, the certificate and the Traefik middlewares):
+#
+#   kubectl apply -f deploy/helm/orbstack/prereqs.yaml
+#   helm upgrade --install asterius deploy/helm/asterius \
+#     -n asterius -f deploy/helm/asterius/values-orbstack.yaml
+
+image:
+  # Built locally with `docker build -t asterius-idp:1.0.0 .`. OrbStack's k3s
+  # runs on the Docker daemon, so the image the daemon holds is the image the
+  # kubelet sees — but only with `Never`, which is also what stops the kubelet
+  # from reaching for a registry that has no such tag.
+  repository: asterius-idp
+  tag: "1.0.0"
+  pullPolicy: Never
+
+config:
+  contents: |
+    log_format = "json"
+
+    [server]
+    bind = "0.0.0.0:9443"
+    mode = "behind_proxy"
+
+    [server.proxy]
+    # The node's pod CIDR: Traefik is the only thing that reaches the pod, and
+    # this is the list that lets it assert the client's host and address.
+    trusted_cidrs = ["192.168.194.0/25"]
+
+    [keys]
+    kek_file = "/etc/asterius-secrets/kek"
+
+    [database]
+    max_connections = 8
+
+    [[tenant]]
+    id = "demo"
+    issuer = "https://auth.k8s.orb.local/t/demo"
+
+    [admin]
+    tenant = "admin"
+    issuer = "https://auth.k8s.orb.local/t/admin"
+    username = "admin"
+    password_file = "/etc/asterius-secrets/admin-password"
+
+secrets:
+  kek:
+    existingSecret: asterius-kek
+    existingSecretKey: kek
+  adminPassword:
+    existingSecret: asterius-admin
+    existingSecretKey: password
+
+database:
+  # Written by the CloudNativePG cluster in deploy/helm/orbstack/prereqs.yaml.
+  urlSecret:
+    existingSecret: asterius-db-app
+    existingSecretKey: uri
+
+ingress:
+  enabled: true
+  className: traefik
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    # Traefik's equivalent of the header rules values.yaml spells out for
+    # ingress-nginx: a client-supplied Forwarded or X-Client-Cert is
+    # overwritten with the empty string before the request reaches the pod.
+    # X-Forwarded-Host is set by Traefik itself and carries the real authority.
+    traefik.ingress.kubernetes.io/router.middlewares: asterius-asterius-headers@kubernetescrd
+  hosts:
+    - host: auth.k8s.orb.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: asterius-tls
+      hosts:
+        - auth.k8s.orb.local
+
+resources:
+  limits:
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
