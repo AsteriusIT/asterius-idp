@@ -23,9 +23,10 @@ name: Release
 #     the audit workflow judge — so the SBOM and the advisory verdict describe
 #     the same dependency graph, and neither can drift from the other. One for
 #     the image, from `syft`, because the image is not only the binary: the
-#     distroless base carries glibc and a handful of Debian packages that
-#     `Cargo.lock` has never heard of, and an operator asking "is this image
-#     affected by a glibc CVE" is asking about exactly those.
+#     distroless base carries ca-certificates, tzdata and a handful of Debian
+#     packages that `Cargo.lock` has never heard of, and an operator asking
+#     "is this image affected by a tzdata CVE" is asking about exactly those.
+#     (No libc among them: the binary is static, see the `Dockerfile`.)
 #
 #     CycloneDX rather than SPDX because cargo-cyclonedx is the cargo-native
 #     producer and syft speaks both, so this is the format that needs no

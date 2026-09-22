@@ -24,7 +24,7 @@ on every `v*` tag, and both are checkable from the outside with no credential.
 | --- | --- | --- |
 | The image | `ghcr.io/asteriusit/asterius-idp:<tag>` and `@<digest>` | — |
 | Signature | The registry, alongside the image | The **digest** |
-| Image SBOM (CycloneDX) | cosign attestation on the image, *and* a release asset | Rust crates + the distroless base's Debian packages |
+| Image SBOM (CycloneDX) | cosign attestation on the image, *and* a release asset | Rust crates + the distroless base's Debian packages (ca-certificates, tzdata, …; no libc — the binary is static) |
 | Binary SBOM (CycloneDX) | Release asset | The Rust dependency graph of the `asterius` binary |
 | `checksums.txt` | Release asset | The two SBOM files |
 
@@ -113,12 +113,17 @@ sha256sum --check checksums.txt
   `cargo-cyclonedx` over the same `Cargo.lock` that `deny.toml` and the
   [supply-chain audit workflow](../../.github/workflows/audit.yml) judge. Use
   this one to answer "which crates are in this build".
-- `asterius-<tag>-image.cdx.json` — that, plus glibc and the rest of the
-  distroless base. Use this one to answer "is this *image* affected".
+- `asterius-<tag>-image.cdx.json` — that, plus the distroless base's Debian
+  packages: `ca-certificates`, `tzdata` and their kin. Use this one to answer
+  "is this *image* affected".
 
-The two differ on purpose: the binary is not the image. A glibc advisory
-appears only in the second, and no amount of reading `Cargo.lock` would have
-found it.
+The two differ on purpose: the binary is not the image. A `ca-certificates` or
+`tzdata` advisory appears only in the second, and no amount of reading
+`Cargo.lock` would have found it. (There is no libc in either: the binary is
+statically linked against musl, and musl is linked into it rather than
+packaged, so an advisory against *it* is a question about the Rust toolchain
+that built the release — `rustup` bundles the musl `libc.a` for the
+`*-unknown-linux-musl` targets — not about the image.)
 
 ---
 
@@ -143,7 +148,7 @@ found it.
 ## 5. What this does *not* prove
 
 - **Not reproducibility.** Nobody can rebuild this image bit-for-bit today and
-  get the same digest: the `Dockerfile` pins `rust:1.98-bookworm` by tag rather
+  get the same digest: the `Dockerfile` pins `rust:1.98-trixie` by tag rather
   than by digest (it says so, and says to pin before cutting a release), and
   the apt layer resolves at build time. The signature proves *this repository
   built it*, not *you could build it again*.

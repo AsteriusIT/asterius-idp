@@ -99,7 +99,7 @@ adjustment, and it is small — but it is not zero, and this ADR would be lying 
 it claimed the console merely reuses what is there.
 
 **One binary and one PostgreSQL is a product promise, not an accident.**
-ADR-0001 records it, the `Dockerfile` builds a `gcr.io/distroless/cc-debian12:nonroot`
+ADR-0001 records it, the `Dockerfile` builds a `gcr.io/distroless/static-debian13:nonroot`
 image with no shell, and `docker-compose.yml` ships exactly one service — a
 database for local development, with the server run from cargo. Note also that
 nothing in the tree serves static assets yet: no `ServeDir`, no `rust-embed`, no

@@ -205,13 +205,35 @@ See `conformance/README.md`.
 - **All capabilities dropped**, `no-new-privileges`. The server binds :9443,
   which needs no privilege.
 
-### Why glibc and not musl
+### Why static musl, and why it took until now
 
-A statically linked musl binary would be the tidier artefact. ADR-0004 puts the
-crypto on `aws-lc-rs`, whose musl build still means a hand-assembled toolchain,
-and a static build nobody can reproduce is worth less than a distroless one
-everybody can. Revisit when `aws-lc-rs` ships a musl target that builds from a
-stock `rustup` toolchain.
+The binary is statically linked against musl and the runtime stage is
+`gcr.io/distroless/static-debian13:nonroot`, so the image carries **no libc
+package**: its Debian content is `ca-certificates`, `tzdata`, `netbase`,
+`base-files` and `media-types`, and nothing else. An advisory against glibc —
+or against OpenSSL, which the `cc` base also ships — has nothing in this image
+to be a finding against.
+
+It was glibc-linked on `distroless/cc` until 2026-09. ADR-0004 puts the crypto
+on `aws-lc-rs`, and at the time its musl build meant a hand-assembled cross
+toolchain; a static artefact nobody could reproduce was worth less than a
+distroless one everybody could. That is no longer the case, and the check that
+showed it is the one to rerun if it is ever in doubt: on `rust:1.98-trixie`,
+`apt-get install musl-tools`, `rustup target add <arch>-unknown-linux-musl`,
+`CC_<target>=musl-gcc cargo build --release --target <arch>-unknown-linux-musl`.
+No third-party toolchain, no vendored compiler. The resulting binary was booted
+against PostgreSQL under the compose hardening (non-root, read-only root,
+every capability dropped) and served a JWKS with P-256, RSA-PSS and Ed25519
+keys it had just generated and wrapped — `aws-lc-rs` doing real work under
+musl, not merely linking.
+
+What that costs: `musl-tools` is one more package in the build stage, and the
+allocator is musl's rather than glibc's. Nothing in this server is allocator-
+bound, and the binary's own metrics will say so before anyone has to guess. The
+CVE that prompted the switch, CVE-2019-1010022, is a disputed glibc stack-guard
+finding that Debian marks `unimportant` and upstream declined to fix; it will
+surface on every glibc-based image forever, and "the scanner is wrong" is a
+sentence an operator should not have to say about a release.
 
 ## Configuration and secrets
 

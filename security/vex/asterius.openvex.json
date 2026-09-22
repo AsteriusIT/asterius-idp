@@ -1,0 +1,59 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://github.com/AsteriusIT/asterius-idp/security/vex/asterius.openvex.json",
+  "author": "AsteriusIT",
+  "role": "vendor",
+  "timestamp": "2026-09-22T00:00:00Z",
+  "version": 1,
+  "tooling": "hand-written; see security/vex/README.md",
+  "statements": [
+    {
+      "vulnerability": {
+        "@id": "https://rustsec.org/advisories/RUSTSEC-2023-0071",
+        "name": "CVE-2023-49092",
+        "description": "Marvin Attack: potential key recovery through timing sidechannels in the `rsa` crate",
+        "aliases": [
+          "RUSTSEC-2023-0071",
+          "GHSA-c38w-74pg-36hr",
+          "GHSA-4grx-2x9w-596c"
+        ]
+      },
+      "timestamp": "2026-09-22T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/asterius-idp?repository_url=ghcr.io/asteriusit/asterius-idp",
+          "subcomponents": [{ "@id": "pkg:cargo/rsa@0.9.10" }]
+        },
+        {
+          "@id": "pkg:cargo/asterius",
+          "subcomponents": [{ "@id": "pkg:cargo/rsa@0.9.10" }]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "`rsa` is resolved into Cargo.lock only as an optional dependency of `sqlx-mysql`, which is never compiled: the workspace takes sqlx with `default-features = false` and the `postgres` backend only (Cargo.toml). `cargo tree -i rsa --target all` reports `nothing to print`, and `cargo deny check advisories`, which judges the resolved crate graph rather than the raw lockfile, passes. No RSA code from this crate is linked into the binary, and Asterius performs its own RSA operations through aws-lc-rs (ADR-0004), which is not covered by this advisory. Lockfile-only scanners (`cargo audit`, `trivy fs`) report it because they read Cargo.lock without resolving features."
+    },
+    {
+      "vulnerability": {
+        "@id": "https://rustsec.org/advisories/RUSTSEC-2026-0285",
+        "name": "RUSTSEC-2026-0285",
+        "description": "rustls: TLS 1.3 handshake messages incorrectly accepted across encryption level boundaries",
+        "aliases": ["GHSA-2mjx-qc3c-rqvc"]
+      },
+      "timestamp": "2026-09-22T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:oci/asterius-idp?repository_url=ghcr.io/asteriusit/asterius-idp",
+          "subcomponents": [{ "@id": "pkg:cargo/rustls@0.23.44" }]
+        },
+        {
+          "@id": "pkg:cargo/asterius",
+          "subcomponents": [{ "@id": "pkg:cargo/rustls@0.23.44" }]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "component_not_present",
+      "impact_statement": "The affected version 0.23.44 was never part of the released binary or image: the workspace Cargo.lock has been on the patched 0.23.45 since the advisory was published. The only place 0.23.44 was resolved was fuzz/Cargo.lock, which builds the fuzz harnesses and ships in no artefact; it has since been updated to 0.23.45 as well, so the affected version is now absent from the repository entirely."
+    }
+  ]
+}
