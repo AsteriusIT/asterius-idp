@@ -75,13 +75,17 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 FROM gcr.io/distroless/cc-debian12:nonroot AS runtime
 
 COPY --from=build /asterius /usr/local/bin/asterius
+# The image must remain runnable without an orchestrator-provided ConfigMap.
+# Deployment secrets and deployment-specific values remain environment
+# overrides, rather than being baked into this file.
+COPY deploy/render/asterius.toml /etc/asterius/asterius.toml
 
 USER nonroot:nonroot
 WORKDIR /
 EXPOSE 9443
 
-# Not a shell form: there is no shell. Configuration comes from the file the
-# orchestrator mounts, overridden by ASTERIUS__* variables.
+# Not a shell form: there is no shell. The image includes a baseline file;
+# deployments may replace it, and ASTERIUS__* variables override either form.
 ENTRYPOINT ["/usr/local/bin/asterius"]
 CMD ["--config", "/etc/asterius/asterius.toml"]
 

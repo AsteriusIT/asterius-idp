@@ -1,0 +1,14 @@
+# Baseline configuration packaged with the container for Render deployments.
+#
+# Secrets and the public issuer are supplied as ASTERIUS__* environment
+# overrides.  Render terminates TLS, so Asterius speaks cleartext only to its
+# platform proxy.
+
+log_format = "json"
+
+[server]
+bind = "0.0.0.0:10000"
+mode = "behind_proxy"
+
+[keys]
+kek_env = "ASTERIUS_KEK"

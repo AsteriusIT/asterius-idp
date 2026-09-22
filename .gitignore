@@ -11,6 +11,7 @@
 
 # Local environment
 .env
+render.env
 
 # The console's toolchain and its output. `console/dist` is embedded into the
 # binary by crates/admin-api/build.rs and is rebuilt by
