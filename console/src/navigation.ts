@@ -117,6 +117,7 @@ export const DESTINATIONS: readonly Destination[] = [
   // dead-letter table beneath them is shown when the caller also holds
   // `admin.outbox:read`, and the buttons when it holds the write scopes.
   { route: 'ssf', label: 'Shared signals', reach: 'tenant', scope: 'admin.ssf:read', bead: 'ast-f7m.8', group: 'Observability' },
+  { route: 'mail', label: 'Mail delivery', reach: 'tenant', scope: 'admin.outbox:read', bead: 'ast-fdxx.1', group: 'Observability' },
   // The trail and its export share one scope, `admin.audit:read`, held by the
   // auditor and the administrators and by nobody else (`ast-lh3.9`).
   { route: 'audit', label: 'Audit trail', reach: 'tenant', scope: 'admin.audit:read', bead: 'ast-f7m.8', group: 'Observability' },

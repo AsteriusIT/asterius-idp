@@ -188,6 +188,8 @@ pub enum FirstPartyDestination {
     AccountSessions,
     /// Recent security changes on the signed-in account.
     AccountActivity,
+    /// Return to the email change form after a fresh authentication.
+    AccountEmail,
 }
 
 impl FirstPartyDestination {
@@ -204,6 +206,7 @@ impl FirstPartyDestination {
             Self::AccountPassword => "account_password",
             Self::AccountSessions => "account_sessions",
             Self::AccountActivity => "account_activity",
+            Self::AccountEmail => "account_email",
         }
     }
 
@@ -225,6 +228,7 @@ impl FirstPartyDestination {
             "account_password" => Some(Self::AccountPassword),
             "account_sessions" => Some(Self::AccountSessions),
             "account_activity" => Some(Self::AccountActivity),
+            "account_email" => Some(Self::AccountEmail),
             _ => None,
         }
     }

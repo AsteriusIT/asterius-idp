@@ -42,7 +42,9 @@ use crate::http::ssf_management::VERIFICATION_PATH as SSF_VERIFICATION_PATH;
 use crate::http::token::{self, TokenContext};
 use crate::http::userinfo;
 use crate::http::verify_email;
-use crate::http::{account_activity, account_passkeys, account_password, account_sessions};
+use crate::http::{
+    account_activity, account_email, account_passkeys, account_password, account_sessions,
+};
 use crate::tenancy::MountPrefix;
 use crate::tenant_settings::SettingsDirectory;
 use asterius_domain::ports::ThemeRepository as _;
@@ -815,6 +817,20 @@ fn account_pages(endpoints: Arc<ClientEndpoints>) -> Router {
         .route(
             account_password::SIGN_IN_PATH,
             get(account_password_sign_in).with_state(Arc::clone(&endpoints)),
+        )
+        .route(
+            account_email::PAGE_PATH,
+            get(account_email_page)
+                .post(account_email_submit)
+                .with_state(Arc::clone(&endpoints)),
+        )
+        .route(
+            account_email::SIGN_IN_PATH,
+            get(account_email_sign_in).with_state(Arc::clone(&endpoints)),
+        )
+        .route(
+            account_email::CONFIRM_PATH,
+            get(account_email_confirm).with_state(Arc::clone(&endpoints)),
         )
         .route(
             account_sessions::PAGE_PATH,
@@ -5899,6 +5915,7 @@ struct AccountParts {
     interactions: asterius_store_pg::PgAuthRequestRepository,
     clients: asterius_store_pg::PgClientRepository,
     users: asterius_store_pg::PgUserRepository,
+    email_changes: asterius_store_pg::PgEmailChangeRequests,
     passkeys: asterius_store_pg::PgPasskeyRepository,
     /// `None` where the deployment has configured no password method, which is
     /// a deployment whose accounts sign in with passkeys only.
@@ -5921,6 +5938,10 @@ async fn account_parts(
         interactions: scope.auth_requests(),
         clients: scope.clients(endpoints.capabilities),
         users: scope.users(Arc::clone(&endpoints.kek)),
+        email_changes: asterius_store_pg::PgEmailChangeRequests::new(
+            endpoints.store.pool().clone(),
+            tenant.id.clone(),
+        ),
         passkeys: scope.passkeys(),
         passwords: endpoints.passwords(&tenant.id),
         mail: scope.mail(),
@@ -6007,6 +6028,23 @@ fn password_account_context<'a>(
         mail: &parts.mail,
         audit: endpoints.audit.as_ref(),
         signals: account_signals(endpoints, parts),
+    }
+}
+
+fn email_account_context<'a>(
+    endpoints: &'a ClientEndpoints,
+    tenant: &'a Tenant,
+    parts: &'a AccountParts,
+    text: &'a asterius_web::Catalog,
+    nonce: &'a asterius_web::csp::Nonce,
+    mount: Option<Extension<MountPrefix>>,
+) -> account_email::EmailContext<'a> {
+    account_email::EmailContext {
+        account: account_context(tenant, parts, text, nonce, mount),
+        users: &parts.users,
+        changes: &parts.email_changes,
+        mail: &parts.mail,
+        audit: endpoints.audit.as_ref(),
     }
 }
 
@@ -6199,6 +6237,104 @@ async fn account_password_sign_in(
     let text = language.for_request(&asterius_domain::locale::UiLocales::default());
     account_password::sign_in(
         &password_account_context(&endpoints, &tenant, &parts, &text, &nonce, mount),
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// `GET /account/email` — display the current address and change form.
+async fn account_email_page(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let parts = match account_parts(&endpoints, &tenant).await {
+        Ok(parts) => parts,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    account_email::page(
+        &email_account_context(&endpoints, &tenant, &parts, &text, &nonce, mount),
+        &headers,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// `POST /account/email` — request a confirmation at a new address.
+async fn account_email_submit(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let parts = match account_parts(&endpoints, &tenant).await {
+        Ok(parts) => parts,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    account_email::submit(
+        &email_account_context(&endpoints, &tenant, &parts, &text, &nonce, mount),
+        &headers,
+        &body,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// `GET /account/email/sign-in` — reauthenticate before a change.
+async fn account_email_sign_in(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+) -> Response {
+    let parts = match account_parts(&endpoints, &tenant).await {
+        Ok(parts) => parts,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
+    let text = asterius_web::Catalog::new(asterius_domain::Locale::English);
+    account_email::sign_in(
+        &email_account_context(&endpoints, &tenant, &parts, &text, &nonce, mount),
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// `GET /account/email/confirm` — consume the mailbox proof.
+async fn account_email_confirm(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
+) -> Response {
+    let parts = match account_parts(&endpoints, &tenant).await {
+        Ok(parts) => parts,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
+    let text = asterius_web::Catalog::new(asterius_domain::Locale::English);
+    account_email::confirm(
+        &email_account_context(&endpoints, &tenant, &parts, &text, &nonce, mount),
+        query.as_deref(),
         time::OffsetDateTime::now_utc(),
     )
     .await

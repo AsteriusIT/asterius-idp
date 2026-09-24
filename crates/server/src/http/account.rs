@@ -384,6 +384,9 @@ pub async fn page(
     let password_href = context
         .mount
         .absolute(crate::http::account_password::PAGE_PATH);
+    let email_href = context
+        .mount
+        .absolute(crate::http::account_email::PAGE_PATH);
     let sessions_href = context
         .mount
         .absolute(crate::http::account_sessions::PAGE_PATH);
@@ -401,6 +404,7 @@ pub async fn page(
             username: &username,
             passkeys_href: &passkeys_href,
             password_href: &password_href,
+            email_href: &email_href,
             sessions_href: &sessions_href,
             activity_href: &activity_href,
             approvals_href: &approvals_href,

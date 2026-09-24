@@ -834,6 +834,8 @@ pub struct AccountPage<'a> {
     pub passkeys_href: &'a str,
     /// Where the password page lives.
     pub password_href: &'a str,
+    /// The verified email change page.
+    pub email_href: &'a str,
     /// Where the session list lives.
     pub sessions_href: &'a str,
     /// The recent security activity page.
@@ -848,6 +850,34 @@ pub struct AccountPage<'a> {
     /// `crate::theme::custom_properties` renders.
     pub theme_css: &'a str,
     /// The tenant's mark and the URL of the face this server hosts.
+    pub brand: crate::brand::Brand<'a>,
+}
+
+/// A signed-in email change form or its confirmation result.
+#[derive(Debug, Template)]
+#[template(path = "account_email.html")]
+pub struct AccountEmailPage<'a> {
+    /// Localized shared page chrome.
+    pub text: &'a Catalog,
+    /// Tenant name in the document title.
+    pub tenant_name: &'a str,
+    /// Current, still-authoritative address; never the pending address.
+    pub current_address: &'a str,
+    /// Whether to show a form.
+    pub show_form: bool,
+    /// Safe result or validation message.
+    pub message: &'a str,
+    /// Form target.
+    pub action: &'a str,
+    /// Synchroniser token for a signed-in request.
+    pub csrf: &'a str,
+    /// Link back to the account home page.
+    pub account_href: &'a str,
+    /// CSP nonce attribute.
+    pub nonce_attribute: NonceAttribute,
+    /// Runtime theme.
+    pub theme_css: &'a str,
+    /// Tenant branding.
     pub brand: crate::brand::Brand<'a>,
 }
 

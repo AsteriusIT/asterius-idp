@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}{{ text.account_email_link() }} — {{ tenant_name }}{% endblock %}
+{% block content %}
+<div class="stack tight">
+<h2>{{ text.account_email_link() }}</h2>
+{% if !current_address.is_empty() %}<p>{{ text.account_email_current() }}: {{ current_address }}</p>{% endif %}
+{% if !message.is_empty() %}<p>{{ message }}</p>{% endif %}
+{% if show_form %}
+<p>{{ text.account_email_intro() }}</p>
+<form method="post" action="{{ action }}" class="stack">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <label for="new-email">{{ text.account_email_new() }}
+    <input id="new-email" name="email" type="email" autocomplete="email" maxlength="320" required>
+  </label>
+  <button type="submit">{{ text.account_email_send() }}</button>
+</form>
+{% endif %}
+<p><a href="{{ account_href }}">{{ text.account_back() }}</a></p>
+</div>
+{% endblock %}

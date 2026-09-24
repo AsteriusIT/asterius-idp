@@ -58,6 +58,7 @@ pub async fn page(
             EventType::CREDENTIAL_CHANGED,
             EventType::RECOVERY_USED,
             EventType::EMAIL_VERIFIED,
+            EventType::EMAIL_CHANGED,
             EventType::SESSION_REVOKED,
         ],
         from: Some(now - WINDOW),
@@ -172,6 +173,7 @@ fn label<'a>(event: &AuditEvent, text: &'a asterius_web::Catalog) -> Option<&'a 
         }
         EventType::RECOVERY_USED => Some(text.activity_recovery()),
         EventType::EMAIL_VERIFIED => Some(text.activity_email()),
+        EventType::EMAIL_CHANGED => Some(text.activity_email_changed()),
         EventType::SESSION_REVOKED => Some(text.activity_session_closed()),
         _ => None,
     }

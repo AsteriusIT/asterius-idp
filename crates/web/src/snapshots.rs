@@ -437,6 +437,7 @@ fn account(text: &Catalog) -> String {
         username: USER,
         passkeys_href: "/account/passkeys",
         password_href: "/account/password",
+        email_href: "/account/email",
         sessions_href: "/account/sessions",
         activity_href: "/account/activity",
         approvals_href: "/account/approvals",
