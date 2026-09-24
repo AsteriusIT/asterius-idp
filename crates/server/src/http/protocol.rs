@@ -42,7 +42,7 @@ use crate::http::ssf_management::VERIFICATION_PATH as SSF_VERIFICATION_PATH;
 use crate::http::token::{self, TokenContext};
 use crate::http::userinfo;
 use crate::http::verify_email;
-use crate::http::{account_passkeys, account_password, account_sessions};
+use crate::http::{account_activity, account_passkeys, account_password, account_sessions};
 use crate::tenancy::MountPrefix;
 use crate::tenant_settings::SettingsDirectory;
 use asterius_domain::ports::ThemeRepository as _;
@@ -824,7 +824,11 @@ fn account_pages(endpoints: Arc<ClientEndpoints>) -> Router {
         )
         .route(
             account_sessions::SIGN_IN_PATH,
-            get(account_sessions_sign_in).with_state(endpoints),
+            get(account_sessions_sign_in).with_state(Arc::clone(&endpoints)),
+        )
+        .route(
+            account_activity::PAGE_PATH,
+            get(account_activity_page).with_state(endpoints),
         )
 }
 
@@ -5055,6 +5059,7 @@ fn passkey_context<'a>(
         passkeys,
         sessions,
         users,
+        mail: None,
         nonce,
         audit: endpoints.audit.as_ref(),
         mount,
@@ -5132,16 +5137,20 @@ async fn passkey_finish(
     let passkeys = scope.passkeys();
     let sessions = scope.sessions();
     let users = scope.users(Arc::clone(&endpoints.kek));
+    let mail = scope.mail();
     passkeys::finish(
-        passkey_context(
-            &endpoints,
-            &tenant,
-            &passkeys,
-            &sessions,
-            &users,
-            &nonce,
-            mount_of(mount),
-        ),
+        PasskeyContext {
+            mail: Some(&mail),
+            ..passkey_context(
+                &endpoints,
+                &tenant,
+                &passkeys,
+                &sessions,
+                &users,
+                &nonce,
+                mount_of(mount),
+            )
+        },
         &headers,
         &body,
         time::OffsetDateTime::now_utc(),
@@ -5976,6 +5985,7 @@ fn passkeys_account_context<'a>(
         passkeys: &parts.passkeys,
         passwords: parts.passwords.as_ref(),
         users: &parts.users,
+        mail: &parts.mail,
         audit: endpoints.audit.as_ref(),
         signals: account_signals(endpoints, parts),
     }
@@ -6189,6 +6199,35 @@ async fn account_password_sign_in(
     let text = language.for_request(&asterius_domain::locale::UiLocales::default());
     account_password::sign_in(
         &password_account_context(&endpoints, &tenant, &parts, &text, &nonce, mount),
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// `GET /account/activity` — recent changes on the signed-in account.
+async fn account_activity_page(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let parts = match account_parts(&endpoints, &tenant).await {
+        Ok(parts) => parts,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    let audit = asterius_store_pg::PgAuditSink::new(endpoints.store.pool().clone());
+    account_activity::page(
+        &account_activity::ActivityContext {
+            account: account_context(&tenant, &parts, &text, &nonce, mount),
+            audit: &audit,
+        },
+        &headers,
         time::OffsetDateTime::now_utc(),
     )
     .await

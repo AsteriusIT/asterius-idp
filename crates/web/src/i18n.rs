@@ -548,6 +548,12 @@ catalogue! {
             en: "See the sessions open on your account, and close any you do not recognise.",
             fr: "Voir les sessions ouvertes sur votre compte et fermer celles que vous ne \
                  reconnaissez pas.";
+        AccountActivityLink => account_activity_link, "account.activity-link",
+            en: "Security activity",
+            fr: "Activité de sécurité";
+        AccountActivityExplains => account_activity_explains, "account.activity-explains",
+            en: "Review recent changes to your account.",
+            fr: "Consultez les changements récents de votre compte.";
         AccountApprovalsLink => account_approvals_link, "account.approvals-link",
             en: "Requests waiting for you",
             fr: "Demandes en attente";
@@ -703,6 +709,44 @@ catalogue! {
         PasswordSignOutOthers => password_sign_out_others, "password.sign-out-others",
             en: "Close my other sessions as well",
             fr: "Fermer également mes autres sessions";
+
+        // ---- security activity (`ast-fdxx.5`) -----------------------------
+        ActivityTitle => activity_title, "activity.title",
+            en: "Security activity",
+            fr: "Activité de sécurité";
+        ActivityHeading => activity_heading, "activity.heading",
+            en: "Recent security activity",
+            fr: "Activité de sécurité récente";
+        ActivityExplains => activity_explains, "activity.explains",
+            en: "Changes from the last 90 days. Times are in UTC. Device and location details are unavailable because they are not recorded.",
+            fr: "Changements des 90 derniers jours. Les heures sont en UTC. Les détails de l'appareil et du lieu ne sont pas enregistrés.";
+        ActivityEmpty => activity_empty, "activity.empty",
+            en: "No recent security changes were found.",
+            fr: "Aucun changement de sécurité récent trouvé.";
+        ActivitySessions => activity_sessions, "activity.sessions",
+            en: "Review and close sessions",
+            fr: "Voir et fermer les sessions";
+        ActivityPassword => activity_password, "activity.password",
+            en: "Password changed",
+            fr: "Mot de passe modifié";
+        ActivityPasskeyAdded => activity_passkey_added, "activity.passkey-added",
+            en: "Passkey added",
+            fr: "Clé d'accès ajoutée";
+        ActivityPasskeyRemoved => activity_passkey_removed, "activity.passkey-removed",
+            en: "Passkey removed",
+            fr: "Clé d'accès supprimée";
+        ActivityRecovery => activity_recovery, "activity.recovery",
+            en: "Account recovery completed",
+            fr: "Récupération du compte terminée";
+        ActivityEmail => activity_email, "activity.email",
+            en: "Email address verified",
+            fr: "Adresse e-mail vérifiée";
+        ActivitySessionClosed => activity_session_closed, "activity.session-closed",
+            en: "Session closed",
+            fr: "Session fermée";
+        ActivitySignIn => activity_sign_in, "activity.sign-in",
+            en: "Signed in",
+            fr: "Connexion";
 
         // ---- sessions (`ast-1xd`) -----------------------------------------
         SessionsTitle => sessions_title, "sessions.title",

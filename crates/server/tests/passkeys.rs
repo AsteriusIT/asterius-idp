@@ -335,6 +335,7 @@ impl Fixture {
             passkeys: &self.passkeys,
             sessions: &self.sessions,
             users: &self.users,
+            mail: None,
             nonce: &self.nonce,
             audit: &self.audit,
             mount,

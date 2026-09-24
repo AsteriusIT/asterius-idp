@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}{{ text.activity_title() }} — {{ tenant_name }}{% endblock %}
+{% block content %}
+<div class="stack tight">
+<h2>{{ text.activity_heading() }}</h2>
+<p class="muted">{{ text.activity_explains() }}</p>
+</div>
+
+{% if events.is_empty() %}
+<p class="muted">{{ text.activity_empty() }}</p>
+{% else %}
+<ul class="scopes">
+{% for event in events %}
+<li>
+  <strong>{{ event.action }}</strong><br>
+  <time datetime="{{ event.occurred_at }}" class="muted">{{ event.occurred_at }}</time>
+</li>
+{% endfor %}
+</ul>
+{% endif %}
+
+<p class="link-row"><a href="{{ sessions_href }}">{{ text.activity_sessions() }}</a></p>
+<p class="link-row"><a href="{{ account_href }}">{{ text.account_back() }}</a></p>
+{% endblock %}

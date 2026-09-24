@@ -64,6 +64,7 @@ pub mod access_evaluation;
 pub mod access_search;
 pub mod access_token;
 pub mod account;
+pub mod account_activity;
 pub mod account_grants;
 pub mod account_passkeys;
 pub mod account_password;

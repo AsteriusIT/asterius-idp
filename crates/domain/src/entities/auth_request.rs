@@ -186,6 +186,8 @@ pub enum FirstPartyDestination {
     /// A person closing a session they do not recognise re-authenticates and
     /// comes back here, which is the page the revocation is pressed on.
     AccountSessions,
+    /// Recent security changes on the signed-in account.
+    AccountActivity,
 }
 
 impl FirstPartyDestination {
@@ -201,6 +203,7 @@ impl FirstPartyDestination {
             Self::AccountPasskeys => "account_passkeys",
             Self::AccountPassword => "account_password",
             Self::AccountSessions => "account_sessions",
+            Self::AccountActivity => "account_activity",
         }
     }
 
@@ -221,6 +224,7 @@ impl FirstPartyDestination {
             "account_passkeys" => Some(Self::AccountPasskeys),
             "account_password" => Some(Self::AccountPassword),
             "account_sessions" => Some(Self::AccountSessions),
+            "account_activity" => Some(Self::AccountActivity),
             _ => None,
         }
     }
