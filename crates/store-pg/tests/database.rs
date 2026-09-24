@@ -8667,6 +8667,37 @@ mod retention {
         )
         .await
         .expect("seed group membership");
+
+        sqlx::query(
+            "insert into managed_group_aliases (tenant_id, group_id, name, created_at)
+             values ($1, $2, 'previous-engineering', $3)",
+        )
+        .bind(tenant.as_str())
+        .bind(group.id.as_uuid())
+        .bind(now())
+        .execute(pool)
+        .await
+        .expect("seed historical group name");
+
+        sqlx::query(
+            "insert into group_tenant_roles (tenant_id, group_id, name)
+             values ($1, $2, 'auditor')",
+        )
+        .bind(tenant.as_str())
+        .bind(group.id.as_uuid())
+        .execute(pool)
+        .await
+        .expect("seed group tenant role");
+
+        sqlx::query(
+            "insert into group_client_roles (tenant_id, group_id, client_id, name)
+             values ($1, $2, 'billing', 'refund')",
+        )
+        .bind(tenant.as_str())
+        .bind(group.id.as_uuid())
+        .execute(pool)
+        .await
+        .expect("seed group client role");
     }
 
     /// One row in each of the four application-role tables (`ast-095`).
