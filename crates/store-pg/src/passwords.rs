@@ -190,6 +190,75 @@ impl PgPasswordVerifier {
         Ok(credential)
     }
 
+    /// Sets a recovered password only while the account is not passkey-only.
+    ///
+    /// The user-row lock serializes this decision with a new passkey insert:
+    /// the credential's foreign key takes a key-share lock on the same row.
+    /// A handler-side check alone leaves a gap between proof inspection and
+    /// password creation. `None` means the policy refused without a write.
+    pub async fn set_recovery_password(
+        &self,
+        user: uuid::Uuid,
+        password: &str,
+    ) -> Result<Option<uuid::Uuid>, DomainError> {
+        let fresh = self.hash_for_storage(password)?;
+        let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
+        let exists = sqlx::query_scalar::<_, uuid::Uuid>(
+            "select user_id from users where tenant_id = $1 and user_id = $2 for update",
+        )
+        .bind(self.tenant.as_str())
+        .bind(user)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(to_domain_error)?;
+        if exists.is_none() {
+            return Err(DomainError::NotFound);
+        }
+        let passkey_only = sqlx::query_scalar::<_, bool>(
+            "select exists(select 1 from credentials where tenant_id = $1 and user_id = $2 and kind = 'passkey')
+                 and not exists(select 1 from credentials where tenant_id = $1 and user_id = $2
+                     and kind = 'password' and disabled_at is null)",
+        )
+        .bind(self.tenant.as_str())
+        .bind(user)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(to_domain_error)?;
+        if passkey_only {
+            return Ok(None);
+        }
+        let updated = sqlx::query_scalar::<_, uuid::Uuid>(
+            "update credentials set password_hash = $3, disabled_at = null
+             where tenant_id = $1 and user_id = $2 and kind = 'password'
+             returning credential_id",
+        )
+        .bind(self.tenant.as_str())
+        .bind(user)
+        .bind(&fresh)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(to_domain_error)?;
+        let credential = if let Some(updated) = updated {
+            updated
+        } else {
+            let credential = uuid::Uuid::new_v4();
+            sqlx::query(
+                "insert into credentials (tenant_id, credential_id, user_id, kind, password_hash)
+                 values ($1, $2, $3, 'password', $4)",
+            )
+            .bind(self.tenant.as_str())
+            .bind(credential)
+            .bind(user)
+            .bind(fresh)
+            .execute(&mut *tx)
+            .await
+            .map_err(to_domain_error)?;
+            credential
+        };
+        tx.commit().await.map_err(to_domain_error)?;
+        Ok(Some(credential))
+    }
+
     /// Whether this account has a password it could sign in with.
     ///
     /// A disabled credential does not count: it cannot be presented, so

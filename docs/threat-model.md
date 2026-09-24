@@ -2155,21 +2155,15 @@ in this repository runs them against a real deployment.
    the headers are honoured from an untrusted source. Strongest, and the one
    most likely to break a legitimate topology.
 
-### 7.5 Account recovery ends on a password, even for a passkey-only account (`ast-2vk.10`)
+### 7.5 Passkey-only recovery policy (`ast-fdxx.2`)
 
-**What ships.** [`crates/server/src/http/recovery.rs`](../crates/server/src/http/recovery.rs)
-sets a password. An account that had only a passkey therefore comes back from
-recovery on a strictly weaker, phishable factor — NIST SP 800-63B §6.1.2.3 is
-the clause that objects.
-
-**Options.**
-1. Send the user straight into passkey enrolment after recovery (the mechanism
-   exists, `ast-2vk.4`) and refuse the session anything else until they do.
-2. Refuse email recovery for an account with no password — which then needs an
-   answer to "so what *is* the path?" (a second passkey registered in advance, a
-   recovery code issued at enrolment, or an administrator).
-3. Accept: a recovered account is a password account, and the user may enrol a
-   passkey afterwards if they remember to.
+An account with passkeys but no active password cannot create a password from
+mailbox control, including through an administrator's forced-reset action.
+Old links are checked again before use. The account-neutral request response
+points to the organization's administrator. Refusals are audited and a
+link-free alert goes to the prior verified address. No recovery session is
+created, so mailbox evidence cannot claim a passkey ACR. See the
+[support playbook](runbooks/passkey-recovery.md).
 
 ### 7.6 Back-channel logout cannot be tested over a socket (`ast-o4u.2`)
 

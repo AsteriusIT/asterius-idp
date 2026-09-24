@@ -4779,6 +4779,7 @@ fn throttle<'a>(
 /// unreadable at four call sites.
 struct RecoveryParts {
     users: asterius_store_pg::PgUserRepository,
+    passkeys: asterius_store_pg::PgPasskeyRepository,
     tokens: asterius_store_pg::PgRecoveryTokens,
     mail: asterius_store_pg::PgOutboxMailSender,
     sessions: asterius_store_pg::PgSessionRepository,
@@ -4793,6 +4794,7 @@ fn recovery_parts(endpoints: &Arc<ClientEndpoints>, tenant: &Arc<Tenant>) -> Rec
     let scope = endpoints.store.scope(tenant.id.clone());
     RecoveryParts {
         users: scope.users(Arc::clone(&endpoints.kek)),
+        passkeys: scope.passkeys(),
         tokens: scope.recovery_tokens(),
         mail: scope.mail(),
         sessions: scope.sessions(),
@@ -4825,6 +4827,7 @@ fn recovery_context<'a>(
         tenant,
         theme,
         users: &parts.users,
+        passkeys: &parts.passkeys,
         passwords: parts.passwords.as_ref(),
         tokens: &parts.tokens,
         mail: &parts.mail,

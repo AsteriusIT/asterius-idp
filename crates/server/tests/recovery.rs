@@ -37,11 +37,14 @@
 
 use asterius_domain::audit::AuditRecord;
 use asterius_domain::entities::session::{Lifetimes, Session, SessionId, SessionStatus};
-use asterius_domain::ports::{SessionRepository as _, TenantRepository as _};
+use asterius_domain::ports::{
+    PasskeyRepository as _, SessionRepository as _, TenantRepository as _,
+};
 use asterius_domain::{
     Argon2Parameters, AuthenticationMethod, Capabilities, ClaimSet, Client, ClientId,
     ClientRegistration, ClientStatus, EndpointLimit, EndpointLimits, Issuer, LoginLimits,
-    RateLimit, RecoveryToken, Secret, Tenant, TenantId, TenantStatus, User, UserId, UserStatus,
+    NewPasskey, RateLimit, RecoveryToken, Secret, Tenant, TenantId, TenantStatus, User, UserId,
+    UserStatus,
 };
 use asterius_jose::LocalKek;
 use asterius_jose::kek::Kek;
@@ -302,6 +305,27 @@ impl Flow {
             .into_iter()
             .filter(|message| message.kind == kind)
             .count()
+    }
+
+    /// Record a credential directly; the passkey ceremony has its own tests.
+    async fn add_passkey(&self) {
+        self.store
+            .scope(self.tenant.id.clone())
+            .passkeys()
+            .register(&NewPasskey {
+                user: self.user,
+                credential_id: uuid::Uuid::new_v4().as_bytes().to_vec(),
+                public_key: b"a COSE key".to_vec(),
+                sign_count: 0,
+                aaguid: None,
+                backup_eligible: true,
+                backup_state: false,
+                user_verified: true,
+                rp_id: HOST.to_owned(),
+                label: None,
+            })
+            .await
+            .expect("register passkey");
     }
 
     /// The audit trail, through the reader the console uses.
@@ -775,6 +799,63 @@ async fn only_a_known_address_produces_a_message() {
     // Assert
     assert_eq!(stranger, None);
     assert!(known.is_some_and(|link| link.contains("/recovery/new?token=")));
+    flow.cleanup().await;
+}
+
+#[tokio::test]
+async fn passkey_only_account_gets_support_route_and_no_password_link() {
+    let mut flow = flow!();
+    flow.add_passkey().await;
+    let existing_session = flow.begin_session(OffsetDateTime::now_utc()).await;
+
+    let link = flow.request_a_link(ADDRESS).await;
+
+    assert_eq!(link, None);
+    assert_eq!(flow.queued_count("recovery_refused").await, 1);
+    assert_eq!(flow.audit_count("recovery.refused").await, 1);
+    assert!(flow.session_is_active(&existing_session).await);
+    assert!(!flow.password_works(NEW_PASSWORD).await);
+    flow.cleanup().await;
+}
+
+#[tokio::test]
+async fn old_recovery_link_cannot_downgrade_a_new_passkey_only_account() {
+    let mut flow = flow!();
+    let link = flow.request_a_link(ADDRESS).await.expect("recovery link");
+    flow.add_passkey().await;
+
+    let refused = flow.use_the_link(&link, NEW_PASSWORD).await;
+
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST);
+    assert!(!flow.password_works(NEW_PASSWORD).await);
+    assert_eq!(flow.queued_count("recovery_refused").await, 0);
+    flow.cleanup().await;
+}
+
+#[tokio::test]
+async fn passkey_added_after_form_rendering_blocks_password_write() {
+    let mut flow = flow!();
+    let link = flow.request_a_link(ADDRESS).await.expect("recovery link");
+    let page = flow.get(&path_and_query(&link)).await;
+    let csrf = csrf_from(&page.body);
+    let token = hidden_field(&page.body, "token");
+    flow.add_passkey().await;
+
+    let refused = flow
+        .post(
+            "/recovery/new",
+            &[
+                ("csrf", &csrf),
+                ("token", &token),
+                ("password", NEW_PASSWORD),
+                ("password_confirmation", NEW_PASSWORD),
+            ],
+        )
+        .await;
+
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST);
+    assert!(!flow.password_works(NEW_PASSWORD).await);
+    assert_eq!(flow.queued_count("recovery_refused").await, 1);
     flow.cleanup().await;
 }
 
