@@ -358,11 +358,15 @@ pub const POLICY: &[Retention] = &[
     },
     Retention {
         table: "group_tenant_roles",
-        rule: Rule::Kept("group role authority persists until explicit withdrawal or group deletion"),
+        rule: Rule::Kept(
+            "group role authority persists until explicit withdrawal or group deletion",
+        ),
     },
     Retention {
         table: "group_client_roles",
-        rule: Rule::Kept("group client role authority persists until explicit withdrawal or group deletion"),
+        rule: Rule::Kept(
+            "group client role authority persists until explicit withdrawal or group deletion",
+        ),
     },
     Retention {
         table: "tenant_roles",
