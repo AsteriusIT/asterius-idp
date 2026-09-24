@@ -1470,6 +1470,101 @@ impl DeploymentUsers {
 
 #[async_trait::async_trait]
 impl AdminBackend for Deployment {
+    async fn invite_user(
+        &self,
+        tenant: &Tenant,
+        actor: &str,
+        request: asterius_admin_api::backend::InvitationRequest,
+        now: time::OffsetDateTime,
+    ) -> Result<asterius_admin_api::backend::InvitationReceipt, DomainError> {
+        let settings = self.settings.for_tenant(&tenant.id).await?;
+        if settings
+            .acr_policy()
+            .achieved(&[asterius_domain::AuthenticationMethod::Password])
+            .is_none()
+        {
+            return Err(DomainError::invalid(
+                "acr_policy",
+                "password onboarding cannot satisfy this tenant's assurance policy; use another account provisioning path",
+            ));
+        }
+        let expiry = time::OffsetDateTime::from_unix_timestamp(request.expires_at)
+            .map_err(|_| DomainError::invalid("expires_at", "invalid timestamp"))?;
+        let username = request.username.as_deref().unwrap_or(&request.email);
+        let link = format!("{}/invite", tenant.issuer.as_str().trim_end_matches('/'));
+        let invitation = self
+            .store
+            .scope(tenant.id.clone())
+            .invitations()
+            .invite(asterius_store_pg::NewInvitation {
+                email: &request.email,
+                username,
+                inviter: actor,
+                role: request.role.as_deref(),
+                group_ids: &request.group_ids,
+                expires_at: expiry,
+                link_base: &link,
+                now,
+            })
+            .await?;
+        Ok(asterius_admin_api::backend::InvitationReceipt {
+            id: invitation.id,
+            email: invitation.email,
+            username: invitation.username,
+            role: invitation.role,
+            group_ids: invitation.group_ids,
+            expires_at: invitation.expires_at.unix_timestamp(),
+        })
+    }
+
+    async fn resend_invitation(
+        &self,
+        tenant: &Tenant,
+        id: uuid::Uuid,
+        expires_at: time::OffsetDateTime,
+        now: time::OffsetDateTime,
+    ) -> Result<asterius_admin_api::backend::InvitationReceipt, DomainError> {
+        let settings = self.settings.for_tenant(&tenant.id).await?;
+        if settings
+            .acr_policy()
+            .achieved(&[asterius_domain::AuthenticationMethod::Password])
+            .is_none()
+        {
+            return Err(DomainError::invalid(
+                "acr_policy",
+                "password onboarding cannot satisfy this tenant's assurance policy; use another account provisioning path",
+            ));
+        }
+        let link = format!("{}/invite", tenant.issuer.as_str().trim_end_matches('/'));
+        let invitation = self
+            .store
+            .scope(tenant.id.clone())
+            .invitations()
+            .resend(id, expires_at, &link, now)
+            .await?;
+        Ok(asterius_admin_api::backend::InvitationReceipt {
+            id: invitation.id,
+            email: invitation.email,
+            username: invitation.username,
+            role: invitation.role,
+            group_ids: invitation.group_ids,
+            expires_at: invitation.expires_at.unix_timestamp(),
+        })
+    }
+
+    async fn revoke_invitation(
+        &self,
+        tenant: &TenantId,
+        id: uuid::Uuid,
+        now: time::OffsetDateTime,
+    ) -> Result<bool, DomainError> {
+        self.store
+            .scope(tenant.clone())
+            .invitations()
+            .revoke(id, now)
+            .await
+    }
+
     async fn overview(
         &self,
         tenant: &TenantId,

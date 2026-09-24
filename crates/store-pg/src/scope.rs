@@ -33,6 +33,12 @@ impl<'a> TenantScope<'a> {
         Self { pool, tenant }
     }
 
+    /// Invitations to create accounts in this tenant.
+    #[must_use]
+    pub fn invitations(&self) -> crate::PgInvitations {
+        crate::PgInvitations::new(self.pool.clone(), self.tenant.clone())
+    }
+
     /// The client repository for this tenant.
     ///
     /// `capabilities` is what a stored client is re-validated against on the

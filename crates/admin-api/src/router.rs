@@ -354,6 +354,9 @@ async fn route_standard(
         crate::USERS_LIST_ID => context.list_users().await,
         crate::USER_READ_ID => context.read_user().await,
         crate::USER_CREATE_ID => context.create_user(body).await,
+        crate::INVITATIONS_CREATE_ID => context.create_invitations(body).await,
+        crate::INVITATION_RESEND_ID => context.resend_invitation(body).await,
+        crate::INVITATION_REVOKE_ID => context.revoke_invitation().await,
         crate::USER_CLAIMS_UPDATE_ID => context.update_claims(body).await,
         crate::USER_STATUS_UPDATE_ID => context.update_status(body).await,
         crate::USER_CREDENTIALS_READ_ID => context.read_credentials().await,
@@ -469,6 +472,130 @@ struct Handling<'a> {
 }
 
 impl Handling<'_> {
+    /// `POST /invitations` accepts a bounded batch and never accepts a password.
+    async fn create_invitations(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Batch {
+            invitations: Vec<crate::backend::InvitationRequest>,
+        }
+        let requested: Batch = self.parse_body(body).await?;
+        if requested.invitations.is_empty() || requested.invitations.len() > 50 {
+            return Err(AdminError::Invalid(
+                "provide between one and fifty invitations".to_owned(),
+            ));
+        }
+        let can_assign_roles = self.principal.held().satisfies(
+            crate::rbac::Authority::new(crate::rbac::Reach::Tenant, "admin.roles:write"),
+            &self.tenant.id,
+        );
+        let can_assign_groups = self.principal.held().satisfies(
+            crate::rbac::Authority::new(crate::rbac::Reach::Tenant, "admin.groups:write"),
+            &self.tenant.id,
+        );
+        if requested.invitations.iter().any(|item| {
+            item.role.is_some() && !can_assign_roles
+                || !item.group_ids.is_empty() && !can_assign_groups
+        }) {
+            return Err(AdminError::Forbidden);
+        }
+        let actor = self.principal.audit_actor();
+        let mut results = Vec::with_capacity(requested.invitations.len());
+        for request in requested.invitations {
+            let result = self
+                .state
+                .backend
+                .invite_user(self.tenant, &actor, request, self.now)
+                .await;
+            match result {
+                Ok(receipt) => {
+                    self.record(
+                        EventType::INVITATION_ISSUED,
+                        Detail::new()
+                            .label("operation", crate::INVITATIONS_CREATE_ID)
+                            .text("invitation_id", receipt.id.to_string()),
+                    )
+                    .await;
+                    results.push(serde_json::json!({"status": "queued", "invitation": receipt}));
+                }
+                Err(DomainError::Conflict(_)) => {
+                    results.push(serde_json::json!({"status": "unavailable"}));
+                }
+                Err(DomainError::Invalid { field, reason }) => {
+                    return Err(AdminError::Invalid(format!("{field}: {reason}")));
+                }
+                Err(error) => {
+                    return Err(AdminError::from_storage(
+                        crate::INVITATIONS_CREATE_ID,
+                        &error,
+                    ));
+                }
+            }
+        }
+        Ok(json_no_store(
+            StatusCode::CREATED,
+            &serde_json::json!({"results": results}),
+        ))
+    }
+
+    async fn resend_invitation(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Request {
+            expires_at: i64,
+        }
+        let requested: Request = self.parse_body(body).await?;
+        let expires_at = OffsetDateTime::from_unix_timestamp(requested.expires_at)
+            .map_err(|_| AdminError::Invalid("invalid expires_at".to_owned()))?;
+        let id = self.invitation_in_path()?;
+        let receipt = self
+            .state
+            .backend
+            .resend_invitation(self.tenant, id, expires_at, self.now)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::INVITATION_RESEND_ID, &error))?;
+        self.record(
+            EventType::INVITATION_RESENT,
+            Detail::new()
+                .label("operation", crate::INVITATION_RESEND_ID)
+                .text("invitation_id", id.to_string()),
+        )
+        .await;
+        Ok(json_no_store(StatusCode::OK, &serde_json::json!(receipt)))
+    }
+
+    async fn revoke_invitation(&self) -> Result<Response, AdminError> {
+        let id = self.invitation_in_path()?;
+        let revoked = self
+            .state
+            .backend
+            .revoke_invitation(&self.tenant.id, id, self.now)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::INVITATION_REVOKE_ID, &error))?;
+        if revoked {
+            self.record(
+                EventType::INVITATION_REVOKED,
+                Detail::new()
+                    .label("operation", crate::INVITATION_REVOKE_ID)
+                    .text("invitation_id", id.to_string()),
+            )
+            .await;
+        }
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({"revoked": revoked}),
+        ))
+    }
+
+    fn invitation_in_path(&self) -> Result<uuid::Uuid, AdminError> {
+        let id = self
+            .path
+            .split('/')
+            .skip_while(|segment| *segment != "invitations")
+            .nth(1)
+            .ok_or(AdminError::NotFound)?;
+        uuid::Uuid::parse_str(id).map_err(|_| AdminError::NotFound)
+    }
     /// One independently-authorized overview aggregate.
     async fn overview(&self, operation: &str) -> Result<Response, AdminError> {
         use crate::backend::OverviewMetric;
@@ -6612,6 +6739,49 @@ mod tests {
 
     #[async_trait::async_trait]
     impl AdminBackend for Handle {
+        async fn invite_user(
+            &self,
+            _tenant: &Tenant,
+            _actor: &str,
+            request: crate::backend::InvitationRequest,
+            _now: OffsetDateTime,
+        ) -> Result<crate::backend::InvitationReceipt, DomainError> {
+            Ok(crate::backend::InvitationReceipt {
+                id: uuid::Uuid::parse_str(SEEDED_INVITATION_ID).expect("fixed UUID"),
+                email: request.email.clone(),
+                username: request.username.unwrap_or(request.email),
+                role: request.role,
+                group_ids: request.group_ids,
+                expires_at: request.expires_at,
+            })
+        }
+
+        async fn resend_invitation(
+            &self,
+            _tenant: &Tenant,
+            id: uuid::Uuid,
+            expires_at: OffsetDateTime,
+            _now: OffsetDateTime,
+        ) -> Result<crate::backend::InvitationReceipt, DomainError> {
+            Ok(crate::backend::InvitationReceipt {
+                id,
+                email: "invited@example.test".to_owned(),
+                username: "invited".to_owned(),
+                role: None,
+                group_ids: Vec::new(),
+                expires_at: expires_at.unix_timestamp(),
+            })
+        }
+
+        async fn revoke_invitation(
+            &self,
+            _tenant: &TenantId,
+            _id: uuid::Uuid,
+            _now: OffsetDateTime,
+        ) -> Result<bool, DomainError> {
+            Ok(true)
+        }
+
         async fn overview(
             &self,
             _tenant: &TenantId,
@@ -6930,6 +7100,7 @@ mod tests {
     /// The account every tenant in the fixture holds, and the value
     /// `{user_id}` is replaced with when a test walks the registry.
     const SEEDED_USER_ID: &str = "3f1d5c2a-0000-4000-8000-000000000001";
+    const SEEDED_INVITATION_ID: &str = "3f1d5c2a-0000-4000-8000-000000000005";
     const SEEDED_GROUP_ID: &str = "3f1d5c2a-0000-4000-8000-000000000004";
 
     /// An application role in both catalogues that nobody holds, so the two
@@ -7558,6 +7729,7 @@ mod tests {
             .replace("{identifier}", SEEDED_RESOURCE_PATH)
             .replace("{type}", SEEDED_DETAIL_TYPE)
             .replace("{user_id}", SEEDED_USER_ID)
+            .replace("{invitation_id}", SEEDED_INVITATION_ID)
             .replace("{group_id}", SEEDED_GROUP_ID)
             .replace("{sid}", SEEDED_SID)
             .replace("{credential_id}", SEEDED_CREDENTIAL_ID)
@@ -7597,6 +7769,13 @@ mod tests {
     /// the authority it declares — so a route reached with a body it rejects
     /// would fail those tests for the wrong reason and hide a real refusal.
     fn body_for(operation: &Operation) -> Body {
+        if operation.id() == crate::THEME_LOGO_UPLOAD_ID {
+            let mut bytes = Vec::new();
+            image::DynamicImage::new_rgba8(2, 2)
+                .write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
+                .expect("fixed test image encodes");
+            return Body::from(bytes);
+        }
         let document = match operation.id() {
             crate::TENANT_CREATE_ID => serde_json::json!({
                 "tenant_id": "brand-new",
@@ -7607,6 +7786,7 @@ mod tests {
             // than the empty one, or "every route answers a deployment admin"
             // would be asserting a 400.
             crate::TENANT_SETTINGS_UPDATE_ID => settings_body(60, 300),
+            crate::THEME_UPDATE_ID => asterius_domain::Theme::default().to_json(),
             // `true`, so that the registry walks leave the fixture serving.
             // `false` would suspend `acme` partway through a loop and every
             // later assertion would be about a tenant the walk itself turned
@@ -7640,6 +7820,13 @@ mod tests {
             // is optional (a tenant may enrol a passkey instead) and every
             // claim is.
             crate::USER_CREATE_ID => serde_json::json!({"username": "new@example.test"}),
+            crate::INVITATIONS_CREATE_ID => serde_json::json!({"invitations": [{
+                "email": "invited@example.test",
+                "expires_at": (OffsetDateTime::now_utc() + time::Duration::days(1)).unix_timestamp()
+            }]}),
+            crate::INVITATION_RESEND_ID => serde_json::json!({
+                "expires_at": (OffsetDateTime::now_utc() + time::Duration::days(1)).unix_timestamp()
+            }),
             crate::GROUP_CREATE_ID => serde_json::json!({
                 "name": "walked",
                 "display_name": "Walked"

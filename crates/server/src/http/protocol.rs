@@ -26,6 +26,7 @@ use crate::http::dpop::DpopEndpoint;
 use crate::http::grant_management;
 use crate::http::interaction::{self, InteractionContext};
 use crate::http::introspection;
+use crate::http::invitation;
 use crate::http::logout;
 use crate::http::par::{self, PushContext};
 use crate::http::passkeys::{self, PasskeyContext, PasskeyLoginContext};
@@ -459,6 +460,12 @@ pub fn routes(state: ProtocolState) -> Router {
 /// POST may not be a GET.
 fn mount_mailbox_pages(router: Router, endpoints: &Arc<ClientEndpoints>) -> Router {
     router
+        .route(
+            invitation::PAGE_PATH,
+            get(invitation_page)
+                .post(invitation_submit)
+                .with_state(Arc::clone(endpoints)),
+        )
         .route(
             recovery::REQUEST_PATH,
             get(recovery_request_page)
@@ -4901,6 +4908,90 @@ async fn recovery_request_submit(
         time::OffsetDateTime::now_utc(),
     )
     .await
+}
+
+/// `GET /invite?token=…` previews an unused invitation.
+async fn invitation_page(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    theme: Option<Extension<Arc<asterius_domain::Theme>>>,
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
+    mount: Option<Extension<MountPrefix>>,
+    uri: axum::http::Uri,
+) -> Response {
+    let scope = endpoints.store.scope(tenant.id.clone());
+    let invitations = scope.invitations();
+    let passwords = endpoints.passwords(&tenant.id);
+    let settings = match settings_for_directory(endpoints.tenant_settings.as_ref(), &tenant.id)
+        .await
+    {
+        Ok(settings) => settings,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read invitation assurance policy");
+            return unavailable();
+        }
+    };
+    let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
+    let context = invitation::Context {
+        tenant: &tenant,
+        theme: crate::http::theme_of(theme.as_ref()),
+        invitations: &invitations,
+        passwords: passwords.as_ref(),
+        audit: endpoints.audit.as_ref(),
+        password_allowed: settings
+            .acr_policy()
+            .achieved(&[asterius_domain::AuthenticationMethod::Password])
+            .is_some(),
+        throttle: throttle(&endpoints, &limiter, client.as_deref()),
+        nonce: &nonce,
+        mount: mount_of(mount),
+    };
+    invitation::show(&context, uri.query(), time::OffsetDateTime::now_utc()).await
+}
+
+/// `POST /invite` atomically consumes the link and creates the account.
+// Axum extracts independent request parts; each is required for the tenant,
+// CSP, CSRF, client-address limiter and form to use one resolved request.
+#[allow(clippy::too_many_arguments)]
+async fn invitation_submit(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    theme: Option<Extension<Arc<asterius_domain::Theme>>>,
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let scope = endpoints.store.scope(tenant.id.clone());
+    let invitations = scope.invitations();
+    let passwords = endpoints.passwords(&tenant.id);
+    let settings = match settings_for_directory(endpoints.tenant_settings.as_ref(), &tenant.id)
+        .await
+    {
+        Ok(settings) => settings,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read invitation assurance policy");
+            return unavailable();
+        }
+    };
+    let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
+    let context = invitation::Context {
+        tenant: &tenant,
+        theme: crate::http::theme_of(theme.as_ref()),
+        invitations: &invitations,
+        passwords: passwords.as_ref(),
+        audit: endpoints.audit.as_ref(),
+        password_allowed: settings
+            .acr_policy()
+            .achieved(&[asterius_domain::AuthenticationMethod::Password])
+            .is_some(),
+        throttle: throttle(&endpoints, &limiter, client.as_deref()),
+        nonce: &nonce,
+        mount: mount_of(mount),
+    };
+    invitation::submit(&context, &headers, &body, time::OffsetDateTime::now_utc()).await
 }
 
 /// `GET /recovery/new?token=…` — the page the mailed link leads to.
