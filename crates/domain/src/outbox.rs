@@ -160,6 +160,19 @@ pub struct DeadLetter {
     pub last_error: Option<String>,
 }
 
+/// Safe administrative view of one notification. Contains no recipient or body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotificationStatus {
+    pub id: i64,
+    pub kind: String,
+    /// `pending`, `claimed`, `failed`, `delivered`, `abandoned`, or `expired`.
+    pub status: String,
+    pub attempts: u32,
+    pub created_at: OffsetDateTime,
+    pub delivered_at: Option<OffsetDateTime>,
+    pub last_error: Option<String>,
+}
+
 /// Reading the dead-letter queue.
 ///
 /// A read-only port. The mutations live on [`DeadLetterOperations`], a
@@ -169,6 +182,12 @@ pub struct DeadLetter {
 /// would give a read scope's route the means to write.
 #[async_trait::async_trait]
 pub trait DeadLetterQuery: Debug + Send + Sync {
+    /// Recent notifications of exactly this tenant, without message secrets.
+    async fn notification_statuses(
+        &self,
+        tenant: &TenantId,
+        limit: u32,
+    ) -> Result<Vec<NotificationStatus>, DomainError>;
     /// The tenant's abandoned rows, newest first, at most `limit` of them.
     ///
     /// # Errors

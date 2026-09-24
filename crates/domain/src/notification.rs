@@ -35,7 +35,7 @@ use std::fmt::Debug;
 /// A closed set. Every variant is a thing this server does that a person has
 /// to be told about out of band, and adding one is a deliberate act rather
 /// than a string somebody passed.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum NotificationKind {
     /// Somebody asked to recover this account, and here is the link.
     ///
@@ -62,6 +62,26 @@ pub enum NotificationKind {
         /// How many minutes the link is good for, so the message can say so.
         valid_for_minutes: i64,
     },
+    /// An invitation to complete first sign-in.
+    Invitation {
+        link: String,
+        valid_for_minutes: i64,
+    },
+    /// Confirm a requested change at the new address.
+    EmailChangeConfirmation {
+        link: String,
+        valid_for_minutes: i64,
+    },
+    /// Alert sent to the former verified address after an address change.
+    EmailChangeNotice,
+    /// Alert that password recovery was refused for a passkey-only account.
+    RecoveryRefused,
+    /// Alert after a passkey was registered.
+    PasskeyAddedNotice,
+    /// Alert after a passkey was removed.
+    PasskeyRemovedNotice,
+    /// Alert after a password reset completed.
+    PasswordResetNotice,
     /// The account's credentials changed. No link, nothing to click: this is
     /// the "was this you?" message, and a link in it would train the person
     /// receiving it to click links in messages about their password.
@@ -101,6 +121,14 @@ pub enum NotificationKind {
     },
 }
 
+impl Debug for NotificationKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NotificationKind")
+            .field("kind", &self.as_str())
+            .finish_non_exhaustive()
+    }
+}
+
 impl NotificationKind {
     /// The stable name a log line or an outbox row records.
     #[must_use]
@@ -108,6 +136,13 @@ impl NotificationKind {
         match self {
             Self::AccountRecovery { .. } => "account_recovery",
             Self::EmailVerification { .. } => "email_verification",
+            Self::Invitation { .. } => "invitation",
+            Self::EmailChangeConfirmation { .. } => "email_change_confirmation",
+            Self::EmailChangeNotice => "email_change_notice",
+            Self::RecoveryRefused => "recovery_refused",
+            Self::PasskeyAddedNotice => "passkey_added_notice",
+            Self::PasskeyRemovedNotice => "passkey_removed_notice",
+            Self::PasswordResetNotice => "password_reset_notice",
             Self::CredentialChanged => "credential_changed",
             Self::ApprovalRequested { .. } => "approval_requested",
         }
@@ -115,7 +150,7 @@ impl NotificationKind {
 }
 
 /// One message, addressed.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Notification {
     /// The address, as the account records it.
     ///
@@ -126,6 +161,18 @@ pub struct Notification {
     pub to: String,
     /// What this is about.
     pub kind: NotificationKind,
+    /// Exact deadline for a token-bearing link, when its issuer knows it.
+    pub expires_at: Option<time::OffsetDateTime>,
+}
+
+impl Debug for Notification {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Notification")
+            .field("to", &"<redacted>")
+            .field("kind", &self.kind)
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
 }
 
 impl Notification {
@@ -138,6 +185,7 @@ impl Notification {
                 link,
                 valid_for_minutes,
             },
+            expires_at: None,
         }
     }
 
@@ -150,6 +198,76 @@ impl Notification {
                 link,
                 valid_for_minutes,
             },
+            expires_at: None,
+        }
+    }
+
+    #[must_use]
+    pub fn invitation(to: String, link: String, valid_for_minutes: i64) -> Self {
+        Self {
+            to,
+            kind: NotificationKind::Invitation {
+                link,
+                valid_for_minutes,
+            },
+            expires_at: None,
+        }
+    }
+
+    #[must_use]
+    pub fn email_change_confirmation(to: String, link: String, valid_for_minutes: i64) -> Self {
+        Self {
+            to,
+            kind: NotificationKind::EmailChangeConfirmation {
+                link,
+                valid_for_minutes,
+            },
+            expires_at: None,
+        }
+    }
+
+    #[must_use]
+    pub fn email_change_notice(to: String) -> Self {
+        Self {
+            to,
+            kind: NotificationKind::EmailChangeNotice,
+            expires_at: None,
+        }
+    }
+
+    #[must_use]
+    pub fn recovery_refused(to: String) -> Self {
+        Self {
+            to,
+            kind: NotificationKind::RecoveryRefused,
+            expires_at: None,
+        }
+    }
+
+    #[must_use]
+    pub fn passkey_added_notice(to: String) -> Self {
+        Self {
+            to,
+            kind: NotificationKind::PasskeyAddedNotice,
+            expires_at: None,
+        }
+    }
+
+    #[must_use]
+    pub fn passkey_removed_notice(to: String) -> Self {
+        Self {
+            to,
+            kind: NotificationKind::PasskeyRemovedNotice,
+            expires_at: None,
+        }
+    }
+
+    #[must_use]
+    pub fn password_reset_notice(to: String) -> Self {
+        Self {
+            to,
+            kind: NotificationKind::PasswordResetNotice,
+            expires_at: None,
         }
     }
 
@@ -170,6 +288,7 @@ impl Notification {
                 binding_message,
                 valid_for_minutes,
             },
+            expires_at: None,
         }
     }
 
@@ -179,7 +298,14 @@ impl Notification {
         Self {
             to,
             kind: NotificationKind::CredentialChanged,
+            expires_at: None,
         }
+    }
+    /// Pins delivery to the token's actual expiry, not its queue timestamp.
+    #[must_use]
+    pub const fn with_expires_at(mut self, expires_at: time::OffsetDateTime) -> Self {
+        self.expires_at = Some(expires_at);
+        self
     }
 }
 
