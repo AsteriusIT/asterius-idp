@@ -127,8 +127,21 @@ fn payload(kind: &NotificationKind) -> serde_json::Value {
         | NotificationKind::EmailVerification {
             link,
             valid_for_minutes,
+        }
+        | NotificationKind::Invitation {
+            link,
+            valid_for_minutes,
+        }
+        | NotificationKind::EmailChangeConfirmation {
+            link,
+            valid_for_minutes,
         } => json!({ "link": link, "valid_for_minutes": valid_for_minutes }),
-        NotificationKind::CredentialChanged => json!({}),
+        NotificationKind::CredentialChanged
+        | NotificationKind::EmailChangeNotice
+        | NotificationKind::RecoveryRefused
+        | NotificationKind::PasskeyAddedNotice
+        | NotificationKind::PasskeyRemovedNotice
+        | NotificationKind::PasswordResetNotice => json!({}),
         // `ast-lh3.6`. The binding message is a value a real sender has to be
         // able to render, because CIBA Core 1.0 §7.1 has the person compare it
         // against the device that started the flow: a message that reached the
@@ -151,13 +164,17 @@ fn payload(kind: &NotificationKind) -> serde_json::Value {
 impl MailSender for PgOutboxMailSender {
     async fn send(&self, message: &Notification) -> Result<(), DomainError> {
         let kind = format!("{KIND_PREFIX}{}", message.kind.as_str());
+        let mut values = payload(&message.kind);
+        if let Some(expires_at) = message.expires_at {
+            values["expires_at"] = json!(expires_at.unix_timestamp());
+        }
         sqlx::query!(
             "insert into outbox (tenant_id, kind, destination, payload, created_at)
              values ($1, $2, $3, $4, $5)",
             self.tenant.as_str(),
             kind,
             message.to,
-            payload(&message.kind),
+            values,
             OffsetDateTime::now_utc(),
         )
         .execute(&self.pool)

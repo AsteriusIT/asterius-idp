@@ -17,8 +17,8 @@ use asterius_server::observability::health::HealthState;
 use asterius_server::observability::{self, Metrics};
 use asterius_server::outbound::HttpsClientUrlFetcher;
 use asterius_server::outbox::{
-    CibaPingDeliverer, HttpDeliverer, JournalDeliverer, OutboxWorker, PgPingRequests,
-    PgPushStreams, SsfPushDeliverer,
+    CibaPingDeliverer, HttpDeliverer, JournalDeliverer, MailDeliverer, OutboxWorker,
+    PgPingRequests, PgPushStreams, SsfPushDeliverer,
 };
 use asterius_server::retention::RetentionSweep;
 use asterius_server::rotation::RotationSweep;
@@ -38,6 +38,7 @@ use time::OffsetDateTime;
 
 const DEFAULT_CONFIG_PATH: &str = "asterius.toml";
 const USAGE: &str = "usage: asterius [--config <path>] [--config-reference] [--admin-openapi]\n       \
+                     asterius mail-test <recipient> [--config <path>]\n       \
                      asterius rewrap-kek [--new-kek-file <path> | --new-kek-env <var>] \
                      [--config <path>]";
 
@@ -59,7 +60,23 @@ fn run() -> Result<(), String> {
     match invocation.command {
         Command::Serve => serve_forever(&invocation.config),
         Command::RewrapKek(new_kek) => rewrap_kek(&invocation.config, new_kek.as_ref()),
+        Command::MailTest(recipient) => mail_test(&invocation.config, &recipient),
     }
+}
+
+fn mail_test(path: &std::path::Path, recipient: &str) -> Result<(), String> {
+    let config = Config::load(path).map_err(|error| error.to_string())?;
+    let mail = config.mail.ok_or("[mail] is not configured")?;
+    let poster = asterius_server::outbound::HttpsPoster::new()
+        .map_err(|error| format!("cannot initialize mail transport: {error}"))?;
+    let sender = MailDeliverer::new(mail, poster);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("cannot start mail test: {error}"))?;
+    runtime.block_on(sender.send_test(recipient))?;
+    println!("mail provider accepted the test message");
+    Ok(())
 }
 
 /// RFC 8705 §2 (`ast-m9c.3`), switched on in both places at once.
@@ -297,7 +314,8 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
             &kek,
             outbox,
             config.outbox,
-        );
+            config.mail.clone(),
+        )?;
 
         let served = serve(&config.server, app, shutdown_signal())
             .await
@@ -338,6 +356,11 @@ fn operational_routes(store: &Store, config: &Config, metrics: Metrics) -> Opera
         health: HealthState {
             store: store.clone(),
             features: Arc::new(config.features.enabled().map(Feature::as_str).collect()),
+            mail_transport: if config.mail.is_some() {
+                "resend"
+            } else {
+                "journal"
+            },
         },
         metrics,
     }
@@ -660,7 +683,8 @@ fn spawn_workers(
     kek: &Arc<dyn Kek>,
     outbox: asterius_store_pg::PgOutbox,
     schedule: asterius_server::config::OutboxConfig,
-) -> Workers {
+    mail: Option<asterius_server::config::MailConfig>,
+) -> Result<Workers, String> {
     let clock: Arc<dyn asterius_domain::ports::Clock> =
         Arc::new(asterius_domain::ports::SystemClock);
     let tenants_for_rotation = Arc::new(PgTenantRepository::new(
@@ -695,7 +719,8 @@ fn spawn_workers(
             signer,
             tenants: tenants_for_streams,
         },
-    );
+        mail,
+    )?;
 
     let (stop, stopping) = tokio::sync::watch::channel(false);
     let handles = vec![
@@ -703,7 +728,7 @@ fn spawn_workers(
         tokio::spawn(retention.run(stopped(stopping.clone()))),
         tokio::spawn(delivery.run(stopped(stopping))),
     ];
-    Workers { stop, handles }
+    Ok(Workers { stop, handles })
 }
 
 /// The one `PgOutbox` this process holds (`ast-0ju.9`).
@@ -740,6 +765,9 @@ fn outbox_handle(
 /// A worker name per process, so two replicas' claims are distinguishable in a
 /// log. Random rather than the hostname: a hostname is an operational detail
 /// that ends up in a `claimed_by` column and then in a support ticket.
+// The composition root names every delivery dependency once. Grouping two
+// unrelated handles would hide which transport the worker actually receives.
+#[allow(clippy::too_many_arguments)]
 fn outbox_worker(
     outbox: asterius_store_pg::PgOutbox,
     schedule: asterius_server::config::OutboxConfig,
@@ -748,11 +776,18 @@ fn outbox_worker(
     kek: &Arc<dyn Kek>,
     audit: Arc<dyn asterius_domain::audit::AuditSink>,
     ssf: SsfSigning,
-) -> OutboxWorker {
+    mail: Option<asterius_server::config::MailConfig>,
+) -> Result<OutboxWorker, String> {
     let name = format!("worker-{}", uuid::Uuid::new_v4());
     let mut worker = OutboxWorker::new(outbox, Arc::clone(&clock), name)
-        .with_pace(schedule.poll, schedule.batch)
-        .with(Arc::new(JournalDeliverer));
+        .with_pace(schedule.poll, schedule.batch);
+    worker = if let Some(config) = mail {
+        let poster = asterius_server::outbound::HttpsPoster::new()
+            .map_err(|error| format!("cannot initialize mail transport: {error}"))?;
+        worker.with(Arc::new(MailDeliverer::new(config, poster)))
+    } else {
+        worker.with(Arc::new(JournalDeliverer))
+    };
 
     match asterius_server::outbound::HttpsPoster::new() {
         Ok(poster) => {
@@ -793,7 +828,7 @@ fn outbox_worker(
             );
         }
     }
-    worker
+    Ok(worker)
 }
 
 /// Resolves when the stop channel says so.
@@ -1010,6 +1045,8 @@ struct Invocation {
 enum Command {
     /// Run the server. What every deployment does.
     Serve,
+    /// Send a harmless message through the configured provider and exit.
+    MailTest(String),
     /// Re-seal everything under the KEK named on the command line, and exit.
     ///
     /// `None` means "the destination is in the configuration": the deployment
@@ -1064,6 +1101,14 @@ impl Invocation {
                     std::process::exit(0);
                 }
                 Some("rewrap-kek") => command = Command::RewrapKek(None),
+                Some("mail-test") => {
+                    let value = arguments.next().ok_or("mail-test needs a recipient")?;
+                    command = Command::MailTest(
+                        value
+                            .into_string()
+                            .map_err(|_| "mail-test needs a UTF-8 recipient")?,
+                    );
+                }
                 Some("--new-kek-file") => {
                     let value = arguments.next().ok_or("--new-kek-file needs a path")?;
                     new_kek_file = Some(PathBuf::from(value));
@@ -1106,7 +1151,8 @@ impl Invocation {
                 ));
             }
             (Command::Serve, None, None) => Command::Serve,
-            (Command::Serve, _, _) => {
+            (Command::MailTest(recipient), None, None) => Command::MailTest(recipient),
+            (Command::MailTest(_) | Command::Serve, _, _) => {
                 return Err(format!(
                     "--new-kek-file and --new-kek-env belong to rewrap-kek\n{USAGE}"
                 ));

@@ -287,6 +287,10 @@ async fn route(
     route_standard(id, context, body).await
 }
 
+// One match over the route registry keeps each operation-to-handler mapping
+// visible together; splitting a single arm merely to stay under 100 lines
+// would hide a route from the registry audit.
+#[allow(clippy::too_many_lines)]
 async fn route_standard(
     id: &str,
     context: &Handling<'_>,
@@ -335,6 +339,7 @@ async fn route_standard(
         crate::KEYS_SCHEDULE_ID => context.set_key_schedule(body).await,
         crate::KEYS_SCHEDULE_APPLY_ID => context.apply_key_schedule().await,
         crate::OUTBOX_DEAD_LETTERS_ID => context.list_dead_letters().await,
+        crate::NOTIFICATION_STATUS_ID => context.list_notification_statuses().await,
         crate::OUTBOX_DEAD_LETTER_RETRY_ID => context.retry_dead_letter().await,
         crate::OUTBOX_DEAD_LETTER_DROP_ID => context.drop_dead_letter().await,
         crate::POLICY_READ_ID => context.read_policy().await,
@@ -1791,6 +1796,35 @@ impl Handling<'_> {
         Ok(json_no_store(
             StatusCode::OK,
             &serde_json::json!({ "items": rendered }),
+        ))
+    }
+
+    async fn list_notification_statuses(&self) -> Result<Response, AdminError> {
+        use time::format_description::well_known::Rfc3339;
+        let statuses = self
+            .state
+            .backend
+            .outbox()
+            .notification_statuses(&self.tenant.id, 100)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::NOTIFICATION_STATUS_ID, &error))?;
+        let items: Vec<_> = statuses
+            .iter()
+            .map(|item| {
+                serde_json::json!({
+                    "id": item.id,
+                    "kind": item.kind,
+                    "status": item.status,
+                    "attempts": item.attempts,
+                    "created_at": item.created_at.format(&Rfc3339).unwrap_or_default(),
+                    "delivered_at": item.delivered_at.and_then(|at| at.format(&Rfc3339).ok()),
+                    "last_error": item.last_error,
+                })
+            })
+            .collect();
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({"items": items}),
         ))
     }
 
@@ -5209,6 +5243,13 @@ mod tests {
 
     #[async_trait::async_trait]
     impl asterius_domain::outbox::DeadLetterQuery for Handle {
+        async fn notification_statuses(
+            &self,
+            _tenant: &asterius_domain::TenantId,
+            _limit: u32,
+        ) -> Result<Vec<asterius_domain::outbox::NotificationStatus>, DomainError> {
+            Ok(Vec::new())
+        }
         async fn dead_letters(
             &self,
             _tenant: &TenantId,

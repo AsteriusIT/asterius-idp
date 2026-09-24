@@ -48,6 +48,7 @@
 pub mod ciba;
 pub mod http;
 pub mod journal;
+pub mod mail;
 pub mod ssf;
 
 use asterius_domain::DomainError;
@@ -62,6 +63,7 @@ use time::Duration;
 pub use ciba::{CibaPingDeliverer, PgPingRequests, PingRequests};
 pub use http::HttpDeliverer;
 pub use journal::JournalDeliverer;
+pub use mail::MailDeliverer;
 pub use ssf::{PgPushStreams, PgSsfQueues, PushStreams, SetPoster, SsfPushDeliverer, push_event};
 
 /// What a deliverer did with an event.
@@ -69,6 +71,8 @@ pub use ssf::{PgPushStreams, PgSsfQueues, PushStreams, SetPoster, SsfPushDeliver
 pub enum Delivered {
     /// It left the process and the receiver accepted it.
     Sent,
+    /// A token-bearing message outlived its token and must never be sent.
+    Expired,
     /// It was recorded inside this process and sent nowhere.
     ///
     /// Terminal, and honest about it: the row is finished but its
@@ -182,6 +186,8 @@ pub struct DeliveryReport {
     pub retrying: usize,
     /// Rows that failed for the last time and are now dead letters.
     pub abandoned: usize,
+    /// Token-bearing messages discarded after their validity window.
+    pub expired: usize,
 }
 
 /// Claims outbox rows and hands them to deliverers.
@@ -298,6 +304,7 @@ impl OutboxWorker {
                 Ok(Verdict::Delivered | Verdict::Journalled) => report.delivered += 1,
                 Ok(Verdict::Retry) => report.retrying += 1,
                 Ok(Verdict::Abandoned) => report.abandoned += 1,
+                Ok(Verdict::Expired) => report.expired += 1,
                 Err(error) => {
                     // A deliverer that panicked leaves its row claimed; the
                     // lease reclaims it. Logged at error because a panic in a
@@ -406,6 +413,7 @@ async fn finish(
         Some(deliverer) => match deliverer.deliver(&event).await {
             Ok(Delivered::Sent) => (Outcome::delivered(now), deliverer.family()),
             Ok(Delivered::Journalled) => (Outcome::journalled(now), deliverer.family()),
+            Ok(Delivered::Expired) => (Outcome::expired(now), deliverer.family()),
             Err(failure) => {
                 let outcome = if failure.permanent {
                     Outcome::abandoned(now, failure.detail)
