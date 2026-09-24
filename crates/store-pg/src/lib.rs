@@ -19,6 +19,7 @@ mod clients;
 mod codes;
 mod cutoffs;
 mod device_codes;
+mod email_change;
 mod email_verification;
 mod error;
 mod grants;
@@ -70,6 +71,7 @@ pub use codes::{PgCodeRepository, Redemption};
 pub use device_codes::{
     NewDeviceAuthorization, PendingDevice, PgDeviceCodeRepository, Poll, Polled, RedeemedDevice,
 };
+pub use email_change::{ConfirmedEmailChange, PgEmailChangeRequests};
 pub use email_verification::PgEmailVerificationTokens;
 pub use error::to_domain_error;
 pub use grants::{PgGrantRepository, Revocation};

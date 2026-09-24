@@ -310,6 +310,18 @@ pub const POLICY: &[Retention] = &[
         },
     },
     Retention {
+        table: "email_change_requests",
+        rule: Rule::Sweep {
+            // The digest and both mailbox addresses have no use after the
+            // fifteen-minute confirmation window.
+            statement: "delete from email_change_requests where ctid = any (array(
+                            select ctid from email_change_requests
+                             where tenant_id = $1 and expires_at <= $2
+                             limit $3))",
+            grace: Duration::ZERO,
+        },
+    },
+    Retention {
         table: "user_roles",
         rule: Rule::Kept(
             "authority is granted and revoked by a person: a deployment admin \

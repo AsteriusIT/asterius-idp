@@ -147,6 +147,12 @@ impl EventType {
     /// it is the shape of somebody trying to move a proof from the mailbox
     /// they control onto one they do not.
     pub const EMAIL_VERIFICATION_REFUSED: Self = Self("email_verification.refused");
+    /// A signed-in user requested confirmation at a replacement address.
+    pub const EMAIL_CHANGE_REQUESTED: Self = Self("email_change.requested");
+    /// The replacement address was confirmed and became authoritative.
+    pub const EMAIL_CHANGED: Self = Self("email_change.changed");
+    /// A change link was malformed, expired, spent or superseded.
+    pub const EMAIL_CHANGE_REFUSED: Self = Self("email_change.refused");
     /// A user granted consent.
     pub const CONSENT_GRANTED: Self = Self("consent.granted");
     /// A user refused consent.
@@ -545,7 +551,7 @@ impl EventType {
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 73] = [
+    pub const ALL: [Self; 76] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -561,6 +567,9 @@ impl EventType {
         Self::EMAIL_VERIFICATION_SENT,
         Self::EMAIL_VERIFIED,
         Self::EMAIL_VERIFICATION_REFUSED,
+        Self::EMAIL_CHANGE_REQUESTED,
+        Self::EMAIL_CHANGED,
+        Self::EMAIL_CHANGE_REFUSED,
         Self::CONSENT_GRANTED,
         Self::CONSENT_DENIED,
         Self::CODE_ISSUED,

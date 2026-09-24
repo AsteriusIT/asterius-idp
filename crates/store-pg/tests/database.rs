@@ -15325,3 +15325,49 @@ mod policies {
         }
     }
 }
+
+mod email_change {
+    use super::*;
+    use asterius_domain::{EmailVerificationToken, UserId};
+    use asterius_store_pg::PgEmailChangeRequests;
+    use time::Duration;
+
+    db_test! {
+        /// The old address stays authoritative until one valid confirmation;
+        /// the notice to its verified mailbox is queued atomically with the
+        /// new verified claim, and replay changes nothing.
+        async fn confirmation_moves_email_once_and_queues_old_address_notice(db) {
+            seed_tenant(&db.pool, "email-change").await;
+            let user = UserId::generate();
+            sqlx::query(
+                "insert into users (tenant_id, user_id, username, email, email_verified)
+                 values ($1, $2, $3, $4, true)",
+            )
+            .bind("email-change")
+            .bind(user.as_uuid())
+            .bind("owner")
+            .bind("old@example.test")
+            .execute(&db.pool)
+            .await
+            .expect("seed account");
+            let requests = PgEmailChangeRequests::new(db.pool.clone(), TenantId::new("email-change"));
+            let token = EmailVerificationToken::generate();
+            let now = OffsetDateTime::now_utc();
+            assert!(requests.issue(user, "new@example.test", &token.digest(), now, now + Duration::minutes(15)).await.expect("issue"));
+            let before: (String, bool) = sqlx::query_as("select email, email_verified from users where tenant_id = $1 and user_id = $2")
+                .bind("email-change").bind(user.as_uuid()).fetch_one(&db.pool).await.expect("current address");
+            assert_eq!(before, ("old@example.test".to_owned(), true));
+
+            let changed = requests.confirm(&token.digest(), now + Duration::minutes(1)).await.expect("confirm");
+            assert_eq!(changed.as_ref().map(|change| change.new_address.as_str()), Some("new@example.test"));
+            assert!(requests.confirm(&token.digest(), now + Duration::minutes(2)).await.expect("replay").is_none());
+            let after: (String, bool) = sqlx::query_as("select email, email_verified from users where tenant_id = $1 and user_id = $2")
+                .bind("email-change").bind(user.as_uuid()).fetch_one(&db.pool).await.expect("new address");
+            assert_eq!(after, ("new@example.test".to_owned(), true));
+            let notice: (String, String) = sqlx::query_as(
+                "select kind, destination from outbox where tenant_id = $1 and kind = 'notification.email_change_notice'"
+            ).bind("email-change").fetch_one(&db.pool).await.expect("old-address notice");
+            assert_eq!(notice, ("notification.email_change_notice".to_owned(), "old@example.test".to_owned()));
+        }
+    }
+}

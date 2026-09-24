@@ -541,6 +541,39 @@ catalogue! {
         AccountPasswordExplains => account_password_explains, "account.password-explains",
             en: "Set a password, or change the one you have.",
             fr: "Définir un mot de passe, ou changer celui que vous avez.";
+        AccountEmailLink => account_email_link, "account.email-link",
+            en: "Email address",
+            fr: "Adresse e-mail";
+        AccountEmailExplains => account_email_explains, "account.email-explains",
+            en: "Change your address after confirming the new mailbox.",
+            fr: "Changer votre adresse après confirmation de la nouvelle boîte mail.";
+        AccountEmailCurrent => account_email_current, "account.email-current",
+            en: "Current address",
+            fr: "Adresse actuelle";
+        AccountEmailIntro => account_email_intro, "account.email-intro",
+            en: "Your current address remains in use until you confirm the new one. If you cannot access your old address, contact your tenant administrator.",
+            fr: "Votre adresse actuelle reste utilisée jusqu'à confirmation de la nouvelle. Si vous ne pouvez plus accéder à l'ancienne, contactez l'administrateur de votre organisation.";
+        AccountEmailNew => account_email_new, "account.email-new",
+            en: "New email address",
+            fr: "Nouvelle adresse e-mail";
+        AccountEmailSend => account_email_send, "account.email-send",
+            en: "Send confirmation",
+            fr: "Envoyer la confirmation";
+        AccountEmailUnusable => account_email_unusable, "account.email-unusable",
+            en: "Enter a usable email address.",
+            fr: "Saisissez une adresse e-mail utilisable.";
+        AccountEmailFormExpired => account_email_form_expired, "account.email-form-expired",
+            en: "This form expired. Try again.",
+            fr: "Ce formulaire a expiré. Réessayez.";
+        AccountEmailQueued => account_email_queued, "account.email-queued",
+            en: "If this address is available, a confirmation link has been queued. Your current address remains active until you confirm it.",
+            fr: "Si cette adresse est disponible, un lien de confirmation a été mis en file d'attente. Votre adresse actuelle reste active jusqu'à confirmation.";
+        AccountEmailConfirmed => account_email_confirmed, "account.email-confirmed",
+            en: "Your new email address is confirmed. Sign in again to view your account.",
+            fr: "Votre nouvelle adresse e-mail est confirmée. Reconnectez-vous pour consulter votre compte.";
+        AccountEmailInvalid => account_email_invalid, "account.email-invalid",
+            en: "This confirmation link is invalid or expired.",
+            fr: "Ce lien de confirmation est invalide ou expiré.";
         AccountSessionsLink => account_sessions_link, "account.sessions-link",
             en: "Where you are signed in",
             fr: "Vos sessions ouvertes";

@@ -45,6 +45,8 @@ const TENANT_SCOPED_TABLES: &[&str] = &[
     "authorization_details_types",
     "initial_access_tokens",
     "recovery_tokens",
+    "email_verification_tokens",
+    "email_change_requests",
 ];
 
 /// Statements that read across every tenant on purpose.
