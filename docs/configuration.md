@@ -217,53 +217,43 @@ Requests — not failures — are counted per endpoint, in the same fixed window
 | `limits.access_evaluation_per_address` | integer | 600 | Access evaluation requests per window from one address (AuthZEN Authorization API 1.0 §11.7). As generous as UserInfo's, because the callers are machines: a policy enforcement point asks once per API call it protects. |
 | `limits.access_evaluation_per_client` | integer | 3000 | The same, per authenticated enforcement point. Higher than the address limit, because several PEPs can share one address; this is the bucket that matters, since every request here carries a verified token. |
 
-## Account recovery and mail — read this before enabling passwords
+## Account recovery and mail
 
-**This repository ships no mail sender, and nothing you configure here will
-make one appear.** Account recovery is built and wired; delivery is not.
+`[mail]` enables transactional delivery through the Resend HTTPS API. Without
+it, notifications are journalled in the outbox and never sent. Queueing a
+recovery or verification link does not mean a provider accepted it.
 
-The recovery pages (`GET|POST /recovery`, `GET|POST /recovery/new`) are mounted
-whenever the deployment has the database wiring for the interaction pages —
-there is no flag. Requesting a link produces a real single-use token and hands
-a message to the configured `MailSender`. The only adapter in this repository
-is a **journal**: it writes the message to the transactional `outbox` table,
-logs that it queued it, and delivers nothing. `delivered_at` stays null,
-because it was not delivered.
+Set `RESEND_API_KEY` in the process environment and configure
+`[mail] from_address = "accounts@example.com"` and
+`api_key_env = "RESEND_API_KEY"`. The worker posts to the fixed
+`https://api.resend.com/emails` endpoint. Verify the sender domain with the
+provider first. A successful API response means provider acceptance, not inbox
+placement. A 429 or 5xx is retried with the outbox backoff; a permanent 4xx
+becomes an abandoned row. An expired link is never sent, even if the provider
+has recovered. Provider-accepted and expired notification payloads are erased
+from the outbox. Restrict database and backup access while rows are pending.
 
-That shape is deliberate rather than a stub. A deployment gets a complete,
-queryable record of which recovery links were produced and for whom, tests can
-read the link a browser would have been mailed, and nobody is misled into
-thinking mail works. Wiring a real sender means implementing
-`asterius_domain::MailSender` — one method, `send(&Notification)` — and
-substituting it where `asterius_store_pg::PgOutboxMailSender` is built. There
-is deliberately no SMTP dependency anywhere in the protocol crates; the
-layering check enforces that.
+The tenant-scoped admin status API lists queued, sent, failed, abandoned and
+expired messages without links or recipient addresses. `/readyz` names the
+configured mail transport; `asterius mail-test <recipient>` sends a harmless
+probe directly to the provider. A provider outage does not make the login
+service unready.
 
-**Operational consequences, in order of how much they will cost you:**
+The recovery pages are mounted whenever interaction pages are available.
+The token is single use and valid for fifteen minutes. A completed recovery
+also queues a credential-change alert without a link.
 
-* **Nobody can recover an account until you wire a sender.** Until then the
-  outbox is the only place the link exists — an operator can read it out and
-  pass it on, which is a manual process and should be treated as one.
-* **Treat the outbox as a credential store.** An `account_recovery` row
-  contains a live reset link until the token behind it expires, fifteen minutes
-  later. Keep retention on that table short and its access narrow. The
-  retention sweep already ages it; the default is not tuned for this.
-* **The mail path is now inside the trust boundary of every account with an
-  address.** A gateway that expands links to preview them will spend them. A
-  shared inbox is a shared account. See `docs/threat-model.md`, "Account
-  recovery".
-* **Recovery sets a password.** An account whose only credential was a passkey
-  is recovered onto a weaker method. A deployment that wants passkeys only
-  should leave `[admin]`/password material unconfigured, which makes the
-  new-password step refuse rather than downgrade.
-* **Requests are counted against `[login]`'s buckets**, not a limiter of their
-  own: a burst of reset requests for one identifier consumes the same budget a
-  burst of wrong passwords would. Size `login.max_failures_per_account` with
-  that in mind.
 
-Recovery mail is not the only thing the journal carries: a completed recovery
-also queues a `credential_changed` notice to the account. That one has nothing
-to click, on purpose.
+## `[mail]` — transactional account email
+
+When this table is present, the outbox worker sends account mail through Resend. Without it, the worker journals messages and never claims they reached a provider.
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `mail.from_address` | email address | **required** | Sender under a domain verified with Resend. One address, without a display name. |
+| `mail.api_key_env` | environment variable name | **required** | Name of the variable containing the provider API key. Never put the key in TOML. |
+
+Run `asterius mail-test recipient@example.com --config asterius.toml` to send a harmless probe. `/readyz` reports `mail_transport` as `resend` or `journal`; provider acceptance is visible in the tenant's `/admin/api/v1/notifications/status` read API. A provider outage does not make the login service unready.
 
 ## `[outbox]` — delivering what was queued
 

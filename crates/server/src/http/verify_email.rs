@@ -474,7 +474,8 @@ async fn issue_and_send(
         address.to_owned(),
         link,
         EMAIL_VERIFICATION_LIFETIME.whole_minutes(),
-    );
+    )
+    .with_expires_at(issued.expires_at);
     if let Err(error) = mail.send(&message).await {
         tracing::error!(%error, tenant = %tenant.id, "cannot hand off a verification message");
         return;

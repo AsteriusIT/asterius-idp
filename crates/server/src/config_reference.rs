@@ -160,6 +160,7 @@ pub fn sections() -> Vec<Section> {
         registration(),
         login(),
         limits(),
+        mail(),
         outbox(),
         tenant(),
         tenant_refresh(),
@@ -245,6 +246,35 @@ fn authzen() -> Section {
                  where `[features] authzen` is on — with no decision point there is \
                  nothing to be unavailable — and never consulted for a client that is \
                  not an agent.",
+            ),
+        ],
+    }
+}
+
+/// `[mail]`: provider credentials and a verified sender domain.
+fn mail() -> Section {
+    Section {
+        table: "mail",
+        heading: "`[mail]` — transactional account email",
+        blurb: "When this table is present, the outbox worker sends account mail through Resend. \
+                Without it, the worker journals messages and never claims they reached a provider.",
+        after: "Run `asterius mail-test recipient@example.com --config asterius.toml` \
+                to send a harmless probe. `/readyz` reports `mail_transport` as `resend` \
+                or `journal`; provider acceptance is visible in the tenant's \
+                `/admin/api/v1/notifications/status` read API. A provider outage does not \
+                make the login service unready.",
+        keys: vec![
+            key(
+                "from_address",
+                "email address",
+                REQUIRED.to_owned(),
+                "Sender under a domain verified with Resend. One address, without a display name.",
+            ),
+            key(
+                "api_key_env",
+                "environment variable name",
+                REQUIRED.to_owned(),
+                "Name of the variable containing the provider API key. Never put the key in TOML.",
             ),
         ],
     }
@@ -1345,54 +1375,7 @@ The confirmation routes (`GET /verify-email?token=…` and `POST /verify-email`)
 /// What an operator must know before switching passwords on (`ast-2vk.10`).
 /// There is no key to document — recovery is mounted with the interaction
 /// pages — and that absence is exactly what an operator has to be told.
-const ACCOUNT_RECOVERY_AND_MAIL: &str = "\
-## Account recovery and mail — read this before enabling passwords\n\
-\n\
-**This repository ships no mail sender, and nothing you configure here will\n\
-make one appear.** Account recovery is built and wired; delivery is not.\n\
-\n\
-The recovery pages (`GET|POST /recovery`, `GET|POST /recovery/new`) are mounted\n\
-whenever the deployment has the database wiring for the interaction pages —\n\
-there is no flag. Requesting a link produces a real single-use token and hands\n\
-a message to the configured `MailSender`. The only adapter in this repository\n\
-is a **journal**: it writes the message to the transactional `outbox` table,\n\
-logs that it queued it, and delivers nothing. `delivered_at` stays null,\n\
-because it was not delivered.\n\
-\n\
-That shape is deliberate rather than a stub. A deployment gets a complete,\n\
-queryable record of which recovery links were produced and for whom, tests can\n\
-read the link a browser would have been mailed, and nobody is misled into\n\
-thinking mail works. Wiring a real sender means implementing\n\
-`asterius_domain::MailSender` — one method, `send(&Notification)` — and\n\
-substituting it where `asterius_store_pg::PgOutboxMailSender` is built. There\n\
-is deliberately no SMTP dependency anywhere in the protocol crates; the\n\
-layering check enforces that.\n\
-\n\
-**Operational consequences, in order of how much they will cost you:**\n\
-\n\
-* **Nobody can recover an account until you wire a sender.** Until then the\n\
-\x20\x20outbox is the only place the link exists — an operator can read it out and\n\
-\x20\x20pass it on, which is a manual process and should be treated as one.\n\
-* **Treat the outbox as a credential store.** An `account_recovery` row\n\
-\x20\x20contains a live reset link until the token behind it expires, fifteen minutes\n\
-\x20\x20later. Keep retention on that table short and its access narrow. The\n\
-\x20\x20retention sweep already ages it; the default is not tuned for this.\n\
-* **The mail path is now inside the trust boundary of every account with an\n\
-\x20\x20address.** A gateway that expands links to preview them will spend them. A\n\
-\x20\x20shared inbox is a shared account. See `docs/threat-model.md`, \"Account\n\
-\x20\x20recovery\".\n\
-* **Recovery sets a password.** An account whose only credential was a passkey\n\
-\x20\x20is recovered onto a weaker method. A deployment that wants passkeys only\n\
-\x20\x20should leave `[admin]`/password material unconfigured, which makes the\n\
-\x20\x20new-password step refuse rather than downgrade.\n\
-* **Requests are counted against `[login]`'s buckets**, not a limiter of their\n\
-\x20\x20own: a burst of reset requests for one identifier consumes the same budget a\n\
-\x20\x20burst of wrong passwords would. Size `login.max_failures_per_account` with\n\
-\x20\x20that in mind.\n\
-\n\
-Recovery mail is not the only thing the journal carries: a completed recovery\n\
-also queues a `credential_changed` notice to the account. That one has nothing\n\
-to click, on purpose.";
+const ACCOUNT_RECOVERY_AND_MAIL: &str = "## Account recovery and mail\n\n`[mail]` enables transactional delivery through the Resend HTTPS API. Without\nit, notifications are journalled in the outbox and never sent. Queueing a\nrecovery or verification link does not mean a provider accepted it.\n\nSet `RESEND_API_KEY` in the process environment and configure\n`[mail] from_address = \"accounts@example.com\"` and\n`api_key_env = \"RESEND_API_KEY\"`. The worker posts to the fixed\n`https://api.resend.com/emails` endpoint. Verify the sender domain with the\nprovider first. A successful API response means provider acceptance, not inbox\nplacement. A 429 or 5xx is retried with the outbox backoff; a permanent 4xx\nbecomes an abandoned row. An expired link is never sent, even if the provider\nhas recovered. Provider-accepted and expired notification payloads are erased\nfrom the outbox. Restrict database and backup access while rows are pending.\n\nThe tenant-scoped admin status API lists queued, sent, failed, abandoned and\nexpired messages without links or recipient addresses. `/readyz` names the\nconfigured mail transport; `asterius mail-test <recipient>` sends a harmless\nprobe directly to the provider. A provider outage does not make the login\nservice unready.\n\nThe recovery pages are mounted whenever interaction pages are available.\nThe token is single use and valid for fifteen minutes. A completed recovery\nalso queues a credential-change alert without a link.\n";
 
 /// Outbound traffic that no key switches on. Prose, because there is nothing to
 /// configure — and here anyway, because it is traffic this deployment sends to
