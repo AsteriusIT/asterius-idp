@@ -838,6 +838,8 @@ pub struct AccountPage<'a> {
     pub email_href: &'a str,
     /// Where the session list lives.
     pub sessions_href: &'a str,
+    /// The recent security activity page.
+    pub activity_href: &'a str,
     /// The approvals inbox (`ast-lh3.6`).
     pub approvals_href: &'a str,
     /// The grants dashboard (`ast-uwv.6`).
@@ -1015,6 +1017,37 @@ pub struct SessionLine {
     pub methods: String,
     /// Whether this is the session the page is being read with.
     pub current: bool,
+}
+
+/// One security event shown to its account owner. No audit detail is exposed.
+#[derive(Debug, Clone)]
+pub struct ActivityLine {
+    /// A localized label selected from a closed set.
+    pub action: String,
+    /// UTC timestamp, rendered without client script.
+    pub occurred_at: String,
+}
+
+/// Recent account security activity, with a route to close live sessions.
+#[derive(Debug, Template)]
+#[template(path = "account_activity.html")]
+pub struct AccountActivityPage<'a> {
+    /// Localized text.
+    pub text: &'a Catalog,
+    /// Tenant display name.
+    pub tenant_name: &'a str,
+    /// Recent events in descending order.
+    pub events: Vec<ActivityLine>,
+    /// Tenant-scoped route to live session controls.
+    pub sessions_href: &'a str,
+    /// Tenant-scoped account home route.
+    pub account_href: &'a str,
+    /// CSP nonce attribute.
+    pub nonce_attribute: NonceAttribute,
+    /// Tenant design tokens.
+    pub theme_css: &'a str,
+    /// Tenant branding.
+    pub brand: crate::brand::Brand<'a>,
 }
 
 /// The session list, with one button per row and one for all the others

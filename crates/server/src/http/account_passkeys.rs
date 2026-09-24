@@ -253,6 +253,8 @@ pub struct PasskeysContext<'a> {
     /// lets the last-passkey check go through that one verifier rather than a
     /// second idea of what checking a password means.
     pub users: &'a dyn asterius_domain::UserDirectory,
+    /// Independent account notice, queued after a passkey is removed.
+    pub mail: &'a dyn asterius_domain::MailSender,
     /// The trail. A credential change is recorded whether or not anybody polls
     /// it.
     pub audit: &'a dyn AuditSink,
@@ -492,6 +494,7 @@ async fn removed(
     {
         Ok(Some(removed)) => {
             record(context, session, credential, "removed", None, now).await;
+            notify_removed(context, user).await;
             // CAEP §3.3 `delete`: `fido2-platform` or `fido2-roaming` from what
             // WebAuthn recorded, the friendly name where the person gave one —
             // no key material, which a receiver has no use for and this server
@@ -535,6 +538,27 @@ async fn removed(
             tracing::error!(%error, tenant = %context.account.tenant.id, "cannot remove a passkey");
             error_page(&context.account, StatusCode::SERVICE_UNAVAILABLE)
         }
+    }
+}
+
+async fn notify_removed(context: &PasskeysContext<'_>, user: UserId) {
+    let address = match context.users.by_id(user).await {
+        Ok(Some(account)) => account.email,
+        Ok(None) => None,
+        Err(error) => {
+            tracing::error!(%error, tenant = %context.account.tenant.id, "cannot read passkey owner for notice");
+            None
+        }
+    };
+    if let Some(address) = address
+        && let Err(error) = context
+            .mail
+            .send(&asterius_domain::Notification::passkey_removed_notice(
+                address,
+            ))
+            .await
+    {
+        tracing::error!(%error, tenant = %context.account.tenant.id, "cannot queue passkey removal notice");
     }
 }
 

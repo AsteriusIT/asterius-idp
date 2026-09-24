@@ -390,6 +390,9 @@ pub async fn page(
     let sessions_href = context
         .mount
         .absolute(crate::http::account_sessions::PAGE_PATH);
+    let activity_href = context
+        .mount
+        .absolute(crate::http::account_activity::PAGE_PATH);
     let approvals_href = context.mount.absolute(crate::http::approvals::PAGE_PATH);
     let grants_href = context
         .mount
@@ -403,6 +406,7 @@ pub async fn page(
             password_href: &password_href,
             email_href: &email_href,
             sessions_href: &sessions_href,
+            activity_href: &activity_href,
             approvals_href: &approvals_href,
             grants_href: &grants_href,
             nonce_attribute: nonce_attribute(nonce),

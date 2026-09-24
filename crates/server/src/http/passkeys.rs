@@ -158,6 +158,8 @@ pub struct PasskeyContext<'a> {
     pub sessions: &'a dyn SessionRepository,
     /// Names the person enrolling.
     pub users: &'a dyn UserDirectory,
+    /// Mail queue for a completed enrolment; absent on read-only handlers.
+    pub mail: Option<&'a dyn asterius_domain::MailSender>,
     /// The CSP nonce the document middleware drew for this response.
     pub nonce: &'a Nonce,
     /// Where a created credential is recorded.
@@ -456,11 +458,35 @@ pub async fn finish(
         now,
     )
     .await;
+    notify_added(&context, passkey.user).await;
     tracing::info!(tenant = %context.tenant.id, origin = %verified.origin, "a passkey was registered");
 
     // No body worth reading: the script navigates on success and there is
     // nothing here it needs. An empty 204 is also nothing to leak.
     (StatusCode::NO_CONTENT, no_store()).into_response()
+}
+
+async fn notify_added(context: &PasskeyContext<'_>, user: UserId) {
+    let Some(mail) = context.mail else {
+        return;
+    };
+    let address = match context.users.by_id(user).await {
+        Ok(Some(user)) => user.email,
+        Ok(None) => None,
+        Err(error) => {
+            tracing::error!(%error, tenant = %context.tenant.id, "cannot read passkey owner for notice");
+            None
+        }
+    };
+    if let Some(address) = address
+        && let Err(error) = mail
+            .send(&asterius_domain::Notification::passkey_added_notice(
+                address,
+            ))
+            .await
+    {
+        tracing::error!(%error, tenant = %context.tenant.id, "cannot queue passkey addition notice");
+    }
 }
 
 /// What the two authentication routes need.

@@ -439,6 +439,7 @@ fn account(text: &Catalog) -> String {
         password_href: "/account/password",
         email_href: "/account/email",
         sessions_href: "/account/sessions",
+        activity_href: "/account/activity",
         approvals_href: "/account/approvals",
         grants_href: "/account/grants",
         nonce_attribute: nonce(),
