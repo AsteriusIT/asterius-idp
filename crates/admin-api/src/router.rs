@@ -7102,6 +7102,7 @@ mod tests {
     const SEEDED_USER_ID: &str = "3f1d5c2a-0000-4000-8000-000000000001";
     const SEEDED_INVITATION_ID: &str = "3f1d5c2a-0000-4000-8000-000000000005";
     const SEEDED_GROUP_ID: &str = "3f1d5c2a-0000-4000-8000-000000000004";
+    const REGISTRY_DELETE_GROUP_ID: &str = "3f1d5c2a-0000-4000-8000-000000000006";
 
     /// An application role in both catalogues that nobody holds, so the two
     /// delete routes have something they are allowed to remove (`ast-095`).
@@ -7730,7 +7731,14 @@ mod tests {
             .replace("{type}", SEEDED_DETAIL_TYPE)
             .replace("{user_id}", SEEDED_USER_ID)
             .replace("{invitation_id}", SEEDED_INVITATION_ID)
-            .replace("{group_id}", SEEDED_GROUP_ID)
+            .replace(
+                "{group_id}",
+                if operation.id() == crate::GROUP_DELETE_ID {
+                    REGISTRY_DELETE_GROUP_ID
+                } else {
+                    SEEDED_GROUP_ID
+                },
+            )
             .replace("{sid}", SEEDED_SID)
             .replace("{credential_id}", SEEDED_CREDENTIAL_ID)
             .replace("{grant_id}", SEEDED_GRANT_ID)
@@ -7750,9 +7758,10 @@ mod tests {
             .replace(
                 "{role_name}",
                 match operation.id() {
-                    crate::USER_APP_ROLE_WITHDRAW_ID | crate::USER_CLIENT_APP_ROLE_WITHDRAW_ID => {
-                        HELD_ROLE
-                    }
+                    crate::USER_APP_ROLE_WITHDRAW_ID
+                    | crate::USER_CLIENT_APP_ROLE_WITHDRAW_ID
+                    | crate::GROUP_APP_ROLE_WITHDRAW_ID
+                    | crate::GROUP_CLIENT_APP_ROLE_WITHDRAW_ID => HELD_ROLE,
                     _ => SPARE_ROLE,
                 },
             );
@@ -7772,7 +7781,10 @@ mod tests {
         if operation.id() == crate::THEME_LOGO_UPLOAD_ID {
             let mut bytes = Vec::new();
             image::DynamicImage::new_rgba8(2, 2)
-                .write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
+                .write_to(
+                    &mut std::io::Cursor::new(&mut bytes),
+                    image::ImageFormat::Png,
+                )
                 .expect("fixed test image encodes");
             return Body::from(bytes);
         }
@@ -7836,16 +7848,15 @@ mod tests {
                 "display_name": "Engineering updated",
                 "revision": 1
             }),
-            crate::GROUP_DELETE_ID => serde_json::json!({"revision": 3}),
-            // A name and nothing else: the description is optional, and a
-            // role cannot be created already assigned to somebody (`ast-095`).
-            crate::APP_ROLE_CREATE_ID | crate::CLIENT_APP_ROLE_CREATE_ID => {
+            crate::GROUP_DELETE_ID => serde_json::json!({"revision": 1}),
+            // Creation needs only a name; later user and group assignments
+            // refer to that role in the tenant's catalogue (`ast-095`).
+            crate::APP_ROLE_CREATE_ID
+            | crate::CLIENT_APP_ROLE_CREATE_ID
+            | crate::USER_APP_ROLE_ASSIGN_ID
+            | crate::GROUP_APP_ROLE_ASSIGN_ID => {
                 serde_json::json!({"name": "auditor"})
             }
-            // The role the table walk has just created, in the tenant's own
-            // catalogue: assignment is a foreign key onto it, so a name that
-            // was never created is a 409 rather than a silent creation.
-            crate::USER_APP_ROLE_ASSIGN_ID => serde_json::json!({"name": "auditor"}),
             // A whole policy document: the route refuses `{}` because a
             // document with no version is not one this build reads
             // (`ast-pj0.4`).
@@ -9640,6 +9651,46 @@ mod tests {
     async fn every_registered_operation_has_a_handler() {
         // Arrange
         let world = World::new().routed_at("asterius-admin");
+        let tenant = TenantId::new("asterius-admin");
+        // The registry includes destructive routes before later readers.
+        // Give deletion its own row so the role routes retain their group.
+        world
+            .handle
+            .0
+            .groups
+            .lock()
+            .expect("an uncontended lock")
+            .push(asterius_domain::Group {
+                tenant: tenant.clone(),
+                id: asterius_domain::GroupId::from_uuid(
+                    uuid::Uuid::parse_str(REGISTRY_DELETE_GROUP_ID).expect("a fixed group uuid"),
+                ),
+                metadata: asterius_domain::GroupMetadata::parse("deletable", "Deletable")
+                    .expect("fixed group metadata"),
+                revision: 1,
+                created_at: OffsetDateTime::UNIX_EPOCH,
+                updated_at: OffsetDateTime::UNIX_EPOCH,
+            });
+        let group = asterius_domain::GroupId::from_uuid(
+            uuid::Uuid::parse_str(SEEDED_GROUP_ID).expect("a fixed group uuid"),
+        );
+        for owner in [
+            RoleOwner::Tenant,
+            RoleOwner::Client(asterius_domain::ClientId::new(SEEDED_CLIENT_ID)),
+        ] {
+            world
+                .handle
+                .0
+                .group_role_assignments
+                .lock()
+                .expect("an uncontended lock")
+                .push(SeededGroupAssignment {
+                    tenant: tenant.clone(),
+                    group,
+                    owner,
+                    name: asterius_domain::RoleName::parse(HELD_ROLE).expect("a fixed role name"),
+                });
+        }
 
         for operation in world.api().operations() {
             // A fresh session per route: `session.end` ends the one it is
