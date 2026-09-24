@@ -1363,6 +1363,39 @@ impl asterius_domain::UserAdministration for DeploymentUsers {
             tenant.clone(),
             self.argon2,
         )?;
+        let has_password = verifier.has_password(*user.as_uuid()).await?;
+        if !has_password && !scope.passkeys().summaries_for_user(&user).await?.is_empty() {
+            // Administrative authority does not turn mailbox control into a
+            // user-verified passkey. Leave credentials and sessions untouched.
+            PgAuditSink::new(self.store.pool().clone())
+                .record(
+                    asterius_domain::audit::AuditEvent::new(
+                        tenant.clone(),
+                        asterius_domain::audit::EventType::RECOVERY_REFUSED,
+                        asterius_domain::audit::Outcome::Failure,
+                        asterius_domain::audit::Actor::System,
+                        now,
+                    )
+                    .subject(user.as_uuid().to_string())
+                    .detail(
+                        asterius_domain::audit::Detail::new()
+                            .label("reason", "passkey_only_admin_reset"),
+                    ),
+                )
+                .await?;
+            if held.email_verified
+                && let Some(address) = held.email.clone()
+                && let Err(error) = scope
+                    .mail()
+                    .send(&asterius_domain::Notification::recovery_refused(address))
+                    .await
+            {
+                tracing::error!(%error, tenant = %tenant, "cannot hand off an administrative recovery refusal notice");
+            }
+            return Err(DomainError::Conflict(
+                "Passkey-only accounts require administrator-assisted identity verification and passkey re-enrolment; password reset is unavailable".to_owned(),
+            ));
+        }
         let password_invalidated = verifier.invalidate(*user.as_uuid(), now).await?;
 
         // Every outstanding recovery link goes with the credential, for the

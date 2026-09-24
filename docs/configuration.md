@@ -243,6 +243,12 @@ The recovery pages are mounted whenever interaction pages are available.
 The token is single use and valid for fifteen minutes. A completed recovery
 also queues a credential-change alert without a link.
 
+An account with passkeys but no active password cannot use email to create a
+password, including through the administrator's forced-reset action. The
+account-neutral result page directs the person to their administrator. A
+link-free refusal alert goes to the account's prior verified address. See the
+[passkey recovery support playbook](runbooks/passkey-recovery.md).
+
 
 ## `[mail]` — transactional account email
 

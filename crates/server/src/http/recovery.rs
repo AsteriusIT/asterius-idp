@@ -12,11 +12,11 @@
 //! # This is a new authentication path, and the boundary moved
 //!
 //! Before this file, taking an account required a credential: a password, or a
-//! passkey's private key. After it, control of a mailbox is enough. That is
-//! not a regression — it is what account recovery *is*, and NIST SP 800-63B
-//! §6.1.2.3 describes it as a binding to an out-of-band channel rather than as
-//! a lesser form of the same thing — but it does mean the mail provider is now
-//! inside the trust boundary for every account with an address on it. See
+//! passkey's private key. For accounts without a passkey, control of a mailbox
+//! can recover a password. NIST SP 800-63B
+//! §6.1.2.3 describes it as a binding to an out-of-band channel. An account
+//! with passkeys but no active password refuses that downgrade. The mail
+//! provider is inside the trust boundary for password recovery. See
 //! `docs/threat-model.md` §"Account recovery".
 //!
 //! The countermeasures that follow from that, all of them here:
@@ -110,12 +110,12 @@ pub struct RecoveryContext<'a> {
     pub theme: &'a asterius_domain::Theme,
     /// This tenant's accounts, for resolving an address to one.
     pub users: &'a asterius_store_pg::PgUserRepository,
+    /// Credentials used to prevent mailbox recovery from replacing passkey assurance.
+    pub passkeys: &'a asterius_store_pg::PgPasskeyRepository,
     /// How a new password is hashed and written.
     ///
     /// `None` is a deployment with no password method configured. Recovery
-    /// then has nothing to set, and the honest answer is to refuse rather than
-    /// to spend a token and change nothing: passkey re-enrolment is the
-    /// remaining half of this ticket and is not built.
+    /// then has nothing to set and refuses without spending the token.
     pub passwords: Option<&'a asterius_store_pg::PgPasswordVerifier>,
     /// The single-use tokens.
     pub tokens: &'a dyn RecoveryTokenStore,
@@ -247,10 +247,57 @@ pub async fn submit_request(
     .await;
 
     if let Some(user) = recoverable(context, address).await {
-        issue_and_send(context, &user, now).await;
+        match passkey_only(context, user.id).await {
+            Ok(true) => refuse_passkey_recovery(context, &user, now).await,
+            Ok(false) => issue_and_send(context, &user, now).await,
+            Err(()) => {}
+        }
     }
 
     sent_page(context)
+}
+
+/// A mailbox alone cannot replace a user-verified passkey with a password.
+/// Includes disabled passkeys: disabling a credential cannot lower the proof
+/// needed to recover its account. Store failures fail closed.
+async fn passkey_only(context: &RecoveryContext<'_>, user: UserId) -> Result<bool, ()> {
+    let passkeys = context.passkeys.summaries_for_user(&user).await.map_err(|error| {
+        tracing::error!(%error, tenant = %context.tenant.id, "cannot inspect passkeys for recovery");
+    })?;
+    if passkeys.is_empty() {
+        return Ok(false);
+    }
+    let Some(passwords) = context.passwords else {
+        return Ok(true);
+    };
+    passwords.has_password(*user.as_uuid()).await.map(|held| !held).map_err(|error| {
+        tracing::error!(%error, tenant = %context.tenant.id, "cannot inspect password for recovery");
+    })
+}
+
+async fn refuse_passkey_recovery(context: &RecoveryContext<'_>, user: &User, now: OffsetDateTime) {
+    record(
+        context,
+        AuditEvent::new(
+            context.tenant.id.clone(),
+            EventType::RECOVERY_REFUSED,
+            Outcome::Failure,
+            Actor::System,
+            now,
+        )
+        .subject(user.id.as_uuid().to_string())
+        .detail(Detail::new().label("reason", "passkey_only")),
+    )
+    .await;
+    if user.email_verified
+        && let Some(address) = user.email.clone()
+        && let Err(error) = context
+            .mail
+            .send(&Notification::recovery_refused(address))
+            .await
+    {
+        tracing::error!(%error, tenant = %context.tenant.id, "cannot hand off a recovery refusal notice");
+    }
 }
 
 /// The account this address recovers, if any, and if it can be recovered.
@@ -366,8 +413,8 @@ pub async fn show_new_password(
         }
     };
 
-    let username = match context.users.find(user).await {
-        Ok(Some(user)) => user.username,
+    let account = match context.users.find(user).await {
+        Ok(Some(user)) => user,
         // The token names an account this tenant no longer has. Refused, not
         // rendered with a blank name: the page's job is to say *which* account
         // is about to change.
@@ -378,8 +425,21 @@ pub async fn show_new_password(
         }
     };
 
+    match passkey_only(context, user).await {
+        Ok(true) => {
+            return refused(
+                context,
+                "password recovery is unavailable for a passkey-only account",
+                now,
+            )
+            .await;
+        }
+        Ok(false) => {}
+        Err(()) => return error_page(context, StatusCode::SERVICE_UNAVAILABLE),
+    }
+
     let (csrf_token, cookie) = csrf::issue();
-    let mut response = new_password_page(context, &csrf_token, &token, &username, None);
+    let mut response = new_password_page(context, &csrf_token, &token, &account.username, None);
     set_cookie(&mut response, &cookie);
     response
 }
@@ -461,6 +521,10 @@ pub async fn submit_new_password(
         }
     };
 
+    if let Err(response) = check_link_assurance(context, &token, now).await {
+        return *response;
+    }
+
     // The point of no return, and one statement. Whoever wins this gets the
     // reset; a second request with the same link finds nothing.
     let user = match context.tokens.spend(&token.digest(), now).await {
@@ -479,10 +543,16 @@ pub async fn submit_new_password(
     };
 
     let credential = match passwords
-        .set_password(*user.as_uuid(), accepted.expose())
+        .set_recovery_password(*user.as_uuid(), accepted.expose())
         .await
     {
-        Ok(credential) => credential,
+        Ok(Some(credential)) => credential,
+        Ok(None) => {
+            if let Ok(Some(account)) = context.users.find(user).await {
+                refuse_passkey_recovery(context, &account, now).await;
+            }
+            return refused(context, "passkey-only recovery was refused", now).await;
+        }
         Err(error) => {
             // The token is spent and the password is not set. The person has
             // to ask for another link, which is the safe end of this: the
@@ -495,6 +565,53 @@ pub async fn submit_new_password(
 
     credential_changed(context, user, credential, now).await;
     done(context)
+}
+
+/// Old links may have been issued before this policy was deployed. Recheck
+/// immediately before spending, even when the page was already rendered.
+async fn check_link_assurance(
+    context: &RecoveryContext<'_>,
+    token: &RecoveryToken,
+    now: OffsetDateTime,
+) -> Result<(), Box<Response>> {
+    let linked_user = match context.tokens.peek(&token.digest(), now).await {
+        Ok(Some(user)) => user,
+        Ok(None) => {
+            return Err(Box::new(
+                refused(context, "an unusable token at the recovery form", now).await,
+            ));
+        }
+        Err(error) => {
+            tracing::error!(%error, tenant = %context.tenant.id, "cannot inspect a recovery token");
+            return Err(Box::new(error_page(
+                context,
+                StatusCode::SERVICE_UNAVAILABLE,
+            )));
+        }
+    };
+    match passkey_only(context, linked_user).await {
+        Ok(true) => {
+            // Spending here makes refusal notice idempotent for this link.
+            if let Ok(Some(user)) = context.tokens.spend(&token.digest(), now).await
+                && let Ok(Some(account)) = context.users.find(user).await
+            {
+                refuse_passkey_recovery(context, &account, now).await;
+            }
+            Err(Box::new(
+                refused(
+                    context,
+                    "password recovery is unavailable for a passkey-only account",
+                    now,
+                )
+                .await,
+            ))
+        }
+        Ok(false) => Ok(()),
+        Err(()) => Err(Box::new(error_page(
+            context,
+            StatusCode::SERVICE_UNAVAILABLE,
+        ))),
+    }
 }
 
 /// Everything a credential change entails, in one place.
