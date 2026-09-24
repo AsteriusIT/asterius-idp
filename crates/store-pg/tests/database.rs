@@ -8510,6 +8510,7 @@ mod retention {
             seed_initial_access_token(pool, tenant, label, expires).await;
             seed_recovery_token(pool, tenant, user, label, expires).await;
             seed_email_verification_token(pool, tenant, user, label, expires).await;
+            seed_email_change_request(pool, tenant, user, label, expires).await;
             seed_device_code(pool, tenant, label, expires).await;
             seed_ciba_request(pool, tenant, user, label, expires).await;
         }
@@ -9252,6 +9253,32 @@ mod retention {
         .execute(pool)
         .await
         .expect("seed email verification token");
+    }
+
+    /// A pending address change with the same fifteen-minute lifetime as its link.
+    async fn seed_email_change_request(
+        pool: &PgPool,
+        tenant: &str,
+        user: uuid::Uuid,
+        label: &str,
+        expires: OffsetDateTime,
+    ) {
+        sqlx::query(
+            "insert into email_change_requests
+                 (tenant_id, token_hash, user_id, old_address, old_verified,
+                  new_address, issued_at, expires_at)
+             values ($1, $2, $3, $4, true, $5, $6, $7)",
+        )
+        .bind(tenant)
+        .bind(format!("digest-of-a-{label}-email-change-link"))
+        .bind(user)
+        .bind("owner@example.test")
+        .bind(format!("{label}@example.test"))
+        .bind(expires - Duration::minutes(15))
+        .bind(expires)
+        .execute(pool)
+        .await
+        .expect("seed email change request");
     }
 
     /// A pending device authorization, live or long over (`ast-lh3.3`).
