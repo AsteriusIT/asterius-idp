@@ -1458,7 +1458,8 @@ impl DeploymentUsers {
             address,
             link,
             asterius_domain::RECOVERY_LIFETIME.whole_minutes(),
-        );
+        )
+        .with_expires_at(issued.expires_at);
         if let Err(error) = scope.mail().send(&message).await {
             tracing::error!(%error, tenant = %tenant, "cannot hand off a recovery message");
             return false;

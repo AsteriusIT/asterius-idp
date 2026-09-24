@@ -79,6 +79,8 @@ pub struct Config {
     pub limits: EndpointLimits,
     /// How the outbox worker paces itself and when it gives up (`ast-0ju.9`).
     pub outbox: OutboxConfig,
+    /// Resend transactional mail transport. Absent keeps the journal behavior.
+    pub mail: Option<MailConfig>,
     /// DPoP settings that are not capability flags (`ast-a05.11`).
     pub dpop: DpopConfig,
     /// Where client certificates come from, and whose CAs vouch for them
@@ -179,6 +181,24 @@ pub struct OutboxConfig {
     /// How long a worker's claim on a row is respected before another worker
     /// may take it.
     pub lease: time::Duration,
+}
+
+/// Credentials and sender for the Resend mail transport.
+#[derive(Clone)]
+pub struct MailConfig {
+    /// Verified sender address at the provider.
+    pub from_address: String,
+    /// Bearer token, read from the named environment variable at startup.
+    pub api_key: String,
+}
+
+impl std::fmt::Debug for MailConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MailConfig")
+            .field("from_address", &self.from_address)
+            .field("api_key", &"<redacted>")
+            .finish()
+    }
 }
 
 impl Default for OutboxConfig {
@@ -459,6 +479,7 @@ struct RawConfig {
     limits: RawLimits,
     #[serde(default)]
     outbox: RawOutbox,
+    mail: Option<RawMail>,
     #[serde(default)]
     dpop: RawDpop,
     #[serde(default)]
@@ -561,6 +582,13 @@ struct RawOutbox {
     retry_seconds: Option<u64>,
     max_retry_seconds: Option<u64>,
     lease_seconds: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawMail {
+    from_address: Option<String>,
+    api_key_env: Option<String>,
 }
 
 /// The `[registration]` table.
@@ -1092,6 +1120,7 @@ impl RawConfig {
         let login = validate_login(&self.login, &mut errors);
         let limits = validate_limits(&self.limits, &mut errors);
         let outbox = validate_outbox(&self.outbox, &mut errors);
+        let mail = validate_mail(self.mail, env, &mut errors);
         let dpop = validate_dpop(self.dpop, env, &mut errors);
         let mtls = validate_mtls(self.mtls, &tenants, &mut errors);
 
@@ -1108,6 +1137,7 @@ impl RawConfig {
             login,
             limits,
             outbox,
+            mail,
             dpop,
             mtls,
             authzen: AuthzenConfig {
@@ -1313,6 +1343,33 @@ fn validate_outbox(raw: &RawOutbox, errors: &mut Collector) -> OutboxConfig {
         max_retry: max_retry.max(retry),
         lease,
     }
+}
+
+fn validate_mail(
+    raw: Option<RawMail>,
+    env: &BTreeMap<String, String>,
+    errors: &mut Collector,
+) -> Option<MailConfig> {
+    let raw = raw?;
+    let from_address = raw.from_address.unwrap_or_default();
+    if from_address.is_empty()
+        || !from_address.contains('@')
+        || from_address.chars().any(char::is_whitespace)
+    {
+        errors.problem("mail.from_address", "must be a single sender email address");
+    }
+    let name = raw.api_key_env.unwrap_or_default();
+    if name.is_empty() {
+        errors.problem("mail.api_key_env", "must name an environment variable");
+    }
+    let api_key = env.get(&name).cloned().unwrap_or_default();
+    if api_key.is_empty() || api_key.contains(['\r', '\n']) {
+        errors.problem("mail.api_key_env", "must name a nonempty valid secret");
+    }
+    Some(MailConfig {
+        from_address,
+        api_key,
+    })
 }
 
 /// Turns the `[limits]` table into the per-endpoint limits the wiring applies.
@@ -2183,6 +2240,7 @@ pub fn declared_keys() -> BTreeMap<&'static str, Vec<String>> {
         ("login", accepted_keys::<RawLogin>()),
         ("limits", accepted_keys::<RawLimits>()),
         ("outbox", accepted_keys::<RawOutbox>()),
+        ("mail", accepted_keys::<RawMail>()),
         ("dpop", accepted_keys::<RawDpop>()),
         ("mtls", accepted_keys::<RawMtls>()),
         ("authzen", accepted_keys::<RawAuthzen>()),

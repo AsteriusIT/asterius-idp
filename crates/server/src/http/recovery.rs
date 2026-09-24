@@ -316,7 +316,8 @@ async fn issue_and_send(context: &RecoveryContext<'_>, user: &User, now: OffsetD
         token.expose()
     );
 
-    let message = Notification::account_recovery(address, link, RECOVERY_LIFETIME.whole_minutes());
+    let message = Notification::account_recovery(address, link, RECOVERY_LIFETIME.whole_minutes())
+        .with_expires_at(issued.expires_at);
     if let Err(error) = context.mail.send(&message).await {
         tracing::error!(%error, tenant = %context.tenant.id, "cannot hand off a recovery message");
         return;

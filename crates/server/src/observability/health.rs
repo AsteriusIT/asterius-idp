@@ -46,6 +46,8 @@ pub struct Readiness {
     /// The optional capabilities this deployment offers, for an operator
     /// checking that a rollout carries the flags they expect.
     pub features: Vec<&'static str>,
+    /// Whether notifications are sent to a provider or only journalled.
+    pub mail_transport: &'static str,
 }
 
 impl IntoResponse for Readiness {
@@ -68,6 +70,7 @@ pub struct HealthState {
     pub store: Store,
     /// The capabilities to report.
     pub features: Arc<Vec<&'static str>>,
+    pub mail_transport: &'static str,
 }
 
 /// `GET /healthz`.
@@ -90,6 +93,7 @@ pub async fn check(state: &HealthState) -> Readiness {
         database,
         migrations_applied,
         features: state.features.as_ref().clone(),
+        mail_transport: state.mail_transport,
     }
 }
 
@@ -118,6 +122,7 @@ mod tests {
                 database,
                 migrations_applied,
                 features: Vec::new(),
+                mail_transport: "journal",
             };
             assert_eq!(
                 readiness.into_response().status(),

@@ -162,6 +162,7 @@ pub const KEYS_SCHEDULE_ID: &str = "keys.schedule";
 pub const KEYS_SCHEDULE_APPLY_ID: &str = "keys.schedule.apply";
 /// The `operationId` of `GET /outbox/dead-letters`.
 pub const OUTBOX_DEAD_LETTERS_ID: &str = "outbox.dead_letters";
+pub const NOTIFICATION_STATUS_ID: &str = "notifications.status";
 /// The `operationId` of [`OUTBOX_DEAD_LETTER_RETRY`].
 pub const OUTBOX_DEAD_LETTER_RETRY_ID: &str = "outbox.dead_letters.retry";
 /// The `operationId` of [`OUTBOX_DEAD_LETTER_DROP`].
@@ -741,6 +742,15 @@ pub const OUTBOX_DEAD_LETTERS: Operation = Operation::read(
     S::Get,
     A::new(R::Tenant, "admin.outbox:read"),
     "Lists deliveries this tenant's outbox has abandoned",
+);
+
+/// Recent account mail status without recipient addresses or live links.
+pub const NOTIFICATION_STATUS: Operation = Operation::read(
+    NOTIFICATION_STATUS_ID,
+    "/notifications/status",
+    S::Get,
+    A::new(R::Tenant, "admin.outbox:read"),
+    "Lists this tenant's queued, accepted, failed and expired account mail",
 );
 
 /// Puts one abandoned SSF delivery back on the schedule (`ast-f7m.8`).
@@ -1363,7 +1373,7 @@ pub const GROUP_CLIENT_APP_ROLE_WITHDRAW: Operation = Operation::mutation(
 /// A `static` rather than a function building a `Vec`, so that the router, the
 /// document and the tests are looking at one object and cannot be handed
 /// different copies of it.
-static REGISTRY: [Operation; 90] = [
+static REGISTRY: [Operation; 91] = [
     SESSION_READ,
     SESSION_END,
     OVERVIEW_USERS,
@@ -1406,6 +1416,7 @@ static REGISTRY: [Operation; 90] = [
     KEYS_SCHEDULE,
     KEYS_SCHEDULE_APPLY,
     OUTBOX_DEAD_LETTERS,
+    NOTIFICATION_STATUS,
     OUTBOX_DEAD_LETTER_RETRY,
     OUTBOX_DEAD_LETTER_DROP,
     SSF_STREAMS_LIST,

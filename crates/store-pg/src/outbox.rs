@@ -64,7 +64,9 @@
 //! same cutoff and there is no second schedule to keep in step.
 
 use crate::error::to_domain_error;
-use asterius_domain::outbox::{DeadLetter, DeadLetterOperations, DeadLetterQuery, OutboxEvent};
+use asterius_domain::outbox::{
+    DeadLetter, DeadLetterOperations, DeadLetterQuery, NotificationStatus, OutboxEvent,
+};
 use asterius_domain::{DomainError, TenantId};
 use sqlx::postgres::PgPool;
 use time::{Duration, OffsetDateTime};
@@ -514,6 +516,36 @@ impl PgOutbox {
                 .await
                 .map_err(to_domain_error)?;
             }
+            Verdict::Expired => {
+                sqlx::query(
+                    "update outbox set status = 'expired', last_error = null,
+                        claimed_by = null, claim_expires_at = null
+                      where tenant_id = $1 and outbox_id = $2",
+                )
+                .bind(event.tenant.as_str())
+                .bind(event.id)
+                .execute(&mut *transaction)
+                .await
+                .map_err(to_domain_error)?;
+            }
+        }
+
+        // A provider-accepted or expired account link is no longer needed to
+        // retry. Clear its credential and recipient in the same transaction
+        // that makes the row terminal. Journalled rows keep their payload for
+        // the existing operator/test journal view.
+        if event.kind.starts_with("notification.")
+            && matches!(outcome.verdict, Verdict::Delivered | Verdict::Expired)
+        {
+            sqlx::query(
+                "update outbox set payload = '{}'::jsonb, destination = ''
+                  where tenant_id = $1 and outbox_id = $2",
+            )
+            .bind(event.tenant.as_str())
+            .bind(event.id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(to_domain_error)?;
         }
 
         transaction.commit().await.map_err(to_domain_error)?;
@@ -548,6 +580,8 @@ pub enum Verdict {
     /// It was recorded inside this process and sent nowhere. Terminal, and
     /// honest about it: `delivered_at` stays null.
     Journalled,
+    /// A link expired before delivery and was discarded.
+    Expired,
     /// It failed and the row has attempts left.
     Retry,
     /// It failed and the row has none. Dead-lettered.
@@ -561,6 +595,7 @@ impl Verdict {
         match self {
             Self::Delivered => "delivered",
             Self::Journalled => "journalled",
+            Self::Expired => "expired",
             Self::Retry => "retry",
             Self::Abandoned => "abandoned",
         }
@@ -596,6 +631,15 @@ impl Outcome {
     pub const fn journalled(at: OffsetDateTime) -> Self {
         Self {
             verdict: Verdict::Journalled,
+            at,
+            detail: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn expired(at: OffsetDateTime) -> Self {
+        Self {
+            verdict: Verdict::Expired,
             at,
             detail: None,
         }
@@ -648,6 +692,50 @@ impl asterius_domain::outbox::OutboxQueue for PgOutbox {
 
 #[async_trait::async_trait]
 impl DeadLetterQuery for PgOutbox {
+    async fn notification_statuses(
+        &self,
+        tenant: &TenantId,
+        limit: u32,
+    ) -> Result<Vec<NotificationStatus>, DomainError> {
+        use sqlx::Row as _;
+        let rows = sqlx::query(
+            "select outbox_id, kind, status, attempts, created_at, delivered_at, last_error
+               from outbox
+              where tenant_id = $1 and kind like 'notification.%'
+              order by outbox_id desc limit $2",
+        )
+        .bind(tenant.as_str())
+        .bind(i64::from(limit.min(100)))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+        rows.into_iter()
+            .map(|row| {
+                let status: String = row.try_get("status").map_err(to_domain_error)?;
+                let delivered_at: Option<OffsetDateTime> =
+                    row.try_get("delivered_at").map_err(to_domain_error)?;
+                let display_status = match status.as_str() {
+                    "pending" | "claimed" => "queued",
+                    "delivered" if delivered_at.is_some() => "sent",
+                    "delivered" => "journalled",
+                    other => other,
+                };
+                Ok(NotificationStatus {
+                    id: row.try_get("outbox_id").map_err(to_domain_error)?,
+                    kind: row.try_get("kind").map_err(to_domain_error)?,
+                    status: display_status.to_owned(),
+                    attempts: u32::try_from(
+                        row.try_get::<i32, _>("attempts").map_err(to_domain_error)?,
+                    )
+                    .unwrap_or(0),
+                    created_at: row.try_get("created_at").map_err(to_domain_error)?,
+                    delivered_at,
+                    last_error: row.try_get("last_error").map_err(to_domain_error)?,
+                })
+            })
+            .collect()
+    }
+
     async fn dead_letters(
         &self,
         tenant: &TenantId,
