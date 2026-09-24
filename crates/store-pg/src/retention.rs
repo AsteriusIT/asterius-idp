@@ -347,8 +347,22 @@ pub const POLICY: &[Retention] = &[
         ),
     },
     Retention {
+        table: "managed_group_aliases",
+        rule: Rule::Kept(
+            "historical group names preserve policy references after a rename until the group is deleted",
+        ),
+    },
+    Retention {
         table: "group_memberships",
         rule: Rule::Kept("direct membership persists until removal or group/user/tenant deletion"),
+    },
+    Retention {
+        table: "group_tenant_roles",
+        rule: Rule::Kept("group role authority persists until explicit withdrawal or group deletion"),
+    },
+    Retention {
+        table: "group_client_roles",
+        rule: Rule::Kept("group client role authority persists until explicit withdrawal or group deletion"),
     },
     Retention {
         table: "tenant_roles",
