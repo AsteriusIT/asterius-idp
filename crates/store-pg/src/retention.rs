@@ -322,6 +322,18 @@ pub const POLICY: &[Retention] = &[
         },
     },
     Retention {
+        table: "invitations",
+        rule: Rule::Sweep {
+            // An expired invitation cannot create an account. Delete its
+            // bearer-token digest and mailbox address at the same deadline.
+            statement: "delete from invitations where ctid = any (array(
+                            select ctid from invitations
+                             where tenant_id = $1 and expires_at <= $2
+                             limit $3))",
+            grace: Duration::ZERO,
+        },
+    },
+    Retention {
         table: "user_roles",
         rule: Rule::Kept(
             "authority is granted and revoked by a person: a deployment admin \
