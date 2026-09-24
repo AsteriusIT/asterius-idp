@@ -19,6 +19,7 @@ import { paramsOf, routeOf } from './routes';
 import { TenantSettings } from './settings';
 import { Tenants } from './tenants';
 import { SharedSignals } from './ssf';
+import { MailStatus } from './mail-status';
 import { Button, CenteredCard, Panel, Screen } from './ui';
 import { Users } from './users';
 import { Overview } from './overview';
@@ -189,6 +190,9 @@ function RouteScreen({
   }
   if (route === 'ssf') {
     return <SharedSignals session={session} />;
+  }
+  if (route === 'mail') {
+    return <MailStatus session={session} />;
   }
   if (route === 'audit') {
     return <AuditExplorer session={session} />;
