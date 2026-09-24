@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Accept invitation — {{ tenant_name }}{% endblock %}
+{% block content %}
+<div class="stack tight">
+<h2>Accept invitation</h2>
+{% if complete %}
+<p>Your account is ready. Sign in with your new password.</p>
+{% else if available %}
+<p>Create a password for <strong>{{ username }}</strong>.</p>
+{% else %}
+<p>{% if let Some(message) = message %}{{ message }}{% else %}This invitation link is unavailable. Ask your administrator for a new invitation.{% endif %}</p>
+{% endif %}
+</div>
+{% if available %}
+{% include "error_summary.html" %}
+<form method="post" action="{{ action }}">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<input type="hidden" name="token" value="{{ token }}">
+<label><span>New password</span>
+<input type="password" name="password" autocomplete="new-password" minlength="{{ minimum_password_length }}" required></label>
+<label><span>New password again</span>
+<input type="password" name="password_confirmation" autocomplete="new-password" minlength="{{ minimum_password_length }}" required></label>
+<div class="actions"><button type="submit">Create account</button></div>
+</form>
+{% endif %}
+{% endblock %}

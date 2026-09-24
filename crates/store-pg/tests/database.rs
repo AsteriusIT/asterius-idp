@@ -13240,6 +13240,89 @@ mod recovery {
 // Email verification (`ast-vae`)
 // ---------------------------------------------------------------------------
 
+/// Invitations are bearer links. The transaction is the security boundary:
+/// spending a link and creating its account must succeed or fail together.
+mod invitations {
+    use super::*;
+    use asterius_domain::OpaqueToken;
+    use asterius_store_pg::{NewInvitation, PgInvitations};
+    use time::Duration;
+    use uuid::Uuid;
+
+    async fn sent_token(pool: &PgPool, tenant: &str) -> OpaqueToken {
+        let row = sqlx::query("select payload from outbox where tenant_id = $1 and kind = 'notification.invitation' order by outbox_id desc limit 1")
+            .bind(tenant).fetch_one(pool).await.expect("queued invitation");
+        let payload: serde_json::Value = row.get("payload");
+        let link = payload["link"].as_str().expect("link");
+        let token = link.split_once("?token=").expect("token parameter").1;
+        OpaqueToken::from_presented(token.to_owned())
+    }
+
+    db_test! {
+        async fn activation_is_tenant_bound_single_use_and_applies_assignments(db) {
+            seed_tenant(&db.pool, "invite-a").await;
+            seed_tenant(&db.pool, "invite-b").await;
+            let group = Uuid::new_v4();
+            sqlx::query("insert into managed_groups (tenant_id, group_id, name, display_name, created_at, updated_at) values ('invite-a',$1,'members','Members',now(),now())")
+                .bind(group).execute(&db.pool).await.expect("group");
+            let store = PgInvitations::new(db.pool.clone(), TenantId::new("invite-a"));
+            let other = PgInvitations::new(db.pool.clone(), TenantId::new("invite-b"));
+            let now = OffsetDateTime::now_utc();
+            let created = store.invite(NewInvitation { email: "ada@example.test", username: "ada", inviter: "admin", role: Some("security_auditor"), group_ids: &[group], expires_at: now + Duration::hours(2), link_base: "https://as.example/invite", now })
+                .await.expect("invite");
+            let token = sent_token(&db.pool, "invite-a").await;
+            assert!(other.preview(&token, now).await.expect("other tenant").is_none());
+            assert!(store.preview(&token, now + Duration::hours(3)).await.expect("expired").is_none());
+            let user = store.activate(&token, "argon2-test-hash", now).await.expect("activate").expect("user").user;
+            assert!(store.activate(&token, "argon2-test-hash", now).await.expect("replay").is_none());
+            assert!(store.preview(&token, now).await.expect("spent").is_none());
+            let row = sqlx::query("select email_verified from users where tenant_id = 'invite-a' and user_id = $1")
+                .bind(user.as_uuid()).fetch_one(&db.pool).await.expect("created account");
+            assert!(row.get::<bool, _>("email_verified"));
+            let role: String = sqlx::query_scalar("select role from user_roles where tenant_id = 'invite-a' and user_id = $1")
+                .bind(user.as_uuid()).fetch_one(&db.pool).await.expect("assigned role");
+            assert_eq!(role, "security_auditor");
+            let count: i64 = sqlx::query_scalar("select count(*) from group_memberships where tenant_id = 'invite-a' and user_id = $1 and group_id = $2")
+                .bind(user.as_uuid()).bind(group).fetch_one(&db.pool).await.expect("assigned group");
+            assert_eq!(count, 1);
+            let consumed: Option<OffsetDateTime> = sqlx::query_scalar("select consumed_at from invitations where tenant_id = 'invite-a' and invitation_id = $1")
+                .bind(created.id).fetch_one(&db.pool).await.expect("invitation");
+            assert!(consumed.is_some());
+        }
+    }
+
+    db_test! {
+        async fn resend_revocation_and_existing_accounts_are_safe(db) {
+            seed_tenant(&db.pool, "invite-rotate").await;
+            let store = PgInvitations::new(db.pool.clone(), TenantId::new("invite-rotate"));
+            let now = OffsetDateTime::now_utc();
+            let expiry = now + Duration::days(1);
+            let first = store.invite(NewInvitation { email: "ada@example.test", username: "ada", inviter: "admin", role: None, group_ids: &[], expires_at: expiry, link_base: "https://as.example/invite", now })
+                .await.expect("invite");
+            let old = sent_token(&db.pool, "invite-rotate").await;
+            assert!(matches!(
+                store.invite(NewInvitation { email: "other@example.test", username: "ada", inviter: "admin", role: None, group_ids: &[], expires_at: expiry, link_base: "https://as.example/invite", now }).await,
+                Err(asterius_domain::DomainError::Conflict(_))
+            ));
+            assert!(store.invite(NewInvitation { email: "evil\r\nBcc:operator@example.test", username: "evil", inviter: "admin", role: None, group_ids: &[], expires_at: expiry, link_base: "https://as.example/invite", now }).await.is_err());
+            store.resend(first.id, expiry, "https://as.example/invite", now).await.expect("resend");
+            let fresh = sent_token(&db.pool, "invite-rotate").await;
+            assert!(store.preview(&old, now).await.expect("old").is_none());
+            assert!(store.preview(&fresh, now).await.expect("fresh").is_some());
+            assert!(store.revoke(first.id, now).await.expect("revoke"));
+            assert!(!store.revoke(first.id, now).await.expect("repeat revoke"));
+            assert!(store.activate(&fresh, "argon2-test-hash", now).await.expect("revoked").is_none());
+            sqlx::query("insert into users (tenant_id,user_id,username,email,status) values ('invite-rotate',$1,'ada','ada@example.test','active')")
+                .bind(Uuid::new_v4()).execute(&db.pool).await.expect("existing account");
+            assert!(store.invite(NewInvitation { email: "ada@example.test", username: "ada", inviter: "admin", role: None, group_ids: &[], expires_at: expiry, link_base: "https://as.example/invite", now }).await.is_err());
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Email verification (`ast-vae`)
+// ---------------------------------------------------------------------------
+
 /// The rules a clock decides, and the one an `update` decides, for the token
 /// behind a confirmation link.
 ///

@@ -181,6 +181,12 @@ pub const AUDIT_EVENTS_EXPORT_ID: &str = "audit.events.export";
 pub const USERS_LIST_ID: &str = "users.list";
 /// The `operationId` of `POST /users`.
 pub const USER_CREATE_ID: &str = "users.create";
+/// Creates one or more account invitations.
+pub const INVITATIONS_CREATE_ID: &str = "invitations.create";
+/// Rotates an invitation's mailed bearer link.
+pub const INVITATION_RESEND_ID: &str = "invitations.resend";
+/// Revokes an invitation before activation.
+pub const INVITATION_REVOKE_ID: &str = "invitations.revoke";
 /// The `operationId` of `GET /users/{user_id}`.
 pub const USER_READ_ID: &str = "users.read";
 /// The `operationId` of `PUT /users/{user_id}/claims`.
@@ -911,6 +917,33 @@ pub const USER_CREATE: Operation = Operation::mutation(
     "Creates an account, with a password that passed policy or with none",
 );
 
+/// Sends account invitations to one or more addresses.
+pub const INVITATIONS_CREATE: Operation = Operation::mutation(
+    INVITATIONS_CREATE_ID,
+    "/invitations",
+    M::Post,
+    A::new(R::Tenant, "admin.users:write"),
+    "Invites users without assigning their passwords",
+);
+
+/// Sends a fresh, independently expiring link.
+pub const INVITATION_RESEND: Operation = Operation::mutation(
+    INVITATION_RESEND_ID,
+    "/invitations/{invitation_id}/resend",
+    M::Post,
+    A::new(R::Tenant, "admin.users:write"),
+    "Resends an account invitation",
+);
+
+/// Invalidates an unused invitation.
+pub const INVITATION_REVOKE: Operation = Operation::mutation(
+    INVITATION_REVOKE_ID,
+    "/invitations/{invitation_id}",
+    M::Delete,
+    A::new(R::Tenant, "admin.users:write"),
+    "Revokes an account invitation",
+);
+
 /// Replaces one account's claims and its verification flags (OIDC Core §5.1).
 ///
 /// `PUT` and not `PATCH`, for the reason [`CLIENT_UPDATE`] gives: a merge
@@ -1373,7 +1406,7 @@ pub const GROUP_CLIENT_APP_ROLE_WITHDRAW: Operation = Operation::mutation(
 /// A `static` rather than a function building a `Vec`, so that the router, the
 /// document and the tests are looking at one object and cannot be handed
 /// different copies of it.
-static REGISTRY: [Operation; 91] = [
+static REGISTRY: [Operation; 94] = [
     SESSION_READ,
     SESSION_END,
     OVERVIEW_USERS,
@@ -1427,6 +1460,9 @@ static REGISTRY: [Operation; 91] = [
     USERS_LIST,
     USER_READ,
     USER_CREATE,
+    INVITATIONS_CREATE,
+    INVITATION_RESEND,
+    INVITATION_REVOKE,
     USER_CLAIMS_UPDATE,
     USER_STATUS_UPDATE,
     USER_CREDENTIALS_READ,

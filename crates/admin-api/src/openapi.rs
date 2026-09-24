@@ -223,6 +223,7 @@ fn operation_object(operation: &Operation) -> Value {
         });
     }
     client_resources_documentation(operation, &mut object);
+    invitation_documentation(operation, &mut object);
     theme_documentation(operation, &mut object);
     if let Some(request_body) = group_request_body(operation) {
         object["requestBody"] = request_body;
@@ -249,6 +250,44 @@ fn operation_object(operation: &Operation) -> Value {
     }
 
     object
+}
+
+fn invitation_documentation(operation: &Operation, object: &mut Value) {
+    match operation.id() {
+        crate::INVITATIONS_CREATE_ID => {
+            object["requestBody"] = json!({
+                "required": true,
+                "content": {"application/json": {"schema": {
+                    "type": "object", "additionalProperties": false,
+                    "required": ["invitations"],
+                    "properties": {"invitations": {
+                        "type": "array", "minItems": 1, "maxItems": 50,
+                        "items": {"type": "object", "additionalProperties": false,
+                            "required": ["email", "expires_at"],
+                            "properties": {
+                                "email": {"type": "string", "format": "email"},
+                                "username": {"type": "string"},
+                                "expires_at": {"type": "integer", "description": "Unix seconds; one minute to 24 hours from now"},
+                                "role": {"type": "string", "enum": ["tenant_admin", "user_support", "security_auditor"]},
+                                "group_ids": {"type": "array", "items": {"type": "string", "format": "uuid"}}
+                            }
+                        }
+                    }}
+                }}}
+            });
+        }
+        crate::INVITATION_RESEND_ID => {
+            object["requestBody"] = json!({
+                "required": true,
+                "content": {"application/json": {"schema": {
+                    "type": "object", "additionalProperties": false,
+                    "required": ["expires_at"],
+                    "properties": {"expires_at": {"type": "integer", "description": "Unix seconds; one minute to 24 hours from now"}}
+                }}}
+            });
+        }
+        _ => {}
+    }
 }
 
 fn client_resources_documentation(operation: &Operation, object: &mut Value) {
@@ -427,7 +466,8 @@ fn idempotency_parameter() -> Value {
 fn responses(operation: &Operation) -> Value {
     // A `POST` that creates answers 201; a probe answers 200, because it
     // created nothing and has no `Location` to give (`ast-f7m.9`).
-    let success = if operation.method() == crate::operations::Method::Post
+    let success = if operation.id() != crate::INVITATION_RESEND_ID
+        && operation.method() == crate::operations::Method::Post
         && operation.effect() == Effect::Mutates
     {
         "201"

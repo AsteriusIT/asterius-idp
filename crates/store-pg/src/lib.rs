@@ -25,6 +25,7 @@ mod error;
 mod grants;
 mod groups;
 mod initial_access_tokens;
+mod invitations;
 mod key_store;
 mod keys;
 mod notifications;
@@ -76,6 +77,10 @@ pub use email_verification::PgEmailVerificationTokens;
 pub use error::to_domain_error;
 pub use grants::{PgGrantRepository, Revocation};
 pub use initial_access_tokens::PgInitialAccessTokens;
+pub use invitations::{
+    ActivatedInvitation, Invitation, InvitationPreview, MAX_INVITATION_LIFETIME, NewInvitation,
+    PgInvitations,
+};
 pub use key_store::TenantKeyStore;
 pub use keys::{PgKeyRepository, Rotation, RotationSchedule};
 pub use notifications::{PgOutboxMailSender, QueuedNotification};

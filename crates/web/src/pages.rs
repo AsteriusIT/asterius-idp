@@ -1303,6 +1303,25 @@ pub struct NewPasswordPage<'a> {
     pub brand: crate::brand::Brand<'a>,
 }
 
+/// First credential enrolment after proving an invited mailbox.
+#[derive(Debug, Template)]
+#[template(path = "invitation.html")]
+pub struct InvitationPage<'a> {
+    pub text: &'a Catalog,
+    pub tenant_name: &'a str,
+    pub username: &'a str,
+    pub action: &'a str,
+    pub csrf: &'a str,
+    pub token: &'a str,
+    pub minimum_password_length: usize,
+    pub message: Option<&'a str>,
+    pub available: bool,
+    pub complete: bool,
+    pub nonce_attribute: NonceAttribute,
+    pub theme_css: &'a str,
+    pub brand: crate::brand::Brand<'a>,
+}
+
 /// The error page.
 ///
 /// One page for every failure a browser can reach. The message is one of a

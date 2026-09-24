@@ -28,6 +28,29 @@ use asterius_domain::{
 };
 use std::sync::Arc;
 
+/// One address in an administrator's invitation request.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InvitationRequest {
+    pub email: String,
+    pub username: Option<String>,
+    pub role: Option<String>,
+    #[serde(default)]
+    pub group_ids: Vec<uuid::Uuid>,
+    pub expires_at: i64,
+}
+
+/// Metadata returned after a link has been queued, without the bearer token.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct InvitationReceipt {
+    pub id: uuid::Uuid,
+    pub email: String,
+    pub username: String,
+    pub role: Option<String>,
+    pub group_ids: Vec<uuid::Uuid>,
+    pub expires_at: i64,
+}
+
 /// One independently-authorized overview aggregate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverviewMetric {
@@ -80,6 +103,37 @@ pub trait PolicyTrial: std::fmt::Debug + Send + Sync {
 /// What an admin API request needs from below the API.
 #[async_trait::async_trait]
 pub trait AdminBackend: std::fmt::Debug + Send + Sync {
+    /// Creates one tenant-bound invitation and queues its link.
+    async fn invite_user(
+        &self,
+        _tenant: &Tenant,
+        _actor: &str,
+        _request: InvitationRequest,
+        _now: time::OffsetDateTime,
+    ) -> Result<InvitationReceipt, DomainError> {
+        Err(DomainError::NotFound)
+    }
+
+    /// Rotates an outstanding invitation's bearer link.
+    async fn resend_invitation(
+        &self,
+        _tenant: &Tenant,
+        _id: uuid::Uuid,
+        _expires_at: time::OffsetDateTime,
+        _now: time::OffsetDateTime,
+    ) -> Result<InvitationReceipt, DomainError> {
+        Err(DomainError::NotFound)
+    }
+
+    /// Revokes an outstanding invitation.
+    async fn revoke_invitation(
+        &self,
+        _tenant: &TenantId,
+        _id: uuid::Uuid,
+        _now: time::OffsetDateTime,
+    ) -> Result<bool, DomainError> {
+        Err(DomainError::NotFound)
+    }
     /// Exact, fixed-cost aggregates for one tenant's overview.
     ///
     /// Implementations must compute only `metric` and bind it to `tenant`.

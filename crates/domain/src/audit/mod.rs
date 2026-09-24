@@ -297,6 +297,16 @@ impl EventType {
     /// investigator tell an account provisioned for a passkey from one
     /// provisioned on a password.
     pub const USER_CREATED: Self = Self("user.created");
+    /// A tenant administrator queued a new account invitation.
+    pub const INVITATION_ISSUED: Self = Self("invitation.issued");
+    /// An administrator rotated an invitation's bearer link.
+    pub const INVITATION_RESENT: Self = Self("invitation.resent");
+    /// An administrator invalidated an outstanding invitation.
+    pub const INVITATION_REVOKED: Self = Self("invitation.revoked");
+    /// A mailbox holder created an account through a single-use invitation.
+    pub const INVITATION_ACTIVATED: Self = Self("invitation.activated");
+    /// The role and group assignments sealed in an invitation were applied.
+    pub const INVITATION_ASSIGNMENTS_APPLIED: Self = Self("invitation.assignments_applied");
     /// An administrator changed the claims that describe an account, or their
     /// verification flags (OIDC Core §5.1).
     ///
@@ -551,7 +561,7 @@ impl EventType {
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 76] = [
+    pub const ALL: [Self; 81] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -597,6 +607,11 @@ impl EventType {
         Self::SUBJECT_COLLISION,
         Self::ADMIN_CHANGED,
         Self::USER_CREATED,
+        Self::INVITATION_ISSUED,
+        Self::INVITATION_RESENT,
+        Self::INVITATION_REVOKED,
+        Self::INVITATION_ACTIVATED,
+        Self::INVITATION_ASSIGNMENTS_APPLIED,
         Self::USER_CLAIMS_CHANGED,
         Self::ACCOUNT_DISABLED,
         Self::ACCOUNT_ENABLED,
