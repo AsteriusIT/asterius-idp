@@ -8510,10 +8510,33 @@ mod retention {
             seed_initial_access_token(pool, tenant, label, expires).await;
             seed_recovery_token(pool, tenant, user, label, expires).await;
             seed_email_verification_token(pool, tenant, user, label, expires).await;
+            seed_invitation(pool, tenant, label, expires).await;
             seed_device_code(pool, tenant, label, expires).await;
             seed_ciba_request(pool, tenant, user, label, expires).await;
         }
         seed_outbox(pool, tenant).await;
+    }
+
+    /// A mailbox invitation with the same expired/live pair as the other
+    /// account-link tables. Its token is a digest, and its address and
+    /// username differ so both live-uniqueness indexes accept the fixture.
+    async fn seed_invitation(pool: &PgPool, tenant: &str, label: &str, expires: OffsetDateTime) {
+        sqlx::query(
+            "insert into invitations
+                 (tenant_id, invitation_id, email, username, token_hash,
+                  invited_by, created_at, expires_at)
+             values ($1, $2, $3, $4, $5, 'retention-test', $6, $7)",
+        )
+        .bind(tenant)
+        .bind(uuid::Uuid::new_v4())
+        .bind(format!("{label}-invite@example.test"))
+        .bind(format!("{label}-invite"))
+        .bind(format!("digest-of-{label}-invitation"))
+        .bind(expires - Duration::hours(1))
+        .bind(expires)
+        .execute(pool)
+        .await
+        .expect("seed invitation");
     }
 
     /// The rows everything else hangs off: the tenant, one client, one user and
