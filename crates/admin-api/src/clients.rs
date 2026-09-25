@@ -232,6 +232,12 @@ pub fn document(client: &Client) -> Value {
             json!(alg.as_str()),
         );
     }
+    if let Some(alg) = registration.introspection_signed_response_alg {
+        object.insert(
+            "introspection_signed_response_alg".to_owned(),
+            json!(alg.as_str()),
+        );
+    }
     if let Some(uri) = &registration.sector_identifier_uri {
         object.insert("sector_identifier_uri".to_owned(), json!(uri));
     }

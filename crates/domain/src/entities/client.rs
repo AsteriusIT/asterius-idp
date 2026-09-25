@@ -1108,6 +1108,9 @@ pub struct ClientMetadata {
     /// OIDC Registration §2. Absent means OIDC Core §5.3.2's default, a plain
     /// JSON UserInfo response.
     pub userinfo_signed_response_alg: Option<String>,
+    /// RFC 9701 §6. Required to opt into signed introspection; omitting it
+    /// preserves the existing JSON response rather than implying RS256.
+    pub introspection_signed_response_alg: Option<String>,
     /// CIBA Core 1.0 §4, REQUIRED of a client registering the CIBA grant.
     /// `poll` or `ping`; see [`TokenDeliveryMode`] for why `push` is neither.
     pub backchannel_token_delivery_mode: Option<String>,
@@ -1219,6 +1222,8 @@ pub struct ClientRegistration {
     /// which is why registering one is checked against the tenant's keys
     /// (`register::unsignable`) as `id_token_signed_response_alg` is.
     pub userinfo_signed_response_alg: Option<SigningAlgorithm>,
+    /// RFC 9701 §6. `None` keeps RFC 7662 JSON introspection.
+    pub introspection_signed_response_alg: Option<SigningAlgorithm>,
     /// CIBA Core 1.0 §4. `Some` exactly when `grant_types` contains the CIBA
     /// grant: §4 makes the member REQUIRED of such a client, and
     /// [`ClientMetadata::validate`] refuses it on any other — the invariant the
@@ -1366,7 +1371,7 @@ impl ClientRegistration {
     /// because it names an algorithm the *client* signs with and this server
     /// only verifies, so it needs no key of ours.
     #[must_use]
-    pub fn server_signed_algorithms(&self) -> [(&'static str, Option<SigningAlgorithm>); 3] {
+    pub fn server_signed_algorithms(&self) -> [(&'static str, Option<SigningAlgorithm>); 4] {
         [
             // OIDC Registration §2. Always present — it has a profile default
             // — so this entry is never `None`.
@@ -1379,6 +1384,10 @@ impl ClientRegistration {
             (
                 "userinfo_signed_response_alg",
                 self.userinfo_signed_response_alg,
+            ),
+            (
+                "introspection_signed_response_alg",
+                self.introspection_signed_response_alg,
             ),
             // OIDC Registration §2, and still `None` now that `ast-gxh.9` has
             // landed the JAR path. The direction is what decides the entry, not
@@ -1723,6 +1732,11 @@ impl ClientMetadata {
                 .userinfo_signed_response_alg
                 .as_deref()
                 .map(|raw| signing_algorithm("userinfo_signed_response_alg", raw))
+                .transpose()?,
+            introspection_signed_response_alg: self
+                .introspection_signed_response_alg
+                .as_deref()
+                .map(|raw| signing_algorithm("introspection_signed_response_alg", raw))
                 .transpose()?,
             backchannel_token_delivery_mode: backchannel.delivery_mode,
             backchannel_client_notification_endpoint: backchannel.notification_endpoint,

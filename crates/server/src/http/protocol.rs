@@ -2896,6 +2896,7 @@ async fn introspection_endpoint_inner(
     introspection::introspect(
         introspection::IntrospectionContext {
             tenant,
+            signer: Some(endpoints.signer.as_ref()),
             clients: &clients,
             source: &source,
             keys: endpoints.keys.as_ref(),

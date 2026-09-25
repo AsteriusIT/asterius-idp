@@ -527,6 +527,7 @@ pub fn provider_metadata(
         "token_endpoint_auth_signing_alg_values_supported": algorithms(),
         "request_object_signing_alg_values_supported": algorithms(),
         "authorization_signing_alg_values_supported": algorithms(),
+        "introspection_signing_alg_values_supported": algorithms(),
         "userinfo_signing_alg_values_supported": algorithms(),
         "dpop_signing_alg_values_supported": algorithms(),
 

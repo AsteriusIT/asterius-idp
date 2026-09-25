@@ -159,7 +159,7 @@ impl PgClientRepository {
                     dpop_bound_access_tokens, tls_client_certificate_bound_access_tokens,
                     authorization_details_types, use_mtls_endpoint_aliases,
                     tls_client_auth_field, tls_client_auth_value,
-                    userinfo_signed_response_alg,
+                    userinfo_signed_response_alg, introspection_signed_response_alg,
                     backchannel_token_delivery_mode, backchannel_client_notification_endpoint,
                     backchannel_user_code_parameter,
                     is_agent, agent_owner_user_id, agent_policy,
@@ -215,7 +215,7 @@ impl PgClientRepository {
                     dpop_bound_access_tokens, tls_client_certificate_bound_access_tokens,
                     authorization_details_types, use_mtls_endpoint_aliases,
                     tls_client_auth_field, tls_client_auth_value,
-                    userinfo_signed_response_alg,
+                    userinfo_signed_response_alg, introspection_signed_response_alg,
                     backchannel_token_delivery_mode, backchannel_client_notification_endpoint,
                     backchannel_user_code_parameter,
                     is_agent, agent_owner_user_id, agent_policy,
@@ -300,10 +300,11 @@ impl PgClientRepository {
                                   backchannel_user_code_parameter,
                                   is_agent, agent_owner_user_id, agent_policy,
                                   backchannel_logout_uri, backchannel_logout_session_required,
-                                  roles_in_id_token, managed_groups_claim, client_secret_hash)
+                                  roles_in_id_token, managed_groups_claim, client_secret_hash,
+                                  introspection_signed_response_alg)
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
                      $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31,
-                     $32, $33, $34, $35, $36, $37, $38)
+                     $32, $33, $34, $35, $36, $37, $38, $39)
              on conflict (tenant_id, client_id) do update
              set client_name = excluded.client_name,
                  compliance_profile = excluded.compliance_profile,
@@ -332,6 +333,7 @@ impl PgClientRepository {
                  tls_client_auth_field = excluded.tls_client_auth_field,
                  tls_client_auth_value = excluded.tls_client_auth_value,
                  userinfo_signed_response_alg = excluded.userinfo_signed_response_alg,
+                 introspection_signed_response_alg = excluded.introspection_signed_response_alg,
                  backchannel_token_delivery_mode = excluded.backchannel_token_delivery_mode,
                  backchannel_client_notification_endpoint =
                      excluded.backchannel_client_notification_endpoint,
@@ -386,6 +388,7 @@ impl PgClientRepository {
             registration.roles_in_id_token.is_issued(),
             registration.managed_groups_claim.is_issued(),
             client_secret_digest.map(|digest| &digest[..]),
+            algorithm_column(registration.introspection_signed_response_alg),
         )
         .execute(&self.pool)
         .await
@@ -509,10 +512,11 @@ impl PgClientRepository {
                                   backchannel_user_code_parameter,
                                   is_agent, agent_owner_user_id, agent_policy,
                                   backchannel_logout_uri, backchannel_logout_session_required,
-                                  roles_in_id_token, managed_groups_claim)
+                                  roles_in_id_token, managed_groups_claim,
+                                  introspection_signed_response_alg)
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
                      $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31,
-                     $32, $33, $34, $35, $36, $37)
+                     $32, $33, $34, $35, $36, $37, $38)
              returning client_id, client_name, compliance_profile, token_endpoint_auth_method, redirect_uris,
                        post_logout_redirect_uris, grant_types, response_types, scopes, resources, jwks, jwks_uri,
                        id_token_signed_response_alg, application_type, subject_type,
@@ -521,7 +525,7 @@ impl PgClientRepository {
                        dpop_bound_access_tokens, tls_client_certificate_bound_access_tokens,
                        authorization_details_types, use_mtls_endpoint_aliases,
                        tls_client_auth_field, tls_client_auth_value,
-                       userinfo_signed_response_alg,
+                       userinfo_signed_response_alg, introspection_signed_response_alg,
                        backchannel_token_delivery_mode, backchannel_client_notification_endpoint,
                        backchannel_user_code_parameter,
                        is_agent, agent_owner_user_id, agent_policy,
@@ -567,6 +571,7 @@ impl PgClientRepository {
             backchannel_session_required,
             registration.roles_in_id_token.is_issued(),
             registration.managed_groups_claim.is_issued(),
+            algorithm_column(registration.introspection_signed_response_alg),
         )
         .fetch_one(&mut *connection)
         .await
@@ -757,6 +762,7 @@ impl PgClientRepository {
                  tls_client_auth_field = $22,
                  tls_client_auth_value = $23,
                  userinfo_signed_response_alg = $24,
+                 introspection_signed_response_alg = $35,
                  backchannel_token_delivery_mode = $25,
                  backchannel_client_notification_endpoint = $26,
                  backchannel_user_code_parameter = $27,
@@ -775,7 +781,7 @@ impl PgClientRepository {
                        dpop_bound_access_tokens, tls_client_certificate_bound_access_tokens,
                        authorization_details_types, use_mtls_endpoint_aliases,
                        tls_client_auth_field, tls_client_auth_value,
-                       userinfo_signed_response_alg,
+                       userinfo_signed_response_alg, introspection_signed_response_alg,
                        backchannel_token_delivery_mode, backchannel_client_notification_endpoint,
                        backchannel_user_code_parameter,
                        is_agent, agent_owner_user_id, agent_policy,
@@ -821,6 +827,7 @@ impl PgClientRepository {
                 ClientSecretUpdate::Set(digest) => Some(digest.to_vec()),
                 ClientSecretUpdate::Keep | ClientSecretUpdate::Revoke => None,
             },
+            algorithm_column(registration.introspection_signed_response_alg),
         )
         .fetch_optional(&self.pool)
         .await
@@ -1318,6 +1325,7 @@ struct Row {
     tls_client_auth_field: Option<String>,
     tls_client_auth_value: Option<String>,
     userinfo_signed_response_alg: Option<String>,
+    introspection_signed_response_alg: Option<String>,
     backchannel_token_delivery_mode: Option<String>,
     backchannel_client_notification_endpoint: Option<String>,
     backchannel_user_code_parameter: bool,
@@ -1379,6 +1387,7 @@ impl Row {
             authorization_details_types: Some(self.authorization_details_types),
             use_mtls_endpoint_aliases: Some(self.use_mtls_endpoint_aliases),
             userinfo_signed_response_alg: self.userinfo_signed_response_alg,
+            introspection_signed_response_alg: self.introspection_signed_response_alg,
             backchannel_token_delivery_mode: self.backchannel_token_delivery_mode,
             backchannel_client_notification_endpoint: self.backchannel_client_notification_endpoint,
             // CIBA Core 1.0 §4's default is false, and the column is not null,

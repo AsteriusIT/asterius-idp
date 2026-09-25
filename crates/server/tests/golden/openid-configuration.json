@@ -56,6 +56,11 @@
   "introspection_endpoint_auth_methods_supported": [
     "private_key_jwt"
   ],
+  "introspection_signing_alg_values_supported": [
+    "EdDSA",
+    "ES256",
+    "PS256"
+  ],
   "issuer": "https://as.example/t/demo",
   "jwks_uri": "https://as.example/t/demo/jwks",
   "prompt_values_supported": [
