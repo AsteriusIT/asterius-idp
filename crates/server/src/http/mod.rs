@@ -70,6 +70,7 @@ pub mod account_grants;
 pub mod account_passkeys;
 pub mod account_password;
 pub mod account_sessions;
+pub mod account_totp;
 pub mod agent_issuance;
 pub mod approvals;
 pub mod assets;

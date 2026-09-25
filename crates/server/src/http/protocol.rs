@@ -45,6 +45,7 @@ use crate::http::userinfo;
 use crate::http::verify_email;
 use crate::http::{
     account_activity, account_email, account_passkeys, account_password, account_sessions,
+    account_totp,
 };
 use crate::tenancy::MountPrefix;
 use crate::tenant_settings::SettingsDirectory;
@@ -809,6 +810,12 @@ fn account_pages(endpoints: Arc<ClientEndpoints>) -> Router {
             account_passkeys::PAGE_PATH,
             get(account_passkeys_page)
                 .post(account_passkeys_submit)
+                .with_state(Arc::clone(&endpoints)),
+        )
+        .route(
+            account_totp::PAGE_PATH,
+            get(account_totp_page)
+                .post(account_totp_submit)
                 .with_state(Arc::clone(&endpoints)),
         )
         .route(
@@ -6011,6 +6018,7 @@ struct AccountParts {
     users: asterius_store_pg::PgUserRepository,
     email_changes: asterius_store_pg::PgEmailChangeRequests,
     passkeys: asterius_store_pg::PgPasskeyRepository,
+    totp_credentials: asterius_store_pg::PgTotpCredentials,
     /// `None` where the deployment has configured no password method, which is
     /// a deployment whose accounts sign in with passkeys only.
     passwords: Option<asterius_store_pg::PgPasswordVerifier>,
@@ -6037,6 +6045,7 @@ async fn account_parts(
             tenant.id.clone(),
         ),
         passkeys: scope.passkeys(),
+        totp_credentials: scope.totp_credentials(Arc::clone(&endpoints.kek)),
         passwords: endpoints.passwords(&tenant.id),
         mail: scope.mail(),
         queues: crate::outbox::PgSsfQueues::new(
@@ -6258,6 +6267,59 @@ async fn account_passkeys_sign_in(
         time::OffsetDateTime::now_utc(),
     )
     .await
+}
+
+/// `GET /account/totp` — lifecycle status without opening a stored seed.
+async fn account_totp_page(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let parts = match account_parts(&endpoints, &tenant).await {
+        Ok(parts) => parts,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read account page dependencies");
+            return unavailable();
+        }
+    };
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    let account = account_context(&tenant, &parts, &text, &nonce, mount);
+    let context = account_totp::TotpContext {
+        account,
+        credentials: &parts.totp_credentials,
+        audit: endpoints.audit.as_ref(),
+    };
+    account_totp::page(&context, &headers, time::OffsetDateTime::now_utc()).await
+}
+
+/// `POST /account/totp` — start enrollment or prove possession of its code.
+async fn account_totp_submit(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let parts = match account_parts(&endpoints, &tenant).await {
+        Ok(parts) => parts,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read account page dependencies");
+            return unavailable();
+        }
+    };
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    let account = account_context(&tenant, &parts, &text, &nonce, mount);
+    let context = account_totp::TotpContext {
+        account,
+        credentials: &parts.totp_credentials,
+        audit: endpoints.audit.as_ref(),
+    };
+    account_totp::submit(&context, &headers, &body, time::OffsetDateTime::now_utc()).await
 }
 
 /// `GET /account/password` — set a password, or change the one there is.
