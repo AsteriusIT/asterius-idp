@@ -8,6 +8,17 @@ use time::{Duration, OffsetDateTime};
 /// The maximum period in which a wallet response can be delivered.
 pub const TRANSACTION_LIFETIME: Duration = Duration::minutes(5);
 
+/// Values saved from one prepared request and authenticated initiator.
+#[derive(Debug, Clone, Copy)]
+pub struct NewOid4vpTransaction<'a> {
+    pub state: &'a str,
+    pub nonce: &'a str,
+    pub client_id: &'a str,
+    pub initiator_client_id: &'a str,
+    pub credential_id: &'a str,
+    pub verifier_id: &'a str,
+}
+
 /// Stored bindings that a consumed wallet response must satisfy.
 #[derive(Debug, Clone)]
 pub struct ConsumedOid4vpTransaction {
@@ -45,15 +56,10 @@ impl PgOid4vpTransactions {
     /// A database failure prevents the request from being exposed.
     pub async fn save(
         &self,
-        state: &str,
-        nonce: &str,
-        client_id: &str,
-        initiator_client_id: &str,
-        credential_id: &str,
-        verifier_id: &str,
+        entry: &NewOid4vpTransaction<'_>,
         now: OffsetDateTime,
     ) -> Result<(), DomainError> {
-        let digest = sha256(state.as_bytes());
+        let digest = sha256(entry.state.as_bytes());
         sqlx::query(
             "insert into oid4vp_transactions
              (tenant_id, state_digest, nonce, client_id, initiator_client_id,
@@ -62,11 +68,11 @@ impl PgOid4vpTransactions {
         )
         .bind(self.tenant.as_str())
         .bind(digest.as_slice())
-        .bind(nonce)
-        .bind(client_id)
-        .bind(initiator_client_id)
-        .bind(credential_id)
-        .bind(verifier_id)
+        .bind(entry.nonce)
+        .bind(entry.client_id)
+        .bind(entry.initiator_client_id)
+        .bind(entry.credential_id)
+        .bind(entry.verifier_id)
         .bind(now + TRANSACTION_LIFETIME)
         .execute(&self.pool)
         .await
@@ -136,7 +142,8 @@ impl PgOid4vpTransactions {
         let digest = sha256(state.as_bytes());
         let result = sqlx::query(
             "update oid4vp_transactions
-                set verified_claims = $3, holder = $4, credential_issuer = $5, verified_at = $6
+                set verified_claims = $3, holder = $4, credential_issuer = $5,
+                    verified_at = $6, expires_at = $6 + interval '5 minutes'
               where tenant_id = $1 and state_digest = $2
                 and consumed_at is not null and verified_at is null and expires_at > $6",
         )

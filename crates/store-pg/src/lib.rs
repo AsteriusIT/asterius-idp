@@ -94,7 +94,7 @@ pub use keys::{PgKeyRepository, Rotation, RotationSchedule};
 pub use notifications::{PgOutboxMailSender, QueuedNotification};
 pub use oid4vci_nonces::{NONCE_LIFETIME as OID4VCI_NONCE_LIFETIME, PgOid4vciNonces};
 pub use oid4vp_transactions::{
-    ConsumedOid4vpTransaction, PgOid4vpTransactions,
+    ConsumedOid4vpTransaction, NewOid4vpTransaction, PgOid4vpTransactions,
     TRANSACTION_LIFETIME as OID4VP_TRANSACTION_LIFETIME,
 };
 pub use outbox::{

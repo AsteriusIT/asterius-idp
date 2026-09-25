@@ -84,16 +84,19 @@ impl Oid4vpVerifiers {
 fn load_verifier(config: &Oid4vpVerifierConfig) -> Result<ConfiguredVerifier, String> {
     let holder_keys = load_keys(&config.holder_jwks_file)?;
     let credential_issuer_keys = load_keys(&config.issuer_jwks_file)?;
+    let query = VerifierQuery {
+        client_id: config.wallet_client_id.clone(),
+        response_uri: config.response_uri.clone(),
+        credential_id: config.credential_id.clone(),
+        credential_type: config.credential_type.clone(),
+        claim_paths: config.claim_paths.clone(),
+    };
+    asterius_oidc::oid4vp::prepare(&query)
+        .map_err(|error| format!("invalid OID4VP verifier {}: {error}", config.id))?;
     Ok(ConfiguredVerifier {
         id: config.id.clone(),
         initiator_client_id: config.initiator_client_id.clone(),
-        query: VerifierQuery {
-            client_id: config.wallet_client_id.clone(),
-            response_uri: config.response_uri.clone(),
-            credential_id: config.credential_id.clone(),
-            credential_type: config.credential_type.clone(),
-            claim_paths: config.claim_paths.clone(),
-        },
+        query,
         holder: config.holder.clone(),
         holder_keys,
         credential_issuer: config.credential_issuer.as_str().to_owned(),
@@ -111,6 +114,9 @@ fn load_keys(path: &Path) -> Result<ClientKeySet, String> {
     }
     let bytes = std::fs::read(path)
         .map_err(|error| format!("cannot read OID4VP JWKS {}: {error}", path.display()))?;
+    if bytes.len() > MAX_JWKS_BYTES as usize {
+        return Err(format!("OID4VP JWKS {} exceeds 64 KiB", path.display()));
+    }
     let jwks = serde_json::from_slice(&bytes)
         .map_err(|_| format!("OID4VP JWKS {} is not JSON", path.display()))?;
     let keys = keys_from_jwk_set(&jwks)
