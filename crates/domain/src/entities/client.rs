@@ -1736,6 +1736,15 @@ impl ClientMetadata {
             ));
         }
         let token_binding = self.token_binding(capabilities, compliance_profile)?;
+        let scopes = self.scopes()?;
+        if scopes.contains("bound_key")
+            && (!scopes.contains("openid") || !token_binding.is_dpop_bound())
+        {
+            return Err(ClientMetadataError::rejected(
+                "scope",
+                "bound_key requires openid and DPoP-bound tokens",
+            ));
+        }
         let backchannel = self.backchannel(&grant_types)?;
         check_ciba_sector(
             &grant_types,
@@ -1758,7 +1767,7 @@ impl ClientMetadata {
             redirect_uris,
             post_logout_redirect_uris,
             grant_types,
-            scopes: self.scopes()?,
+            scopes,
             resources: BTreeSet::new(),
             jwks,
             id_token_signed_response_alg: match &self.id_token_signed_response_alg {

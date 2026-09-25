@@ -790,6 +790,11 @@ pub fn validate(
             }
         })
         .transpose()?;
+    if scopes.contains("bound_key")
+        && (!openid || dpop_jkt.is_none() || !registration.token_binding.is_dpop_bound())
+    {
+        return Err(AuthorizationError::Invalid("bound_key"));
+    }
 
     // Grant Management ID1 §5.2 and §5.4. Parsed last of the request's own
     // parameters because §7.1's "an action is required" is a statement about

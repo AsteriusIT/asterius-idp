@@ -44,6 +44,8 @@ pub struct NewDeviceAuthorization {
     pub client_id: String,
     /// What it asked for, already narrowed to its registration.
     pub scopes: Vec<String>,
+    /// The optional DPoP key pinned by the device at authorization.
+    pub dpop_jkt: Option<String>,
     /// RFC 9396 §3's rich authorization, as the parser accepted it.
     pub authorization_details: serde_json::Value,
     /// §3.2's `expires_in`, as an instant.
@@ -125,6 +127,8 @@ pub struct RedeemedDevice {
     pub client_id: String,
     /// The authorization the approval created.
     pub grant_id: GrantId,
+    /// The key the device pinned before browser approval.
+    pub dpop_jkt: Option<String>,
 }
 
 /// Device authorizations for one tenant.
@@ -166,21 +170,22 @@ impl PgDeviceCodeRepository {
         let user = Self::digest_bytes("user_code", user_code_digest)?;
         let interval = i32::try_from(request.interval.whole_seconds())
             .map_err(|_| DomainError::invalid("interval", "is not a number of seconds"))?;
-        sqlx::query!(
+        sqlx::query(
             "insert into device_codes
                  (tenant_id, device_code_hash, user_code_hash, client_id, scopes,
-                  authorization_details, issued_at, expires_at, poll_interval_seconds)
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
-            self.tenant.as_str(),
-            device,
-            user,
-            request.client_id,
-            &request.scopes,
-            request.authorization_details,
-            now,
-            request.expires_at,
-            interval,
+                  authorization_details, issued_at, expires_at, poll_interval_seconds, dpop_jkt)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         )
+        .bind(self.tenant.as_str())
+        .bind(device)
+        .bind(user)
+        .bind(&request.client_id)
+        .bind(&request.scopes)
+        .bind(&request.authorization_details)
+        .bind(now)
+        .bind(request.expires_at)
+        .bind(interval)
+        .bind(&request.dpop_jkt)
         .execute(&self.pool)
         .await
         .map_err(|error| match &error {
@@ -311,29 +316,30 @@ impl PgDeviceCodeRepository {
         now: OffsetDateTime,
     ) -> Result<Option<RedeemedDevice>, DomainError> {
         let device = Self::digest_bytes("device_code", device_code_digest)?;
-        let row = sqlx::query!(
+        let row: Option<(String, Option<uuid::Uuid>, Option<String>)> = sqlx::query_as(
             "update device_codes
                 set redeemed_at = $3
               where tenant_id = $1 and device_code_hash = $2
                 and status = 'approved' and redeemed_at is null and expires_at > $3
-          returning client_id, grant_id",
-            self.tenant.as_str(),
-            device,
-            now,
+          returning client_id, grant_id, dpop_jkt",
         )
+        .bind(self.tenant.as_str())
+        .bind(device)
+        .bind(now)
         .fetch_optional(&self.pool)
         .await
         .map_err(to_domain_error)?;
 
-        Ok(row.and_then(|row| {
-            row.grant_id.map(|grant| RedeemedDevice {
-                client_id: row.client_id,
+        Ok(row.and_then(|(client_id, grant_id, dpop_jkt)| {
+            grant_id.map(|grant| RedeemedDevice {
+                client_id,
                 // A grant deleted between the approval and the redemption
                 // leaves the column null (`on delete set null`), and the
                 // `and_then` above turns that into "not redeemable" rather
                 // than into a token minted from an authorization that no
                 // longer exists.
                 grant_id: GrantId::new(grant.to_string()),
+                dpop_jkt,
             })
         }))
     }

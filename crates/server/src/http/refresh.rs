@@ -146,6 +146,8 @@ pub struct RefreshToken<'a> {
     /// issue without one. Which of the two binds the token is the client's
     /// registered `TokenBinding` — see [`issuance::SenderConstraint`].
     pub constraint: issuance::SenderConstraint<'a>,
+    /// Verified DPoP proof for a key-bound refreshed ID Token.
+    pub proof: Option<&'a super::dpop::Binding>,
     /// When the request arrived. One instant for every deadline and both
     /// tokens, so `iat`, `exp` and the two refresh-token expiries are judged
     /// against one clock reading rather than several.
@@ -185,6 +187,7 @@ impl<'a> RefreshToken<'a> {
             grant_id_claim: code.grant_id_claim,
             lifetimes: code.lifetimes,
             constraint: code.constraint,
+            proof: code.proof,
             now: code.now,
         }
     }
@@ -321,6 +324,20 @@ impl RefreshToken<'_> {
         // is computed rather than stored and so reaches no row.
         if !matches!(grant.status(self.now), GrantStatus::Active) {
             return Err(invalid_grant());
+        }
+        if grant.scopes.contains("bound_key") {
+            // A key-bound ID Token can only be refreshed under the original
+            // key, even when the tenant otherwise permits DPoP key rotation
+            // for ordinary access tokens (Key Binding 1.0 §5).
+            let Some(proof) = self.proof else {
+                return Err(invalid_grant());
+            };
+            if !matches!(
+                &record.binding,
+                RefreshBinding::Dpop(jkt) if jkt == proof.jkt.as_str()
+            ) {
+                return Err(invalid_grant());
+            }
         }
 
         // RFC 6749 §6, and the reason `record.scopes` is the comparison rather
@@ -473,6 +490,11 @@ impl RefreshToken<'_> {
                 access_token: access_token.as_str(),
                 // §12.2: no new `nonce`. See `IdTokenParts::nonce`.
                 nonce: None,
+                key_bound_jwk: if grant.scopes.contains("bound_key") {
+                    Some(&self.proof.ok_or_else(invalid_grant)?.public_jwk)
+                } else {
+                    None
+                },
                 released: issuance::released_claims(
                     self.users,
                     self.groups,

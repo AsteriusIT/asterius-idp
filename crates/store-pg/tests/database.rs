@@ -14754,6 +14754,7 @@ mod device_codes {
         NewDeviceAuthorization {
             client_id: "billing".to_owned(),
             scopes: vec!["openid".to_owned()],
+            dpop_jkt: None,
             authorization_details: serde_json::Value::Array(Vec::new()),
             expires_at: now + Duration::minutes(10),
             interval: Duration::seconds(5),

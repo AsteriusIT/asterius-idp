@@ -3526,6 +3526,7 @@ async fn dispatch_grants(
         grant_management,
         lifetimes,
         constraint,
+        proof: request.binding,
         now,
     };
     // The same repositories, and deliberately the same `now` and proof key:

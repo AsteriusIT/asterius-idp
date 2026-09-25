@@ -296,6 +296,8 @@ pub struct DeviceRequest {
     /// RFC 9396 §3's rich authorization, already checked against the client's
     /// §9.2 allow-list.
     pub authorization_details: AuthorizationDetails,
+    /// The key pinned by OpenID Connect Key Binding's `bound_key` request.
+    pub dpop_jkt: Option<String>,
 }
 
 /// Validates a device authorization request.
@@ -350,6 +352,28 @@ pub fn validate(
         scopes.insert(token.to_owned());
     }
 
+    let dpop_jkt = params
+        .get("dpop_jkt")?
+        .map(|raw| {
+            if raw.len() == 43
+                && raw
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            {
+                Ok(raw.to_owned())
+            } else {
+                Err(AuthorizationError::Invalid("dpop_jkt"))
+            }
+        })
+        .transpose()?;
+    if scopes.contains("bound_key")
+        && (!scopes.contains("openid")
+            || dpop_jkt.is_none()
+            || !registration.token_binding.is_dpop_bound())
+    {
+        return Err(AuthorizationError::Invalid("bound_key"));
+    }
+
     let authorization_details = match params.get("authorization_details")? {
         None => AuthorizationDetails::default(),
         Some(raw) => {
@@ -368,6 +392,7 @@ pub fn validate(
     Ok(DeviceRequest {
         scopes,
         authorization_details,
+        dpop_jkt,
     })
 }
 
