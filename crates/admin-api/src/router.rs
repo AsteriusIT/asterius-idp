@@ -381,6 +381,7 @@ async fn route_standard(
         crate::USER_CREDENTIALS_READ_ID => context.read_credentials().await,
         crate::USER_PASSKEY_REMOVE_ID => context.remove_passkey().await,
         crate::USER_PASSWORD_RESET_ID => context.reset_password().await,
+        crate::USER_TOTP_RESET_ID => context.reset_totp().await,
         crate::USER_SESSIONS_LIST_ID => context.list_sessions().await,
         crate::USER_SESSION_REVOKE_ID => context.revoke_session().await,
         crate::USER_GRANTS_LIST_ID => context.list_grants().await,
@@ -3748,6 +3749,86 @@ impl Handling<'_> {
         .await;
 
         Ok(json_no_store(StatusCode::OK, &users::reset_document(reset)))
+    }
+
+    /// Administrator-assisted recovery for a lost TOTP authenticator.
+    async fn reset_totp(&self) -> Result<Response, AdminError> {
+        self.require_fresh_totp_recovery_admin().await?;
+        let id = self.user_in_path()?;
+        let user = self.load_user(id, crate::USER_TOTP_RESET_ID).await?;
+        let reset = self
+            .state
+            .backend
+            .users()
+            .reset_totp(&self.tenant.id, user.id, self.now)
+            .await
+            .map_err(|error| match error {
+                DomainError::NotFound => AdminError::NotFound,
+                other => AdminError::from_storage(crate::USER_TOTP_RESET_ID, &other),
+            })?;
+
+        self.record_about(
+            EventType::CREDENTIAL_CHANGED,
+            &user.id,
+            Detail::new()
+                .label("operation", crate::USER_TOTP_RESET_ID)
+                .label("credential_kind", "totp")
+                .flag("factor_removed", reset.factor_removed)
+                .number(
+                    "sessions_revoked",
+                    i64::try_from(reset.terminated.sessions_revoked).unwrap_or(-1),
+                )
+                .number(
+                    "logout_tokens_queued",
+                    i64::try_from(reset.terminated.logout_tokens_queued).unwrap_or(-1),
+                ),
+        )
+        .await;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({
+                "factor_removed": reset.factor_removed,
+                "sessions_revoked": reset.terminated.sessions_revoked,
+                "logout_tokens_queued": reset.terminated.logout_tokens_queued,
+            }),
+        ))
+    }
+
+    /// Re-checks the current persisted admin session immediately before reset.
+    /// A human must have authenticated in the past two minutes using a
+    /// user-verified passkey; automation and bootstrap-password sessions fail.
+    async fn require_fresh_totp_recovery_admin(&self) -> Result<(), AdminError> {
+        let Principal::Console {
+            tenant,
+            user,
+            session_id,
+            ..
+        } = self.principal
+        else {
+            return Err(AdminError::Forbidden);
+        };
+        let digest = SessionId::from_presented(session_id.clone()).digest();
+        let session = self
+            .state
+            .backend
+            .session(tenant, &digest)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::USER_TOTP_RESET_ID, &error))?
+            .ok_or(AdminError::StepUpRequired)?;
+        let fresh = session.authenticated_at <= self.now
+            && self.now - session.authenticated_at <= time::Duration::seconds(120);
+        if session.tenant != *tenant
+            || session.user != *user.as_uuid()
+            || !matches!(
+                session.status(self.now),
+                asterius_domain::SessionStatus::Active
+            )
+            || !fresh
+            || !asterius_domain::admin_access_policy::is_phishing_resistant(&session.amr)
+        {
+            return Err(AdminError::StepUpRequired);
+        }
+        Ok(())
     }
 
     /// `GET /users/{user_id}/sessions` — this account's browser sessions.

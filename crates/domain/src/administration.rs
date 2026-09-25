@@ -140,6 +140,15 @@ pub struct PasswordReset {
     pub terminated: Terminated,
 }
 
+/// What an administrator-assisted TOTP reset did.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TotpReset {
+    /// Whether an enrolled or pending factor was removed.
+    pub factor_removed: bool,
+    /// What ending the account's sessions did.
+    pub terminated: Terminated,
+}
+
 /// A new account, as the console asks for one.
 ///
 /// The password is an [`AcceptedPassword`] and therefore cannot be a value
@@ -416,4 +425,15 @@ pub trait UserAdministration: Debug + Send + Sync {
         user: UserId,
         now: OffsetDateTime,
     ) -> Result<PasswordReset, DomainError>;
+
+    /// Removes a lost TOTP factor and ends every live account session.
+    /// This never creates a replacement factor or changes other credentials.
+    async fn reset_totp(
+        &self,
+        _tenant: &TenantId,
+        _id: UserId,
+        _now: OffsetDateTime,
+    ) -> Result<TotpReset, DomainError> {
+        Err(DomainError::NotFound)
+    }
 }

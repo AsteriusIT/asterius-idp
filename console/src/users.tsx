@@ -149,6 +149,11 @@ export interface Reset extends Terminated {
   readonly recovery_sent: boolean;
 }
 
+/** What an administrator-assisted lost-TOTP reset did. */
+export interface TotpReset extends Terminated {
+  readonly factor_removed: boolean;
+}
+
 /**
  * What one account administers (`ast-3t8`).
  *
@@ -203,6 +208,14 @@ export function describeReset(result: Reset): string {
     ? 'a recovery link has been sent'
     : 'no recovery link could be sent — this account has no email address';
   return `${password}; ${mail}. ${describeTermination(result)}`;
+}
+
+/** A sentence describing a lost-factor reset. */
+export function describeTotpReset(result: TotpReset): string {
+  const factor = result.factor_removed
+    ? 'The authenticator was removed'
+    : 'No authenticator was enrolled';
+  return `${factor}. ${describeTermination(result)}`;
 }
 
 /** Whether this caller can change account claims and security settings. */
@@ -732,6 +745,7 @@ function Account({
         title="Profile"
         actions={
           mayManageAccount(session) ? (
+          <>
           <Button
             variant={disabled ? 'secondary' : 'danger'}
             disabled={busy}
@@ -854,6 +868,25 @@ function Account({
           >
             Force a password reset
           </Button>
+          <Button
+            variant="danger"
+            disabled={busy}
+            onClick={() =>
+              setConfirming({
+                title: 'Reset this authenticator?',
+                body: 'This requires a fresh sign-in with a user-verified passkey. The TOTP factor will be removed and every active session for this account will end. The user must set up a new authenticator after signing in.',
+                confirmLabel: 'Reset authenticator',
+                act: () =>
+                  run(
+                    () => mutate(`${base}/credentials/totp/reset`, 'POST', session),
+                    (value) => describeTotpReset(value as TotpReset),
+                  ),
+              })
+            }
+          >
+            Reset authenticator
+          </Button>
+          </>
           ) : undefined
         }
       >
