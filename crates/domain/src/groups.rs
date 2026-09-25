@@ -9,7 +9,7 @@ use thiserror::Error;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{DomainError, RoleName, RoleNameError, TenantId, UserId};
+use crate::{ClientId, DomainError, RoleName, RoleNameError, TenantId, UserId};
 
 /// Stable identity; renaming a group never changes it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -138,6 +138,40 @@ pub struct Group {
     pub updated_at: OffsetDateTime,
 }
 
+/// A client-owned SCIM view of a managed group and its direct members.
+#[derive(Debug, Clone)]
+pub struct ScimGroupState {
+    /// Canonical managed group.
+    pub group: Group,
+    /// Provisioning client's stable external identifier.
+    pub external_id: Option<String>,
+    /// Direct same-tenant members, ordered by stable user ID.
+    pub members: Vec<UserId>,
+}
+
+/// One versioned replacement of SCIM-managed group attributes and members.
+#[derive(Debug, Clone)]
+pub struct ScimGroupReplacement {
+    /// Tenant owning the group.
+    pub tenant: TenantId,
+    /// Client that owns the SCIM resource.
+    pub client: ClientId,
+    /// Stable group identity.
+    pub group: GroupId,
+    /// Required revision from If-Match.
+    pub expected_revision: i64,
+    /// Human-facing group name.
+    pub display_name: String,
+    /// Client-owned stable key.
+    pub external_id: Option<String>,
+    /// Complete desired direct membership.
+    pub members: Vec<UserId>,
+    /// Audit operation identifier.
+    pub operation: &'static str,
+    /// Change timestamp.
+    pub now: OffsetDateTime,
+}
+
 /// Tenant-scoped catalogue and direct memberships. No nested/dynamic groups.
 /// Every write is atomic. Listing limits must be 1–200; cursors are exclusive.
 /// Implementations reject stale revisions with `DomainError::Conflict` and
@@ -145,6 +179,60 @@ pub struct Group {
 /// cascades memberships; deleting a user leaves the group itself intact.
 #[async_trait::async_trait]
 pub trait GroupDirectory: Debug + Send + Sync {
+    /// Creates a client-owned SCIM group with its members atomically.
+    async fn scim_create(
+        &self,
+        _tenant: &TenantId,
+        _client: &ClientId,
+        _display_name: &str,
+        _external_id: Option<&str>,
+        _members: &[UserId],
+        _now: OffsetDateTime,
+    ) -> Result<ScimGroupState, DomainError> {
+        Err(DomainError::invalid("scim.group", "unsupported adapter"))
+    }
+
+    /// Gets a group only when this provisioning client owns it.
+    async fn scim_get(
+        &self,
+        _tenant: &TenantId,
+        _client: &ClientId,
+        _id: GroupId,
+    ) -> Result<Option<ScimGroupState>, DomainError> {
+        Err(DomainError::invalid("scim.group", "unsupported adapter"))
+    }
+
+    /// Lists a bounded offset page, optionally by exact displayName.
+    async fn scim_page(
+        &self,
+        _tenant: &TenantId,
+        _client: &ClientId,
+        _display_name: Option<&str>,
+        _offset: u32,
+        _limit: u16,
+    ) -> Result<(u64, Vec<ScimGroupState>), DomainError> {
+        Err(DomainError::invalid("scim.group", "unsupported adapter"))
+    }
+
+    /// Replaces a client-owned group only at the expected revision.
+    async fn scim_replace(
+        &self,
+        _replacement: ScimGroupReplacement,
+    ) -> Result<ScimGroupState, DomainError> {
+        Err(DomainError::invalid("scim.group", "unsupported adapter"))
+    }
+
+    /// Deletes only a client-owned group at the expected revision.
+    async fn scim_delete(
+        &self,
+        _tenant: &TenantId,
+        _client: &ClientId,
+        _id: GroupId,
+        _expected_revision: i64,
+        _now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        Err(DomainError::invalid("scim.group", "unsupported adapter"))
+    }
     /// Creates a distinct group; duplicate names conflict rather than overwrite.
     async fn create(
         &self,

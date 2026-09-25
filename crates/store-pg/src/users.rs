@@ -166,6 +166,57 @@ impl PgUserRepository {
             ));
         }
         let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
+        self.scim_write_identity(&mut tx, replacement).await?;
+        let ended_sessions = if replacement.status == UserStatus::Disabled || replacement.delete {
+            self.scim_revoke_credentials(&mut tx, replacement).await?
+        } else {
+            Vec::new()
+        };
+        let row: ScimRow = sqlx::query_as(
+            "select u.user_id, u.username, u.email, u.email_verified, u.status,
+                    u.claims, u.created_at, u.updated_at, u.scim_revision,
+                    e.external_id
+             from users u join scim_user_external_ids e
+               on e.tenant_id = u.tenant_id and e.user_id = u.user_id
+              and e.client_id = $3
+             where u.tenant_id = $1 and u.user_id = $2",
+        )
+        .bind(self.tenant.as_str())
+        .bind(replacement.user.as_uuid())
+        .bind(replacement.client.as_str())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(to_domain_error)?;
+        crate::audit::append(
+            &mut tx,
+            AuditEvent::new(
+                self.tenant.clone(),
+                EventType::USER_SCIM_PROFILE_CHANGED,
+                Outcome::Success,
+                Actor::Client(replacement.client.clone()),
+                OffsetDateTime::now_utc(),
+            )
+            .subject(replacement.user.to_string())
+            .detail(
+                Detail::new()
+                    .label("operation", replacement.operation)
+                    .flag("deprovisioned", replacement.delete)
+                    .flag(
+                        "active",
+                        !replacement.delete && replacement.status == UserStatus::Active,
+                    ),
+            ),
+        )
+        .await?;
+        tx.commit().await.map_err(to_domain_error)?;
+        Ok((row.into_state(&self.tenant)?, ended_sessions))
+    }
+
+    async fn scim_write_identity(
+        &self,
+        connection: &mut sqlx::PgConnection,
+        replacement: &ScimProfileReplacement,
+    ) -> Result<(), DomainError> {
         let tombstoned: bool = sqlx::query_scalar(
             "select exists(select 1 from scim_user_external_ids
              where tenant_id = $1 and client_id = $2 and user_id = $3
@@ -174,7 +225,7 @@ impl PgUserRepository {
         .bind(self.tenant.as_str())
         .bind(replacement.client.as_str())
         .bind(replacement.user.as_uuid())
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut *connection)
         .await
         .map_err(to_domain_error)?;
         if tombstoned {
@@ -198,7 +249,7 @@ impl PgUserRepository {
         } else {
             replacement.status.as_str()
         })
-        .execute(&mut *tx)
+        .execute(&mut *connection)
         .await
         .map_err(to_domain_error)?
         .rows_affected();
@@ -208,7 +259,7 @@ impl PgUserRepository {
             )
             .bind(self.tenant.as_str())
             .bind(replacement.user.as_uuid())
-            .fetch_one(&mut *tx)
+            .fetch_one(&mut *connection)
             .await
             .map_err(to_domain_error)?;
             return Err(if exists {
@@ -231,107 +282,125 @@ impl PgUserRepository {
         .bind(&replacement.external_id)
         .bind(replacement.delete)
         .bind(OffsetDateTime::now_utc())
-        .execute(&mut *tx)
+        .execute(&mut *connection)
         .await
         .map_err(to_domain_error)?;
-        let mut ended_sessions = Vec::new();
-        if replacement.status == UserStatus::Disabled || replacement.delete {
-            let now = OffsetDateTime::now_utc();
-            ended_sessions = sqlx::query_as(
-                "select session_id, public_sid from sessions
-                 where tenant_id = $1 and user_id = $2 and revoked_at is null
-                   and expires_at > $3 and idle_expires_at > $3",
-            )
-            .bind(self.tenant.as_str())
-            .bind(replacement.user.as_uuid())
-            .bind(now)
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(to_domain_error)?;
-            sqlx::query(
-                "update sessions set revoked_at = $3, revocation_reason = $4
-                 where tenant_id = $1 and user_id = $2 and revoked_at is null",
-            )
-            .bind(self.tenant.as_str())
-            .bind(replacement.user.as_uuid())
-            .bind(now)
-            .bind(asterius_domain::SessionRevocation::AccountClosed.as_str())
-            .execute(&mut *tx)
-            .await
-            .map_err(to_domain_error)?;
-            let grants: Vec<Uuid> = sqlx::query_scalar(
-                "update grants set revoked_at = $3, revocation_reason = $4
-                 where tenant_id = $1 and user_id = $2 and revoked_at is null
-                 returning grant_id",
-            )
-            .bind(self.tenant.as_str())
-            .bind(replacement.user.as_uuid())
-            .bind(now)
-            .bind(asterius_domain::RevocationReason::AdminRevoked.as_str())
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(to_domain_error)?;
-            sqlx::query(
-                "update refresh_tokens set revoked_at = $3
-                 where tenant_id = $1 and revoked_at is null
-                   and grant_id in (select grant_id from grants
-                                    where tenant_id = $1 and user_id = $2)",
-            )
-            .bind(self.tenant.as_str())
-            .bind(replacement.user.as_uuid())
-            .bind(now)
-            .execute(&mut *tx)
-            .await
-            .map_err(to_domain_error)?;
-            for grant in &grants {
-                let grant_id = grant.to_string();
-                crate::cutoffs::withdraw(
-                    &mut *tx,
-                    &self.tenant,
-                    crate::cutoffs::Principal::Grant(&grant_id),
-                    now,
-                )
-                .await?;
-            }
-        }
-        let row: ScimRow = sqlx::query_as(
-            "select u.user_id, u.username, u.email, u.email_verified, u.status,
-                    u.claims, u.created_at, u.updated_at, u.scim_revision,
-                    e.external_id
-             from users u join scim_user_external_ids e
-               on e.tenant_id = u.tenant_id and e.user_id = u.user_id
-              and e.client_id = $3
-             where u.tenant_id = $1 and u.user_id = $2",
+        Ok(())
+    }
+
+    async fn scim_revoke_credentials(
+        &self,
+        connection: &mut sqlx::PgConnection,
+        replacement: &ScimProfileReplacement,
+    ) -> Result<Vec<(String, String)>, DomainError> {
+        let now = OffsetDateTime::now_utc();
+        let ended_sessions: Vec<(String, String)> = sqlx::query_as(
+            "select session_id, public_sid from sessions
+             where tenant_id = $1 and user_id = $2 and revoked_at is null
+               and expires_at > $3 and idle_expires_at > $3",
         )
         .bind(self.tenant.as_str())
         .bind(replacement.user.as_uuid())
-        .bind(replacement.client.as_str())
-        .fetch_one(&mut *tx)
+        .bind(now)
+        .fetch_all(&mut *connection)
         .await
         .map_err(to_domain_error)?;
-        crate::audit::append(
-            &mut *tx,
-            AuditEvent::new(
-                self.tenant.clone(),
-                EventType::USER_SCIM_PROFILE_CHANGED,
-                Outcome::Success,
-                Actor::Client(replacement.client.clone()),
-                OffsetDateTime::now_utc(),
-            )
-            .subject(replacement.user.to_string())
-            .detail(
-                Detail::new()
-                    .label("operation", replacement.operation)
-                    .flag("deprovisioned", replacement.delete)
-                    .flag(
-                        "active",
-                        !replacement.delete && replacement.status == UserStatus::Active,
-                    ),
-            ),
+        sqlx::query(
+            "update sessions set revoked_at = $3, revocation_reason = $4
+             where tenant_id = $1 and user_id = $2 and revoked_at is null",
         )
-        .await?;
-        tx.commit().await.map_err(to_domain_error)?;
-        Ok((row.into_state(&self.tenant)?, ended_sessions))
+        .bind(self.tenant.as_str())
+        .bind(replacement.user.as_uuid())
+        .bind(now)
+        .bind(asterius_domain::SessionRevocation::AccountClosed.as_str())
+        .execute(&mut *connection)
+        .await
+        .map_err(to_domain_error)?;
+        let grants: Vec<Uuid> = sqlx::query_scalar(
+            "update grants set revoked_at = $3, revocation_reason = $4
+             where tenant_id = $1 and user_id = $2 and revoked_at is null
+             returning grant_id",
+        )
+        .bind(self.tenant.as_str())
+        .bind(replacement.user.as_uuid())
+        .bind(now)
+        .bind(asterius_domain::RevocationReason::AdminRevoked.as_str())
+        .fetch_all(&mut *connection)
+        .await
+        .map_err(to_domain_error)?;
+        sqlx::query(
+            "update refresh_tokens set revoked_at = $3
+             where tenant_id = $1 and revoked_at is null
+               and grant_id in (select grant_id from grants
+                                where tenant_id = $1 and user_id = $2)",
+        )
+        .bind(self.tenant.as_str())
+        .bind(replacement.user.as_uuid())
+        .bind(now)
+        .execute(&mut *connection)
+        .await
+        .map_err(to_domain_error)?;
+        for grant in &grants {
+            let grant_id = grant.to_string();
+            crate::cutoffs::withdraw(
+                &mut *connection,
+                &self.tenant,
+                crate::cutoffs::Principal::Grant(&grant_id),
+                now,
+            )
+            .await?;
+        }
+        if replacement.delete {
+            self.scim_clear_memberships(connection, replacement, now)
+                .await?;
+        }
+        Ok(ended_sessions)
+    }
+
+    async fn scim_clear_memberships(
+        &self,
+        connection: &mut sqlx::PgConnection,
+        replacement: &ScimProfileReplacement,
+        now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        // A deleted provisioning resource must not retain managed
+        // group authority if an operator later reactivates the same
+        // canonical account. Lock groups before membership rows, the
+        // same order a group replacement uses, then advance ETags.
+        let groups: Vec<Uuid> = sqlx::query_scalar(
+            "select group_id from managed_groups
+             where tenant_id = $1 and group_id in (
+                 select group_id from group_memberships
+                 where tenant_id = $1 and user_id = $2)
+             order by group_id for update",
+        )
+        .bind(self.tenant.as_str())
+        .bind(replacement.user.as_uuid())
+        .fetch_all(&mut *connection)
+        .await
+        .map_err(to_domain_error)?;
+        sqlx::query(
+            "delete from group_memberships
+             where tenant_id = $1 and user_id = $2",
+        )
+        .bind(self.tenant.as_str())
+        .bind(replacement.user.as_uuid())
+        .execute(&mut *connection)
+        .await
+        .map_err(to_domain_error)?;
+        if !groups.is_empty() {
+            sqlx::query(
+                "update managed_groups set revision = revision + 1, updated_at = $3
+                 where tenant_id = $1 and group_id = any($2::uuid[])",
+            )
+            .bind(self.tenant.as_str())
+            .bind(&groups)
+            .bind(now)
+            .execute(&mut *connection)
+            .await
+            .map_err(to_domain_error)?;
+        }
+        Ok(())
     }
 
     /// Bounded SCIM page with version and per-client external identifiers.
@@ -459,7 +528,7 @@ impl PgUserRepository {
         .await
         .map_err(to_domain_error)?;
         crate::audit::append(
-            &mut *tx,
+            &mut tx,
             AuditEvent::new(
                 self.tenant.clone(),
                 EventType::USER_CREATED,

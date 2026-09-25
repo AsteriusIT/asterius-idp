@@ -64,6 +64,7 @@ pub mod resource_servers;
 pub mod roles;
 pub mod router;
 pub mod scim;
+mod scim_groups;
 pub mod ssf;
 pub mod theme_image;
 pub mod throttle;
@@ -244,6 +245,18 @@ pub const SCIM_USER_REPLACE_ID: &str = "scim.users.replace";
 pub const SCIM_USER_DELETE_ID: &str = "scim.users.delete";
 /// Applies an atomic, conditional SCIM User patch.
 pub const SCIM_USER_PATCH_ID: &str = "scim.users.patch";
+/// The operation identifier of `GET /scim/v2/Groups`.
+pub const SCIM_GROUPS_LIST_ID: &str = "scim.groups.list";
+/// The operation identifier of `POST /scim/v2/Groups`.
+pub const SCIM_GROUP_CREATE_ID: &str = "scim.groups.create";
+/// The operation identifier of `GET /scim/v2/Groups/{group_id}`.
+pub const SCIM_GROUP_READ_ID: &str = "scim.groups.read";
+/// The operation identifier of `PUT /scim/v2/Groups/{group_id}`.
+pub const SCIM_GROUP_REPLACE_ID: &str = "scim.groups.replace";
+/// The operation identifier of `PATCH /scim/v2/Groups/{group_id}`.
+pub const SCIM_GROUP_PATCH_ID: &str = "scim.groups.patch";
+/// The operation identifier of `DELETE /scim/v2/Groups/{group_id}`.
+pub const SCIM_GROUP_DELETE_ID: &str = "scim.groups.delete";
 /// The `operationId` of `POST /groups`.
 pub const GROUP_CREATE_ID: &str = "groups.create";
 /// The `operationId` of `GET /groups/{group_id}`.
@@ -1568,8 +1581,56 @@ pub const SCIM_USER_PATCH: Operation = Operation::mutation(
     A::new(R::AutomationTenant, "admin.scim:write"),
     "Conditionally patches one tenant User",
 );
+/// Lists client-owned tenant groups.
+pub const SCIM_GROUPS_LIST: Operation = Operation::read(
+    SCIM_GROUPS_LIST_ID,
+    "/scim/v2/Groups",
+    S::Get,
+    A::new(R::AutomationTenant, "admin.scim:read"),
+    "One SCIM Group page",
+);
+/// Creates one client-owned tenant group.
+pub const SCIM_GROUP_CREATE: Operation = Operation::mutation(
+    SCIM_GROUP_CREATE_ID,
+    "/scim/v2/Groups",
+    M::Post,
+    A::new(R::AutomationTenant, "admin.scim:write"),
+    "Creates one SCIM Group",
+);
+/// Reads a client-owned tenant group.
+pub const SCIM_GROUP_READ: Operation = Operation::read(
+    SCIM_GROUP_READ_ID,
+    "/scim/v2/Groups/{group_id}",
+    S::Get,
+    A::new(R::AutomationTenant, "admin.scim:read"),
+    "One SCIM Group",
+);
+/// Replaces client-owned group metadata and membership conditionally.
+pub const SCIM_GROUP_REPLACE: Operation = Operation::mutation(
+    SCIM_GROUP_REPLACE_ID,
+    "/scim/v2/Groups/{group_id}",
+    M::Put,
+    A::new(R::AutomationTenant, "admin.scim:write"),
+    "Conditionally replaces one SCIM Group",
+);
+/// Patches approved client-owned group attributes conditionally.
+pub const SCIM_GROUP_PATCH: Operation = Operation::mutation(
+    SCIM_GROUP_PATCH_ID,
+    "/scim/v2/Groups/{group_id}",
+    M::Patch,
+    A::new(R::AutomationTenant, "admin.scim:write"),
+    "Conditionally patches one SCIM Group",
+);
+/// Deletes a client-owned group and its memberships conditionally.
+pub const SCIM_GROUP_DELETE: Operation = Operation::mutation(
+    SCIM_GROUP_DELETE_ID,
+    "/scim/v2/Groups/{group_id}",
+    M::Delete,
+    A::new(R::AutomationTenant, "admin.scim:write"),
+    "Conditionally deletes one SCIM Group",
+);
 
-static REGISTRY: [Operation; 109] = [
+static REGISTRY: [Operation; 115] = [
     SESSION_READ,
     SESSION_END,
     OVERVIEW_USERS,
@@ -1653,6 +1714,12 @@ static REGISTRY: [Operation; 109] = [
     SCIM_USER_REPLACE,
     SCIM_USER_DELETE,
     SCIM_USER_PATCH,
+    SCIM_GROUPS_LIST,
+    SCIM_GROUP_CREATE,
+    SCIM_GROUP_READ,
+    SCIM_GROUP_REPLACE,
+    SCIM_GROUP_PATCH,
+    SCIM_GROUP_DELETE,
     GROUP_CREATE,
     GROUP_READ,
     GROUP_UPDATE,

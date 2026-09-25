@@ -3,7 +3,8 @@
 use std::collections::BTreeSet;
 
 use asterius_domain::{
-    DomainError, Group, GroupDirectory, GroupId, GroupMetadata, TenantId, UserId,
+    Actor, AuditEvent, ClientId, Detail, DomainError, EventType, Group, GroupDirectory, GroupId,
+    GroupMetadata, Outcome, ScimGroupReplacement, ScimGroupState, TenantId, UserId,
 };
 use sqlx::{PgConnection, PgPool};
 use time::OffsetDateTime;
@@ -81,6 +82,173 @@ struct GroupRow {
     updated_at: OffsetDateTime,
 }
 
+#[derive(sqlx::FromRow)]
+struct ScimGroupRow {
+    tenant_id: String,
+    group_id: Uuid,
+    name: String,
+    display_name: String,
+    revision: i64,
+    created_at: OffsetDateTime,
+    updated_at: OffsetDateTime,
+    external_id: Option<String>,
+}
+
+impl ScimGroupRow {
+    fn into_state(self, members: Vec<UserId>) -> Result<ScimGroupState, DomainError> {
+        let external_id = self.external_id;
+        let group = GroupRow {
+            tenant_id: self.tenant_id,
+            group_id: self.group_id,
+            name: self.name,
+            display_name: self.display_name,
+            revision: self.revision,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        }
+        .try_into()?;
+        Ok(ScimGroupState {
+            group,
+            external_id,
+            members,
+        })
+    }
+}
+
+const SCIM_MAX_MEMBERS: usize = 1_000;
+
+async fn validate_scim_members(
+    connection: &mut PgConnection,
+    tenant: &TenantId,
+    client: &ClientId,
+    members: &[UserId],
+) -> Result<Vec<Uuid>, DomainError> {
+    if members.len() > SCIM_MAX_MEMBERS {
+        return Err(DomainError::invalid(
+            "members",
+            "too many SCIM group members",
+        ));
+    }
+    let ids = members
+        .iter()
+        .map(|user| *user.as_uuid())
+        .collect::<Vec<_>>();
+    let unique = ids.iter().copied().collect::<BTreeSet<_>>();
+    if unique.len() != ids.len() {
+        return Err(DomainError::invalid(
+            "members",
+            "duplicate SCIM group member",
+        ));
+    }
+    let visible: i64 = sqlx::query_scalar(
+        "select count(*) from users u left join scim_user_external_ids e
+           on e.tenant_id = u.tenant_id and e.user_id = u.user_id and e.client_id = $2
+         where u.tenant_id = $1 and u.user_id = any($3::uuid[])
+           and e.deleted_at is null",
+    )
+    .bind(tenant.as_str())
+    .bind(client.as_str())
+    .bind(&ids)
+    .fetch_one(connection)
+    .await
+    .map_err(to_domain_error)?;
+    if usize::try_from(visible).unwrap_or(usize::MAX) != ids.len() {
+        return Err(DomainError::invalid(
+            "members",
+            "member is outside this client's tenant view",
+        ));
+    }
+    Ok(ids)
+}
+
+async fn scim_role_free(
+    connection: &mut PgConnection,
+    tenant: &TenantId,
+    id: GroupId,
+) -> Result<(), DomainError> {
+    let has_roles: bool = sqlx::query_scalar(
+        "select exists(select 1 from group_tenant_roles
+                        where tenant_id = $1 and group_id = $2)
+             or exists(select 1 from group_client_roles
+                       where tenant_id = $1 and group_id = $2)",
+    )
+    .bind(tenant.as_str())
+    .bind(id.as_uuid())
+    .fetch_one(connection)
+    .await
+    .map_err(to_domain_error)?;
+    if has_roles {
+        return Err(DomainError::Conflict(
+            "SCIM group carries application roles".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+async fn scim_owned_locked(
+    connection: &mut PgConnection,
+    tenant: &TenantId,
+    client: &ClientId,
+    id: GroupId,
+    expected_revision: i64,
+) -> Result<String, DomainError> {
+    if expected_revision < 1 {
+        return Err(DomainError::invalid("revision", "must be positive"));
+    }
+    let row: Option<(String, i64)> = sqlx::query_as(
+        "select g.name, g.revision from managed_groups g
+         join scim_group_owners o on o.tenant_id = g.tenant_id and o.group_id = g.group_id
+         where g.tenant_id = $1 and g.group_id = $2 and o.client_id = $3
+         for update of g",
+    )
+    .bind(tenant.as_str())
+    .bind(id.as_uuid())
+    .bind(client.as_str())
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(to_domain_error)?;
+    let (name, revision) = row.ok_or(DomainError::NotFound)?;
+    if revision != expected_revision {
+        return Err(DomainError::Conflict("group revision changed".to_owned()));
+    }
+    scim_role_free(connection, tenant, id).await?;
+    Ok(name)
+}
+
+async fn scim_members(
+    pool: &PgPool,
+    tenant: &TenantId,
+    client: &ClientId,
+    id: GroupId,
+) -> Result<Vec<UserId>, DomainError> {
+    let rows: Vec<(Uuid, bool)> = sqlx::query_as(
+        "select m.user_id, e.deleted_at is null as visible
+         from group_memberships m left join scim_user_external_ids e
+           on e.tenant_id = m.tenant_id and e.user_id = m.user_id and e.client_id = $3
+         where m.tenant_id = $1 and m.group_id = $2
+         order by m.user_id limit $4",
+    )
+    .bind(tenant.as_str())
+    .bind(id.as_uuid())
+    .bind(client.as_str())
+    .bind(i64::try_from(SCIM_MAX_MEMBERS + 1).unwrap_or(i64::MAX))
+    .fetch_all(pool)
+    .await
+    .map_err(to_domain_error)?;
+    if rows.len() > SCIM_MAX_MEMBERS {
+        return Err(DomainError::invalid(
+            "members",
+            "SCIM group exceeds member limit",
+        ));
+    }
+    if rows.iter().any(|(_, visible)| !visible) {
+        return Err(DomainError::Conflict(
+            "SCIM group has an unavailable member".to_owned(),
+        ));
+    }
+    Ok(rows.into_iter().map(|(id, _)| UserId::new(id)).collect())
+}
+
 impl TryFrom<GroupRow> for Group {
     type Error = DomainError;
 
@@ -132,6 +300,298 @@ async fn lock_revision(
 
 #[async_trait::async_trait]
 impl GroupDirectory for PgGroups {
+    async fn scim_create(
+        &self,
+        tenant: &TenantId,
+        client: &ClientId,
+        display_name: &str,
+        external_id: Option<&str>,
+        members: &[UserId],
+        now: OffsetDateTime,
+    ) -> Result<ScimGroupState, DomainError> {
+        let id = GroupId::mint();
+        let name = format!("scim:{}", id.as_uuid());
+        let metadata = GroupMetadata::parse(&name, display_name)
+            .map_err(|error| DomainError::invalid("displayName", error.to_string()))?;
+        let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
+        let member_ids = validate_scim_members(&mut tx, tenant, client, members).await?;
+        let row: GroupRow = sqlx::query_as(
+            "insert into managed_groups
+             (tenant_id, group_id, name, display_name, created_at, updated_at)
+             values ($1, $2, $3, $4, $5, $5)
+             returning tenant_id, group_id, name, display_name, revision, created_at, updated_at",
+        )
+        .bind(tenant.as_str())
+        .bind(id.as_uuid())
+        .bind(metadata.name().as_str())
+        .bind(metadata.display_name())
+        .bind(now)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(to_domain_error)?;
+        sqlx::query(
+            "insert into scim_group_owners (tenant_id, client_id, group_id, external_id)
+             values ($1, $2, $3, $4)",
+        )
+        .bind(tenant.as_str())
+        .bind(client.as_str())
+        .bind(id.as_uuid())
+        .bind(external_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(to_domain_error)?;
+        sqlx::query(
+            "insert into group_memberships (tenant_id, group_id, user_id, created_at)
+             select $1, $2, supplied.user_id, $4
+             from unnest($3::uuid[]) as supplied(user_id)",
+        )
+        .bind(tenant.as_str())
+        .bind(id.as_uuid())
+        .bind(&member_ids)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(to_domain_error)?;
+        crate::audit::append(
+            &mut tx,
+            AuditEvent::new(
+                tenant.clone(),
+                EventType::ADMIN_CHANGED,
+                Outcome::Success,
+                Actor::Client(client.clone()),
+                now,
+            )
+            .subject(id.as_uuid().to_string())
+            .detail(
+                Detail::new()
+                    .label("operation", "scim.groups.create")
+                    .number(
+                        "member_count",
+                        i64::try_from(members.len()).unwrap_or(i64::MAX),
+                    ),
+            ),
+        )
+        .await?;
+        tx.commit().await.map_err(to_domain_error)?;
+        let mut members = members.to_vec();
+        members.sort_unstable();
+        Ok(ScimGroupState {
+            group: row.try_into()?,
+            external_id: external_id.map(str::to_owned),
+            members,
+        })
+    }
+
+    async fn scim_get(
+        &self,
+        tenant: &TenantId,
+        client: &ClientId,
+        id: GroupId,
+    ) -> Result<Option<ScimGroupState>, DomainError> {
+        let row: Option<ScimGroupRow> = sqlx::query_as(
+            "select g.tenant_id, g.group_id, g.name, g.display_name, g.revision,
+                    g.created_at, g.updated_at, o.external_id
+             from managed_groups g join scim_group_owners o
+               on o.tenant_id = g.tenant_id and o.group_id = g.group_id
+             where g.tenant_id = $1 and o.client_id = $2 and g.group_id = $3",
+        )
+        .bind(tenant.as_str())
+        .bind(client.as_str())
+        .bind(id.as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+        let Some(row) = row else { return Ok(None) };
+        let mut connection = self.pool.acquire().await.map_err(to_domain_error)?;
+        scim_role_free(&mut connection, tenant, id).await?;
+        drop(connection);
+        let members = scim_members(&self.pool, tenant, client, id).await?;
+        Ok(Some(row.into_state(members)?))
+    }
+
+    async fn scim_page(
+        &self,
+        tenant: &TenantId,
+        client: &ClientId,
+        display_name: Option<&str>,
+        offset: u32,
+        limit: u16,
+    ) -> Result<(u64, Vec<ScimGroupState>), DomainError> {
+        if offset > 10_000 || !(1..=200).contains(&limit) {
+            return Err(DomainError::invalid("page", "outside SCIM page bounds"));
+        }
+        let total: i64 = sqlx::query_scalar(
+            "select count(*) from managed_groups g join scim_group_owners o
+               on o.tenant_id = g.tenant_id and o.group_id = g.group_id
+             where g.tenant_id = $1 and o.client_id = $2
+               and ($3::text is null or g.display_name = $3)",
+        )
+        .bind(tenant.as_str())
+        .bind(client.as_str())
+        .bind(display_name)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+        let rows: Vec<ScimGroupRow> = sqlx::query_as(
+            "select g.tenant_id, g.group_id, g.name, g.display_name, g.revision,
+                    g.created_at, g.updated_at, o.external_id
+             from managed_groups g join scim_group_owners o
+               on o.tenant_id = g.tenant_id and o.group_id = g.group_id
+             where g.tenant_id = $1 and o.client_id = $2
+               and ($3::text is null or g.display_name = $3)
+             order by g.group_id offset $4 limit $5",
+        )
+        .bind(tenant.as_str())
+        .bind(client.as_str())
+        .bind(display_name)
+        .bind(i64::from(offset))
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+        let mut states = Vec::with_capacity(rows.len());
+        for row in rows {
+            let id = GroupId::from_uuid(row.group_id);
+            let mut connection = self.pool.acquire().await.map_err(to_domain_error)?;
+            scim_role_free(&mut connection, tenant, id).await?;
+            drop(connection);
+            states.push(row.into_state(scim_members(&self.pool, tenant, client, id).await?)?);
+        }
+        Ok((u64::try_from(total).unwrap_or(0), states))
+    }
+
+    async fn scim_replace(
+        &self,
+        replacement: ScimGroupReplacement,
+    ) -> Result<ScimGroupState, DomainError> {
+        let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
+        let name = scim_owned_locked(
+            &mut tx,
+            &replacement.tenant,
+            &replacement.client,
+            replacement.group,
+            replacement.expected_revision,
+        )
+        .await?;
+        let metadata = GroupMetadata::parse(&name, &replacement.display_name)
+            .map_err(|error| DomainError::invalid("displayName", error.to_string()))?;
+        let member_ids = validate_scim_members(
+            &mut tx,
+            &replacement.tenant,
+            &replacement.client,
+            &replacement.members,
+        )
+        .await?;
+        let row: GroupRow = sqlx::query_as(
+            "update managed_groups set display_name = $3,
+                    revision = revision + 1, updated_at = $4
+             where tenant_id = $1 and group_id = $2
+             returning tenant_id, group_id, name, display_name, revision, created_at, updated_at",
+        )
+        .bind(replacement.tenant.as_str())
+        .bind(replacement.group.as_uuid())
+        .bind(metadata.display_name())
+        .bind(replacement.now)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(to_domain_error)?;
+        sqlx::query(
+            "update scim_group_owners set external_id = $4
+             where tenant_id = $1 and client_id = $2 and group_id = $3",
+        )
+        .bind(replacement.tenant.as_str())
+        .bind(replacement.client.as_str())
+        .bind(replacement.group.as_uuid())
+        .bind(&replacement.external_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(to_domain_error)?;
+        sqlx::query(
+            "delete from group_memberships where tenant_id = $1 and group_id = $2
+               and not (user_id = any($3::uuid[]))",
+        )
+        .bind(replacement.tenant.as_str())
+        .bind(replacement.group.as_uuid())
+        .bind(&member_ids)
+        .execute(&mut *tx)
+        .await
+        .map_err(to_domain_error)?;
+        sqlx::query(
+            "insert into group_memberships (tenant_id, group_id, user_id, created_at)
+             select $1, $2, supplied.user_id, $4
+             from unnest($3::uuid[]) as supplied(user_id)
+             on conflict (tenant_id, group_id, user_id) do nothing",
+        )
+        .bind(replacement.tenant.as_str())
+        .bind(replacement.group.as_uuid())
+        .bind(&member_ids)
+        .bind(replacement.now)
+        .execute(&mut *tx)
+        .await
+        .map_err(to_domain_error)?;
+        crate::audit::append(
+            &mut tx,
+            AuditEvent::new(
+                replacement.tenant.clone(),
+                EventType::ADMIN_CHANGED,
+                Outcome::Success,
+                Actor::Client(replacement.client.clone()),
+                replacement.now,
+            )
+            .subject(replacement.group.as_uuid().to_string())
+            .detail(
+                Detail::new()
+                    .label("operation", replacement.operation)
+                    .number(
+                        "member_count",
+                        i64::try_from(member_ids.len()).unwrap_or(i64::MAX),
+                    ),
+            ),
+        )
+        .await?;
+        tx.commit().await.map_err(to_domain_error)?;
+        let mut members = replacement.members;
+        members.sort_unstable();
+        Ok(ScimGroupState {
+            group: row.try_into()?,
+            external_id: replacement.external_id,
+            members,
+        })
+    }
+
+    async fn scim_delete(
+        &self,
+        tenant: &TenantId,
+        client: &ClientId,
+        id: GroupId,
+        expected_revision: i64,
+        now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
+        scim_owned_locked(&mut tx, tenant, client, id, expected_revision).await?;
+        sqlx::query("delete from managed_groups where tenant_id = $1 and group_id = $2")
+            .bind(tenant.as_str())
+            .bind(id.as_uuid())
+            .execute(&mut *tx)
+            .await
+            .map_err(to_domain_error)?;
+        crate::audit::append(
+            &mut tx,
+            AuditEvent::new(
+                tenant.clone(),
+                EventType::ADMIN_CHANGED,
+                Outcome::Success,
+                Actor::Client(client.clone()),
+                now,
+            )
+            .subject(id.as_uuid().to_string())
+            .detail(Detail::new().label("operation", "scim.groups.delete")),
+        )
+        .await?;
+        tx.commit().await.map_err(to_domain_error)?;
+        Ok(())
+    }
+
     async fn create(
         &self,
         tenant: &TenantId,
