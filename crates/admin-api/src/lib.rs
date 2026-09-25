@@ -210,6 +210,8 @@ pub const USER_CREDENTIALS_READ_ID: &str = "users.credentials.read";
 pub const USER_PASSKEY_REMOVE_ID: &str = "users.credentials.passkey.remove";
 /// The `operationId` of `POST /users/{user_id}/credentials/password/reset`.
 pub const USER_PASSWORD_RESET_ID: &str = "users.credentials.password.reset";
+/// The `operationId` of `POST /users/{user_id}/credentials/totp/reset`.
+pub const USER_TOTP_RESET_ID: &str = "users.credentials.totp.reset";
 /// The `operationId` of `GET /users/{user_id}/sessions`.
 pub const USER_SESSIONS_LIST_ID: &str = "users.sessions.list";
 /// The `operationId` of `DELETE /users/{user_id}/sessions/{sid}`.
@@ -1096,6 +1098,16 @@ pub const USER_PASSWORD_RESET: Operation = Operation::mutation(
     "Invalidates an account's password and mails it a recovery link",
 );
 
+/// Removes a lost TOTP factor and revokes all of the account's live sessions.
+/// Console callers need a fresh, phishing-resistant human admin session.
+pub const USER_TOTP_RESET: Operation = Operation::mutation(
+    USER_TOTP_RESET_ID,
+    "/users/{user_id}/credentials/totp/reset",
+    M::Post,
+    A::new(R::Tenant, "admin.users:write"),
+    "Removes a lost TOTP factor and revokes the account's live sessions",
+);
+
 /// One account's browser sessions.
 ///
 /// A scope of its own — `admin.sessions:read` rather than `admin.users:read` —
@@ -1557,7 +1569,7 @@ pub const SCIM_USER_PATCH: Operation = Operation::mutation(
     "Conditionally patches one tenant User",
 );
 
-static REGISTRY: [Operation; 108] = [
+static REGISTRY: [Operation; 109] = [
     SESSION_READ,
     SESSION_END,
     OVERVIEW_USERS,
@@ -1624,6 +1636,7 @@ static REGISTRY: [Operation; 108] = [
     USER_CREDENTIALS_READ,
     USER_PASSKEY_REMOVE,
     USER_PASSWORD_RESET,
+    USER_TOTP_RESET,
     USER_SESSIONS_LIST,
     USER_SESSION_REVOKE,
     USER_GRANTS_LIST,
