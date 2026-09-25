@@ -188,13 +188,33 @@ fn operation_object(operation: &Operation) -> Value {
             "schema": {"type": "string", "maxLength": asterius_domain::GroupMetadata::MAX_DISPLAY_BYTES},
         }));
     }
+    if matches!(
+        operation.id(),
+        crate::SCIM_USERS_LIST_ID | crate::SCIM_GROUPS_LIST_ID
+    ) {
+        parameters.extend([
+            json!({"name":"startIndex","in":"query","required":false,
+                "description":"One-based index; at most 10001.",
+                "schema":{"type":"integer","minimum":1,"maximum":10001,"default":1}}),
+            json!({"name":"count","in":"query","required":false,
+                "description":"Requested results; zero returns only totalResults.",
+                "schema":{"type":"integer","minimum":0,"maximum":200,"default":100}}),
+            json!({"name":"filter","in":"query","required":false,
+                "description":"Only one equality filter is supported: userName for Users, displayName for Groups.",
+                "schema":{"type":"string"}}),
+        ]);
+    }
 
     let mut object = json!({
         "operationId": operation.id(),
         "summary": operation.summary(),
         "x-asterius-reach": reach_name(operation.authority().reach()),
         "x-asterius-scope": operation.authority().scope(),
-        "security": [{ "consoleSession": [] }, { "adminToken": [operation.authority().scope()] }],
+        "security": if crate::scim::is_route(operation.id()) {
+            json!([{ "adminToken": [operation.authority().scope()] }])
+        } else {
+            json!([{ "consoleSession": [] }, { "adminToken": [operation.authority().scope()] }])
+        },
         "responses": responses(operation),
     });
 
@@ -464,6 +484,15 @@ fn idempotency_parameter() -> Value {
 }
 
 fn responses(operation: &Operation) -> Value {
+    if operation.id() == crate::SCIM_BULK_ID {
+        return json!({
+            "401": error_response("Provisioning authentication is required."),
+            "403": error_response("The token lacks admin.scim:write."),
+            "429": error_response("A rate limit was reached."),
+            "501": {"description": "SCIM Bulk is unsupported.",
+                "content": {"application/scim+json": {"schema": {"type": "object"}}}},
+        });
+    }
     // A `POST` that creates answers 201; a probe answers 200, because it
     // created nothing and has no `Location` to give (`ast-f7m.9`).
     let success = if operation.id() != crate::INVITATION_RESEND_ID

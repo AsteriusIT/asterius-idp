@@ -330,6 +330,7 @@ async fn route_standard(
         crate::SCIM_GROUP_REPLACE_ID => context.scim_replace_group(body).await,
         crate::SCIM_GROUP_PATCH_ID => context.scim_patch_group(body).await,
         crate::SCIM_GROUP_DELETE_ID => context.scim_delete_group().await,
+        crate::SCIM_BULK_ID => Err(AdminError::ScimUnsupported("SCIM Bulk is not supported")),
         crate::TENANTS_LIST_ID => context.list_tenants().await,
         crate::TENANT_READ_ID => context.read_tenant().await,
         crate::TENANT_CREATE_ID => context.create_tenant(body).await,
@@ -758,41 +759,12 @@ impl Handling<'_> {
     }
 
     async fn scim_list_groups(&self) -> Result<Response, AdminError> {
-        let mut start_index = None;
-        let mut count = None;
-        let mut filter = None;
-        for (name, value) in url::form_urlencoded::parse(self.query.as_bytes()) {
-            match name.as_ref() {
-                "startIndex" if start_index.is_none() => {
-                    start_index =
-                        Some(value.parse::<u32>().map_err(|_| {
-                            AdminError::Invalid("invalid SCIM startIndex".to_owned())
-                        })?);
-                }
-                "count" if count.is_none() => {
-                    count = Some(
-                        value
-                            .parse::<u16>()
-                            .map_err(|_| AdminError::Invalid("invalid SCIM count".to_owned()))?,
-                    );
-                }
-                "filter" if filter.is_none() => {
-                    filter = Some(scim_groups::display_name_eq_filter(&value)?);
-                }
-                _ => {
-                    return Err(AdminError::Invalid(
-                        "unsupported or repeated SCIM query parameter".to_owned(),
-                    ));
-                }
-            }
-        }
-        let start_index = start_index.unwrap_or(1);
-        let count = count.unwrap_or(100);
-        if !(1..=10_001).contains(&start_index) || count > 200 {
-            return Err(AdminError::Invalid(
-                "SCIM page is outside supported bounds".to_owned(),
-            ));
-        }
+        let page = scim::IndexPageQuery::parse(&self.query)?;
+        let filter = page
+            .filter
+            .as_deref()
+            .map(scim_groups::display_name_eq_filter)
+            .transpose()?;
         let (total, mut states) = self
             .state
             .backend
@@ -801,15 +773,15 @@ impl Handling<'_> {
                 &self.tenant.id,
                 &self.scim_client()?,
                 filter.as_deref(),
-                start_index - 1,
-                count.max(1),
+                page.start_index - 1,
+                page.count.max(1),
             )
             .await
             .map_err(|error| scim_group_error(crate::SCIM_GROUPS_LIST_ID, error))?;
-        if count == 0 {
+        if page.count == 0 {
             states.clear();
         }
-        scim_groups::groups_list_response(&states, total, start_index, &self.scim_base())
+        scim_groups::groups_list_response(&states, total, page.start_index, &self.scim_base())
     }
 
     async fn scim_replace_group(&self, body: axum::body::Body) -> Result<Response, AdminError> {
@@ -913,41 +885,12 @@ impl Handling<'_> {
     }
 
     async fn scim_list_users(&self) -> Result<Response, AdminError> {
-        let mut start_index = None;
-        let mut count = None;
-        let mut filter = None;
-        for (name, value) in url::form_urlencoded::parse(self.query.as_bytes()) {
-            match name.as_ref() {
-                "startIndex" if start_index.is_none() => {
-                    start_index =
-                        Some(value.parse::<u32>().map_err(|_| {
-                            AdminError::Invalid("invalid SCIM startIndex".to_owned())
-                        })?);
-                }
-                "count" if count.is_none() => {
-                    count = Some(
-                        value
-                            .parse::<u16>()
-                            .map_err(|_| AdminError::Invalid("invalid SCIM count".to_owned()))?,
-                    );
-                }
-                "filter" if filter.is_none() => {
-                    filter = Some(scim::username_eq_filter(&value)?);
-                }
-                _ => {
-                    return Err(AdminError::Invalid(
-                        "unsupported or repeated SCIM query parameter".to_owned(),
-                    ));
-                }
-            }
-        }
-        let start_index = start_index.unwrap_or(1);
-        let count = count.unwrap_or(100);
-        if !(1..=10_001).contains(&start_index) || count > 200 {
-            return Err(AdminError::Invalid(
-                "SCIM page is outside supported bounds".to_owned(),
-            ));
-        }
+        let page = scim::IndexPageQuery::parse(&self.query)?;
+        let filter = page
+            .filter
+            .as_deref()
+            .map(scim::username_eq_filter)
+            .transpose()?;
         let (total, mut users) = if let Some(username) = filter {
             let matched = self
                 .state
@@ -967,7 +910,7 @@ impl Handling<'_> {
                 None => None,
             };
             let total = u64::from(state.is_some());
-            let users = if start_index == 1 {
+            let users = if page.start_index == 1 {
                 state.into_iter().collect()
             } else {
                 Vec::new()
@@ -980,19 +923,19 @@ impl Handling<'_> {
                 .scim_page(
                     &self.tenant.id,
                     &self.scim_client()?,
-                    start_index - 1,
-                    count.max(1),
+                    page.start_index - 1,
+                    page.count.max(1),
                 )
                 .await
                 .map_err(|error| AdminError::from_storage(crate::SCIM_USERS_LIST_ID, &error))?
         };
-        if count == 0 {
+        if page.count == 0 {
             users.clear();
         }
         scim::users_list_response(
             &users,
             total,
-            start_index,
+            page.start_index,
             &format!(
                 "{}{}/scim/v2",
                 self.tenant.issuer.as_str(),
