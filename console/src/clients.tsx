@@ -215,6 +215,12 @@ type ResourceLoad =
   | { readonly kind: 'ready'; readonly rows: readonly ResourceServerSummary[] }
   | { readonly kind: 'failed'; readonly message: string };
 
+type HealthReport = {
+  readonly request_id: string;
+  readonly audit_event: string;
+  readonly checks: readonly { readonly name: string; readonly status: 'pass' | 'fail'; readonly message: string }[];
+};
+
 /** Which client the editor is on, if any. */
 type Editing =
   | { readonly kind: 'none' }
@@ -236,6 +242,9 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
   const [discoveryError, setDiscoveryError] = useState<string | null>(null);
   const [resourceLoad, setResourceLoad] = useState<ResourceLoad>({ kind: 'idle' });
   const [selectedResources, setSelectedResources] = useState<readonly string[]>([]);
+  const [health, setHealth] = useState<HealthReport | null>(null);
+  const [healthError, setHealthError] = useState<string | null>(null);
+  const [healthBusy, setHealthBusy] = useState(false);
   const canWrite = session.scopes.includes('admin.clients:write');
   const canReadResources = session.scopes.includes('admin.resource_servers:read');
   useEffect(() => {
@@ -337,6 +346,19 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
     setResourceLoad({ kind: 'idle' });
     setSelectedResources([]);
     setIssuedSecret(null);
+    setHealth(null);
+    setHealthError(null);
+  }, []);
+
+  const checkHealth = useCallback((clientId: string) => {
+    const requestId = crypto.randomUUID();
+    setHealthBusy(true);
+    setHealthError(null);
+    setHealth(null);
+    read(`${clientPath(clientId)}/health`, { 'X-Request-ID': requestId }).then(
+      (body) => setHealth(body as HealthReport),
+      (error: unknown) => setHealthError(error instanceof Error ? error.message : 'The integration check could not be completed.'),
+    ).finally(() => setHealthBusy(false));
   }, []);
 
   const saveResources = useCallback(
@@ -480,6 +502,20 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
           </dl>
           {draft.token_endpoint_auth_method === 'private_key_jwt' && <p className="muted">Use the issuer as the assertion audience, the client ID as <code>iss</code> and <code>sub</code>, and a fresh <code>jti</code> for every request.</p>}
           {!profile.fapiBadge && <Message tone="info">This application is a non-FAPI compatibility exception. Review its authentication and sender constraints before production use.</Message>}
+          <div className="application-health">
+            <Button disabled={healthBusy || busy} onClick={() => checkHealth(editing.document.client_id)}>{healthBusy ? 'Checking…' : 'Run integration check'}</Button>
+            <p className="muted">Read-only checks. No token is issued and no private credential is requested. The registered JWKS URL is fetched through the server’s guarded outbound path.</p>
+            {healthError !== null && <Message tone="error">{healthError}</Message>}
+            {health !== null && <>
+              <ul className="application-health-checks">
+                {health.checks.map((check) => <li key={check.name}>
+                  <Badge tone={check.status === 'pass' ? 'ok' : 'bad'}>{check.status}</Badge>
+                  <span><strong>{check.name.replaceAll('_', ' ')}</strong><small>{check.message}</small></span>
+                </li>)}
+              </ul>
+              <p>Request ID <code>{health.request_id}</code> <Button onClick={() => void navigator.clipboard.writeText(health.request_id)}>Copy ID</Button> · audit event <code>{health.audit_event}</code>{session.scopes.includes('admin.audit:read') ? <> in <a href={hrefOf('audit')}>Audit</a>.</> : ' (viewing the event requires admin.audit:read).'}</p>
+            </>}
+          </div>
         </Panel>}
         {discoveryError !== null && <Message tone="error">{discoveryError}</Message>}
         {!canWrite && <Message tone="info">Read-only access. Registering and saving applications requires admin.clients:write.</Message>}

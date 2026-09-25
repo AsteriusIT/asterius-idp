@@ -123,6 +123,8 @@ pub const THEME_RESET_ID: &str = "theme.reset";
 pub const CLIENTS_LIST_ID: &str = "clients.list";
 /// The `operationId` of `GET /clients/{client_id}`.
 pub const CLIENT_READ_ID: &str = "clients.read";
+/// The `operationId` of `GET /clients/{client_id}/health`.
+pub const CLIENT_HEALTH_ID: &str = "clients.health";
 /// The `operationId` of `POST /clients`.
 pub const CLIENT_CREATE_ID: &str = "clients.create";
 /// The `operationId` of `PUT /clients/{client_id}`.
@@ -470,6 +472,15 @@ pub const CLIENT_READ: Operation = Operation::read(
     S::Get,
     A::new(R::Tenant, "admin.clients:read"),
     "Reads one client's registration",
+);
+
+/// Read-only, rate-limited integration checks for one registered client.
+pub const CLIENT_HEALTH: Operation = Operation::read(
+    CLIENT_HEALTH_ID,
+    "/clients/{client_id}/health",
+    S::Get,
+    A::new(R::Tenant, "admin.clients:read"),
+    "Checks a registered client's integration configuration without issuing tokens",
 );
 
 /// Registers a client from the console, through the RFC 7591 validator.
@@ -1406,7 +1417,7 @@ pub const GROUP_CLIENT_APP_ROLE_WITHDRAW: Operation = Operation::mutation(
 /// A `static` rather than a function building a `Vec`, so that the router, the
 /// document and the tests are looking at one object and cannot be handed
 /// different copies of it.
-static REGISTRY: [Operation; 94] = [
+static REGISTRY: [Operation; 95] = [
     SESSION_READ,
     SESSION_END,
     OVERVIEW_USERS,
@@ -1428,6 +1439,7 @@ static REGISTRY: [Operation; 94] = [
     THEME_RESET,
     CLIENTS_LIST,
     CLIENT_READ,
+    CLIENT_HEALTH,
     CLIENT_CREATE,
     CLIENT_UPDATE,
     CLIENT_RESOURCES_UPDATE,

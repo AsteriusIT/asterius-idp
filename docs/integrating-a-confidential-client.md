@@ -333,6 +333,38 @@ The `reason` values, which are stable identifiers you can alert on:
 Every step in a code flow here is PKCE-protected: PAR does not replace
 `code_challenge`.
 
+## 8. Preflight a saved registration
+
+From **Applications → a saved client**, select **Run integration check** before
+trying the flow above. The tenant-scoped, rate-limited check reads the saved
+registration, fetches the tenant discovery document and its advertised JWKS,
+and fetches a registered client `jwks_uri` through the server's guarded
+outbound path. It compares discovery's `issuer` byte-for-byte with the tenant
+issuer and checks public JWK metadata, callback registration, client
+authentication method and sender constraint. It does not send a request to a
+callback URL, mint tokens, or request a private key or client secret. Inline
+JWKS are inspected as stored; a remote JWKS that resolves to a private,
+loopback or link-local address is refused by the existing SSRF guard.
+
+Each result gives a safe repair hint. Common failures:
+
+| Check | What to do |
+| --- | --- |
+| `discovery_issuer` | Make the public issuer reachable through the reverse proxy and ensure discovery reports the exact tenant issuer. Use the advertised issuer in client assertions. |
+| `issuer_jwks` | Check the discovery `jwks_uri`, TLS and public key metadata; each key needs a distinct `kid` and a `kty`, and the set must contain public key material only. |
+| `callbacks` | Register the exact callback the application sends, including case and path. Web callbacks use HTTPS; native callbacks may use loopback HTTP. The check does not call that URL. |
+| `client_authentication` | Use `private_key_jwt` or the registered mTLS method for FAPI; keep any server-issued OIDC compatibility secret in a secret manager. |
+| `sender_constraint` | Use DPoP or certificate binding for FAPI. A bearer result is only valid for an explicitly selected standard OIDC client. |
+| `public_jwks` | For `jwks_uri`, publish a reachable public HTTPS JWK Set. For inline keys, repair the saved public JWK Set. The response never includes key values or the URL. |
+
+Copy the **Request ID** from the result when handing the issue to an operator.
+The check writes a `client.read` audit event with that ID and the client ID;
+the link opens the tenant's Audit screen. Failures in remote fetches use fixed
+messages and do not return the URL, query, response body or private material.
+The normal confidential-client flow remains §7: preflight diagnoses saved
+configuration, while the real PAR, authorization-code and token requests prove
+the application's own assertion and DPoP implementation.
+
 ## See also
 
 * `docs/deployment/tls-and-proxy.md` — what the issuer must be behind a proxy,

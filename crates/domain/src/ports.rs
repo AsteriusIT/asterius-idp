@@ -887,6 +887,18 @@ pub trait ClientAdministration: Debug + Send + Sync {
         client_id: &ClientId,
     ) -> Result<Option<Client>, DomainError>;
 
+    /// Runs a read-only integration check for one client owned by `tenant`.
+    /// Implementations must use the deployment's guarded outbound fetcher and
+    /// must never return credentials or private key material.
+    async fn integration_health(
+        &self,
+        _tenant: &TenantId,
+        _client_id: &ClientId,
+        _issuer: &str,
+    ) -> Result<serde_json::Value, DomainError> {
+        Err(DomainError::NotFound)
+    }
+
     /// Stores a client an administrator created, and returns it **as stored**.
     ///
     /// No registration access token is issued and none is stored: OIDC
