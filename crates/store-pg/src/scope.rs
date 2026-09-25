@@ -151,6 +151,13 @@ impl<'a> TenantScope<'a> {
         PgPasskeyRepository::new(self.pool.clone(), self.tenant.clone())
     }
 
+    /// TOTP enrollment credentials for this tenant. Seeds are sealed with the
+    /// deployment KEK and bound to both this tenant and the user row.
+    #[must_use]
+    pub fn totp_credentials(&self, kek: Arc<dyn Kek>) -> crate::PgTotpCredentials {
+        crate::PgTotpCredentials::new(self.pool.clone(), self.tenant.clone(), kek)
+    }
+
     /// The account-recovery tokens for this tenant (`ast-2vk.10`).
     #[must_use]
     pub fn recovery_tokens(&self) -> crate::PgRecoveryTokens {
