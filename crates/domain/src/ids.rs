@@ -108,6 +108,104 @@ string_id!(
     ClientId
 );
 
+/// A Client ID Metadata Document identifier (an absolute HTTPS document URL).
+///
+/// The original spelling is retained: CIMD identity comparisons are exact
+/// string comparisons, and URL normalization must not merge two identifiers.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct CimdClientId(String);
+
+impl CimdClientId {
+    /// Parses a URL suitable for use as a CIMD `client_id`.
+    ///
+    /// This intentionally adopts the draft's stricter MUST requirements and
+    /// rejects query strings as well. It also rejects spellings that `Url`
+    /// would normalize before fetching, so the fetched URL remains the exact
+    /// identity being compared in metadata.
+    pub fn parse(raw: &str) -> Result<Self, CimdClientIdError> {
+        if raw.is_empty() || raw.len() > 2048 {
+            return Err(CimdClientIdError::Length);
+        }
+        let url = url::Url::parse(raw).map_err(|_| CimdClientIdError::Url)?;
+        if url.scheme() != "https" {
+            return Err(CimdClientIdError::HttpsRequired);
+        }
+        if url.host_str().is_none_or(str::is_empty)
+            || !url.username().is_empty()
+            || url.password().is_some()
+        {
+            return Err(CimdClientIdError::Authority);
+        }
+        if url.fragment().is_some() {
+            return Err(CimdClientIdError::Fragment);
+        }
+        if url.query().is_some() {
+            return Err(CimdClientIdError::Query);
+        }
+        let path = raw
+            .split_once("//")
+            .map(|(_, rest)| rest)
+            .and_then(|rest| rest.find('/').map(|index| &rest[index..]))
+            .ok_or(CimdClientIdError::PathRequired)?;
+        let segments = path.split('/').skip(1);
+        for segment in segments {
+            let decoded_dots = segment.replace("%2e", ".").replace("%2E", ".");
+            if decoded_dots == "." || decoded_dots == ".." {
+                return Err(CimdClientIdError::DotSegment);
+            }
+        }
+        if url.path() == "/" || url.as_str() != raw {
+            return Err(CimdClientIdError::NonCanonical);
+        }
+        Ok(Self(raw.to_owned()))
+    }
+
+    /// Borrows the exact identifier spelling.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for CimdClientId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Why a CIMD URL identifier was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum CimdClientIdError {
+    /// The identifier is empty or too long.
+    #[error("client_id length is invalid")]
+    Length,
+    /// The identifier is not an absolute URL.
+    #[error("client_id must be an absolute URL")]
+    Url,
+    /// The identifier does not use HTTPS.
+    #[error("client_id must use HTTPS")]
+    HttpsRequired,
+    /// The URL has no host or contains user information.
+    #[error("client_id authority is invalid")]
+    Authority,
+    /// The URL has a fragment.
+    #[error("client_id must not contain a fragment")]
+    Fragment,
+    /// Query strings are refused for CIMD identifiers.
+    #[error("client_id must not contain a query")]
+    Query,
+    /// The URL has no non-root path.
+    #[error("client_id must contain a path")]
+    PathRequired,
+    /// A dot or dot-dot path component is forbidden.
+    #[error("client_id must not contain dot path components")]
+    DotSegment,
+    /// URL parser normalization would change the identifier spelling.
+    #[error("client_id URL spelling is not canonical")]
+    NonCanonical,
+}
+
 impl ClientId {
     /// The prefix every `client_id` this server mints begins with.
     ///

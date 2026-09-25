@@ -295,6 +295,56 @@ pub trait ClientUrlFetcher: Debug + Send + Sync {
     async fn fetch(&self, url: &str) -> Result<Vec<u8>, DomainError>;
 }
 
+/// A successfully fetched CIMD document and the server's bounded freshness
+/// hint. The body contains untrusted JSON and still requires full validation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchedClientMetadataDocument {
+    /// Raw JSON bytes, capped by the network adapter before allocation grows.
+    pub body: Vec<u8>,
+    /// `Cache-Control: max-age` in seconds, if present. Callers must apply
+    /// their own upper and lower bounds; absent or invalid means no freshness.
+    pub max_age_seconds: Option<u64>,
+}
+
+/// Fetches a Client ID Metadata Document through the server's guarded
+/// outbound-request boundary.
+#[async_trait::async_trait]
+pub trait ClientMetadataDocumentFetcher: Debug + Send + Sync {
+    /// Fetches exactly the supplied client ID URL without following redirects.
+    async fn fetch_document(
+        &self,
+        client_id: &crate::CimdClientId,
+    ) -> Result<FetchedClientMetadataDocument, DomainError>;
+}
+
+/// A tenant-scoped cached CIMD response. The body is still revalidated before
+/// it can become client authorization policy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CachedClientMetadataDocument {
+    /// Previously fetched JSON bytes.
+    pub body: Vec<u8>,
+    /// Cache expiry after applying the response's bounded freshness policy.
+    pub expires_at: time::OffsetDateTime,
+}
+
+/// Stores successful CIMD responses by tenant and exact client ID URL.
+#[async_trait::async_trait]
+pub trait ClientMetadataDocumentCache: Debug + Send + Sync {
+    /// Reads a cached response, including expired entries for revalidation.
+    async fn find_document(
+        &self,
+        client_id: &crate::CimdClientId,
+    ) -> Result<Option<CachedClientMetadataDocument>, DomainError>;
+
+    /// Stores a successful response and its bounded expiry.
+    async fn store_document(
+        &self,
+        client_id: &crate::CimdClientId,
+        body: &[u8],
+        expires_at: time::OffsetDateTime,
+    ) -> Result<(), DomainError>;
+}
+
 /// Remembers, across replicas and restarts, that fetching a `jwks_uri` failed.
 ///
 /// The in-process negative cache in `asterius-jose`'s client key cache is

@@ -1493,6 +1493,95 @@ impl ClientRegistration {
         metadata.validate_for_profile(capabilities, profile)
     }
 
+    /// Parses a Client ID Metadata Document for the exact URL that named it.
+    /// CIMD currently admits only the public OAuth profile.
+    pub fn from_cimd_json(
+        document: &[u8],
+        client_id: &crate::CimdClientId,
+        capabilities: Capabilities,
+    ) -> Result<ClientRegistration, ClientMetadataError> {
+        let value: serde_json::Value =
+            serde_json::from_slice(document).map_err(|error| ClientMetadataError::Malformed {
+                kind: match error.classify() {
+                    serde_json::error::Category::Io => "io",
+                    serde_json::error::Category::Syntax => "syntax",
+                    serde_json::error::Category::Data => "type",
+                    serde_json::error::Category::Eof => "eof",
+                },
+                line: error.line(),
+                column: error.column(),
+            })?;
+        let object = value.as_object().ok_or(ClientMetadataError::Malformed {
+            kind: "type",
+            line: 1,
+            column: 1,
+        })?;
+        if object.get("client_id").and_then(serde_json::Value::as_str) != Some(client_id.as_str()) {
+            return Err(ClientMetadataError::rejected(
+                "client_id",
+                "must exactly match the document URL",
+            ));
+        }
+        if object.contains_key("client_secret") || object.contains_key("client_secret_expires_at") {
+            return Err(ClientMetadataError::rejected(
+                "client_secret",
+                "CIMD documents cannot contain shared-secret credentials",
+            ));
+        }
+        fn has_private_key_material(value: &serde_json::Value) -> bool {
+            match value {
+                serde_json::Value::Object(object) => object.iter().any(|(name, member)| {
+                    matches!(
+                        name.as_str(),
+                        "d" | "p"
+                            | "q"
+                            | "dp"
+                            | "dq"
+                            | "qi"
+                            | "oth"
+                            | "k"
+                            | "private_key"
+                            | "private_key_pem"
+                    ) || has_private_key_material(member)
+                }),
+                serde_json::Value::Array(values) => values.iter().any(has_private_key_material),
+                _ => false,
+            }
+        }
+        if has_private_key_material(&value) {
+            return Err(ClientMetadataError::rejected(
+                "jwks",
+                "CIMD documents cannot contain private key material",
+            ));
+        }
+        let registration =
+            Self::from_json_with_profile(document, capabilities, ClientComplianceProfile::Public)?;
+        let client_url = Url::parse(client_id.as_str())
+            .map_err(|_| ClientMetadataError::rejected("client_id", "must be a valid HTTPS URL"))?;
+        for redirect in registration
+            .redirect_uris
+            .iter()
+            .chain(registration.post_logout_redirect_uris.iter())
+        {
+            let redirect_url = Url::parse(redirect.as_str()).map_err(|_| {
+                ClientMetadataError::rejected("redirect_uris", "must contain valid URLs")
+            })?;
+            let native_loopback = registration.application_type == ApplicationType::Native
+                && redirect_url.host().is_some_and(|host| match host {
+                    Host::Ipv4(address) => address.is_loopback(),
+                    Host::Ipv6(address) => address.is_loopback(),
+                    Host::Domain(_) => false,
+                });
+            if redirect_url.origin() != client_url.origin() && !native_loopback {
+                return Err(ClientMetadataError::rejected(
+                    "redirect_uris",
+                    "must use the client_id origin (native loopback redirects are allowed)",
+                ));
+            }
+        }
+        Ok(registration)
+    }
+
     /// The `sector_identifier_uri` this registration still owes a fetch, if
     /// any.
     ///

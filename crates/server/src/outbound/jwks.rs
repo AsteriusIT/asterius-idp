@@ -35,7 +35,9 @@
 
 use crate::outbound::ssrf::{self, Target, UrlRefused};
 use asterius_domain::DomainError;
-use asterius_domain::ports::ClientUrlFetcher;
+use asterius_domain::ports::{
+    ClientMetadataDocumentFetcher, ClientUrlFetcher, FetchedClientMetadataDocument,
+};
 use http_body_util::{BodyExt as _, Empty};
 use hyper::body::Bytes;
 use hyper::header::{ACCEPT, CONTENT_TYPE, HOST, USER_AGENT};
@@ -54,6 +56,9 @@ use tokio_rustls::TlsConnector;
 /// number checked again by the parser, because the parser is also reached from
 /// storage.
 pub const MAX_BODY_BYTES: usize = 64 * 1024;
+
+/// CIMD documents have a deliberately smaller network budget than JWKS.
+pub const MAX_CIMD_DOCUMENT_BYTES: usize = 5 * 1024;
 
 /// How long the TCP connection has to be established.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
@@ -262,6 +267,18 @@ impl HttpsClientUrlFetcher {
         read_document(&target, stream, media_types).await
     }
 
+    async fn get_cimd(&self, url: &str) -> Result<FetchedClientMetadataDocument, FetchError> {
+        let target = ssrf::check_url(url)?;
+        let addresses = vetted_addresses(&target).await?;
+        let stream = self.connect(&target, &addresses).await?;
+        let document =
+            read_document_with_limit(&target, stream, &[], MAX_CIMD_DOCUMENT_BYTES, true).await?;
+        Ok(FetchedClientMetadataDocument {
+            body: document.body,
+            max_age_seconds: bounded_max_age(document.cache_control.as_deref()),
+        })
+    }
+
     /// Fetches a Federation Entity Configuration or Subordinate Statement using
     /// the same guarded connection path as client JWKS retrieval.
     pub async fn fetch_entity_statement(&self, url: &str) -> Result<Vec<u8>, FetchError> {
@@ -363,6 +380,23 @@ async fn read_document(
     stream: tokio_rustls::client::TlsStream<TcpStream>,
     media_types: &[&str],
 ) -> Result<Vec<u8>, FetchError> {
+    read_document_with_limit(target, stream, media_types, MAX_BODY_BYTES, false)
+        .await
+        .map(|document| document.body)
+}
+
+struct ReadDocument {
+    body: Vec<u8>,
+    cache_control: Option<String>,
+}
+
+async fn read_document_with_limit(
+    target: &Target,
+    stream: tokio_rustls::client::TlsStream<TcpStream>,
+    media_types: &[&str],
+    max_body_bytes: usize,
+    cimd_json: bool,
+) -> Result<ReadDocument, FetchError> {
     let failed = || FetchError::Http {
         host: target.host.clone(),
     };
@@ -412,7 +446,11 @@ async fn read_document(
         .and_then(|value| value.to_str().ok())
         .unwrap_or_default()
         .to_owned();
-    if !is_media_type(&content_type, media_types) {
+    if !(if cimd_json {
+        is_json_media_type(&content_type)
+    } else {
+        is_media_type(&content_type, media_types)
+    }) {
         pump.abort();
         return Err(FetchError::MediaType {
             host: target.host.clone(),
@@ -423,23 +461,75 @@ async fn read_document(
     // The body is read frame by frame with a running total, so a response that
     // never ends — or one whose `Content-Length` lied — stops at the cap rather
     // than after it.
+    let cache_control = response
+        .headers()
+        .get(hyper::header::CACHE_CONTROL)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
     let mut body = response.into_body();
     let mut collected: Vec<u8> = Vec::new();
     while let Some(frame) = body.frame().await {
         let frame = frame.map_err(|_| failed())?;
         if let Some(chunk) = frame.data_ref() {
-            if collected.len() + chunk.len() > MAX_BODY_BYTES {
+            if collected.len() + chunk.len() > max_body_bytes {
                 pump.abort();
                 return Err(FetchError::TooLarge {
                     host: target.host.clone(),
-                    limit: MAX_BODY_BYTES,
+                    limit: max_body_bytes,
                 });
             }
             collected.extend_from_slice(chunk);
         }
     }
     pump.abort();
-    Ok(collected)
+    Ok(ReadDocument {
+        body: collected,
+        cache_control,
+    })
+}
+
+fn is_json_media_type(header: &str) -> bool {
+    let media_type = header
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    media_type == "application/json"
+        || media_type
+            .strip_prefix("application/")
+            .is_some_and(|subtype| subtype.ends_with("+json"))
+}
+
+fn bounded_max_age(cache_control: Option<&str>) -> Option<u64> {
+    let cache_control = cache_control?;
+    if cache_control.split(',').any(|directive| {
+        matches!(
+            directive.trim().to_ascii_lowercase().as_str(),
+            "no-store" | "no-cache" | "private"
+        )
+    }) {
+        return Some(0);
+    }
+    let mut shared_max_age: Option<u64> = None;
+    let mut max_age: Option<u64> = None;
+    for directive in cache_control.split(',') {
+        let Some((name, value)) = directive.trim().split_once('=') else {
+            continue;
+        };
+        let target = if name.trim().eq_ignore_ascii_case("s-maxage") {
+            &mut shared_max_age
+        } else if name.trim().eq_ignore_ascii_case("max-age") {
+            &mut max_age
+        } else {
+            continue;
+        };
+        let Ok(value) = value.trim().trim_matches('"').parse::<u64>() else {
+            return Some(0);
+        };
+        *target = Some(target.map_or(value, |current| current.min(value)));
+    }
+    shared_max_age.or(max_age)
 }
 
 /// Whether a `Content-Type` names a media type a JWK Set may arrive as.
@@ -493,6 +583,30 @@ impl ClientUrlFetcher for HttpsClientUrlFetcher {
                 // anywhere. This is an operational fact about a registration,
                 // not a trace of a request.
                 tracing::warn!(error = %error, "client JWK Set fetch failed");
+                Err(error.into())
+            }
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ClientMetadataDocumentFetcher for HttpsClientUrlFetcher {
+    async fn fetch_document(
+        &self,
+        client_id: &asterius_domain::CimdClientId,
+    ) -> Result<FetchedClientMetadataDocument, DomainError> {
+        let outcome =
+            match tokio::time::timeout(TOTAL_TIMEOUT, self.get_cimd(client_id.as_str())).await {
+                Ok(outcome) => outcome,
+                Err(_) => Err(FetchError::TimedOut {
+                    host: ssrf::check_url(client_id.as_str())
+                        .map_or_else(|_| "the URL".to_owned(), |target| target.host),
+                }),
+            };
+        match outcome {
+            Ok(document) => Ok(document),
+            Err(error) => {
+                tracing::warn!(error = %error, "CIMD fetch failed");
                 Err(error.into())
             }
         }

@@ -49,7 +49,7 @@ use crate::http::{
 };
 use crate::tenancy::MountPrefix;
 use crate::tenant_settings::SettingsDirectory;
-use asterius_domain::ports::ThemeRepository as _;
+use asterius_domain::ports::{ClientMetadataDocumentCache as _, ThemeRepository as _};
 use asterius_domain::{Capabilities, DomainError, KeyStore, Tenant, TokenLifetimes};
 use asterius_oidc::client_auth::{AssertionRules, Attempt};
 use asterius_oidc::metadata::{self, Endpoint};
@@ -177,6 +177,9 @@ pub struct ClientEndpoints {
     /// names. Shared with nothing else: the client key cache holds its own
     /// handle to the same adapter.
     pub outbound: Arc<dyn asterius_domain::ports::ClientUrlFetcher>,
+    /// Fetches tenant-opted-in Client ID Metadata Documents through the same
+    /// guarded TLS transport, with the smaller CIMD-specific byte limit.
+    pub cimd_documents: Arc<dyn asterius_domain::ports::ClientMetadataDocumentFetcher>,
     /// Where registration decisions are recorded.
     pub audit: Arc<dyn asterius_domain::AuditSink>,
     /// How long this deployment's sessions live.
@@ -238,6 +241,91 @@ pub struct ClientEndpoints {
     /// Last in the struct, so a parallel change adding another member does not
     /// have to be reconciled line by line.
     pub outbox: Option<Arc<dyn asterius_domain::outbox::OutboxQueue>>,
+}
+
+/// Resolves and persists a tenant-enabled CIMD client before the ordinary
+/// client repository handles authorization. The stored client row keeps all
+/// existing code, grant, and interaction foreign keys intact.
+async fn materialize_cimd_client(
+    endpoints: &ClientEndpoints,
+    tenant: &Tenant,
+    scope: &asterius_store_pg::TenantScope<'_>,
+    raw_client_id: &str,
+) -> Result<bool, asterius_domain::DomainError> {
+    if !raw_client_id.starts_with("https://") {
+        return Ok(false);
+    }
+    let client_id = asterius_domain::CimdClientId::parse(raw_client_id)
+        .map_err(|_| asterius_domain::DomainError::invalid("client_id", "invalid CIMD URL"))?;
+    let now = time::OffsetDateTime::now_utc();
+    let clients = scope.clients(endpoints.capabilities);
+    let cache = clients.find_document(&client_id).await?;
+    let cached_body = cache
+        .as_ref()
+        .filter(|document| document.expires_at > now)
+        .map(|document| document.body.clone());
+    let (body, fetched_cache_age) = if let Some(body) = cached_body {
+        (body, None)
+    } else {
+        let fetched = endpoints.cimd_documents.fetch_document(&client_id).await?;
+        (fetched.body, Some(fetched.max_age_seconds))
+    };
+    let registration = asterius_domain::ClientRegistration::from_cimd_json(
+        &body,
+        &client_id,
+        endpoints.capabilities,
+    )
+    .map_err(|_| {
+        asterius_domain::DomainError::invalid("client_metadata", "invalid CIMD document")
+    })?;
+    let id = asterius_domain::ClientId::new(client_id.as_str());
+    match clients.find(&id).await? {
+        Some(existing) if existing.registration == registration => {}
+        Some(_) => {
+            return Err(asterius_domain::DomainError::invalid(
+                "client_metadata",
+                "CIMD registration is immutable",
+            ));
+        }
+        None => {
+            let created = asterius_domain::Client {
+                tenant: tenant.id.clone(),
+                id: id.clone(),
+                registration,
+                status: asterius_domain::ClientStatus::Active,
+                created_at: now,
+                updated_at: now,
+            };
+            clients.upsert(&created).await?;
+        }
+    }
+
+    // Cache only after the validated client row is durable. The update is
+    // tenant-scoped and a shared CIMD row cannot be mistaken for an OAuth
+    // client registration or another tenant's copy of the same URL.
+    if let Some(cache_age) = fetched_cache_age {
+        let max_age = cache_age.unwrap_or(60).min(300);
+        let expires_at = now + time::Duration::seconds(max_age.min(i64::MAX as u64) as i64);
+        clients
+            .store_document(&client_id, &body, expires_at)
+            .await?;
+    }
+    Ok(true)
+}
+
+fn cimd_error_response(error: DomainError) -> Response {
+    tracing::warn!(%error, "CIMD client resolution failed");
+    let (status, code) = if matches!(error, DomainError::Storage(_)) {
+        (StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable")
+    } else {
+        (StatusCode::BAD_REQUEST, "invalid_client")
+    };
+    (
+        status,
+        [(header::CONTENT_TYPE, "application/json")],
+        Json(serde_json::json!({"error": code})),
+    )
+        .into_response()
 }
 
 impl ClientEndpoints {
@@ -1102,6 +1190,9 @@ async fn discovery(
         document["identity_chaining_requested_token_types_supported"] =
             serde_json::json!([asterius_oidc::token_exchange::ID_JAG]);
     }
+    if settings.allows_non_fapi_clients() && state.clients.is_some() {
+        document["client_id_metadata_document_supported"] = serde_json::json!(true);
+    }
     cacheable_json(&document, METADATA_MAX_AGE)
 }
 
@@ -1457,6 +1548,18 @@ async fn pushed_authorization_request_inner(
                 return unavailable();
             }
         };
+
+    if public_profile_allowed {
+        let requested_client_id = url::form_urlencoded::parse(body)
+            .find(|(name, _)| name == "client_id")
+            .map(|(_, value)| value.into_owned());
+        if let Some(client_id) = requested_client_id
+            && client_id.starts_with("https://")
+            && let Err(error) = materialize_cimd_client(endpoints, tenant, &scope, &client_id).await
+        {
+            return cimd_error_response(error);
+        }
+    }
 
     // Grant Management ID1 §5.2, read exactly the way JAR is: one flag decides
     // both what the discovery document advertises and whether this endpoint has
@@ -3999,6 +4102,29 @@ async fn run_authorize(
     let requests = scope.auth_requests();
     let sessions = scope.sessions();
     let clients = scope.clients(endpoints.capabilities);
+    if !settings.allows_non_fapi_clients()
+        && let Some(client_id) = pairs
+            .iter()
+            .find(|(name, _)| name == "client_id")
+            .map(|(_, value)| value.as_str())
+    {
+        match clients
+            .find(&asterius_domain::ClientId::new(client_id))
+            .await
+        {
+            Ok(Some(client)) if client.registration.compliance_profile.is_public() => {
+                return cimd_error_response(DomainError::invalid(
+                    "client_id",
+                    "public clients are disabled for this tenant",
+                ));
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::error!(%error, tenant = %tenant.id, "cannot read client at /authorize");
+                return unavailable();
+            }
+        }
+    }
     let subjects = scope.users(std::sync::Arc::clone(&endpoints.kek));
     let memory = match memory_policy_for(endpoints, tenant).await {
         Ok(memory) => memory,
@@ -4084,6 +4210,15 @@ async fn direct_authorization_pairs(
 ) -> Result<Option<Vec<(String, String)>>, Box<Response>> {
     if pairs.iter().any(|(name, _)| name == "request_uri") || !settings.allows_non_fapi_clients() {
         return Ok(None);
+    }
+    if let Some(client_id) = pairs
+        .iter()
+        .find(|(name, _)| name == "client_id")
+        .map(|(_, value)| value.as_str())
+        .filter(|client_id| client_id.starts_with("https://"))
+        && let Err(error) = materialize_cimd_client(endpoints, tenant, scope, client_id).await
+    {
+        return Err(Box::new(cimd_error_response(error)));
     }
     let capabilities = settings.effective_capabilities(endpoints.capabilities);
     let grant_management = grant_management_policy(endpoints, tenant, capabilities)

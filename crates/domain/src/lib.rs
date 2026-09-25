@@ -81,7 +81,10 @@ pub use entities::{
     VerifiedClaims, VerifiedClaimsError,
 };
 pub use error::DomainError;
-pub use ids::{ClientId, GrantId, SessionId, SubjectId, TenantId, TenantIdError};
+pub use ids::{
+    CimdClientId, CimdClientIdError, ClientId, GrantId, SessionId, SubjectId, TenantId,
+    TenantIdError,
+};
 pub use issuer::{Issuer, IssuerError};
 pub use json_sentinel::{
     SERDE_JSON_SENTINELS, is_serde_json_sentinel, names_a_serde_json_sentinel, serde_json_sentinel,
@@ -98,13 +101,14 @@ pub use outbox::{DeadLetter, DeadLetterOperations, DeadLetterQuery, OutboxEvent}
 
 pub use ports::{
     ApplicationRoleDirectory, AuthRequestRepository, AuthorizationDetailsTypeRepository,
-    ClientAdministration, ClientConfiguration, ClientRegistry, ClientRepository,
+    CachedClientMetadataDocument, ClientAdministration, ClientConfiguration,
+    ClientMetadataDocumentCache, ClientMetadataDocumentFetcher, ClientRegistry, ClientRepository,
     ClientSecretUpdate, ClientUsageRecorder, CodeIssuer, CredentialVerifier,
-    EmailVerificationStore, GrantAmendments, GrantRepository, InitialAccessTokenStore,
-    InteractionRepository, ManagedClient, PasskeyRepository, PolicyEngine, PolicyStore,
-    PreviousRegistrationAccessToken, RecoveryTokenStore, ReplayCheck, ReplayGuard, ReplayPurpose,
-    ResourceServerRepository, SessionRepository, SubjectResolver, TenantSettingsRepository,
-    UserDirectory,
+    EmailVerificationStore, FetchedClientMetadataDocument, GrantAmendments, GrantRepository,
+    InitialAccessTokenStore, InteractionRepository, ManagedClient, PasskeyRepository, PolicyEngine,
+    PolicyStore, PreviousRegistrationAccessToken, RecoveryTokenStore, ReplayCheck, ReplayGuard,
+    ReplayPurpose, ResourceServerRepository, SessionRepository, SubjectResolver,
+    TenantSettingsRepository, UserDirectory,
 };
 pub use rate_limit::{
     Bucket, Decision as RateLimitDecision, EndpointLimit, EndpointLimits, LimitedEndpoint,
