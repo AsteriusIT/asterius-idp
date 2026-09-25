@@ -311,6 +311,7 @@ impl Fixture {
                 proof_key: None,
                 certificate,
             },
+            proof: None,
             now: self.now,
         };
         self.post(client, &handler, pairs).await
@@ -507,6 +508,7 @@ impl Fixture {
                 proof_key: Some(jkt),
                 certificate: None,
             },
+            proof: None,
             now: self.now,
         };
         self.post(
@@ -565,6 +567,7 @@ impl Fixture {
                 proof_key,
                 certificate: None,
             },
+            proof: None,
             now: self.now,
         };
         self.post(client, &handler, pairs).await

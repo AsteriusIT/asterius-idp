@@ -45,7 +45,10 @@ use asterius_store_pg::{
 };
 use axum::Json;
 use axum::response::{IntoResponse, Response};
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use serde_json::json;
+use sha2::{Digest as _, Sha256};
 use time::OffsetDateTime;
 
 use crate::http::dpop;
@@ -124,6 +127,8 @@ pub struct AuthorizationCode<'a> {
     /// 4 admits no unbound access token, so there is no token this handler
     /// could issue.
     pub constraint: issuance::SenderConstraint<'a>,
+    /// The verified request proof, including its public key and code hash.
+    pub proof: Option<&'a dpop::Binding>,
     /// When the request arrived. One instant for every check and both tokens,
     /// so `iat`, `exp` and the code's expiry are judged against one clock
     /// reading rather than several.
@@ -288,6 +293,22 @@ impl AuthorizationCode<'_> {
         ) {
             return Err(invalid_grant());
         }
+        if grant.scopes.contains("bound_key") {
+            // OpenID Connect Key Binding 1.0 §2.3 binds this particular code,
+            // as well as the earlier pinned key, to the verified DPoP proof.
+            if !grant.scopes.contains("openid") || binding.dpop_jkt.is_none() {
+                return Err(invalid_grant());
+            }
+            let proof = self.proof.ok_or_else(invalid_grant)?;
+            let expected = B64.encode(Sha256::digest(presented.as_bytes()));
+            if !proof
+                .code_hash
+                .as_deref()
+                .is_some_and(|hash| asterius_domain::ct_eq(hash.as_bytes(), expected.as_bytes()))
+            {
+                return Err(invalid_grant());
+            }
+        }
         let claimed = self.grants.claim(&binding.grant_id, self.now).await?;
 
         let mut session = issuance::session_facts(self.sessions, &grant).await?;
@@ -358,6 +379,11 @@ impl AuthorizationCode<'_> {
                 session: &session,
                 access_token: access_token.as_str(),
                 nonce: binding.nonce.as_deref(),
+                key_bound_jwk: if grant.scopes.contains("bound_key") {
+                    Some(&self.proof.ok_or_else(invalid_grant)?.public_jwk)
+                } else {
+                    None
+                },
                 // From the grant, never from the request. See
                 // `issuance::released_claims`.
                 released: issuance::released_claims(

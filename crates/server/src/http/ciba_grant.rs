@@ -353,6 +353,7 @@ impl CibaGrant<'_> {
                 session: &session,
                 access_token: access_token.as_str(),
                 nonce: None,
+                key_bound_jwk: None,
                 released: issuance::released_claims(
                     self.users,
                     self.groups,

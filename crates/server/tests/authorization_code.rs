@@ -548,6 +548,7 @@ impl Fixture {
                 proof_key,
                 certificate,
             },
+            proof: None,
             now: self.now,
         };
         let handlers: [&dyn GrantHandler; 1] = [&handler];

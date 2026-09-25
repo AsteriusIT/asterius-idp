@@ -338,6 +338,13 @@ pub fn validate(
 
     let mut scopes = BTreeSet::new();
     for token in params.get("scope")?.unwrap_or_default().split_whitespace() {
+        // Key Binding 1.0 requires a pinned `dpop_jkt` at this endpoint and a
+        // code-bound DPoP proof at redemption. Until both travel with the
+        // device authorization row, fail closed instead of issuing an ID Token
+        // whose `cnf` has no relationship to the original device request.
+        if token == "bound_key" {
+            return Err(AuthorizationError::Invalid("scope"));
+        }
         // As at the authorization endpoint: an over-broad request is refused
         // rather than trimmed, so a client is never handed a token narrower
         // than the one it believes it asked for.

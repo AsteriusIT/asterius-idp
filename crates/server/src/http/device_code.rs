@@ -118,6 +118,8 @@ pub struct DeviceCode<'a> {
     /// certificate, or neither. "Neither" is a refusal, as it is for every
     /// other grant (FAPI 2.0 SP §5.3.2.1 item 4).
     pub constraint: issuance::SenderConstraint<'a>,
+    /// Verified DPoP proof for a key-bound ID Token.
+    pub proof: Option<&'a super::dpop::Binding>,
     /// The pre-issuance policy check for an agent (`ast-lh3.10`).
     ///
     /// A device-code agent is an agent a person approved at a browser, and the
@@ -162,6 +164,7 @@ impl<'a> DeviceCode<'a> {
             grant_id_claim: code.grant_id_claim,
             lifetimes: code.lifetimes,
             constraint: code.constraint,
+            proof: code.proof,
             now: code.now,
         }
     }
@@ -335,6 +338,11 @@ impl DeviceCode<'_> {
                 session: &session,
                 access_token: access_token.as_str(),
                 nonce: None,
+                key_bound_jwk: if grant.scopes.contains("bound_key") {
+                    Some(&self.proof.ok_or_else(invalid_grant)?.public_jwk)
+                } else {
+                    None
+                },
                 released: issuance::released_claims(
                     self.users,
                     self.groups,

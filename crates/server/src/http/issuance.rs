@@ -791,6 +791,8 @@ pub struct IdTokenParts<'a> {
     /// it generated for a browser round trip that happened weeks ago would be
     /// checking a replay defence against a request it is not making.
     pub nonce: Option<&'a str>,
+    /// Public key from the verified DPoP proof for `bound_key` requests.
+    pub key_bound_jwk: Option<&'a serde_json::Value>,
     /// The claims the grant covers, from [`released_claims`].
     pub released: ReleasedToIdToken,
 }
@@ -850,6 +852,7 @@ pub async fn sign_id_token(
         session,
         access_token,
         nonce,
+        key_bound_jwk,
         released,
     } = parts;
     let authentication = authentication_under(&session.authentication, acr_policy);
@@ -865,6 +868,9 @@ pub async fn sign_id_token(
     // authorization request carried one.
     if let Some(nonce) = nonce {
         builder = builder.with_nonce(nonce);
+    }
+    if let Some(public_jwk) = key_bound_jwk {
+        builder = builder.bound_to_key(public_jwk.clone());
     }
     // OIDC Back-Channel Logout 1.0 §2.4: `sid` names a session a relying party
     // can be told about when it ends. A grant whose session is already gone has
