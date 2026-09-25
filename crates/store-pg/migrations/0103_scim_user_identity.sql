@@ -21,6 +21,7 @@ create table scim_user_external_ids (
     client_id text not null,
     user_id uuid not null,
     external_id text,
+    deleted_at timestamptz,
     created_at timestamptz not null default now(),
     updated_at timestamptz not null default now(),
     primary key (tenant_id, client_id, user_id),
@@ -31,7 +32,7 @@ create table scim_user_external_ids (
 
 create unique index scim_user_external_id_unique
     on scim_user_external_ids (tenant_id, client_id, external_id)
-    where external_id is not null;
+    where external_id is not null and deleted_at is null;
 
 create trigger scim_user_external_ids_set_updated_at
     before update on scim_user_external_ids

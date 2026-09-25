@@ -31,6 +31,7 @@ pub fn is_route(id: &str) -> bool {
             | crate::SCIM_USER_CREATE_ID
             | crate::SCIM_USERS_LIST_ID
             | crate::SCIM_USER_REPLACE_ID
+            | crate::SCIM_USER_DELETE_ID
     )
 }
 
@@ -178,14 +179,10 @@ pub struct RequestedUser {
     pub user_name: String,
     #[serde(default, rename = "externalId")]
     pub external_id: Option<String>,
-    #[serde(default = "default_active")]
-    pub active: bool,
+    #[serde(default)]
+    pub active: Option<bool>,
     #[serde(default)]
     pub emails: Vec<RequestedEmail>,
-}
-
-const fn default_active() -> bool {
-    true
 }
 
 #[derive(Debug, Deserialize)]

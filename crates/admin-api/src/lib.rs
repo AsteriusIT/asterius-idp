@@ -232,6 +232,8 @@ pub const SCIM_USER_CREATE_ID: &str = "scim.users.create";
 pub const SCIM_USERS_LIST_ID: &str = "scim.users.list";
 /// Conditionally replaces the approved SCIM User profile.
 pub const SCIM_USER_REPLACE_ID: &str = "scim.users.replace";
+/// Soft-deprovisions one tenant User for a provisioning client.
+pub const SCIM_USER_DELETE_ID: &str = "scim.users.delete";
 /// The `operationId` of `POST /groups`.
 pub const GROUP_CREATE_ID: &str = "groups.create";
 /// The `operationId` of `GET /groups/{group_id}`.
@@ -1503,8 +1505,16 @@ pub const SCIM_USER_REPLACE: Operation = Operation::mutation(
     A::new(R::AutomationTenant, "admin.scim:write"),
     "Conditionally replaces one tenant User profile",
 );
+/// Soft-deprovisions a User after an If-Match check.
+pub const SCIM_USER_DELETE: Operation = Operation::mutation(
+    SCIM_USER_DELETE_ID,
+    "/scim/v2/Users/{user_id}",
+    M::Delete,
+    A::new(R::AutomationTenant, "admin.scim:write"),
+    "Conditionally deprovisions one tenant User",
+);
 
-static REGISTRY: [Operation; 103] = [
+static REGISTRY: [Operation; 104] = [
     SESSION_READ,
     SESSION_END,
     OVERVIEW_USERS,
@@ -1582,6 +1592,7 @@ static REGISTRY: [Operation; 103] = [
     SCIM_USER_CREATE,
     SCIM_USERS_LIST,
     SCIM_USER_REPLACE,
+    SCIM_USER_DELETE,
     GROUP_CREATE,
     GROUP_READ,
     GROUP_UPDATE,

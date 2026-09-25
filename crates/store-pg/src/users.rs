@@ -158,7 +158,7 @@ impl PgUserRepository {
     pub async fn scim_replace_profile(
         &self,
         replacement: &ScimProfileReplacement,
-    ) -> Result<ScimUserState, DomainError> {
+    ) -> Result<(ScimUserState, Vec<(String, String)>), DomainError> {
         if replacement.tenant != self.tenant || replacement.expected_revision < 1 {
             return Err(DomainError::invalid(
                 "scim.profile",
@@ -166,17 +166,38 @@ impl PgUserRepository {
             ));
         }
         let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
+        let tombstoned: bool = sqlx::query_scalar(
+            "select exists(select 1 from scim_user_external_ids
+             where tenant_id = $1 and client_id = $2 and user_id = $3
+               and deleted_at is not null)",
+        )
+        .bind(self.tenant.as_str())
+        .bind(replacement.client.as_str())
+        .bind(replacement.user.as_uuid())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(to_domain_error)?;
+        if tombstoned {
+            return Err(DomainError::NotFound);
+        }
         let updated = sqlx::query(
             "update users set username = $4, email = $5,
+             status = $6,
              email_verified = case when email is distinct from $5
                                    then false else email_verified end
-             where tenant_id = $1 and user_id = $2 and scim_revision = $3",
+             where tenant_id = $1 and user_id = $2 and scim_revision = $3
+               and (status <> 'locked' or $6 <> 'active')",
         )
         .bind(self.tenant.as_str())
         .bind(replacement.user.as_uuid())
         .bind(replacement.expected_revision)
         .bind(&replacement.username)
         .bind(&replacement.email)
+        .bind(if replacement.delete {
+            UserStatus::Disabled.as_str()
+        } else {
+            replacement.status.as_str()
+        })
         .execute(&mut *tx)
         .await
         .map_err(to_domain_error)?
@@ -198,18 +219,81 @@ impl PgUserRepository {
         }
         sqlx::query(
             "insert into scim_user_external_ids
-             (tenant_id, client_id, user_id, external_id)
-             values ($1, $2, $3, $4)
+             (tenant_id, client_id, user_id, external_id, deleted_at)
+             values ($1, $2, $3, $4, case when $5 then $6 else null end)
              on conflict (tenant_id, client_id, user_id)
-             do update set external_id = excluded.external_id",
+             do update set external_id = excluded.external_id,
+                           deleted_at = excluded.deleted_at",
         )
         .bind(self.tenant.as_str())
         .bind(replacement.client.as_str())
         .bind(replacement.user.as_uuid())
         .bind(&replacement.external_id)
+        .bind(replacement.delete)
+        .bind(OffsetDateTime::now_utc())
         .execute(&mut *tx)
         .await
         .map_err(to_domain_error)?;
+        let mut ended_sessions = Vec::new();
+        if replacement.status == UserStatus::Disabled || replacement.delete {
+            let now = OffsetDateTime::now_utc();
+            ended_sessions = sqlx::query_as(
+                "select session_id, public_sid from sessions
+                 where tenant_id = $1 and user_id = $2 and revoked_at is null
+                   and expires_at > $3 and idle_expires_at > $3",
+            )
+            .bind(self.tenant.as_str())
+            .bind(replacement.user.as_uuid())
+            .bind(now)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(to_domain_error)?;
+            sqlx::query(
+                "update sessions set revoked_at = $3, revocation_reason = $4
+                 where tenant_id = $1 and user_id = $2 and revoked_at is null",
+            )
+            .bind(self.tenant.as_str())
+            .bind(replacement.user.as_uuid())
+            .bind(now)
+            .bind(asterius_domain::SessionRevocation::AccountClosed.as_str())
+            .execute(&mut *tx)
+            .await
+            .map_err(to_domain_error)?;
+            let grants: Vec<Uuid> = sqlx::query_scalar(
+                "update grants set revoked_at = $3, revocation_reason = $4
+                 where tenant_id = $1 and user_id = $2 and revoked_at is null
+                 returning grant_id",
+            )
+            .bind(self.tenant.as_str())
+            .bind(replacement.user.as_uuid())
+            .bind(now)
+            .bind(asterius_domain::RevocationReason::AdminRevoked.as_str())
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(to_domain_error)?;
+            sqlx::query(
+                "update refresh_tokens set revoked_at = $3
+                 where tenant_id = $1 and revoked_at is null
+                   and grant_id in (select grant_id from grants
+                                    where tenant_id = $1 and user_id = $2)",
+            )
+            .bind(self.tenant.as_str())
+            .bind(replacement.user.as_uuid())
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .map_err(to_domain_error)?;
+            for grant in &grants {
+                let grant_id = grant.to_string();
+                crate::cutoffs::withdraw(
+                    &mut *tx,
+                    &self.tenant,
+                    crate::cutoffs::Principal::Grant(&grant_id),
+                    now,
+                )
+                .await?;
+            }
+        }
         let row: ScimRow = sqlx::query_as(
             "select u.user_id, u.username, u.email, u.email_verified, u.status,
                     u.claims, u.created_at, u.updated_at, u.scim_revision,
@@ -226,7 +310,7 @@ impl PgUserRepository {
         .await
         .map_err(to_domain_error)?;
         tx.commit().await.map_err(to_domain_error)?;
-        row.into_state(&self.tenant)
+        Ok((row.into_state(&self.tenant)?, ended_sessions))
     }
 
     /// Bounded SCIM page with version and per-client external identifiers.
@@ -239,11 +323,16 @@ impl PgUserRepository {
         if offset > 10_000 || !(1..=200).contains(&limit) {
             return Err(DomainError::invalid("page", "outside SCIM page bounds"));
         }
-        let total: i64 = sqlx::query_scalar("select count(*) from users where tenant_id = $1")
-            .bind(self.tenant.as_str())
-            .fetch_one(&self.pool)
-            .await
-            .map_err(to_domain_error)?;
+        let total: i64 = sqlx::query_scalar(
+            "select count(*) from users u left join scim_user_external_ids e
+               on e.tenant_id = u.tenant_id and e.user_id = u.user_id and e.client_id = $2
+             where u.tenant_id = $1 and e.deleted_at is null",
+        )
+        .bind(self.tenant.as_str())
+        .bind(client.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
         let rows: Vec<ScimRow> = sqlx::query_as(
             "select u.user_id, u.username, u.email, u.email_verified, u.status,
                     u.claims, u.created_at, u.updated_at, u.scim_revision,
@@ -251,7 +340,7 @@ impl PgUserRepository {
              from users u left join scim_user_external_ids e
                on e.tenant_id = u.tenant_id and e.user_id = u.user_id
               and e.client_id = $2
-             where u.tenant_id = $1
+             where u.tenant_id = $1 and e.deleted_at is null
              order by u.username, u.user_id offset $3 limit $4",
         )
         .bind(self.tenant.as_str())
@@ -281,7 +370,8 @@ impl PgUserRepository {
              from users u left join scim_user_external_ids e
                on e.tenant_id = u.tenant_id and e.user_id = u.user_id
               and e.client_id = $3
-             where u.tenant_id = $1 and u.user_id = $2",
+             where u.tenant_id = $1 and u.user_id = $2
+               and e.deleted_at is null",
         )
         .bind(self.tenant.as_str())
         .bind(id.as_uuid())

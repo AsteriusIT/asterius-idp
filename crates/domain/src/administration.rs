@@ -185,6 +185,10 @@ pub struct ScimProfileReplacement {
     pub email: Option<String>,
     /// New client identifier, or none to clear it.
     pub external_id: Option<String>,
+    /// Resulting canonical status; omitting SCIM active preserves Locked.
+    pub status: UserStatus,
+    /// Soft-deprovision the SCIM resource for this client after disabling it.
+    pub delete: bool,
 }
 
 /// Administering the accounts of one deployment (`ast-f7m.6`).
