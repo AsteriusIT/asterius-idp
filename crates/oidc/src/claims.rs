@@ -70,7 +70,7 @@
 //! ID token, never as a side effect of a scope.
 
 use crate::tokens::AUTHORISATION_CLAIMS;
-use asterius_domain::{Claim, ClaimName, ClaimSet, Grant, RoleClaim, User};
+use asterius_domain::{Claim, ClaimName, ClaimSet, Grant, RoleClaim, User, VerifiedClaimName};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -500,6 +500,109 @@ pub enum ClaimsRequestError {
         ClaimsRequest::MAX_CLAIMS
     )]
     TooManyClaims,
+    /// An IDA extension requested semantics this implementation cannot safely
+    /// evaluate yet. Refuse rather than silently granting a weaker request.
+    #[error("the verified_claims request has unsupported or malformed constraints")]
+    UnsupportedIdentityAssurance,
+}
+
+/// The supported, explicit subset of an OpenID4IDA verified-claims request.
+///
+/// Evidence, assurance-level and value filters are refused until the release
+/// policy can evaluate them. This type records only attributes that the
+/// client requested; it never turns ordinary user claims into verified ones.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdaRequest {
+    framework: Option<String>,
+    claims: BTreeMap<VerifiedClaimName, bool>,
+}
+
+impl IdaRequest {
+    /// A specific trust framework, or `None` when the client requested any
+    /// framework that tenant policy permits.
+    #[must_use]
+    pub fn framework(&self) -> Option<&str> {
+        self.framework.as_deref()
+    }
+
+    /// Requested attribute names and their essential hints.
+    #[must_use]
+    pub const fn claims(&self) -> &BTreeMap<VerifiedClaimName, bool> {
+        &self.claims
+    }
+
+    fn parse(value: &Value) -> Result<Self, ClaimsRequestError> {
+        let bad = ClaimsRequestError::UnsupportedIdentityAssurance;
+        let object = value.as_object().ok_or(bad.clone())?;
+        if object.len() != 2
+            || !object.contains_key("verification")
+            || !object.contains_key("claims")
+        {
+            return Err(bad);
+        }
+        let verification = object["verification"].as_object().ok_or(bad.clone())?;
+        if verification.len() != 1 {
+            return Err(bad);
+        }
+        let framework = match verification.get("trust_framework") {
+            Some(Value::Null) => None,
+            Some(Value::Object(constraint)) if constraint.len() == 1 => {
+                let value = constraint
+                    .get("value")
+                    .and_then(Value::as_str)
+                    .ok_or(bad.clone())?;
+                if value.is_empty()
+                    || value.len() > 128
+                    || !value.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric()
+                            || matches!(byte, b'-' | b'_' | b'.' | b':' | b'/')
+                    })
+                {
+                    return Err(bad);
+                }
+                Some(value.to_owned())
+            }
+            _ => return Err(bad),
+        };
+        let requested = object["claims"].as_object().ok_or(bad.clone())?;
+        if requested.is_empty() || requested.len() > 32 {
+            return Err(bad);
+        }
+        let mut claims = BTreeMap::new();
+        for (raw, entry) in requested {
+            let name = VerifiedClaimName::parse(raw).map_err(|_| bad.clone())?;
+            let essential = match entry {
+                Value::Null => false,
+                Value::Object(fields) if fields.is_empty() => false,
+                Value::Object(fields) if fields.len() == 1 => fields
+                    .get("essential")
+                    .and_then(Value::as_bool)
+                    .ok_or(bad.clone())?,
+                _ => return Err(bad),
+            };
+            claims.insert(name, essential);
+        }
+        Ok(Self { framework, claims })
+    }
+
+    fn to_json(&self) -> Value {
+        let claims: Map<String, Value> = self
+            .claims
+            .iter()
+            .map(|(name, essential)| {
+                let entry = if *essential {
+                    serde_json::json!({"essential": true})
+                } else {
+                    Value::Null
+                };
+                (name.as_str().to_owned(), entry)
+            })
+            .collect();
+        serde_json::json!({
+            "verification": {"trust_framework": self.framework.as_ref().map_or(Value::Null, |value| serde_json::json!({"value": value}))},
+            "claims": claims,
+        })
+    }
 }
 
 /// One entry of a `claims` object (OIDC Core §5.5.1).
@@ -581,6 +684,8 @@ pub struct ClaimsRequest {
     userinfo: BTreeMap<ReleasableClaim, ClaimRequest>,
     acr: Option<ClaimRequest>,
     role_claims: BTreeSet<RoleClaim>,
+    ida_id_token: Option<IdaRequest>,
+    ida_userinfo: Option<IdaRequest>,
 }
 
 impl ClaimsRequest {
@@ -663,6 +768,8 @@ impl ClaimsRequest {
         // first it is given.
         let mut acr = None;
         let mut role_claims = BTreeSet::new();
+        let ida_id_token = parse_ida_section(&root, "id_token")?;
+        let ida_userinfo = parse_ida_section(&root, "userinfo")?;
         let id_token = parse_section(&root, "id_token", &mut acr, &mut role_claims)?;
         // The role claims named under `userinfo` are dropped rather than
         // collected: `/userinfo` already answers with what the account holds
@@ -674,6 +781,8 @@ impl ClaimsRequest {
             userinfo,
             acr,
             role_claims,
+            ida_id_token,
+            ida_userinfo,
         })
     }
 
@@ -719,6 +828,18 @@ impl ClaimsRequest {
         &self.role_claims
     }
 
+    /// Explicit IDA request for ID Token delivery, if present.
+    #[must_use]
+    pub const fn ida_id_token(&self) -> Option<&IdaRequest> {
+        self.ida_id_token.as_ref()
+    }
+
+    /// Explicit IDA request for UserInfo delivery, if present.
+    #[must_use]
+    pub const fn ida_userinfo(&self) -> Option<&IdaRequest> {
+        self.ida_userinfo.as_ref()
+    }
+
     /// Whether the client asked for anything at all.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -726,6 +847,8 @@ impl ClaimsRequest {
             && self.userinfo.is_empty()
             && self.acr.is_none()
             && self.role_claims.is_empty()
+            && self.ida_id_token.is_none()
+            && self.ida_userinfo.is_none()
     }
 
     /// The canonical form of this request, as the JSON object a grant stores.
@@ -762,12 +885,16 @@ impl ClaimsRequest {
         for claim in &self.role_claims {
             id_token.insert(claim.as_str().to_owned(), Value::Object(Map::new()));
         }
+        if let Some(request) = &self.ida_id_token {
+            id_token.insert("verified_claims".to_owned(), request.to_json());
+        }
+        let mut userinfo = section_json(&self.userinfo);
+        if let Some(request) = &self.ida_userinfo {
+            userinfo.insert("verified_claims".to_owned(), request.to_json());
+        }
         let mut root = Map::new();
         root.insert("id_token".to_owned(), Value::Object(id_token));
-        root.insert(
-            "userinfo".to_owned(),
-            Value::Object(section_json(&self.userinfo)),
-        );
+        root.insert("userinfo".to_owned(), Value::Object(userinfo));
         Value::Object(root)
     }
 
@@ -793,6 +920,19 @@ fn section_json(claims: &BTreeMap<ReleasableClaim, ClaimRequest>) -> Map<String,
         .iter()
         .map(|(claim, entry)| (claim.as_str().to_owned(), entry.to_json()))
         .collect()
+}
+
+fn parse_ida_section(
+    root: &Map<String, Value>,
+    member: &'static str,
+) -> Result<Option<IdaRequest>, ClaimsRequestError> {
+    let Some(Value::Object(section)) = root.get(member) else {
+        return Ok(None);
+    };
+    section
+        .get("verified_claims")
+        .map(IdaRequest::parse)
+        .transpose()
 }
 
 /// One `userinfo` or `id_token` section.
@@ -822,6 +962,9 @@ fn parse_section(
     }
 
     for (name, entry) in section {
+        if name == "verified_claims" {
+            continue;
+        }
         let entry = parse_entry(entry)?;
         if name == "acr" {
             // First one wins, and `id_token` is parsed first — see
