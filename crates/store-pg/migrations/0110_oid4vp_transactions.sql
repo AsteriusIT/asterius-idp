@@ -15,6 +15,7 @@ CREATE TABLE oid4vp_transactions (
     holder text,
     credential_issuer text,
     verified_at timestamptz,
+    rejected_at timestamptz,
     PRIMARY KEY (tenant_id, state_digest),
     CONSTRAINT oid4vp_state_digest_length CHECK (octet_length(state_digest) = 32)
 );

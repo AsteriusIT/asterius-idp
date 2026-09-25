@@ -311,6 +311,11 @@ credential issuer and approved claim values in configured path order. The
 wallet response deadline is five minutes; a verified result remains readable
 for five minutes after acceptance. The state is a transaction secret and
 must not be logged or passed to another relying party.
+The result endpoint returns `202` while pending, `400` after a rejected wallet
+response, and `200` with approved claims after verification. The request,
+wallet response and result endpoints each admit at most 60 requests per minute
+per resolved client address; authenticated initiation and result calls also
+share a 120-per-minute client budget. Limiter storage failures refuse requests.
 
 An ID-JAG request uses token exchange with `requested_token_type=urn:ietf:params:oauth:token-type:id-jag` and an ID token issued to the authenticated agent as its subject token. The agent must prove its DPoP key. The server accepts one approved downstream AS audience, one approved HTTPS resource and explicit approved scopes. It issues a five-minute maximum `oauth-id-jag+jwt` with the downstream client ID, target sector subject, actor, and DPoP confirmation. SAML and refresh-token subject assertions, `actor_token`, and rich authorization details are refused until their validation and policy profiles are implemented. The approval table is the enterprise administrator's authorization; no cross-app grant is inferred from an ID token alone.
 

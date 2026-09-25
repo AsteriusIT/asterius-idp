@@ -34,6 +34,17 @@ pub struct ConsumedOid4vpTransaction {
     pub verifier_id: String,
 }
 
+/// The initiator's view of a live verifier transaction.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Oid4vpTransactionResult {
+    /// No wallet response has completed yet.
+    Pending,
+    /// The wallet response was cryptographically or structurally refused.
+    Rejected,
+    /// Approved data from a verified presentation.
+    Verified(serde_json::Value),
+}
+
 /// Tenant-bound adapter for verifier state.
 #[derive(Debug, Clone)]
 pub struct PgOid4vpTransactions {
@@ -145,13 +156,42 @@ impl PgOid4vpTransactions {
                 set verified_claims = $3, holder = $4, credential_issuer = $5,
                     verified_at = $6, expires_at = $6 + interval '5 minutes'
               where tenant_id = $1 and state_digest = $2
-                and consumed_at is not null and verified_at is null and expires_at > $6",
+                and consumed_at is not null and verified_at is null
+                and rejected_at is null and expires_at > $6",
         )
         .bind(self.tenant.as_str())
         .bind(digest.as_slice())
         .bind(disclosed_claims)
         .bind(holder)
         .bind(issuer)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    /// Marks a consumed transaction terminally refused without storing the
+    /// untrusted presentation or any of its claims.
+    ///
+    /// # Errors
+    ///
+    /// Storage failure prevents publication of the rejection status.
+    pub async fn record_rejected(
+        &self,
+        state: &str,
+        now: OffsetDateTime,
+    ) -> Result<bool, DomainError> {
+        let digest = sha256(state.as_bytes());
+        let result = sqlx::query(
+            "update oid4vp_transactions set rejected_at = $3,
+                    expires_at = $3 + interval '5 minutes'
+              where tenant_id = $1 and state_digest = $2
+                and consumed_at is not null and verified_at is null
+                and rejected_at is null and expires_at > $3",
+        )
+        .bind(self.tenant.as_str())
+        .bind(digest.as_slice())
         .bind(now)
         .execute(&self.pool)
         .await
@@ -172,14 +212,13 @@ impl PgOid4vpTransactions {
         initiator_client_id: &str,
         verifier_id: &str,
         now: OffsetDateTime,
-    ) -> Result<Option<serde_json::Value>, DomainError> {
+    ) -> Result<Option<Oid4vpTransactionResult>, DomainError> {
         let digest = sha256(state.as_bytes());
         let row = sqlx::query(
-            "select verified_claims, holder, credential_issuer
+            "select verified_claims, holder, credential_issuer, verified_at, rejected_at
                from oid4vp_transactions
               where tenant_id = $1 and state_digest = $2 and verifier_id = $3
-                and initiator_client_id = $4 and expires_at > $5
-                and verified_at is not null",
+                and initiator_client_id = $4 and expires_at > $5",
         )
         .bind(self.tenant.as_str())
         .bind(digest.as_slice())
@@ -190,15 +229,25 @@ impl PgOid4vpTransactions {
         .await
         .map_err(to_domain_error)?;
         row.map(|row| {
+            let rejected_at: Option<OffsetDateTime> =
+                row.try_get("rejected_at").map_err(to_domain_error)?;
+            if rejected_at.is_some() {
+                return Ok(Oid4vpTransactionResult::Rejected);
+            }
+            let verified_at: Option<OffsetDateTime> =
+                row.try_get("verified_at").map_err(to_domain_error)?;
+            if verified_at.is_none() {
+                return Ok(Oid4vpTransactionResult::Pending);
+            }
             let claims: serde_json::Value =
                 row.try_get("verified_claims").map_err(to_domain_error)?;
             let holder: String = row.try_get("holder").map_err(to_domain_error)?;
             let issuer: String = row.try_get("credential_issuer").map_err(to_domain_error)?;
-            Ok(serde_json::json!({
+            Ok(Oid4vpTransactionResult::Verified(serde_json::json!({
                 "holder": holder,
                 "credential_issuer": issuer,
                 "disclosed_claims": claims
-            }))
+            })))
         })
         .transpose()
     }

@@ -2,6 +2,9 @@
 
 use crate::http::protocol::ClientEndpoints;
 use asterius_domain::audit::{Actor, AuditEvent, Detail, EventType, Outcome};
+use asterius_domain::rate_limit::{
+    RateLimitStore as _, oid4vp_address_bucket, oid4vp_client_bucket,
+};
 use asterius_domain::{Client, ClientId, Tenant};
 use asterius_oidc::client_auth::{AssertionRules, Attempt};
 use asterius_oidc::form::Parameters;
@@ -17,6 +20,8 @@ use std::sync::Arc;
 use time::OffsetDateTime;
 
 const MAX_FORM_BYTES: usize = 65_536;
+const ADDRESS_REQUESTS_PER_MINUTE: u32 = 60;
+const CLIENT_REQUESTS_PER_MINUTE: u32 = 120;
 
 /// Mounts OID4VP routes under the resolved tenant's path prefix.
 pub fn routes(endpoints: Arc<ClientEndpoints>) -> Router {
@@ -31,18 +36,27 @@ async fn request(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
     certificate: Option<Extension<Arc<crate::mtls::PresentedCertificate>>>,
+    client_addr: Option<Extension<crate::http::forwarded::ClientAddr>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    let now = OffsetDateTime::now_utc();
+    if let Err(response) =
+        throttle_address(&endpoints, &tenant, "request", client_addr.as_deref(), now).await
+    {
+        return response;
+    }
     let Ok(form) = parse_form(&headers, &body) else {
         return refused(StatusCode::BAD_REQUEST);
     };
-    let now = OffsetDateTime::now_utc();
     let certificate = certificate.as_deref().map(|presented| &presented.leaf);
     let Ok(client) = authenticate(&endpoints, &tenant, &headers, &form, certificate, now).await
     else {
         return refused(StatusCode::UNAUTHORIZED);
     };
+    if let Err(response) = throttle_client(&endpoints, &tenant, client.id.as_str(), now).await {
+        return response;
+    }
     let Ok(Some(verifier_id)) = form.get("verifier_id") else {
         return refused(StatusCode::BAD_REQUEST);
     };
@@ -91,16 +105,22 @@ async fn request(
 async fn response(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
+    client_addr: Option<Extension<crate::http::forwarded::ClientAddr>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    let now = OffsetDateTime::now_utc();
+    if let Err(response) =
+        throttle_address(&endpoints, &tenant, "response", client_addr.as_deref(), now).await
+    {
+        return response;
+    }
     let Ok(form) = parse_form(&headers, &body) else {
         return refused(StatusCode::BAD_REQUEST);
     };
     let Ok(Some(state)) = form.get("state") else {
         return refused(StatusCode::BAD_REQUEST);
     };
-    let now = OffsetDateTime::now_utc();
     let transactions = transactions(&endpoints, &tenant);
     let transaction = match transactions.consume(state, now).await {
         Ok(Some(transaction)) => transaction,
@@ -156,7 +176,13 @@ async fn response(
         return refused(StatusCode::SERVICE_UNAVAILABLE);
     }
     let Ok(verified) = verified else {
-        return refused(StatusCode::BAD_REQUEST);
+        return match transactions.record_rejected(state, now).await {
+            Ok(_) => refused(StatusCode::BAD_REQUEST),
+            Err(error) => {
+                tracing::error!(%error, tenant = %tenant.id, "cannot record rejected OID4VP response");
+                refused(StatusCode::SERVICE_UNAVAILABLE)
+            }
+        };
     };
     let claims = Value::Array(verified.disclosed_claims);
     match transactions
@@ -182,18 +208,27 @@ async fn result(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
     certificate: Option<Extension<Arc<crate::mtls::PresentedCertificate>>>,
+    client_addr: Option<Extension<crate::http::forwarded::ClientAddr>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    let now = OffsetDateTime::now_utc();
+    if let Err(response) =
+        throttle_address(&endpoints, &tenant, "result", client_addr.as_deref(), now).await
+    {
+        return response;
+    }
     let Ok(form) = parse_form(&headers, &body) else {
         return refused(StatusCode::BAD_REQUEST);
     };
-    let now = OffsetDateTime::now_utc();
     let certificate = certificate.as_deref().map(|presented| &presented.leaf);
     let Ok(client) = authenticate(&endpoints, &tenant, &headers, &form, certificate, now).await
     else {
         return refused(StatusCode::UNAUTHORIZED);
     };
+    if let Err(response) = throttle_client(&endpoints, &tenant, client.id.as_str(), now).await {
+        return response;
+    }
     let (Ok(Some(verifier_id)), Ok(Some(state))) = (form.get("verifier_id"), form.get("state"))
     else {
         return refused(StatusCode::BAD_REQUEST);
@@ -209,8 +244,16 @@ async fn result(
         .verified_result(state, client.id.as_str(), verifier_id, now)
         .await
     {
-        Ok(Some(value)) => respond(StatusCode::OK, value),
-        Ok(None) => respond(StatusCode::ACCEPTED, json!({"status": "pending"})),
+        Ok(Some(asterius_store_pg::Oid4vpTransactionResult::Verified(value))) => {
+            respond(StatusCode::OK, value)
+        }
+        Ok(Some(asterius_store_pg::Oid4vpTransactionResult::Rejected)) => {
+            respond(StatusCode::BAD_REQUEST, json!({"status": "rejected"}))
+        }
+        Ok(Some(asterius_store_pg::Oid4vpTransactionResult::Pending)) => {
+            respond(StatusCode::ACCEPTED, json!({"status": "pending"}))
+        }
+        Ok(None) => refused(StatusCode::NOT_FOUND),
         Err(error) => {
             tracing::error!(%error, tenant = %tenant.id, "cannot read OID4VP result");
             refused(StatusCode::SERVICE_UNAVAILABLE)
@@ -285,6 +328,66 @@ fn transactions(
     tenant: &Tenant,
 ) -> asterius_store_pg::PgOid4vpTransactions {
     asterius_store_pg::PgOid4vpTransactions::new(endpoints.store.pool().clone(), tenant.id.clone())
+}
+
+async fn throttle_address(
+    endpoints: &ClientEndpoints,
+    tenant: &Tenant,
+    route: &'static str,
+    address: Option<&crate::http::forwarded::ClientAddr>,
+    now: OffsetDateTime,
+) -> Result<(), Response> {
+    charge(
+        endpoints,
+        tenant,
+        &oid4vp_address_bucket(route, address.map(|address| address.ip)),
+        ADDRESS_REQUESTS_PER_MINUTE,
+        now,
+    )
+    .await
+}
+
+async fn throttle_client(
+    endpoints: &ClientEndpoints,
+    tenant: &Tenant,
+    client_id: &str,
+    now: OffsetDateTime,
+) -> Result<(), Response> {
+    charge(
+        endpoints,
+        tenant,
+        &oid4vp_client_bucket(client_id),
+        CLIENT_REQUESTS_PER_MINUTE,
+        now,
+    )
+    .await
+}
+
+async fn charge(
+    endpoints: &ClientEndpoints,
+    tenant: &Tenant,
+    bucket: &asterius_domain::rate_limit::Bucket,
+    ceiling: u32,
+    now: OffsetDateTime,
+) -> Result<(), Response> {
+    let elapsed = now.unix_timestamp().rem_euclid(60);
+    let window = now - time::Duration::seconds(elapsed);
+    let expiry = window + time::Duration::minutes(2);
+    let store = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
+    let count = store
+        .record(&tenant.id, bucket, window, expiry)
+        .await
+        .map_err(|error| {
+            tracing::error!(%error, tenant = %tenant.id, "OID4VP limiter unavailable");
+            refused(StatusCode::SERVICE_UNAVAILABLE)
+        })?;
+    if count > ceiling {
+        return Err(respond(
+            StatusCode::TOO_MANY_REQUESTS,
+            json!({"error": "temporarily_unavailable"}),
+        ));
+    }
+    Ok(())
 }
 
 fn refused(status: StatusCode) -> Response {

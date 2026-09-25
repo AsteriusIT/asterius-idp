@@ -36,3 +36,7 @@ invalid. It stores only the approved disclosed claims for five minutes and
 returns them to the authenticated initiator. This profile serves one configured
 holder and one trusted issuer per verifier entry. It does not implement a
 general DID resolver, credential status mechanism, or other VC formats.
+Rejected responses receive a terminal result status without storing untrusted
+claims. PostgreSQL counters bound each route by client address and the
+authenticated initiation/result client, so retries cannot bypass limits by
+moving between replicas.
