@@ -37,7 +37,8 @@ use crate::salts;
 use asterius_domain::audit::{Actor, AuditEvent, AuditSink as _, Detail, EventType, Outcome};
 use asterius_domain::ports::TenantScoped;
 use asterius_domain::{
-    ClaimSet, DomainError, SectorIdentifier, SubjectId, TenantId, User, UserId, UserStatus,
+    ClaimSet, ClientId, DomainError, ScimProfileReplacement, ScimUserState, SectorIdentifier,
+    SubjectId, TenantId, User, UserId, UserStatus,
 };
 use asterius_jose::Kek;
 use sqlx::postgres::PgPool;
@@ -74,6 +75,7 @@ impl TenantScoped for PgUserRepository {
 }
 
 /// One row of `users`, before it becomes an entity.
+#[derive(sqlx::FromRow)]
 struct Row {
     user_id: Uuid,
     username: String,
@@ -83,6 +85,43 @@ struct Row {
     claims: serde_json::Value,
     created_at: OffsetDateTime,
     updated_at: OffsetDateTime,
+}
+
+#[derive(sqlx::FromRow)]
+struct ScimRow {
+    user_id: Uuid,
+    username: String,
+    email: Option<String>,
+    email_verified: bool,
+    status: String,
+    claims: serde_json::Value,
+    created_at: OffsetDateTime,
+    updated_at: OffsetDateTime,
+    scim_revision: i64,
+    external_id: Option<String>,
+}
+
+impl ScimRow {
+    fn into_state(self, tenant: &TenantId) -> Result<ScimUserState, DomainError> {
+        let revision = self.scim_revision;
+        let external_id = self.external_id;
+        let user = Row {
+            user_id: self.user_id,
+            username: self.username,
+            email: self.email,
+            email_verified: self.email_verified,
+            status: self.status,
+            claims: self.claims,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        }
+        .into_entity(tenant)?;
+        Ok(ScimUserState {
+            user,
+            external_id,
+            revision,
+        })
+    }
 }
 
 impl Row {
@@ -114,6 +153,362 @@ impl Row {
 }
 
 impl PgUserRepository {
+    /// Conditionally replaces the approved SCIM profile and external ID.
+    /// The revision predicate and both writes share one transaction.
+    pub async fn scim_replace_profile(
+        &self,
+        replacement: &ScimProfileReplacement,
+    ) -> Result<(ScimUserState, Vec<(String, String)>), DomainError> {
+        if replacement.tenant != self.tenant || replacement.expected_revision < 1 {
+            return Err(DomainError::invalid(
+                "scim.profile",
+                "invalid tenant or revision",
+            ));
+        }
+        let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
+        let tombstoned: bool = sqlx::query_scalar(
+            "select exists(select 1 from scim_user_external_ids
+             where tenant_id = $1 and client_id = $2 and user_id = $3
+               and deleted_at is not null)",
+        )
+        .bind(self.tenant.as_str())
+        .bind(replacement.client.as_str())
+        .bind(replacement.user.as_uuid())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(to_domain_error)?;
+        if tombstoned {
+            return Err(DomainError::NotFound);
+        }
+        let updated = sqlx::query(
+            "update users set username = $4, email = $5,
+             status = $6,
+             email_verified = case when email is distinct from $5
+                                   then false else email_verified end
+             where tenant_id = $1 and user_id = $2 and scim_revision = $3
+               and (status <> 'locked' or $6 <> 'active')",
+        )
+        .bind(self.tenant.as_str())
+        .bind(replacement.user.as_uuid())
+        .bind(replacement.expected_revision)
+        .bind(&replacement.username)
+        .bind(&replacement.email)
+        .bind(if replacement.delete {
+            UserStatus::Disabled.as_str()
+        } else {
+            replacement.status.as_str()
+        })
+        .execute(&mut *tx)
+        .await
+        .map_err(to_domain_error)?
+        .rows_affected();
+        if updated == 0 {
+            let exists: bool = sqlx::query_scalar(
+                "select exists(select 1 from users where tenant_id = $1 and user_id = $2)",
+            )
+            .bind(self.tenant.as_str())
+            .bind(replacement.user.as_uuid())
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(to_domain_error)?;
+            return Err(if exists {
+                DomainError::Conflict("SCIM revision changed".to_owned())
+            } else {
+                DomainError::NotFound
+            });
+        }
+        sqlx::query(
+            "insert into scim_user_external_ids
+             (tenant_id, client_id, user_id, external_id, deleted_at)
+             values ($1, $2, $3, $4, case when $5 then $6 else null end)
+             on conflict (tenant_id, client_id, user_id)
+             do update set external_id = excluded.external_id,
+                           deleted_at = excluded.deleted_at",
+        )
+        .bind(self.tenant.as_str())
+        .bind(replacement.client.as_str())
+        .bind(replacement.user.as_uuid())
+        .bind(&replacement.external_id)
+        .bind(replacement.delete)
+        .bind(OffsetDateTime::now_utc())
+        .execute(&mut *tx)
+        .await
+        .map_err(to_domain_error)?;
+        let mut ended_sessions = Vec::new();
+        if replacement.status == UserStatus::Disabled || replacement.delete {
+            let now = OffsetDateTime::now_utc();
+            ended_sessions = sqlx::query_as(
+                "select session_id, public_sid from sessions
+                 where tenant_id = $1 and user_id = $2 and revoked_at is null
+                   and expires_at > $3 and idle_expires_at > $3",
+            )
+            .bind(self.tenant.as_str())
+            .bind(replacement.user.as_uuid())
+            .bind(now)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(to_domain_error)?;
+            sqlx::query(
+                "update sessions set revoked_at = $3, revocation_reason = $4
+                 where tenant_id = $1 and user_id = $2 and revoked_at is null",
+            )
+            .bind(self.tenant.as_str())
+            .bind(replacement.user.as_uuid())
+            .bind(now)
+            .bind(asterius_domain::SessionRevocation::AccountClosed.as_str())
+            .execute(&mut *tx)
+            .await
+            .map_err(to_domain_error)?;
+            let grants: Vec<Uuid> = sqlx::query_scalar(
+                "update grants set revoked_at = $3, revocation_reason = $4
+                 where tenant_id = $1 and user_id = $2 and revoked_at is null
+                 returning grant_id",
+            )
+            .bind(self.tenant.as_str())
+            .bind(replacement.user.as_uuid())
+            .bind(now)
+            .bind(asterius_domain::RevocationReason::AdminRevoked.as_str())
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(to_domain_error)?;
+            sqlx::query(
+                "update refresh_tokens set revoked_at = $3
+                 where tenant_id = $1 and revoked_at is null
+                   and grant_id in (select grant_id from grants
+                                    where tenant_id = $1 and user_id = $2)",
+            )
+            .bind(self.tenant.as_str())
+            .bind(replacement.user.as_uuid())
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .map_err(to_domain_error)?;
+            for grant in &grants {
+                let grant_id = grant.to_string();
+                crate::cutoffs::withdraw(
+                    &mut *tx,
+                    &self.tenant,
+                    crate::cutoffs::Principal::Grant(&grant_id),
+                    now,
+                )
+                .await?;
+            }
+        }
+        let row: ScimRow = sqlx::query_as(
+            "select u.user_id, u.username, u.email, u.email_verified, u.status,
+                    u.claims, u.created_at, u.updated_at, u.scim_revision,
+                    e.external_id
+             from users u join scim_user_external_ids e
+               on e.tenant_id = u.tenant_id and e.user_id = u.user_id
+              and e.client_id = $3
+             where u.tenant_id = $1 and u.user_id = $2",
+        )
+        .bind(self.tenant.as_str())
+        .bind(replacement.user.as_uuid())
+        .bind(replacement.client.as_str())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(to_domain_error)?;
+        crate::audit::append(
+            &mut *tx,
+            AuditEvent::new(
+                self.tenant.clone(),
+                EventType::USER_SCIM_PROFILE_CHANGED,
+                Outcome::Success,
+                Actor::Client(replacement.client.clone()),
+                OffsetDateTime::now_utc(),
+            )
+            .subject(replacement.user.to_string())
+            .detail(
+                Detail::new()
+                    .label("operation", replacement.operation)
+                    .flag("deprovisioned", replacement.delete)
+                    .flag(
+                        "active",
+                        !replacement.delete && replacement.status == UserStatus::Active,
+                    ),
+            ),
+        )
+        .await?;
+        tx.commit().await.map_err(to_domain_error)?;
+        Ok((row.into_state(&self.tenant)?, ended_sessions))
+    }
+
+    /// Bounded SCIM page with version and per-client external identifiers.
+    pub async fn scim_page(
+        &self,
+        client: &ClientId,
+        offset: u32,
+        limit: u16,
+    ) -> Result<(u64, Vec<ScimUserState>), DomainError> {
+        if offset > 10_000 || !(1..=200).contains(&limit) {
+            return Err(DomainError::invalid("page", "outside SCIM page bounds"));
+        }
+        let total: i64 = sqlx::query_scalar(
+            "select count(*) from users u left join scim_user_external_ids e
+               on e.tenant_id = u.tenant_id and e.user_id = u.user_id and e.client_id = $2
+             where u.tenant_id = $1 and e.deleted_at is null",
+        )
+        .bind(self.tenant.as_str())
+        .bind(client.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+        let rows: Vec<ScimRow> = sqlx::query_as(
+            "select u.user_id, u.username, u.email, u.email_verified, u.status,
+                    u.claims, u.created_at, u.updated_at, u.scim_revision,
+                    e.external_id
+             from users u left join scim_user_external_ids e
+               on e.tenant_id = u.tenant_id and e.user_id = u.user_id
+              and e.client_id = $2
+             where u.tenant_id = $1 and e.deleted_at is null
+             order by u.username, u.user_id offset $3 limit $4",
+        )
+        .bind(self.tenant.as_str())
+        .bind(client.as_str())
+        .bind(i64::from(offset))
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+        let states = rows
+            .into_iter()
+            .map(|row| row.into_state(&self.tenant))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((u64::try_from(total).unwrap_or(0), states))
+    }
+
+    /// Reads a canonical account with this client's SCIM metadata.
+    pub async fn scim_find(
+        &self,
+        client: &ClientId,
+        id: UserId,
+    ) -> Result<Option<ScimUserState>, DomainError> {
+        let row: Option<ScimRow> = sqlx::query_as(
+            "select u.user_id, u.username, u.email, u.email_verified, u.status,
+                    u.claims, u.created_at, u.updated_at, u.scim_revision,
+                    e.external_id
+             from users u left join scim_user_external_ids e
+               on e.tenant_id = u.tenant_id and e.user_id = u.user_id
+              and e.client_id = $3
+             where u.tenant_id = $1 and u.user_id = $2
+               and e.deleted_at is null",
+        )
+        .bind(self.tenant.as_str())
+        .bind(id.as_uuid())
+        .bind(client.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+        row.map(|row| row.into_state(&self.tenant)).transpose()
+    }
+
+    /// Creates a credential-free account and its client-owned external ID in
+    /// one transaction. A uniqueness conflict rolls back both records.
+    pub async fn scim_create(
+        &self,
+        client: &ClientId,
+        user: &User,
+        external_id: Option<&str>,
+    ) -> Result<ScimUserState, DomainError> {
+        if user.tenant != self.tenant {
+            return Err(DomainError::invalid("tenant_id", "does not match scope"));
+        }
+        let claims = serde_json::to_value(&user.claims)
+            .map_err(|error| DomainError::invalid("claims", error.to_string()))?;
+        let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
+        sqlx::query(
+            "insert into users (tenant_id, user_id, username, email,
+                                email_verified, status, claims)
+             values ($1, $2, $3, $4, false, $5, $6)",
+        )
+        .bind(self.tenant.as_str())
+        .bind(user.id.as_uuid())
+        .bind(&user.username)
+        .bind(&user.email)
+        .bind(user.status.as_str())
+        .bind(claims)
+        .execute(&mut *tx)
+        .await
+        .map_err(to_domain_error)?;
+        sqlx::query(
+            "insert into scim_user_external_ids
+             (tenant_id, client_id, user_id, external_id)
+             values ($1, $2, $3, $4)",
+        )
+        .bind(self.tenant.as_str())
+        .bind(client.as_str())
+        .bind(user.id.as_uuid())
+        .bind(external_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(to_domain_error)?;
+        let row: ScimRow = sqlx::query_as(
+            "select u.user_id, u.username, u.email, u.email_verified, u.status,
+                    u.claims, u.created_at, u.updated_at, u.scim_revision,
+                    e.external_id
+             from users u join scim_user_external_ids e
+               on e.tenant_id = u.tenant_id and e.user_id = u.user_id
+              and e.client_id = $3
+             where u.tenant_id = $1 and u.user_id = $2",
+        )
+        .bind(self.tenant.as_str())
+        .bind(user.id.as_uuid())
+        .bind(client.as_str())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(to_domain_error)?;
+        crate::audit::append(
+            &mut *tx,
+            AuditEvent::new(
+                self.tenant.clone(),
+                EventType::USER_CREATED,
+                Outcome::Success,
+                Actor::Client(client.clone()),
+                OffsetDateTime::now_utc(),
+            )
+            .subject(user.id.to_string())
+            .detail(
+                Detail::new()
+                    .label("operation", "scim.users.create")
+                    .flag("active", user.can_authenticate()),
+            ),
+        )
+        .await?;
+        tx.commit().await.map_err(to_domain_error)?;
+        row.into_state(&self.tenant)
+    }
+
+    /// One bounded SCIM offset page and the tenant's total account count.
+    /// Offset pagination is capped at 10,000 so a remote client cannot force
+    /// an arbitrarily deep index walk with one request.
+    pub async fn page(&self, offset: u32, limit: u16) -> Result<(u64, Vec<User>), DomainError> {
+        if offset > 10_000 || !(1..=200).contains(&limit) {
+            return Err(DomainError::invalid("page", "outside SCIM page bounds"));
+        }
+        let total: i64 = sqlx::query_scalar("select count(*) from users where tenant_id = $1")
+            .bind(self.tenant.as_str())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(to_domain_error)?;
+        let rows: Vec<Row> = sqlx::query_as(
+            "select user_id, username, email, email_verified, status, claims,
+                    created_at, updated_at from users where tenant_id = $1
+             order by username, user_id offset $2 limit $3",
+        )
+        .bind(self.tenant.as_str())
+        .bind(i64::from(offset))
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+        let users = rows
+            .into_iter()
+            .map(|row| row.into_entity(&self.tenant))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((u64::try_from(total).unwrap_or(0), users))
+    }
+
     /// Binds a pool to one tenant.
     ///
     /// `kek` is the key-encryption key the tenant's pairwise salt is sealed

@@ -32,7 +32,7 @@
 use crate::entities::grant::Grant;
 use crate::entities::user::{User, UserStatus};
 use crate::error::DomainError;
-use crate::ids::{GrantId, TenantId};
+use crate::ids::{ClientId, GrantId, TenantId};
 use crate::{AcceptedPassword, AuthenticationMethod, UserId};
 use std::fmt::Debug;
 use time::OffsetDateTime;
@@ -157,6 +157,42 @@ pub struct NewAccount {
     pub password: Option<AcceptedPassword>,
 }
 
+/// SCIM's client-specific handle on an existing tenant account.
+#[derive(Debug, Clone)]
+pub struct ScimUserState {
+    /// The canonical account.
+    pub user: User,
+    /// Opaque identifier supplied by this provisioning client.
+    pub external_id: Option<String>,
+    /// Monotonic version changed by every account write, including console edits.
+    pub revision: i64,
+}
+
+/// One conditional SCIM edit to the approved profile fields.
+#[derive(Debug, Clone)]
+pub struct ScimProfileReplacement {
+    /// Operation name retained in the atomic audit record.
+    pub operation: &'static str,
+    /// Tenant owning the account.
+    pub tenant: TenantId,
+    /// Provisioning client owning the external identifier.
+    pub client: ClientId,
+    /// Local account identifier.
+    pub user: UserId,
+    /// Version supplied by If-Match.
+    pub expected_revision: i64,
+    /// New login identifier.
+    pub username: String,
+    /// New email, or none to clear it.
+    pub email: Option<String>,
+    /// New client identifier, or none to clear it.
+    pub external_id: Option<String>,
+    /// Resulting canonical status; omitting SCIM active preserves Locked.
+    pub status: UserStatus,
+    /// Soft-deprovision the SCIM resource for this client after disabling it.
+    pub delete: bool,
+}
+
 /// Administering the accounts of one deployment (`ast-f7m.6`).
 ///
 /// One port rather than six handles, for the reason
@@ -166,6 +202,57 @@ pub struct NewAccount {
 /// and forget the second.
 #[async_trait::async_trait]
 pub trait UserAdministration: Debug + Send + Sync {
+    /// Replaces only approved profile fields when the account version still
+    /// matches; the store commits the account and external ID in one transaction.
+    async fn scim_replace_profile(
+        &self,
+        replacement: ScimProfileReplacement,
+    ) -> Result<ScimUserState, DomainError>;
+
+    /// Reads a User and its SCIM version/external ID for one provisioning client.
+    async fn scim_find(
+        &self,
+        tenant: &TenantId,
+        client: &ClientId,
+        id: UserId,
+    ) -> Result<Option<ScimUserState>, DomainError>;
+
+    /// Atomically creates a credential-free user and claims its external ID.
+    async fn scim_create(
+        &self,
+        client: &ClientId,
+        user: User,
+        external_id: Option<&str>,
+    ) -> Result<ScimUserState, DomainError>;
+
+    /// One tenant page with each user's current SCIM version and this
+    /// client's external ID.
+    async fn scim_page(
+        &self,
+        tenant: &TenantId,
+        client: &ClientId,
+        offset: u32,
+        limit: u16,
+    ) -> Result<(u64, Vec<ScimUserState>), DomainError>;
+
+    /// Exact tenant username lookup for SCIM's `userName eq` filter.
+    async fn find_by_username(
+        &self,
+        tenant: &TenantId,
+        username: &str,
+    ) -> Result<Option<User>, DomainError>;
+
+    /// A SCIM offset page and total count for the routed tenant.
+    ///
+    /// Callers cap `offset` and `limit` before invoking this port; the adapter
+    /// repeats those bounds so another caller cannot ask for an unbounded scan.
+    async fn page(
+        &self,
+        tenant: &TenantId,
+        offset: u32,
+        limit: u16,
+    ) -> Result<(u64, Vec<User>), DomainError>;
+
     /// One page of this tenant's accounts, ordered by username.
     ///
     /// `term` is matched against the username and the email address, and an

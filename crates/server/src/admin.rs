@@ -1266,6 +1266,126 @@ impl DeploymentUsers {
 
 #[async_trait::async_trait]
 impl asterius_domain::UserAdministration for DeploymentUsers {
+    async fn scim_replace_profile(
+        &self,
+        replacement: asterius_domain::ScimProfileReplacement,
+    ) -> Result<asterius_domain::ScimUserState, DomainError> {
+        let now = time::OffsetDateTime::now_utc();
+        let scope = self.store.scope(replacement.tenant.clone());
+        let users = scope.users(Arc::clone(&self.kek));
+        let previous = users
+            .scim_find(&replacement.client, replacement.user)
+            .await?
+            .ok_or(DomainError::NotFound)?;
+        let (state, sessions) = users.scim_replace_profile(&replacement).await?;
+        for (digest, public_sid) in sessions {
+            self.notify_participants(&replacement.tenant, &digest, now)
+                .await;
+            self.emit_signal(
+                &replacement.tenant,
+                &crate::ssf::Cause::SessionRevoked {
+                    user: replacement.user,
+                    sid: public_sid,
+                    by: crate::ssf::RevokedBy::AccountDisabled,
+                    locale: asterius_domain::Locale::default(),
+                },
+                now,
+            )
+            .await;
+        }
+        if previous.user.status == state.user.status {
+            return Ok(state);
+        }
+        if state.user.status == asterius_domain::UserStatus::Active {
+            self.emit_signal(
+                &replacement.tenant,
+                &crate::ssf::Cause::AccountEnabled {
+                    user: replacement.user,
+                    initiator: asterius_ssf::caep::InitiatingEntity::Admin,
+                },
+                now,
+            )
+            .await;
+        } else {
+            self.emit_signal(
+                &replacement.tenant,
+                &crate::ssf::Cause::AccountDisabled {
+                    user: replacement.user,
+                    reason: None,
+                    initiator: asterius_ssf::caep::InitiatingEntity::Admin,
+                },
+                now,
+            )
+            .await;
+        }
+        Ok(state)
+    }
+
+    async fn scim_page(
+        &self,
+        tenant: &TenantId,
+        client: &ClientId,
+        offset: u32,
+        limit: u16,
+    ) -> Result<(u64, Vec<asterius_domain::ScimUserState>), DomainError> {
+        self.store
+            .scope(tenant.clone())
+            .users(Arc::clone(&self.kek))
+            .scim_page(client, offset, limit)
+            .await
+    }
+
+    async fn scim_find(
+        &self,
+        tenant: &TenantId,
+        client: &ClientId,
+        id: UserId,
+    ) -> Result<Option<asterius_domain::ScimUserState>, DomainError> {
+        self.store
+            .scope(tenant.clone())
+            .users(Arc::clone(&self.kek))
+            .scim_find(client, id)
+            .await
+    }
+
+    async fn scim_create(
+        &self,
+        client: &ClientId,
+        user: asterius_domain::User,
+        external_id: Option<&str>,
+    ) -> Result<asterius_domain::ScimUserState, DomainError> {
+        self.store
+            .scope(user.tenant.clone())
+            .users(Arc::clone(&self.kek))
+            .scim_create(client, &user, external_id)
+            .await
+    }
+
+    async fn find_by_username(
+        &self,
+        tenant: &TenantId,
+        username: &str,
+    ) -> Result<Option<asterius_domain::User>, DomainError> {
+        self.store
+            .scope(tenant.clone())
+            .users(Arc::clone(&self.kek))
+            .find_by_username(username)
+            .await
+    }
+
+    async fn page(
+        &self,
+        tenant: &TenantId,
+        offset: u32,
+        limit: u16,
+    ) -> Result<(u64, Vec<asterius_domain::User>), DomainError> {
+        self.store
+            .scope(tenant.clone())
+            .users(Arc::clone(&self.kek))
+            .page(offset, limit)
+            .await
+    }
+
     async fn search(
         &self,
         tenant: &TenantId,

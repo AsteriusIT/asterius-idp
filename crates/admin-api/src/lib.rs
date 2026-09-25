@@ -224,6 +224,18 @@ pub const SCIM_CONFIG_ID: &str = "scim.config.read";
 pub const SCIM_SCHEMAS_ID: &str = "scim.schemas.list";
 /// SCIM 2.0 resource type catalogue.
 pub const SCIM_RESOURCE_TYPES_ID: &str = "scim.resource_types.list";
+/// Reads one tenant User using the SCIM 2.0 representation.
+pub const SCIM_USER_READ_ID: &str = "scim.users.read";
+/// Creates a tenant User through the restricted SCIM profile.
+pub const SCIM_USER_CREATE_ID: &str = "scim.users.create";
+/// Lists one bounded tenant User page using SCIM offset pagination.
+pub const SCIM_USERS_LIST_ID: &str = "scim.users.list";
+/// Conditionally replaces the approved SCIM User profile.
+pub const SCIM_USER_REPLACE_ID: &str = "scim.users.replace";
+/// Soft-deprovisions one tenant User for a provisioning client.
+pub const SCIM_USER_DELETE_ID: &str = "scim.users.delete";
+/// Applies an atomic, conditional SCIM User patch.
+pub const SCIM_USER_PATCH_ID: &str = "scim.users.patch";
 /// The `operationId` of `POST /groups`.
 pub const GROUP_CREATE_ID: &str = "groups.create";
 /// The `operationId` of `GET /groups/{group_id}`.
@@ -1463,7 +1475,56 @@ pub const SCIM_RESOURCE_TYPES: Operation = Operation::read(
     "SCIM 2.0 resource types",
 );
 
-static REGISTRY: [Operation; 99] = [
+/// Reads an account through the provisioning profile.
+pub const SCIM_USER_READ: Operation = Operation::read(
+    SCIM_USER_READ_ID,
+    "/scim/v2/Users/{user_id}",
+    S::Get,
+    A::new(R::AutomationTenant, "admin.scim:read"),
+    "One tenant User in the SCIM 2.0 representation",
+);
+/// Creates an account without accepting credentials or role grants.
+pub const SCIM_USER_CREATE: Operation = Operation::mutation(
+    SCIM_USER_CREATE_ID,
+    "/scim/v2/Users",
+    M::Post,
+    A::new(R::AutomationTenant, "admin.scim:write"),
+    "Creates one tenant User from the restricted SCIM profile",
+);
+/// Lists one tenant's accounts through the provisioning profile.
+pub const SCIM_USERS_LIST: Operation = Operation::read(
+    SCIM_USERS_LIST_ID,
+    "/scim/v2/Users",
+    S::Get,
+    A::new(R::AutomationTenant, "admin.scim:read"),
+    "One SCIM 2.0 User page",
+);
+/// Replaces only profile attributes after an If-Match check.
+pub const SCIM_USER_REPLACE: Operation = Operation::mutation(
+    SCIM_USER_REPLACE_ID,
+    "/scim/v2/Users/{user_id}",
+    M::Put,
+    A::new(R::AutomationTenant, "admin.scim:write"),
+    "Conditionally replaces one tenant User profile",
+);
+/// Soft-deprovisions a User after an If-Match check.
+pub const SCIM_USER_DELETE: Operation = Operation::mutation(
+    SCIM_USER_DELETE_ID,
+    "/scim/v2/Users/{user_id}",
+    M::Delete,
+    A::new(R::AutomationTenant, "admin.scim:write"),
+    "Conditionally deprovisions one tenant User",
+);
+/// Applies approved User attribute changes after an If-Match check.
+pub const SCIM_USER_PATCH: Operation = Operation::mutation(
+    SCIM_USER_PATCH_ID,
+    "/scim/v2/Users/{user_id}",
+    M::Patch,
+    A::new(R::AutomationTenant, "admin.scim:write"),
+    "Conditionally patches one tenant User",
+);
+
+static REGISTRY: [Operation; 105] = [
     SESSION_READ,
     SESSION_END,
     OVERVIEW_USERS,
@@ -1537,6 +1598,12 @@ static REGISTRY: [Operation; 99] = [
     SCIM_CONFIG,
     SCIM_SCHEMAS,
     SCIM_RESOURCE_TYPES,
+    SCIM_USER_READ,
+    SCIM_USER_CREATE,
+    SCIM_USERS_LIST,
+    SCIM_USER_REPLACE,
+    SCIM_USER_DELETE,
+    SCIM_USER_PATCH,
     GROUP_CREATE,
     GROUP_READ,
     GROUP_UPDATE,

@@ -314,6 +314,8 @@ impl EventType {
     /// the values: a trail kept for years and read by whoever is on call is
     /// not the place to copy somebody's date of birth into.
     pub const USER_CLAIMS_CHANGED: Self = Self("user.claims_changed");
+    /// A provisioning client changed approved profile fields or its external ID.
+    pub const USER_SCIM_PROFILE_CHANGED: Self = Self("user.scim_profile_changed");
     /// An account was switched off by an administrator.
     ///
     /// # The RISC seam
@@ -561,7 +563,7 @@ impl EventType {
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 81] = [
+    pub const ALL: [Self; 82] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -613,6 +615,7 @@ impl EventType {
         Self::INVITATION_ACTIVATED,
         Self::INVITATION_ASSIGNMENTS_APPLIED,
         Self::USER_CLAIMS_CHANGED,
+        Self::USER_SCIM_PROFILE_CHANGED,
         Self::ACCOUNT_DISABLED,
         Self::ACCOUNT_ENABLED,
         Self::ROLE_GRANTED,

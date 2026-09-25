@@ -33,7 +33,7 @@
 //! The belt-and-braces test `every_mutation_refuses_get` still exists. It
 //! costs four lines and it is what fails first if somebody ever widens `Safe`.
 
-use crate::rbac::Authority;
+use crate::rbac::{Authority, Reach};
 
 /// A verb with no side effects.
 ///
@@ -307,7 +307,11 @@ impl Operation {
     /// most once; asking for one would be ceremony with no property behind it.
     #[must_use]
     pub const fn needs_idempotency_key(&self) -> bool {
-        matches!(self.method, Method::Post) && matches!(self.effect, Effect::Mutates)
+        matches!(self.method, Method::Post)
+            && matches!(self.effect, Effect::Mutates)
+            // RFC 7644 clients do not send the admin API's custom header.
+            // A provisioning POST uses the SCIM resource's uniqueness rules.
+            && !matches!(self.authority.reach(), Reach::AutomationTenant)
     }
 
     /// The full path a client calls, including the API's base.
