@@ -261,6 +261,8 @@ pub const SCIM_GROUP_REPLACE_ID: &str = "scim.groups.replace";
 pub const SCIM_GROUP_PATCH_ID: &str = "scim.groups.patch";
 /// The operation identifier of `DELETE /scim/v2/Groups/{group_id}`.
 pub const SCIM_GROUP_DELETE_ID: &str = "scim.groups.delete";
+/// The operation identifier of `POST /scim/v2/Bulk`.
+pub const SCIM_BULK_ID: &str = "scim.bulk.unsupported";
 /// The `operationId` of `POST /groups`.
 pub const GROUP_CREATE_ID: &str = "groups.create";
 /// The `operationId` of `GET /groups/{group_id}`.
@@ -1651,8 +1653,16 @@ pub const SCIM_GROUP_DELETE: Operation = Operation::mutation(
     A::new(R::AutomationTenant, "admin.scim:write"),
     "Conditionally deletes one SCIM Group",
 );
+/// A defined SCIM error for clients that try optional Bulk despite discovery.
+pub const SCIM_BULK: Operation = Operation::mutation(
+    SCIM_BULK_ID,
+    "/scim/v2/Bulk",
+    M::Post,
+    A::new(R::AutomationTenant, "admin.scim:write"),
+    "SCIM Bulk is unsupported by this service",
+);
 
-static REGISTRY: [Operation; 117] = [
+static REGISTRY: [Operation; 118] = [
     SESSION_READ,
     SESSION_END,
     OVERVIEW_USERS,
@@ -1744,6 +1754,7 @@ static REGISTRY: [Operation; 117] = [
     SCIM_GROUP_REPLACE,
     SCIM_GROUP_PATCH,
     SCIM_GROUP_DELETE,
+    SCIM_BULK,
     GROUP_CREATE,
     GROUP_READ,
     GROUP_UPDATE,

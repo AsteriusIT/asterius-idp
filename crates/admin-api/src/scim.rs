@@ -39,6 +39,7 @@ pub fn is_route(id: &str) -> bool {
             | crate::SCIM_GROUP_REPLACE_ID
             | crate::SCIM_GROUP_PATCH_ID
             | crate::SCIM_GROUP_DELETE_ID
+            | crate::SCIM_BULK_ID
     )
 }
 
@@ -56,19 +57,27 @@ fn response(status: StatusCode, body: Value) -> Response {
 /// SCIM's common error shape. No storage or token detail reaches `detail`.
 #[must_use]
 pub fn error_response(error: &AdminError) -> Response {
-    let detail = match error.status() {
-        StatusCode::UNAUTHORIZED => "Provisioning authentication is required",
-        StatusCode::FORBIDDEN => "Provisioning access is denied",
-        StatusCode::TOO_MANY_REQUESTS => "Too many provisioning requests",
-        StatusCode::SERVICE_UNAVAILABLE => "Provisioning is temporarily unavailable",
-        StatusCode::PRECONDITION_REQUIRED => "If-Match is required",
-        StatusCode::PRECONDITION_FAILED => "SCIM resource version changed",
-        _ => "Invalid provisioning request",
+    let detail = match error {
+        AdminError::ScimUnsupported(detail) => *detail,
+        _ => match error.status() {
+            StatusCode::UNAUTHORIZED => "Provisioning authentication is required",
+            StatusCode::FORBIDDEN => "Provisioning access is denied",
+            StatusCode::TOO_MANY_REQUESTS => "Too many provisioning requests",
+            StatusCode::SERVICE_UNAVAILABLE => "Provisioning is temporarily unavailable",
+            StatusCode::PRECONDITION_REQUIRED => "If-Match is required",
+            StatusCode::PRECONDITION_FAILED => "SCIM resource version changed",
+            _ => "Invalid provisioning request",
+        },
     };
-    let mut response = response(
-        error.status(),
-        json!({ "schemas": [ERROR], "status": error.status().as_u16().to_string(), "detail": detail }),
-    );
+    let mut body = json!({
+        "schemas": [ERROR],
+        "status": error.status().as_u16().to_string(),
+        "detail": detail,
+    });
+    if matches!(error, AdminError::Invalid(_)) {
+        body["scimType"] = json!("invalidValue");
+    }
+    let mut response = response(error.status(), body);
     if error.status() == StatusCode::UNAUTHORIZED {
         response.headers_mut().insert(
             header::WWW_AUTHENTICATE,
@@ -83,6 +92,68 @@ pub fn error_response(error: &AdminError) -> Response {
         response.headers_mut().insert(header::RETRY_AFTER, value);
     }
     response
+}
+
+/// Index pagination for both SCIM resource collections. The explicit bounds
+/// match the repository queries and the RFC 9865 capability document.
+#[derive(Debug)]
+pub struct IndexPageQuery {
+    pub start_index: u32,
+    pub count: u16,
+    pub filter: Option<String>,
+}
+
+impl IndexPageQuery {
+    /// Reads only the SCIM query parameters this service implements.
+    ///
+    /// # Errors
+    ///
+    /// Duplicate, malformed, or unsupported parameters are refused.
+    pub fn parse(query: &str) -> Result<Self, AdminError> {
+        let mut start_index = None;
+        let mut count = None;
+        let mut filter = None;
+        for (name, value) in url::form_urlencoded::parse(query.as_bytes()) {
+            match name.as_ref() {
+                "startIndex" if start_index.is_none() => {
+                    start_index =
+                        Some(value.parse::<u32>().map_err(|_| {
+                            AdminError::Invalid("invalid SCIM startIndex".to_owned())
+                        })?);
+                }
+                "count" if count.is_none() => {
+                    count = Some(
+                        value
+                            .parse::<u16>()
+                            .map_err(|_| AdminError::Invalid("invalid SCIM count".to_owned()))?,
+                    );
+                }
+                "filter" if filter.is_none() => filter = Some(value.into_owned()),
+                "cursor" => {
+                    return Err(AdminError::ScimUnsupported(
+                        "SCIM cursor pagination is not supported",
+                    ));
+                }
+                _ => {
+                    return Err(AdminError::Invalid(
+                        "unsupported or repeated SCIM query parameter".to_owned(),
+                    ));
+                }
+            }
+        }
+        let start_index = start_index.unwrap_or(1);
+        let count = count.unwrap_or(100);
+        if !(1..=10_001).contains(&start_index) || count > 200 {
+            return Err(AdminError::Invalid(
+                "SCIM page is outside supported bounds".to_owned(),
+            ));
+        }
+        Ok(Self {
+            start_index,
+            count,
+            filter,
+        })
+    }
 }
 
 fn list(resources: &[Value], total: u64, start_index: u32) -> Value {
@@ -463,6 +534,9 @@ pub fn discovery_response(id: &str, base: &str) -> Response {
             "schemas": [CONFIG],
             "patch": {"supported": true},
             "bulk": {"supported": false, "maxOperations": 0, "maxPayloadSize": 0},
+            "pagination": {"cursor": false, "index": true,
+                "defaultPaginationMethod": "index", "defaultPageSize": 100,
+                "maxPageSize": 200},
             "filter": {"supported": true, "maxResults": 200},
             "changePassword": {"supported": false},
             "sort": {"supported": false},

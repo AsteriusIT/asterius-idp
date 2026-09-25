@@ -108,6 +108,10 @@ pub enum AdminError {
     #[error("{0}")]
     Invalid(String),
 
+    /// An optional SCIM protocol operation this deployment does not implement.
+    #[error("{0}")]
+    ScimUnsupported(&'static str),
+
     /// The thing addressed is not there.
     #[error("no such resource")]
     NotFound,
@@ -151,6 +155,7 @@ impl AdminError {
             Self::IdempotencyReplay => "idempotency_replay",
             Self::CursorInvalid => "invalid_cursor",
             Self::Invalid(_) => "invalid_request",
+            Self::ScimUnsupported(_) => "not_implemented",
             Self::NotFound => "not_found",
             Self::Conflict(_) => "conflict",
             Self::PreconditionRequired => "precondition_required",
@@ -181,6 +186,7 @@ impl AdminError {
             Self::PreconditionRequired => StatusCode::PRECONDITION_REQUIRED,
             Self::PreconditionFailed => StatusCode::PRECONDITION_FAILED,
             Self::CursorInvalid | Self::Invalid(_) => StatusCode::BAD_REQUEST,
+            Self::ScimUnsupported(_) => StatusCode::NOT_IMPLEMENTED,
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::Throttled { .. } => StatusCode::TOO_MANY_REQUESTS,
             Self::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
