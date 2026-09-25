@@ -99,6 +99,13 @@
 </ul>
 {% endif %}
 
+{% if !verified_claims.is_empty() %}
+<p class="muted">{{ text.consent_verified_claims() }}</p>
+<ul class="scopes">
+{% for claim in verified_claims %}<li>{{ claim }}</li>{% endfor %}
+</ul>
+{% endif %}
+
 {% if !resources.is_empty() %}
 <p class="muted">{{ text.consent_resources() }}</p>
 <ul class="scopes">

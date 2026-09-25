@@ -261,6 +261,9 @@ catalogue! {
         ConsentDetailLocations => consent_detail_locations, "consent.detail-locations",
             en: "At:",
             fr: "Auprès de :";
+        ConsentVerifiedClaims => consent_verified_claims, "consent.verified-claims",
+            en: "Verified identity attributes requested:",
+            fr: "Attributs d’identité vérifiés demandés :";
         ConsentResources => consent_resources, "consent.resources",
             en: "Access applies to:",
             fr: "Cet accès s'applique à :";

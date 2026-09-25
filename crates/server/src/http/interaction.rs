@@ -387,6 +387,7 @@ struct ConsentOffer {
     /// The origin of the validated `redirect_uri`, when it is one a
     /// `form-action` source expression can name (`ast-jsq`).
     form_action: Option<FormActionOrigin>,
+    verified_claims: Vec<String>,
 }
 
 /// Builds the consent offer for a request, when one is needed.
@@ -475,6 +476,31 @@ async fn describe(
             .and_then(|kind| kind.consent_template.clone())
     });
 
+    let verified_claims = request
+        .parameters
+        .get("claims")
+        .and_then(|value| asterius_oidc::claims::ClaimsRequest::from_json(value).ok())
+        .map(|claims| {
+            [
+                ("ID token", claims.ida_id_token()),
+                ("UserInfo", claims.ida_userinfo()),
+            ]
+            .into_iter()
+            .flat_map(|(destination, ida)| {
+                ida.into_iter().flat_map(move |ida| {
+                    ida.claims().keys().map(move |name| {
+                        format!(
+                            "{destination}: {} (framework: {})",
+                            name.as_str(),
+                            ida.framework().unwrap_or("any permitted")
+                        )
+                    })
+                })
+            })
+            .collect()
+        })
+        .unwrap_or_default();
+
     Some(ConsentOffer {
         request: ConsentRequest::new(
             client.registration.client_name.clone(),
@@ -488,6 +514,7 @@ async fn describe(
             |_| None,
         ),
         form_action,
+        verified_claims,
     })
 }
 
@@ -2738,6 +2765,7 @@ fn consent_page(
                     datatypes: detail.datatypes.clone(),
                 })
                 .collect(),
+            verified_claims: offer.verified_claims.clone(),
             action: chrome.action,
             csrf: chrome.csrf.expose(),
             nonce_attribute: nonce_attribute(nonce),
