@@ -2291,3 +2291,14 @@ membership updates advance the group revision. Managed memberships do not yet
 feed policy evaluation: legacy `groups_of` claims keep their existing authority
 until an explicit migration enables the new source. See
 [group migration](groups-migration.md) for the staged transition.
+## OpenID ASC privacy boundary (`ast-s36.25.3.1`)
+
+OpenID ASC is disabled until the deployment enables `advanced_claims`; a tenant
+may further disable it. A request is limited to 4 KiB, eight transformed
+definitions, two functions per definition, and eight ordered rules per delivery
+type. Unsupported functions, nested pointers, and schema rules fail at PAR.
+Conditions run from the consented grant, and the consent page names each base
+claim consulted for a transformation. Consent memory includes the exact ASC
+expression, so changing a predicate or omit rule requires another decision.
+Omission and abort can still reveal a boolean fact after consent. Deployments
+should enable ASC only where that disclosure is intended.

@@ -390,6 +390,7 @@ struct ConsentOffer {
     /// `form-action` source expression can name (`ast-jsq`).
     form_action: Option<FormActionOrigin>,
     verified_claims: Vec<String>,
+    transformed_claims: Vec<String>,
 }
 
 /// Builds the consent offer for a request, when one is needed.
@@ -506,6 +507,12 @@ async fn describe(
             lines
         })
         .unwrap_or_default();
+    let transformed_claims = request
+        .parameters
+        .get("claims")
+        .and_then(|value| asterius_oidc::claims::ClaimsRequest::from_json(value).ok())
+        .map(|claims| claims.advanced_claims_consent_lines())
+        .unwrap_or_default();
 
     Some(ConsentOffer {
         request: ConsentRequest::new(
@@ -521,6 +528,7 @@ async fn describe(
         ),
         form_action,
         verified_claims,
+        transformed_claims,
     })
 }
 
@@ -2803,6 +2811,7 @@ fn consent_page(
                 })
                 .collect(),
             verified_claims: offer.verified_claims.clone(),
+            transformed_claims: offer.transformed_claims.clone(),
             action: chrome.action,
             csrf: chrome.csrf.expose(),
             nonce_attribute: nonce_attribute(nonce),

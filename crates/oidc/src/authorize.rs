@@ -367,6 +367,8 @@ pub struct AuthorizationPolicy {
     /// Off by default, which is a tenant that ignores both parameters — see
     /// [`GrantManagementPolicy::supported`].
     pub grant_management: GrantManagementPolicy,
+    /// This tenant explicitly enables the bounded OpenID ASC subset.
+    pub advanced_claims: bool,
 }
 
 impl AuthorizationPolicy {
@@ -382,6 +384,7 @@ impl AuthorizationPolicy {
         Self {
             prompt_create,
             grant_management: GrantManagementPolicy::new(false, false),
+            advanced_claims: false,
         }
     }
 
@@ -396,6 +399,13 @@ impl AuthorizationPolicy {
     #[must_use]
     pub const fn with_grant_management(mut self, grant_management: GrantManagementPolicy) -> Self {
         self.grant_management = grant_management;
+        self
+    }
+
+    /// Enables the bounded OpenID ASC subset for this tenant.
+    #[must_use]
+    pub const fn with_advanced_claims(mut self, enabled: bool) -> Self {
+        self.advanced_claims = enabled;
         self
     }
 
@@ -764,6 +774,9 @@ pub fn validate(
         .map(ClaimsRequest::parse)
         .transpose()?
         .unwrap_or_default();
+    if claims.has_advanced_claims() && !policy.advanced_claims {
+        return Err(ClaimsRequestError::UnsupportedAdvancedClaims.into());
+    }
 
     // OIDC Core §5.2. Never an error: a language preference is a hint about
     // presentation, and `ClaimsLocales::parse` drops what it cannot read so a

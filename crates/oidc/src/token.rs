@@ -232,6 +232,7 @@ mod tests {
         Capabilities {
             mtls: true,
             grant_management: true,
+            advanced_claims: true,
             ciba: true,
             device_flow: true,
             token_exchange: true,

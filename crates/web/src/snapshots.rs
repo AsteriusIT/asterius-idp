@@ -204,6 +204,7 @@ fn consent(text: &Catalog) -> String {
             },
         ],
         verified_claims: Vec::new(),
+        transformed_claims: Vec::new(),
         action: "/interaction/abc/consent",
         csrf: CSRF,
         nonce_attribute: nonce(),

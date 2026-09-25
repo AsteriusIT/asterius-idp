@@ -88,6 +88,7 @@ Everything is off unless switched on here, and what is switched on is exactly wh
 | --- | --- | --- | --- |
 | `features.mtls` | boolean | `false` | mTLS client authentication and certificate-bound tokens (RFC 8705). |
 | `features.grant_management` | boolean | `false` | Grant Management for OAuth 2.0 (Implementer's Draft). |
+| `features.advanced_claims` | boolean | `false` | OpenID ASC draft-02 bounded subset. Up to eight custom transformed claims per request and two functions each (`eq`, `contains`, `starts_with`, `ends_with`, `gt`, `gte`, `lt`, `lte`). Up to eight ordered Selective Abort/Omit rules per delivery type; only direct claim JSON Pointers and `exists`/`simple` methods are accepted. Schema and nested pointers are refused. A tenant can disable this deployment capability in its settings. |
 | `features.ciba` | boolean | `false` | CIBA Core 1.0 backchannel authentication, poll and ping. There is no backchannel authentication endpoint yet, so switching this on validates and stores CIBA client metadata and advertises nothing: the discovery document names neither the endpoint, nor the delivery modes, nor the grant type. |
 | `features.device_flow` | boolean | `false` | Device Authorization Grant (RFC 8628). |
 | `features.token_exchange` | boolean | `false` | Token Exchange (RFC 8693) with delegation chains. |

@@ -261,6 +261,8 @@ pub struct ConsentPage<'a> {
     pub authorization_details: Vec<DetailLine>,
     /// Verified attributes requested for each token destination.
     pub verified_claims: Vec<String>,
+    /// Base attributes consulted for explicitly requested ASC transformations.
+    pub transformed_claims: Vec<String>,
     /// Where the form posts to.
     pub action: &'a str,
     /// The synchroniser token for this rendering.
@@ -1537,6 +1539,7 @@ mod tests {
                     datatypes: vec![(*hostile).to_owned()],
                 }],
                 verified_claims: Vec::new(),
+                transformed_claims: Vec::new(),
                 action: "/interaction/x/consent",
                 csrf: hostile,
                 nonce_attribute: nonce_attribute(&nonce),
@@ -1996,6 +1999,7 @@ mod tests {
                 resources: Vec::new(),
                 authorization_details: Vec::new(),
                 verified_claims: Vec::new(),
+                transformed_claims: Vec::new(),
                 action: "/x",
                 csrf: "t",
                 nonce_attribute: nonce_attribute(&nonce),
@@ -2056,6 +2060,7 @@ mod tests {
                 resources: Vec::new(),
                 authorization_details: Vec::new(),
                 verified_claims: Vec::new(),
+                transformed_claims: Vec::new(),
                 action: "/x",
                 csrf: "the-token",
                 nonce_attribute: nonce_attribute(&nonce),
@@ -2088,6 +2093,7 @@ mod tests {
             resources: Vec::new(),
             authorization_details: Vec::new(),
             verified_claims: Vec::new(),
+            transformed_claims: Vec::new(),
             action: "/x",
             csrf: "t",
             nonce_attribute: nonce_attribute(&nonce),
@@ -2180,6 +2186,7 @@ mod tests {
             resources,
             authorization_details: Vec::new(),
             verified_claims: Vec::new(),
+            transformed_claims: Vec::new(),
             action: "/interaction/x",
             csrf: "t",
             nonce_attribute: nonce_attribute(&nonce),

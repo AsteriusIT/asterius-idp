@@ -74,6 +74,9 @@ use asterius_domain::{Claim, ClaimName, ClaimSet, Grant, RoleClaim, User, Verifi
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
+mod asc;
+pub use asc::{FUNCTIONS as ASC_FUNCTIONS, MAX_COUNT as ASC_MAX_COUNT, MAX_DEPTH as ASC_MAX_DEPTH};
+
 // ---------------------------------------------------------------------------
 // Scopes to claims (OIDC Core §5.4)
 // ---------------------------------------------------------------------------
@@ -504,6 +507,12 @@ pub enum ClaimsRequestError {
     /// evaluate yet. Refuse rather than silently granting a weaker request.
     #[error("the verified_claims request has unsupported or malformed constraints")]
     UnsupportedIdentityAssurance,
+    /// ASC syntax exceeds the supported subset or its fixed resource bounds.
+    #[error("the advanced claims request is unsupported or malformed")]
+    UnsupportedAdvancedClaims,
+    /// A consented ASC selective-abort condition was not met.
+    #[error("an advanced claims condition was not met")]
+    AdvancedClaimsAborted,
 }
 
 /// The supported, explicit subset of an OpenID Identity Assurance request.
@@ -844,6 +853,7 @@ pub struct ClaimsRequest {
     role_claims: BTreeSet<RoleClaim>,
     ida_id_token: Option<IdaRequest>,
     ida_userinfo: Option<IdaRequest>,
+    asc: Option<asc::AscRequest>,
 }
 
 impl ClaimsRequest {
@@ -927,20 +937,28 @@ impl ClaimsRequest {
         let mut role_claims = BTreeSet::new();
         let ida_id_token = parse_ida_section(&root, "id_token")?;
         let ida_userinfo = parse_ida_section(&root, "userinfo")?;
+        let asc = asc::AscRequest::parse(&root)?;
         let id_token = parse_section(&root, "id_token", &mut acr, &mut role_claims)?;
         // The role claims named under `userinfo` are dropped rather than
         // collected: `/userinfo` already answers with what the account holds
         // (`ast-095`), so there is nothing for a request there to turn on, and
         // a second switch that changed nothing would be read as one that did.
         let userinfo = parse_section(&root, "userinfo", &mut acr, &mut BTreeSet::new())?;
-        Ok(Self {
+        let request = Self {
             id_token,
             userinfo,
             acr,
             role_claims,
             ida_id_token,
             ida_userinfo,
-        })
+            asc,
+        };
+        // Canonicalisation expands null entries and makes SAO defaults
+        // explicit. A request accepted at PAR must still parse from the grant.
+        if request.to_json().to_string().len() > Self::MAX_LEN {
+            return Err(ClaimsRequestError::TooLarge);
+        }
+        Ok(request)
     }
 
     /// What the client asked to receive in the ID token.
@@ -997,6 +1015,27 @@ impl ClaimsRequest {
         self.ida_userinfo.as_ref()
     }
 
+    /// Whether this request uses OpenID ASC syntax and requires tenant opt-in.
+    #[must_use]
+    pub const fn has_advanced_claims(&self) -> bool {
+        self.asc.is_some()
+    }
+
+    /// A stable, exact consent-memory surface for ASC definitions and rules.
+    #[must_use]
+    pub fn advanced_claims_consent_surface(&self) -> Option<String> {
+        self.asc.as_ref().map(asc::AscRequest::consent_surface)
+    }
+
+    /// Plain text descriptions of base claims consulted by transformed
+    /// requests, for the consent offer. The user sees the source attribute.
+    #[must_use]
+    pub fn advanced_claims_consent_lines(&self) -> Vec<String> {
+        self.asc
+            .as_ref()
+            .map_or_else(Vec::new, asc::AscRequest::consent_lines)
+    }
+
     /// Whether the client asked for anything at all.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -1006,6 +1045,7 @@ impl ClaimsRequest {
             && self.role_claims.is_empty()
             && self.ida_id_token.is_none()
             && self.ida_userinfo.is_none()
+            && self.asc.is_none()
     }
 
     /// The canonical form of this request, as the JSON object a grant stores.
@@ -1052,6 +1092,9 @@ impl ClaimsRequest {
         let mut root = Map::new();
         root.insert("id_token".to_owned(), Value::Object(id_token));
         root.insert("userinfo".to_owned(), Value::Object(userinfo));
+        if let Some(asc) = &self.asc {
+            asc.add_json(&mut root);
+        }
         Value::Object(root)
     }
 
@@ -1120,6 +1163,12 @@ fn parse_section(
 
     for (name, entry) in section {
         if name == "verified_claims" {
+            continue;
+        }
+        // Parsed separately as ASC aliases. Never let a colon-prefixed name
+        // fall through to an ordinary user claim, even if the claim-name
+        // grammar broadens in a later revision.
+        if name.starts_with(':') {
             continue;
         }
         let entry = parse_entry(entry)?;
@@ -1314,7 +1363,23 @@ pub fn record_on_grant(parameters: &Value, grant: &mut Grant) {
 pub fn resolve_for_grant(user: &User, grant: &Grant) -> Result<ResolvedClaims, ClaimsRequestError> {
     let requested = ClaimsRequest::from_json(&grant.claims)?;
     let locales = ClaimsLocales::from_tags(&grant.claims_locales);
-    Ok(resolve(user, &grant.scopes, &requested, &locales))
+    resolve_checked(user, &grant.scopes, &requested, &locales)
+}
+
+/// Resolves ordinary claims and then applies consented ASC transformations and
+/// ordered selective rules. The original base claim is never added by a
+/// transformed request alone.
+pub fn resolve_checked(
+    user: &User,
+    scopes: &BTreeSet<String>,
+    requested: &ClaimsRequest,
+    locales: &ClaimsLocales,
+) -> Result<ResolvedClaims, ClaimsRequestError> {
+    let mut result = resolve(user, scopes, requested, locales);
+    if let Some(asc) = &requested.asc {
+        asc.apply(user, locales, &mut result.id_token, &mut result.userinfo)?;
+    }
+    Ok(result)
 }
 
 /// The value of one claim for one user, or `None` when the user has none.
