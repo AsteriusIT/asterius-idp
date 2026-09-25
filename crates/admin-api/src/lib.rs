@@ -183,6 +183,8 @@ pub const USERS_LIST_ID: &str = "users.list";
 pub const USER_CREATE_ID: &str = "users.create";
 /// Creates one or more account invitations.
 pub const INVITATIONS_CREATE_ID: &str = "invitations.create";
+/// Lists recent invitations without their bearer material.
+pub const INVITATIONS_STATUS_ID: &str = "invitations.status";
 /// Rotates an invitation's mailed bearer link.
 pub const INVITATION_RESEND_ID: &str = "invitations.resend";
 /// Revokes an invitation before activation.
@@ -755,7 +757,7 @@ pub const NOTIFICATION_STATUS: Operation = Operation::read(
     NOTIFICATION_STATUS_ID,
     "/notifications/status",
     S::Get,
-    A::new(R::Tenant, "admin.outbox:read"),
+    A::new(R::Tenant, "admin.lifecycle:read"),
     "Lists this tenant's queued, accepted, failed and expired account mail",
 );
 
@@ -926,12 +928,21 @@ pub const INVITATIONS_CREATE: Operation = Operation::mutation(
     "Invites users without assigning their passwords",
 );
 
+/// Token-free invitation lifecycle status for support diagnosis.
+pub const INVITATIONS_STATUS: Operation = Operation::read(
+    INVITATIONS_STATUS_ID,
+    "/invitations",
+    S::Get,
+    A::new(R::Tenant, "admin.lifecycle:read"),
+    "Lists recent invitations without bearer tokens or message contents",
+);
+
 /// Sends a fresh, independently expiring link.
 pub const INVITATION_RESEND: Operation = Operation::mutation(
     INVITATION_RESEND_ID,
     "/invitations/{invitation_id}/resend",
     M::Post,
-    A::new(R::Tenant, "admin.users:write"),
+    A::new(R::Tenant, "admin.lifecycle:write"),
     "Resends an account invitation",
 );
 
@@ -940,7 +951,7 @@ pub const INVITATION_REVOKE: Operation = Operation::mutation(
     INVITATION_REVOKE_ID,
     "/invitations/{invitation_id}",
     M::Delete,
-    A::new(R::Tenant, "admin.users:write"),
+    A::new(R::Tenant, "admin.lifecycle:write"),
     "Revokes an account invitation",
 );
 
@@ -1406,7 +1417,7 @@ pub const GROUP_CLIENT_APP_ROLE_WITHDRAW: Operation = Operation::mutation(
 /// A `static` rather than a function building a `Vec`, so that the router, the
 /// document and the tests are looking at one object and cannot be handed
 /// different copies of it.
-static REGISTRY: [Operation; 94] = [
+static REGISTRY: [Operation; 95] = [
     SESSION_READ,
     SESSION_END,
     OVERVIEW_USERS,
@@ -1461,6 +1472,7 @@ static REGISTRY: [Operation; 94] = [
     USER_READ,
     USER_CREATE,
     INVITATIONS_CREATE,
+    INVITATIONS_STATUS,
     INVITATION_RESEND,
     INVITATION_REVOKE,
     USER_CLAIMS_UPDATE,

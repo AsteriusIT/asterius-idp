@@ -355,6 +355,7 @@ async fn route_standard(
         crate::USER_READ_ID => context.read_user().await,
         crate::USER_CREATE_ID => context.create_user(body).await,
         crate::INVITATIONS_CREATE_ID => context.create_invitations(body).await,
+        crate::INVITATIONS_STATUS_ID => context.list_invitation_statuses().await,
         crate::INVITATION_RESEND_ID => context.resend_invitation(body).await,
         crate::INVITATION_REVOKE_ID => context.revoke_invitation().await,
         crate::USER_CLAIMS_UPDATE_ID => context.update_claims(body).await,
@@ -472,6 +473,19 @@ struct Handling<'a> {
 }
 
 impl Handling<'_> {
+    async fn list_invitation_statuses(&self) -> Result<Response, AdminError> {
+        let items = self
+            .state
+            .backend
+            .invitation_statuses(&self.tenant.id, 100, self.now)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::INVITATIONS_STATUS_ID, &error))?;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({"items": items}),
+        ))
+    }
+
     /// `POST /invitations` accepts a bounded batch and never accepts a password.
     async fn create_invitations(&self, body: axum::body::Body) -> Result<Response, AdminError> {
         #[derive(serde::Deserialize)]
@@ -6739,6 +6753,15 @@ mod tests {
 
     #[async_trait::async_trait]
     impl AdminBackend for Handle {
+        async fn invitation_statuses(
+            &self,
+            _tenant: &TenantId,
+            _limit: u32,
+            _now: OffsetDateTime,
+        ) -> Result<Vec<crate::backend::InvitationStatus>, DomainError> {
+            Ok(Vec::new())
+        }
+
         async fn invite_user(
             &self,
             _tenant: &Tenant,
