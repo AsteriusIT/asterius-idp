@@ -98,6 +98,9 @@ pub struct RefreshToken<'a> {
     pub acr_policy: &'a asterius_domain::AcrPolicy,
     /// Refresh tokens for this tenant.
     pub tokens: &'a PgRefreshTokenRepository,
+    /// Native SSO secret storage and source-client policy.
+    pub native_sso: &'a asterius_store_pg::PgNativeSso,
+    pub native_sso_approvals: &'a [crate::config::NativeSsoApproval],
     /// Grants for this tenant, consulted for revocation and for what the
     /// tokens may say.
     pub grants: &'a PgGrantRepository,
@@ -172,6 +175,8 @@ impl<'a> RefreshToken<'a> {
     ) -> Self {
         Self {
             tokens: code.refresh_tokens,
+            native_sso: code.native_sso,
+            native_sso_approvals: code.native_sso_approvals,
             grants: code.grants,
             sessions: code.sessions,
             users: code.users,
@@ -354,6 +359,54 @@ impl RefreshToken<'_> {
             // nothing they did not send.
             Failure::Client("invalid_scope", "the requested scope exceeds the granted scope")
         })?;
+        if effective.contains("device_sso") && !effective.contains("openid") {
+            return Err(Failure::Client(
+                "invalid_scope",
+                "device_sso requires openid",
+            ));
+        }
+        if effective.contains("device_sso") && grant.scopes.contains("bound_key") {
+            return Err(Failure::Client(
+                "invalid_scope",
+                "device_sso cannot share a key-bound ID token",
+            ));
+        }
+        let presented_device_secret = params.get("device_secret").map_err(|_| {
+            Failure::Client("invalid_request", "device_secret was sent more than once")
+        })?;
+        if presented_device_secret.is_some() && !effective.contains("device_sso") {
+            return Err(Failure::Client(
+                "invalid_request",
+                "device_secret requires device_sso",
+            ));
+        }
+        let device_secret = if effective.contains("device_sso") {
+            if client.registration.application_type != asterius_domain::ApplicationType::Native
+                || !self
+                    .native_sso_approvals
+                    .iter()
+                    .any(|approval| approval.source_client_id == client.id.as_str())
+            {
+                return Err(Failure::Client(
+                    "invalid_scope",
+                    "native SSO is not approved for this client",
+                ));
+            }
+            let facts = self.session_facts(&grant).await?;
+            let sid = facts.sid.as_deref().ok_or_else(invalid_grant)?;
+            Some(
+                crate::http::native_sso::issue(
+                    self.native_sso,
+                    &grant,
+                    sid,
+                    presented_device_secret,
+                    self.now,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
 
         // RFC 8707 §2.2 applies to every token request, and a refresh is one:
         // the resources named here must be a subset of what the authorization
@@ -363,7 +416,15 @@ impl RefreshToken<'_> {
             .map_err(|_| Failure::Client(INVALID_TARGET, TARGET_REFUSED))?;
 
         let (access_token, id_token) = self
-            .mint(tenant, client, &grant, confirmation, &effective, &targets)
+            .mint(
+                tenant,
+                client,
+                &grant,
+                confirmation,
+                &effective,
+                &targets,
+                device_secret.as_ref().map(|issued| issued.ds_hash.as_str()),
+            )
             .await?;
 
         let returned = self
@@ -386,6 +447,7 @@ impl RefreshToken<'_> {
             &returned,
             id_token.as_deref(),
             self.lifetimes.access_token(),
+            device_secret.as_ref().map(|issued| issued.value.as_str()),
         ))
     }
 
@@ -409,6 +471,7 @@ impl RefreshToken<'_> {
         confirmation: Confirmation,
         effective: &BTreeSet<String>,
         targets: &BTreeSet<String>,
+        device_secret_hash: Option<&str>,
     ) -> Result<(String, Option<String>), Failure> {
         let mut session = self.session_facts(grant).await?;
         session.revalidate_acr(self.acr_policy);
@@ -484,6 +547,7 @@ impl RefreshToken<'_> {
         // code applies, it is the only thing it can produce.
         let id_token = if effective.contains("openid") {
             let parts = issuance::IdTokenParts {
+                device_secret_hash,
                 acr_policy: self.acr_policy,
                 claimed: &claimed,
                 session: &session,
@@ -763,6 +827,7 @@ impl RefreshToken<'_> {
         refresh_token: &str,
         id_token: Option<&str>,
         access_token_lifetime: time::Duration,
+        device_secret: Option<&str>,
     ) -> Response {
         let mut body = json!({
             "access_token": access_token,
@@ -789,6 +854,11 @@ impl RefreshToken<'_> {
             && let Some(object) = body.as_object_mut()
         {
             object.insert("id_token".to_owned(), json!(id_token));
+        }
+        if let Some(device_secret) = device_secret
+            && let Some(object) = body.as_object_mut()
+        {
+            object.insert("device_secret".to_owned(), json!(device_secret));
         }
         (axum::http::StatusCode::OK, Json(body)).into_response()
     }

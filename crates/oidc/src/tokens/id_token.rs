@@ -218,6 +218,7 @@ pub struct IdToken<'a> {
     role_claims: BTreeSet<RoleClaim>,
     managed_groups: Vec<String>,
     key_bound_jwk: Option<Value>,
+    device_secret_hash: Option<String>,
 }
 
 impl<'a> IdToken<'a> {
@@ -280,6 +281,7 @@ impl<'a> IdToken<'a> {
             role_claims: BTreeSet::new(),
             managed_groups: Vec::new(),
             key_bound_jwk: None,
+            device_secret_hash: None,
         }
     }
 
@@ -362,6 +364,13 @@ impl<'a> IdToken<'a> {
     /// pinned by the authorization request and its `c_s256` with the code.
     pub fn bound_to_key(mut self, public_jwk: Value) -> Self {
         self.key_bound_jwk = Some(public_jwk);
+        self
+    }
+
+    /// Binds this authentication assertion to a Native SSO device secret.
+    /// The caller stores the full SHA-256 digest and passes its base64url form.
+    pub fn with_device_secret_hash(mut self, digest: String) -> Self {
+        self.device_secret_hash = Some(digest);
         self
     }
 
@@ -487,6 +496,17 @@ impl<'a> IdToken<'a> {
         // Back-Channel Logout 1.0 §2.1.
         if let Some(session) = &self.session {
             claims.insert("sid".to_owned(), Value::String(session.0.clone()));
+        }
+        if let Some(hash) = self.device_secret_hash {
+            if self.session.is_none()
+                || hash.len() != 43
+                || !hash
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+            {
+                return Err(IssuanceError::Session);
+            }
+            claims.insert("ds_hash".to_owned(), Value::String(hash));
         }
 
         // OIDC Core §3.1.3.6.

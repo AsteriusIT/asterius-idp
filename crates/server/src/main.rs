@@ -325,6 +325,18 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
                         })
                         .collect(),
                 ),
+                native_sso_approvals: Arc::new(
+                    config
+                        .tenants
+                        .iter()
+                        .map(|tenant| {
+                            (
+                                tenant.id.as_str().to_owned(),
+                                tenant.native_sso_approvals.clone(),
+                            )
+                        })
+                        .collect(),
+                ),
                 authenticator,
                 store: store.clone(),
                 keys: Arc::clone(&keys) as Arc<dyn asterius_domain::KeyStore>,

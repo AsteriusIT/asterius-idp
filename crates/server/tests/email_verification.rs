@@ -430,6 +430,7 @@ fn assemble(
         signed_metadata: None,
         clients: Some(Arc::new(ClientEndpoints {
             id_jag_approvals: Arc::default(),
+            native_sso_approvals: Arc::default(),
             oid4vp_verifiers: Arc::default(),
             // `ast-lh3.10`: no policy decision point, which is what a
             // deployment with `[features] authzen` off wires. Agents are

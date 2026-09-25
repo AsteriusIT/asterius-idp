@@ -123,6 +123,9 @@ pub struct ClientEndpoints {
     pub oid4vp_verifiers: Arc<crate::oid4vp::Oid4vpVerifiers>,
     /// Operator-approved cross-domain ID-JAG relationships, keyed by tenant.
     pub id_jag_approvals: Arc<std::collections::HashMap<String, Vec<crate::config::IdJagApproval>>>,
+    /// Operator-approved native app sharing pairs, keyed by tenant.
+    pub native_sso_approvals:
+        Arc<std::collections::HashMap<String, Vec<crate::config::NativeSsoApproval>>>,
     /// Authenticates the client behind a request.
     pub authenticator: Arc<ClientAuthenticator>,
     /// Tenant-scoped repositories.
@@ -1203,6 +1206,19 @@ async fn discovery(
     {
         document["identity_chaining_requested_token_types_supported"] =
             serde_json::json!([asterius_oidc::token_exchange::ID_JAG]);
+    }
+    if capabilities.token_exchange
+        && state.clients.as_ref().is_some_and(|endpoints| {
+            endpoints
+                .native_sso_approvals
+                .get(tenant.id.as_str())
+                .is_some_and(|approvals| !approvals.is_empty())
+        })
+    {
+        document["native_sso_supported"] = serde_json::json!(true);
+        if let Some(scopes) = document["scopes_supported"].as_array_mut() {
+            scopes.push(serde_json::json!("device_sso"));
+        }
     }
     if settings.allows_non_fapi_clients() && state.clients.is_some() {
         document["client_id_metadata_document_supported"] = serde_json::json!(true);
@@ -3864,6 +3880,17 @@ async fn dispatch_grants(
     let codes = scope.codes();
     let grants = scope.grants();
     let refresh_tokens = scope.refresh_tokens();
+    let native_sso =
+        asterius_store_pg::PgNativeSso::new(endpoints.store.pool().clone(), tenant.id.clone());
+    let native_sso_approvals = if endpoints.capabilities.token_exchange {
+        endpoints
+            .native_sso_approvals
+            .get(tenant.id.as_str())
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    } else {
+        &[]
+    };
     let sessions = scope.sessions();
     // Read only, to project the claims the grant covers into the ID token
     // (OIDC Core §5.4, §5.5). The KEK is the one every other user read takes.
@@ -3889,6 +3916,8 @@ async fn dispatch_grants(
         codes: &codes,
         grants: &grants,
         refresh_tokens: &refresh_tokens,
+        native_sso: &native_sso,
+        native_sso_approvals,
         sessions: &sessions,
         users: &users,
         resource_servers: &resource_servers,
@@ -3945,6 +3974,7 @@ async fn dispatch_grants(
             .get(tenant.id.as_str())
             .map(Vec::as_slice)
             .unwrap_or(&[]),
+        native_sso_approvals,
     );
     let refresh_token = RefreshToken::sharing(&authorization_code, endpoints.audit.as_ref());
     // The sixth grant (CIBA Core 1.0 §10.1), on the same borrows as the device

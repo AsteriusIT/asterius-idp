@@ -2444,21 +2444,22 @@ Draft (ID2, approved 2025-10-17; draft-07 dated 2025-01-16) — `device_sso`,
 `device_secret` + `ds_hash`/`sid` binding, and an RFC 8693 profile using the
 device secret as `actor_token`.
 
-The maturity trigger fired, but the implementation trigger did not. Keep it
-post-v1 until Final: ID2 still notes that its reuse of ID tokens relaxes normal
-audience and expiry validation, leaves device-secret construction and binding
-to the AS, and requires a session-wide revocation model. It also returns bearer
-access tokens and normally refresh tokens, while Asterius's E11_02 deliberately
-issues only DPoP-bound, narrowing-only access tokens and refuses
-`actor_token`. Those are protocol and product decisions, not a free extension
-of the current exchange handler.
+Implemented as an explicit tenant opt-in under `ast-s36.23`. Approved native
+source and target client IDs are configured per tenant; the source requests
+`device_sso` and receives a random, digest-stored `device_secret` with an ID
+token carrying `ds_hash` and `sid`. A separate RFC 8693 profile accepts that
+pair as `subject_token` and `actor_token`, validates the signed ID token even
+if expired, checks the digest, live session, account, source grant, audiences,
+and approval, then issues a target-scoped bearer access and ID token. The
+target must have the standard OIDC bearer profile. Offline access requires a
+separate per-pair operator opt-in and an eligible source grant. Session and
+source-grant revocation withdraw the secret and derived grants; session logout
+also notifies the target as a participant. Discovery advertises Native SSO
+only when token exchange and a sharing pair are configured.
 
-Compatibility remains fail-closed and cheap to revisit: discovery omits
-`native_sso_supported`; no device secret or `ds_hash` is issued; and E11_02
-rejects the profile's required actor token instead of silently treating the
-request as ordinary RFC 8693. The authorization-code and refresh handlers
-remain extension-tolerant, so a future feature can consume `device_secret`
-without changing the token endpoint's dispatch boundary.
+Without an approval, discovery omits `native_sso_supported`, issuance refuses
+`device_sso`, and the generic narrowing-only exchange still rejects an actor
+token. The approved profile never enters the generic exchange path.
 
 **Acceptance tests**
 

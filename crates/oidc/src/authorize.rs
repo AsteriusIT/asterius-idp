@@ -735,6 +735,9 @@ pub fn validate(
 
     let scopes = parse_scopes(params.get("scope")?, registration)?;
     let openid = scopes.contains("openid");
+    if scopes.contains("device_sso") && (!openid || scopes.contains("bound_key")) {
+        return Err(AuthorizationError::Invalid("device_sso"));
+    }
 
     let state = bounded(params.get("state")?, MAX_STATE_LEN, "state")?;
     let nonce = bounded(params.get("nonce")?, MAX_NONCE_LEN, "nonce")?;

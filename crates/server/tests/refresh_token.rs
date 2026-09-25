@@ -292,6 +292,11 @@ impl Fixture {
         let verified = self.store.scope(self.tenant.id.clone()).verified_claims();
         let ida_frameworks = std::collections::BTreeSet::new();
         let handler = RefreshToken {
+            native_sso: &asterius_store_pg::PgNativeSso::new(
+                self.store.pool().clone(),
+                self.tenant.id.clone(),
+            ),
+            native_sso_approvals: &[],
             acr_policy: &asterius_domain::AcrPolicy::default(),
             roles: &roles,
             groups: &groups,
@@ -487,6 +492,11 @@ impl Fixture {
         let verified = self.store.scope(self.tenant.id.clone()).verified_claims();
         let ida_frameworks = std::collections::BTreeSet::new();
         let handler = AuthorizationCode {
+            native_sso: &asterius_store_pg::PgNativeSso::new(
+                self.store.pool().clone(),
+                self.tenant.id.clone(),
+            ),
+            native_sso_approvals: &[],
             acr_policy: &asterius_domain::AcrPolicy::default(),
             roles: &roles,
             groups: &groups,
@@ -548,6 +558,11 @@ impl Fixture {
         let verified = self.store.scope(self.tenant.id.clone()).verified_claims();
         let ida_frameworks = std::collections::BTreeSet::new();
         let handler = RefreshToken {
+            native_sso: &asterius_store_pg::PgNativeSso::new(
+                self.store.pool().clone(),
+                self.tenant.id.clone(),
+            ),
+            native_sso_approvals: &[],
             acr_policy: &asterius_domain::AcrPolicy::default(),
             roles: &roles,
             groups: &groups,

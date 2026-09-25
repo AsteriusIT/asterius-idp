@@ -1826,6 +1826,18 @@ impl ClientMetadata {
         }
         let token_binding = self.token_binding(capabilities, compliance_profile)?;
         let scopes = self.scopes()?;
+        if scopes.contains("device_sso")
+            && (application_type != ApplicationType::Native
+                || !scopes.contains("openid")
+                || !grant_types.contains(&GrantType::AuthorizationCode)
+                || !grant_types.contains(&GrantType::RefreshToken)
+                || subject_type == SubjectType::Ephemeral)
+        {
+            return Err(ClientMetadataError::rejected(
+                "scope",
+                "device_sso requires a native OIDC authorization-code and refresh client with a persistent subject",
+            ));
+        }
         if scopes.contains("bound_key")
             && (!scopes.contains("openid") || !token_binding.is_dpop_bound())
         {

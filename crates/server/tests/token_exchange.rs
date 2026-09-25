@@ -445,6 +445,14 @@ impl Fixture {
             .scope(self.tenant.id.clone())
             .users(Arc::clone(&self.kek));
         let handler = TokenExchange {
+            native_sso: &asterius_store_pg::PgNativeSso::new(
+                self.store.pool().clone(),
+                self.tenant.id.clone(),
+            ),
+            native_sso_approvals: &[],
+            refresh_tokens: &self.store.scope(self.tenant.id.clone()).refresh_tokens(),
+            sessions: &self.store.scope(self.tenant.id.clone()).sessions(),
+            acr_policy: &asterius_domain::AcrPolicy::default(),
             id_jag_approvals: &[],
             users: &users,
             clients: &clients,

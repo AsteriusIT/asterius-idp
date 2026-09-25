@@ -147,6 +147,24 @@ pub async fn verify_id_token(
     asterius_jose::verify::verify(token, &policy, &resolver, now).map_err(Rejected::Token)
 }
 
+/// Verifies a Native SSO source ID token as a session hint (draft-07 §6.3).
+/// Its `exp` may pass, but the caller must check the live sid and device secret.
+pub async fn verify_native_sso_id_token(
+    tenant: &Tenant,
+    keys: &dyn KeyStore,
+    token: &str,
+    now: OffsetDateTime,
+) -> Result<Verified, Rejected> {
+    let resolver = published(tenant, keys).await?;
+    let policy = Policy::new(
+        TypRule::OptionalOneOf(&[asterius_oidc::tokens::id_token::ID_TOKEN_TYP]),
+        SigningAlgorithm::ALL.to_vec(),
+    )
+    .issued_by(tenant.issuer.as_str())
+    .accepting_expired();
+    asterius_jose::verify::verify(token, &policy, &resolver, now).map_err(Rejected::Token)
+}
+
 /// The resolver over the key set this tenant publishes.
 ///
 /// Shared by the two verifiers above so that they cannot come to hold
