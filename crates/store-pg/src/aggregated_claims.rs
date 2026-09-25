@@ -13,7 +13,7 @@ use sqlx::PgPool;
 use time::OffsetDateTime;
 
 /// The signed claim source a user still has connected to this tenant.
-#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+#[derive(Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct StoredClaimSource {
     /// Pinned Claims Provider issuer.
     pub provider_issuer: String,
@@ -25,6 +25,17 @@ pub struct StoredClaimSource {
     pub claim_names: Vec<String>,
     /// JWT expiry, also the maximum retention deadline.
     pub expires_at: OffsetDateTime,
+}
+
+impl std::fmt::Debug for StoredClaimSource {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("StoredClaimSource")
+            .field("provider_issuer", &self.provider_issuer)
+            .field("claim_names", &self.claim_names)
+            .field("expires_at", &self.expires_at)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Signed claim sets belonging to one tenant.
