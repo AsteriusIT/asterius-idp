@@ -16,6 +16,7 @@ use asterius_server::http::protocol::{self, ClientEndpoints, ProtocolState};
 use asterius_server::http::server::{OperationalRoutes, app, not_found, serve, shutdown_signal};
 use asterius_server::observability::health::HealthState;
 use asterius_server::observability::{self, Metrics};
+use asterius_server::oid4vp::Oid4vpVerifiers;
 use asterius_server::outbound::HttpsClientUrlFetcher;
 use asterius_server::outbox::{
     CibaPingDeliverer, HttpDeliverer, JournalDeliverer, MailDeliverer, OutboxWorker,
@@ -243,6 +244,7 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
             ),
         )
         .await?;
+        let _oid4vp_verifiers = Oid4vpVerifiers::load(&config.tenants)?;
         let federation_for_sweep = federation.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));

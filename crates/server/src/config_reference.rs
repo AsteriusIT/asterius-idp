@@ -1070,6 +1070,12 @@ fn tenant() -> Section {
                 "empty (ID-JAG issuance disabled)".to_owned(),
                 "Explicit cross-domain ID-JAG approvals for managed agents. The audience is a downstream AS issuer; subject_sector_uri names its SSO subject sector; resources and scopes are strict allow-lists. No approval can be inferred from a token request.",
             ),
+            key(
+                "oid4vp_verifier",
+                "array of verifier policy tables",
+                "empty (OID4VP disabled)".to_owned(),
+                "Pins an initiating OAuth client, preregistered Wallet client ID, this tenant's /oid4vp/response URI, one JWT VC type and claim paths, holder and credential issuer identifiers and local JWKS files. Statusless credentials require explicit accept_without_status = true.",
+            ),
         ],
     }
 }
