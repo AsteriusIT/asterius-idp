@@ -4590,6 +4590,7 @@ async fn interaction_show(
 
     let scope = endpoints.store.scope(tenant.id.clone());
     let requests = scope.auth_requests();
+    let totp_credentials = scope.totp_credentials(Arc::clone(&endpoints.kek));
     let sessions = scope.sessions();
     let clients = scope.clients(endpoints.capabilities);
     let grants = scope.grants();
@@ -4669,6 +4670,7 @@ async fn interaction_show(
                 tokens: &verification_tokens,
                 mail: &mail,
             }),
+            totp_credentials: &totp_credentials,
         },
         &id,
         query.as_deref(),
@@ -4713,6 +4715,7 @@ async fn interaction_submit(
 
     let scope = endpoints.store.scope(tenant.id.clone());
     let requests = scope.auth_requests();
+    let totp_credentials = scope.totp_credentials(Arc::clone(&endpoints.kek));
     let sessions = scope.sessions();
     let clients = scope.clients(endpoints.capabilities);
     let grants = scope.grants();
@@ -4792,6 +4795,7 @@ async fn interaction_submit(
                 tokens: &verification_tokens,
                 mail: &mail,
             }),
+            totp_credentials: &totp_credentials,
         },
         &id,
         &headers,
