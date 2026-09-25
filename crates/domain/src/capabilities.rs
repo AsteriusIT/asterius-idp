@@ -364,6 +364,7 @@ mod tests {
             request_object: true,
             dynamic_client_registration: true,
             self_registration: true,
+            advanced_claims: true,
         })
         .expect("serialise");
         let fields = json.as_object().expect("object");
