@@ -100,6 +100,43 @@ async fn receive(
     let action = match event.event_type {
         LifecycleEventType::SessionRevoked => asterius_store_pg::ReceiverAction::SessionRevoked,
         LifecycleEventType::AccountDisabled => asterius_store_pg::ReceiverAction::AccountDisabled,
+        LifecycleEventType::CredentialChange => {
+            let valid_credential_type = matches!(
+                event.event.get("credential_type").and_then(Value::as_str),
+                Some(
+                    "password"
+                        | "pin"
+                        | "x509"
+                        | "fido2-platform"
+                        | "fido2-roaming"
+                        | "fido-u2f"
+                        | "verifiable-credential"
+                        | "phone-voice"
+                        | "phone-sms"
+                        | "app"
+                )
+            );
+            if !valid_credential_type {
+                return response(StatusCode::BAD_REQUEST);
+            }
+            match event.event.get("change_type").and_then(Value::as_str) {
+                // A remote credential revocation/removal cannot identify or
+                // safely mutate a local credential. Revoke sessions only.
+                Some("revoke" | "delete") => {
+                    asterius_store_pg::ReceiverAction::CredentialCompromised
+                }
+                Some("create" | "update") => asterius_store_pg::ReceiverAction::ObserveOnly,
+                _ => return response(StatusCode::BAD_REQUEST),
+            }
+        }
+    };
+    let Some(event_at) = event
+        .event
+        .get("event_timestamp")
+        .and_then(Value::as_i64)
+        .and_then(|seconds| OffsetDateTime::from_unix_timestamp(seconds).ok())
+    else {
+        return response(StatusCode::BAD_REQUEST);
     };
     match endpoints
         .store
@@ -111,11 +148,13 @@ async fn receive(
             &event.jti,
             event.replay_until,
             action,
+            event_at,
             now,
         )
         .await
     {
         Ok(asterius_store_pg::ReceiverOutcome::Applied)
+        | Ok(asterius_store_pg::ReceiverOutcome::Stale)
         | Ok(asterius_store_pg::ReceiverOutcome::Duplicate) => response(StatusCode::ACCEPTED),
         Err(asterius_domain::DomainError::Invalid { .. }) => response(StatusCode::BAD_REQUEST),
         Err(_) => response(StatusCode::INTERNAL_SERVER_ERROR),
@@ -137,6 +176,8 @@ pub enum LifecycleEventType {
     SessionRevoked,
     /// Disable the resolved local account and its sessions.
     AccountDisabled,
+    /// A credential changed; policy below applies only a session revocation.
+    CredentialChange,
 }
 
 impl LifecycleEventType {
@@ -144,6 +185,7 @@ impl LifecycleEventType {
         match uri {
             asterius_ssf::caep::SESSION_REVOKED => Some(Self::SessionRevoked),
             asterius_ssf::caep::ACCOUNT_DISABLED => Some(Self::AccountDisabled),
+            asterius_ssf::caep::CREDENTIAL_CHANGE => Some(Self::CredentialChange),
             _ => None,
         }
     }
@@ -247,6 +289,7 @@ pub async fn verify_for_configured_peer(
     let required_scope = match event.event_type {
         LifecycleEventType::SessionRevoked => RECEIVE_SCOPE,
         LifecycleEventType::AccountDisabled => DISABLE_ACCOUNT_SCOPE,
+        LifecycleEventType::CredentialChange => RECEIVE_SCOPE,
     };
     if !scopes.contains(required_scope) {
         return Err(ReceiverError::Peer);
@@ -342,6 +385,14 @@ fn parse_verified_event(
     let (uri, event) = events.iter().next().ok_or(ReceiverError::Profile)?;
     let event_type = LifecycleEventType::parse(uri).ok_or(ReceiverError::UnsupportedEvent)?;
     if !event.is_object() {
+        return Err(ReceiverError::Profile);
+    }
+    if event
+        .get("event_timestamp")
+        .and_then(Value::as_i64)
+        .and_then(|seconds| OffsetDateTime::from_unix_timestamp(seconds).ok())
+        .is_none()
+    {
         return Err(ReceiverError::Profile);
     }
     Ok(VerifiedEvent {
