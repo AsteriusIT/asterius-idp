@@ -1076,6 +1076,12 @@ fn tenant() -> Section {
                 "empty (OID4VP disabled)".to_owned(),
                 "Pins an initiating OAuth client, preregistered Wallet client ID, this tenant's /oid4vp/response URI, one JWT VC type and claim paths, holder and credential issuer identifiers and local JWKS files. Statusless credentials require explicit accept_without_status = true.",
             ),
+            key(
+                "claims_provider",
+                "array of { issuer, jwks_file, allowed_claims } tables",
+                "empty (aggregated delivery disabled)".to_owned(),
+                "Pins Claims Provider issuer, local public JWKS and approved attribute names for signed UserInfo aggregation. Up to four providers, each with up to sixteen attributes. OAuth user setup and collection are separately tracked.",
+            ),
         ],
     }
 }

@@ -366,13 +366,17 @@ pub async fn remember_participant(
 /// [`DomainError::Invalid`] when the grant names no user, the user is gone, or
 /// the stored `claims` request no longer parses; a storage error otherwise.
 pub async fn released_claims(
+    tenant: &Tenant,
     users: &PgUserRepository,
     groups: &asterius_store_pg::PgGroups,
     verified: &asterius_store_pg::PgVerifiedClaims,
+    aggregated: &asterius_store_pg::PgAggregatedClaims,
+    claims_providers: &crate::claims_provider::ClaimsProviders,
     ida_frameworks: &std::collections::BTreeSet<String>,
     grant: &Grant,
     client: &Client,
     held: &asterius_domain::HeldRoles,
+    now: time::OffsetDateTime,
 ) -> Result<ReleasedToIdToken, DomainError> {
     let id = grant
         .user
@@ -405,6 +409,15 @@ pub async fn released_claims(
             }
         }
     }
+    let rows = aggregated.by_user(id, now).await?;
+    claims.extend(claims_providers.deliver(
+        tenant,
+        &requested,
+        crate::claims_provider::Destination::IdToken,
+        &claims,
+        &rows,
+        now,
+    )?);
     Ok(ReleasedToIdToken {
         claims,
         role_claims: role_claims(&requested, client),

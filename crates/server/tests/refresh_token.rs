@@ -290,12 +290,16 @@ impl Fixture {
         let roles = asterius_store_pg::PgApplicationRoles::new(self.store.pool().clone());
         let groups = asterius_store_pg::PgGroups::new(self.store.pool().clone());
         let verified = self.store.scope(self.tenant.id.clone()).verified_claims();
+        let aggregated = self.store.scope(self.tenant.id.clone()).aggregated_claims();
+        let claims_providers = asterius_server::claims_provider::ClaimsProviders::default();
         let ida_frameworks = std::collections::BTreeSet::new();
         let handler = RefreshToken {
             acr_policy: &asterius_domain::AcrPolicy::default(),
             roles: &roles,
             groups: &groups,
             verified: &verified,
+            aggregated: &aggregated,
+            claims_providers: &claims_providers,
             ida_frameworks: &ida_frameworks,
             tokens: &tokens,
             grants: &grants,
@@ -485,12 +489,16 @@ impl Fixture {
         let roles = asterius_store_pg::PgApplicationRoles::new(self.store.pool().clone());
         let groups = asterius_store_pg::PgGroups::new(self.store.pool().clone());
         let verified = self.store.scope(self.tenant.id.clone()).verified_claims();
+        let aggregated = self.store.scope(self.tenant.id.clone()).aggregated_claims();
+        let claims_providers = asterius_server::claims_provider::ClaimsProviders::default();
         let ida_frameworks = std::collections::BTreeSet::new();
         let handler = AuthorizationCode {
             acr_policy: &asterius_domain::AcrPolicy::default(),
             roles: &roles,
             groups: &groups,
             verified: &verified,
+            aggregated: &aggregated,
+            claims_providers: &claims_providers,
             ida_frameworks: &ida_frameworks,
             codes: &codes,
             grants: &grants,
@@ -546,12 +554,16 @@ impl Fixture {
         let roles = asterius_store_pg::PgApplicationRoles::new(self.store.pool().clone());
         let groups = asterius_store_pg::PgGroups::new(self.store.pool().clone());
         let verified = self.store.scope(self.tenant.id.clone()).verified_claims();
+        let aggregated = self.store.scope(self.tenant.id.clone()).aggregated_claims();
+        let claims_providers = asterius_server::claims_provider::ClaimsProviders::default();
         let ida_frameworks = std::collections::BTreeSet::new();
         let handler = RefreshToken {
             acr_policy: &asterius_domain::AcrPolicy::default(),
             roles: &roles,
             groups: &groups,
             verified: &verified,
+            aggregated: &aggregated,
+            claims_providers: &claims_providers,
             ida_frameworks: &ida_frameworks,
             tokens: &tokens,
             grants: &grants,

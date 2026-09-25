@@ -390,6 +390,7 @@ struct ConsentOffer {
     /// `form-action` source expression can name (`ast-jsq`).
     form_action: Option<FormActionOrigin>,
     verified_claims: Vec<String>,
+    requested_claims: Vec<String>,
     transformed_claims: Vec<String>,
 }
 
@@ -513,6 +514,24 @@ async fn describe(
         .and_then(|value| asterius_oidc::claims::ClaimsRequest::from_json(value).ok())
         .map(|claims| claims.advanced_claims_consent_lines())
         .unwrap_or_default();
+    let requested_claims = request
+        .parameters
+        .get("claims")
+        .and_then(|value| asterius_oidc::claims::ClaimsRequest::from_json(value).ok())
+        .map(|claims| {
+            [
+                ("ID token", claims.id_token()),
+                ("UserInfo", claims.userinfo()),
+            ]
+            .into_iter()
+            .flat_map(|(destination, names)| {
+                names
+                    .keys()
+                    .map(move |name| format!("{destination}: {}", name.as_str()))
+            })
+            .collect()
+        })
+        .unwrap_or_default();
 
     Some(ConsentOffer {
         request: ConsentRequest::new(
@@ -528,6 +547,7 @@ async fn describe(
         ),
         form_action,
         verified_claims,
+        requested_claims,
         transformed_claims,
     })
 }
@@ -2811,6 +2831,7 @@ fn consent_page(
                 })
                 .collect(),
             verified_claims: offer.verified_claims.clone(),
+            requested_claims: offer.requested_claims.clone(),
             transformed_claims: offer.transformed_claims.clone(),
             action: chrome.action,
             csrf: chrome.csrf.expose(),

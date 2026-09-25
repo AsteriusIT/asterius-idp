@@ -261,6 +261,8 @@ pub struct ConsentPage<'a> {
     pub authorization_details: Vec<DetailLine>,
     /// Verified attributes requested for each token destination.
     pub verified_claims: Vec<String>,
+    /// Explicit OIDC claim names the RP requested at each destination.
+    pub requested_claims: Vec<String>,
     /// Base attributes consulted for explicitly requested ASC transformations.
     pub transformed_claims: Vec<String>,
     /// Where the form posts to.
@@ -1539,6 +1541,7 @@ mod tests {
                     datatypes: vec![(*hostile).to_owned()],
                 }],
                 verified_claims: Vec::new(),
+                requested_claims: Vec::new(),
                 transformed_claims: Vec::new(),
                 action: "/interaction/x/consent",
                 csrf: hostile,
@@ -1999,6 +2002,7 @@ mod tests {
                 resources: Vec::new(),
                 authorization_details: Vec::new(),
                 verified_claims: Vec::new(),
+                requested_claims: Vec::new(),
                 transformed_claims: Vec::new(),
                 action: "/x",
                 csrf: "t",
@@ -2060,6 +2064,7 @@ mod tests {
                 resources: Vec::new(),
                 authorization_details: Vec::new(),
                 verified_claims: Vec::new(),
+                requested_claims: Vec::new(),
                 transformed_claims: Vec::new(),
                 action: "/x",
                 csrf: "the-token",
@@ -2093,6 +2098,7 @@ mod tests {
             resources: Vec::new(),
             authorization_details: Vec::new(),
             verified_claims: Vec::new(),
+            requested_claims: Vec::new(),
             transformed_claims: Vec::new(),
             action: "/x",
             csrf: "t",
@@ -2186,6 +2192,7 @@ mod tests {
             resources,
             authorization_details: Vec::new(),
             verified_claims: Vec::new(),
+            requested_claims: Vec::new(),
             transformed_claims: Vec::new(),
             action: "/interaction/x",
             csrf: "t",

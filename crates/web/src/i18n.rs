@@ -264,6 +264,9 @@ catalogue! {
         ConsentVerifiedClaims => consent_verified_claims, "consent.verified-claims",
             en: "Verified identity attributes requested:",
             fr: "Attributs d’identité vérifiés demandés :";
+        ConsentRequestedClaims => consent_requested_claims, "consent.requested-claims",
+            en: "Claims requested by this application:",
+            fr: "Données demandées par cette application :";
         ConsentTransformedClaims => consent_transformed_claims, "consent.transformed-claims",
             en: "Attributes used to calculate requested claims:",
             fr: "Attributs utilisés pour calculer les données demandées :";

@@ -7,6 +7,7 @@
 
 pub mod admin;
 pub mod backchannel;
+pub mod claims_provider;
 pub mod client_auth;
 pub mod config;
 pub mod config_reference;
