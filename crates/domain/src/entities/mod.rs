@@ -7,6 +7,7 @@ pub mod application_role;
 pub mod auth_request;
 pub mod authorization_details;
 pub mod client;
+pub mod credential_issuance;
 pub mod email_verification;
 pub mod grant;
 pub mod identity_assurance;
@@ -44,6 +45,9 @@ pub use client::{
     ClientRegistration, ClientStatus, GrantType, JwksSource, ManagedGroupsClaim, RedirectUri,
     RedirectUriError, RolesInIdToken, SubjectType, TlsClientAuthSubject, TokenBinding,
     TokenDeliveryMode, TokenEndpointAuthMethod,
+};
+pub use credential_issuance::{
+    ConfigurationError as CredentialConfigurationError, CredentialConfiguration,
 };
 pub use email_verification::{
     EMAIL_VERIFICATION_LIFETIME, EMAIL_VERIFICATION_TOKEN_BITS, EmailVerificationToken,

@@ -260,6 +260,8 @@ pub struct TenantSettings {
 
     ida_frameworks: BTreeSet<String>,
     rate_limits: crate::tenant_rate_limits::TenantRateLimits,
+    /// Explicit credential issuance policy. Absence preserves the pre-VC state.
+    credential_issuance: Option<crate::CredentialConfiguration>,
 }
 
 impl Default for TenantSettings {
@@ -287,6 +289,7 @@ impl Default for TenantSettings {
 
             ida_frameworks: BTreeSet::new(),
             rate_limits: crate::tenant_rate_limits::TenantRateLimits::default(),
+            credential_issuance: None,
         }
     }
 }
@@ -322,6 +325,22 @@ impl TenantSettings {
         }
         self.ida_frameworks = frameworks;
         Ok(self)
+    }
+
+    /// One configured credential type, or none when issuance is disabled.
+    #[must_use]
+    pub const fn credential_issuance(&self) -> Option<&crate::CredentialConfiguration> {
+        self.credential_issuance.as_ref()
+    }
+
+    /// Attaches an already validated credential policy.
+    #[must_use]
+    pub fn with_credential_issuance(
+        mut self,
+        configuration: Option<crate::CredentialConfiguration>,
+    ) -> Self {
+        self.credential_issuance = configuration;
+        self
     }
 
     /// This tenant's session policy; absence preserves the issuance defaults.
@@ -402,6 +421,7 @@ impl TenantSettings {
 
             ida_frameworks: BTreeSet::new(),
             rate_limits: crate::tenant_rate_limits::TenantRateLimits::default(),
+            credential_issuance: None,
         })
     }
 
@@ -675,6 +695,7 @@ impl TenantSettings {
 
             "ida_frameworks": self.ida_frameworks,
             "rate_limits": self.rate_limits.to_json(),
+            "credential_issuance": self.credential_issuance.as_ref().map(crate::CredentialConfiguration::to_json),
         })
     }
 
@@ -810,6 +831,10 @@ impl TenantSettings {
             Some(serde_json::Value::Bool(allowed)) => *allowed,
             Some(_) => return Err(TenantSettingsError::NotABoolean("allow_non_fapi_clients")),
         };
+        let credential_issuance = match object.get("credential_issuance") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(document) => Some(crate::CredentialConfiguration::from_json(document)?),
+        };
 
         let ida_frameworks = match object.get("ida_frameworks") {
             None | Some(serde_json::Value::Null) => BTreeSet::new(),
@@ -841,6 +866,7 @@ impl TenantSettings {
             .with_rate_limits(crate::tenant_rate_limits::TenantRateLimits::from_json(
                 object.get("rate_limits"),
             )?)
+            .with_credential_issuance(credential_issuance)
             .with_acr_policy(acr_policy)
     }
 }
@@ -870,6 +896,9 @@ pub enum TenantSettingsError {
     /// The explicit IDA trust-framework allowlist is malformed or unbounded.
     #[error("invalid IDA trust-framework allowlist")]
     InvalidIdaFrameworks,
+    /// An invalid stored credential issuance policy.
+    #[error(transparent)]
+    CredentialConfiguration(#[from] crate::CredentialConfigurationError),
     /// Invalid tenant session deadlines.
     #[error(transparent)]
     SessionPolicy(#[from] crate::entities::session::SessionPolicyError),

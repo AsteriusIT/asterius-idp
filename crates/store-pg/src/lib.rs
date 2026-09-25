@@ -30,6 +30,7 @@ mod invitations;
 mod key_store;
 mod keys;
 mod notifications;
+mod oid4vci_nonces;
 mod outbox;
 mod overview;
 mod passkeys;
@@ -90,6 +91,7 @@ pub use invitations::{
 pub use key_store::TenantKeyStore;
 pub use keys::{PgKeyRepository, Rotation, RotationSchedule};
 pub use notifications::{PgOutboxMailSender, QueuedNotification};
+pub use oid4vci_nonces::{NONCE_LIFETIME as OID4VCI_NONCE_LIFETIME, PgOid4vciNonces};
 pub use outbox::{
     Backoff, DEFAULT_LEASE, DEFAULT_MAX_ATTEMPTS, NewOutboxEntry, Outcome, PgOutbox, PgTransaction,
     Verdict, enqueue,
