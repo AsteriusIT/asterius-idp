@@ -1,26 +1,32 @@
 //! SCIM 2.0 discovery documents and wire errors (RFC 7643 §§5–7, RFC 7644 §4).
 //!
 //! Resource catalogues remain empty until the Users and Groups provisioning
-//! handlers exist. Discovery must never advertise an endpoint that returns 404.
+//! handlers are complete. Discovery must never advertise incomplete resources.
 
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
 use crate::AdminError;
+use asterius_domain::User;
+use time::format_description::well_known::Rfc3339;
 
 /// SCIM media type required by RFC 7644 §3.1.
 pub const MEDIA_TYPE: &str = "application/scim+json";
 const LIST: &str = "urn:ietf:params:scim:api:messages:2.0:ListResponse";
 const ERROR: &str = "urn:ietf:params:scim:api:messages:2.0:Error";
 const CONFIG: &str = "urn:ietf:params:scim:schemas:core:2.0:ServiceProviderConfig";
+const USER: &str = "urn:ietf:params:scim:schemas:core:2.0:User";
 
-/// Identifies the three discovery routes for their wire error envelope.
+/// Identifies SCIM routes for their wire error envelope.
 #[must_use]
-pub fn is_discovery(id: &str) -> bool {
+pub fn is_route(id: &str) -> bool {
     matches!(
         id,
-        crate::SCIM_CONFIG_ID | crate::SCIM_SCHEMAS_ID | crate::SCIM_RESOURCE_TYPES_ID
+        crate::SCIM_CONFIG_ID
+            | crate::SCIM_SCHEMAS_ID
+            | crate::SCIM_RESOURCE_TYPES_ID
+            | crate::SCIM_USER_READ_ID
     )
 }
 
@@ -75,8 +81,41 @@ fn list(resources: Vec<Value>) -> Value {
     })
 }
 
+/// A tenant User with only account profile and lifecycle fields. Credentials,
+/// passkeys, claims and roles do not cross this boundary.
+///
+/// # Errors
+///
+/// Fails closed if persisted timestamps cannot be represented as RFC 3339.
+pub fn user_response(user: &User, base: &str) -> Result<Response, AdminError> {
+    let created = user
+        .created_at
+        .format(&Rfc3339)
+        .map_err(|_| AdminError::Unavailable)?;
+    let modified = user
+        .updated_at
+        .format(&Rfc3339)
+        .map_err(|_| AdminError::Unavailable)?;
+    let mut body = json!({
+        "schemas": [USER],
+        "id": user.id.as_uuid().to_string(),
+        "userName": user.username,
+        "active": user.can_authenticate(),
+        "meta": {
+            "resourceType": "User",
+            "created": created,
+            "lastModified": modified,
+            "location": format!("{base}/Users/{}", user.id.as_uuid()),
+        },
+    });
+    if let Some(email) = &user.email {
+        body["emails"] = json!([{"value": email, "type": "work", "primary": true}]);
+    }
+    Ok(response(StatusCode::OK, body))
+}
+
 /// Renders one registered discovery operation. Users and Groups will be added
-/// to these catalogues with their handlers (`ast-s36.13.2` and `.3`).
+/// to these catalogues when their handlers are complete (`ast-s36.13.2` and `.3`).
 #[must_use]
 pub fn discovery_response(id: &str, base: &str) -> Response {
     let body = match id {

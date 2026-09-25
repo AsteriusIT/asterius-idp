@@ -224,6 +224,8 @@ pub const SCIM_CONFIG_ID: &str = "scim.config.read";
 pub const SCIM_SCHEMAS_ID: &str = "scim.schemas.list";
 /// SCIM 2.0 resource type catalogue.
 pub const SCIM_RESOURCE_TYPES_ID: &str = "scim.resource_types.list";
+/// Reads one tenant User using the SCIM 2.0 representation.
+pub const SCIM_USER_READ_ID: &str = "scim.users.read";
 /// The `operationId` of `POST /groups`.
 pub const GROUP_CREATE_ID: &str = "groups.create";
 /// The `operationId` of `GET /groups/{group_id}`.
@@ -1463,7 +1465,16 @@ pub const SCIM_RESOURCE_TYPES: Operation = Operation::read(
     "SCIM 2.0 resource types",
 );
 
-static REGISTRY: [Operation; 99] = [
+/// Reads an account through the provisioning profile.
+pub const SCIM_USER_READ: Operation = Operation::read(
+    SCIM_USER_READ_ID,
+    "/scim/v2/Users/{user_id}",
+    S::Get,
+    A::new(R::AutomationTenant, "admin.scim:read"),
+    "One tenant User in the SCIM 2.0 representation",
+);
+
+static REGISTRY: [Operation; 100] = [
     SESSION_READ,
     SESSION_END,
     OVERVIEW_USERS,
@@ -1537,6 +1548,7 @@ static REGISTRY: [Operation; 99] = [
     SCIM_CONFIG,
     SCIM_SCHEMAS,
     SCIM_RESOURCE_TYPES,
+    SCIM_USER_READ,
     GROUP_CREATE,
     GROUP_READ,
     GROUP_UPDATE,

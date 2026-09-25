@@ -153,7 +153,7 @@ impl AdminApi {
 async fn dispatch(operation: Operation, state: AdminState, request: Request) -> Response {
     match handle(operation, &state, request).await {
         Ok(response) => response,
-        Err(refusal) if scim::is_discovery(operation.id()) => scim::error_response(&refusal),
+        Err(refusal) if scim::is_route(operation.id()) => scim::error_response(&refusal),
         Err(refusal) => refusal.into_response(),
     }
 }
@@ -311,6 +311,7 @@ async fn route_standard(
                 ),
             ))
         }
+        crate::SCIM_USER_READ_ID => context.scim_read_user().await,
         crate::TENANTS_LIST_ID => context.list_tenants().await,
         crate::TENANT_READ_ID => context.read_tenant().await,
         crate::TENANT_CREATE_ID => context.create_tenant(body).await,
@@ -485,6 +486,32 @@ struct Handling<'a> {
 }
 
 impl Handling<'_> {
+    async fn scim_read_user(&self) -> Result<Response, AdminError> {
+        let id = self
+            .path
+            .rsplit('/')
+            .next()
+            .and_then(|segment| uuid::Uuid::parse_str(segment).ok())
+            .map(asterius_domain::UserId::new)
+            .ok_or(AdminError::NotFound)?;
+        let user = self
+            .state
+            .backend
+            .users()
+            .find(&self.tenant.id, id)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::SCIM_USER_READ_ID, &error))?
+            .ok_or(AdminError::NotFound)?;
+        scim::user_response(
+            &user,
+            &format!(
+                "{}{}/scim/v2",
+                self.tenant.issuer.as_str(),
+                crate::BASE_PATH
+            ),
+        )
+    }
+
     async fn list_invitation_statuses(&self) -> Result<Response, AdminError> {
         let items = self
             .state
