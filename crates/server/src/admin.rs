@@ -724,6 +724,221 @@ impl asterius_admin_api::ssf::SsfAdministration for DeploymentSsf {
 /// the admin API takes a `dyn ClientAdministration` handle: the object behind
 /// it is what a handler can reach, and this one can reach a tenant's clients
 /// and the outbound fetcher and nothing else.
+fn public_jwks_metadata_valid(set: &serde_json::Value) -> bool {
+    let Some(keys) = set.get("keys").and_then(serde_json::Value::as_array) else {
+        return false;
+    };
+    if keys.is_empty() {
+        return false;
+    }
+    let mut kids = std::collections::BTreeSet::new();
+    keys.iter().all(|key| {
+        let kid = key.get("kid").and_then(serde_json::Value::as_str);
+        let kty = key.get("kty").and_then(serde_json::Value::as_str);
+        kid.is_some_and(|kid| !kid.is_empty() && kids.insert(kid.to_owned()))
+            && kty.is_some_and(|kty| !kty.is_empty())
+            && ["d", "p", "q", "dp", "dq", "qi", "k", "oth"]
+                .iter()
+                .all(|member| key.get(member).is_none())
+    })
+}
+
+async fn issuer_health_checks(
+    outbound: &dyn ClientUrlFetcher,
+    issuer: &str,
+) -> (
+    serde_json::Value,
+    serde_json::Value,
+    Option<serde_json::Value>,
+) {
+    let discovery_url = format!(
+        "{}/.well-known/openid-configuration",
+        issuer.trim_end_matches('/')
+    );
+    let discovery = outbound
+        .fetch(&discovery_url)
+        .await
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+    let discovery_matches = discovery
+        .as_ref()
+        .and_then(|document| document.get("issuer"))
+        .and_then(serde_json::Value::as_str)
+        == Some(issuer);
+    let discovery_check = serde_json::json!({
+        "name": "discovery_issuer",
+        "status": if discovery_matches { "pass" } else { "fail" },
+        "message": if discovery_matches {
+            "The discovery document is reachable and its issuer exactly matches this tenant. Configure the client with this issuer and its discovery URL."
+        } else {
+            "The discovery document could not be fetched or its issuer did not exactly match this tenant. Check the public issuer URL, reverse-proxy routing, TLS, and discovery response."
+        }
+    });
+    let jwks_uri = discovery
+        .as_ref()
+        .and_then(|document| document.get("jwks_uri"))
+        .and_then(serde_json::Value::as_str);
+    let jwks = match jwks_uri {
+        Some(uri) => outbound
+            .fetch(uri)
+            .await
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok()),
+        None => None,
+    };
+    let keys_valid = jwks.as_ref().is_some_and(public_jwks_metadata_valid);
+    let jwks_check = serde_json::json!({
+        "name": "issuer_jwks",
+        "status": if keys_valid { "pass" } else { "fail" },
+        "message": if keys_valid {
+            "The JWKS URI advertised by discovery is reachable and publishes public keys with unique IDs and key types."
+        } else {
+            "The JWKS URI advertised by discovery could not be fetched or has invalid public key metadata. Check discovery's jwks_uri and publish a valid public JWK Set."
+        }
+    });
+    (discovery_check, jwks_check, discovery)
+}
+
+fn registration_health_checks(
+    registration: &asterius_domain::ClientRegistration,
+    discovery: Option<&serde_json::Value>,
+) -> Vec<serde_json::Value> {
+    let mut checks = vec![serde_json::json!({
+        "name": "callbacks",
+        "status": if registration.redirect_uris.is_empty() { "fail" } else { "pass" },
+        "message": if registration.redirect_uris.is_empty() {
+            "Register at least one exact callback URL allowed for this application type and make the application use the same URL."
+        } else {
+            "At least one callback is registered. Use the exact registered URL, including path and case; web callbacks use HTTPS and native loopback callbacks may use HTTP."
+        }
+    })];
+    let auth_method = registration.token_endpoint_auth_method;
+    let auth_supported = discovery
+        .and_then(|document| document.get("token_endpoint_auth_methods_supported"))
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|methods| {
+            methods
+                .iter()
+                .any(|method| method.as_str() == Some(auth_method.as_str()))
+        });
+    let auth_message = if auth_supported {
+        match auth_method {
+            asterius_domain::TokenEndpointAuthMethod::PrivateKeyJwt => {
+                "The client uses private_key_jwt. Confirm its signing key is available to the application and its public key is published."
+            }
+            asterius_domain::TokenEndpointAuthMethod::TlsClientAuth => {
+                "The client uses tls_client_auth. Confirm the client certificate chains to this deployment's configured trust anchor."
+            }
+            asterius_domain::TokenEndpointAuthMethod::SelfSignedTlsClientAuth => {
+                "The client uses self_signed_tls_client_auth. Confirm the certificate thumbprint matches the registered public key."
+            }
+            asterius_domain::TokenEndpointAuthMethod::ClientSecretBasic => {
+                "This OIDC compatibility profile uses client_secret_basic. Keep the server-issued secret private and use the configured basic-auth method."
+            }
+        }
+    } else {
+        "The registered authentication method is not advertised by discovery. Choose a method from token_endpoint_auth_methods_supported and update the client."
+    };
+    checks.push(serde_json::json!({
+        "name": "client_authentication",
+        "status": if auth_supported { "pass" } else { "fail" },
+        "message": auth_message,
+    }));
+    let dpop = registration.token_binding.is_dpop_bound();
+    let mtls = registration.token_binding.is_certificate_bound();
+    let dpop_supported = discovery
+        .and_then(|document| document.get("dpop_signing_alg_values_supported"))
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|algorithms| !algorithms.is_empty());
+    let mtls_supported = discovery
+        .and_then(|document| document.get("tls_client_certificate_bound_access_tokens"))
+        .and_then(serde_json::Value::as_bool)
+        == Some(true);
+    let bearer_supported = registration.token_binding.is_bearer()
+        && registration.compliance_profile == asterius_domain::ClientComplianceProfile::Oidc;
+    let binding_supported =
+        (dpop && dpop_supported) || (mtls && mtls_supported) || bearer_supported;
+    let binding_message = if dpop && dpop_supported {
+        "Access tokens are bound to DPoP. Discovery advertises supported proof algorithms; send a fresh proof for each protected request."
+    } else if mtls && mtls_supported {
+        "Access tokens are certificate bound. Discovery advertises mTLS-bound tokens; present the same trusted client certificate when using them."
+    } else if bearer_supported {
+        "This explicitly selected standard OIDC client uses bearer tokens. Prefer DPoP or mTLS where the client supports sender constraints."
+    } else if dpop {
+        "Discovery does not advertise DPoP proof algorithms. Check tenant protocol capability and DPoP configuration."
+    } else if mtls {
+        "Discovery does not advertise certificate-bound access tokens. Enable and configure mTLS for the tenant."
+    } else {
+        "This registration has no supported sender constraint. Select DPoP or mTLS for FAPI."
+    };
+    checks.push(serde_json::json!({
+        "name": "sender_constraint",
+        "status": if binding_supported { "pass" } else { "fail" },
+        "message": binding_message,
+    }));
+    checks
+}
+
+async fn client_jwks_health_check(
+    outbound: &dyn ClientUrlFetcher,
+    registration: &asterius_domain::ClientRegistration,
+) -> serde_json::Value {
+    let jwks = match &registration.jwks {
+        asterius_domain::JwksSource::Uri(uri) => outbound
+            .fetch(uri)
+            .await
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok()),
+        asterius_domain::JwksSource::Inline(value) => Some(value.clone()),
+        asterius_domain::JwksSource::None => None,
+    };
+    let auth_method = registration.token_endpoint_auth_method;
+    let client_jwks_required = matches!(
+        auth_method,
+        asterius_domain::TokenEndpointAuthMethod::PrivateKeyJwt
+            | asterius_domain::TokenEndpointAuthMethod::SelfSignedTlsClientAuth
+    ) || registration.request_object_signing_alg.is_some();
+    let keys_valid = match &registration.jwks {
+        asterius_domain::JwksSource::None => !client_jwks_required,
+        _ => jwks.as_ref().is_some_and(public_jwks_metadata_valid),
+    };
+    let message = if matches!(registration.jwks, asterius_domain::JwksSource::None) {
+        "No client JWK Set is needed for this registered authentication method."
+    } else if keys_valid {
+        "The registered public key set is reachable and has unique key IDs and key types without private key members."
+    } else if matches!(registration.jwks, asterius_domain::JwksSource::Uri(_)) {
+        "The registered public key URL could not be fetched or did not return a usable public JWK Set. Publish HTTPS JSON with unique kid and kty values; private key members must stay private."
+    } else {
+        "The registered public JWK Set is missing or unusable. Provide public keys with unique kid and kty values; keep private key members out of the registration."
+    };
+    serde_json::json!({
+        "name": "public_jwks",
+        "status": if keys_valid { "pass" } else { "fail" },
+        "message": message,
+    })
+}
+
+#[cfg(test)]
+mod integration_health_tests {
+    use super::public_jwks_metadata_valid;
+    use serde_json::json;
+
+    #[test]
+    fn jwks_health_requires_nonempty_public_keys_with_unique_kids_and_types() {
+        assert!(public_jwks_metadata_valid(&json!({"keys": [
+            {"kty": "EC", "kid": "one", "crv": "P-256", "x": "x", "y": "y"},
+            {"kty": "RSA", "kid": "two", "n": "n", "e": "AQAB"}
+        ]})));
+        assert!(!public_jwks_metadata_valid(&json!({"keys": []})));
+        assert!(!public_jwks_metadata_valid(&json!({"keys": [
+            {"kty": "EC", "kid": "same"}, {"kty": "RSA", "kid": "same"}
+        ]})));
+        assert!(!public_jwks_metadata_valid(&json!({"keys": [
+            {"kty": "EC", "kid": "private", "d": "secret"}
+        ]})));
+    }
+}
+
 #[derive(Clone)]
 struct DeploymentClients {
     store: Store,
@@ -757,6 +972,27 @@ impl ClientAdministration for DeploymentClients {
             .clients(self.capabilities)
             .find(client_id)
             .await
+    }
+
+    async fn integration_health(
+        &self,
+        tenant: &TenantId,
+        client_id: &ClientId,
+        issuer: &str,
+    ) -> Result<serde_json::Value, DomainError> {
+        let client = self
+            .find(tenant, client_id)
+            .await?
+            .ok_or(DomainError::NotFound)?;
+        let (discovery_check, issuer_jwks_check, discovery) =
+            issuer_health_checks(self.outbound.as_ref(), issuer).await;
+        let mut checks = vec![discovery_check, issuer_jwks_check];
+        checks.extend(registration_health_checks(
+            &client.registration,
+            discovery.as_ref(),
+        ));
+        checks.push(client_jwks_health_check(self.outbound.as_ref(), &client.registration).await);
+        Ok(serde_json::json!({ "checks": checks }))
     }
 
     async fn create(

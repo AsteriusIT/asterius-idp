@@ -116,6 +116,11 @@ td, [data-slot='table-cell'] { padding: calc(var(--table-cell-y) + 6px) 16px; fo
 .application-connection-grid dd { min-width: 0; }
 .application-connection-grid code { display: block; overflow-wrap: anywhere; font-size: 13px; }
 .application-connection-wide { grid-column: 1 / -1; }
+.application-health { display: grid; gap: 12px; margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--line); }
+.application-health-checks { display: grid; gap: 10px; padding: 0; list-style: none; }
+.application-health-checks li { display: flex; align-items: flex-start; gap: 10px; }
+.application-health-checks li span { display: grid; gap: 4px; }
+.application-health-checks small { color: var(--muted); }
 .credential-secret-panel { margin-bottom: 22px; border-color: color-mix(in srgb, var(--warning) 45%, var(--line)); }
 .credential-secret-value code { display: block; padding: 14px; overflow-wrap: anywhere; border-radius: 7px; background: var(--surface-sunken); user-select: all; }
 .credential-secret-actions { margin: 8px 0 24px; padding: 20px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-sunken); }

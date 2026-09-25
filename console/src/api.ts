@@ -128,8 +128,8 @@ async function request(target: string, init: RequestInit, label = target): Promi
 }
 
 /** Reads a resource. */
-export async function read(path: string): Promise<unknown> {
-  return request(API_BASE + path, { method: 'GET' }, path);
+export async function read(path: string, headers: Readonly<Record<string, string>> = {}): Promise<unknown> {
+  return request(API_BASE + path, { method: 'GET', headers }, path);
 }
 
 /** Reads a public protocol document at the tenant's canonical issuer URL. */

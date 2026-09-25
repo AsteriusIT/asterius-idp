@@ -312,6 +312,7 @@ async fn route_standard(
         crate::THEME_RESET_ID => context.reset_theme().await,
         crate::CLIENTS_LIST_ID => context.list_clients().await,
         crate::CLIENT_READ_ID => context.read_client().await,
+        crate::CLIENT_HEALTH_ID => context.check_client_health().await,
         crate::CLIENT_CREATE_ID => context.create_client(body).await,
         crate::CLIENT_UPDATE_ID => context.update_client(body).await,
         crate::CLIENT_RESOURCES_UPDATE_ID => context.update_client_resources(body).await,
@@ -1431,6 +1432,50 @@ impl Handling<'_> {
         let client = self.load_client(&id, crate::CLIENT_READ_ID).await?;
 
         Ok(json_no_store(StatusCode::OK, &clients::document(&client)))
+    }
+
+    /// `GET /clients/{client_id}/health` — safe, read-only integration checks.
+    async fn check_client_health(&self) -> Result<Response, AdminError> {
+        let id = self.client_in_path("/health")?;
+        let incoming_request_id = self
+            .headers
+            .get("x-request-id")
+            .and_then(|value| value.to_str().ok());
+        if incoming_request_id.is_some_and(|value| {
+            value.is_empty()
+                || value.len() > 128
+                || value.chars().any(|character| {
+                    !(character.is_ascii_alphanumeric() || "-_.".contains(character))
+                })
+        }) {
+            return Err(AdminError::Invalid("X-Request-ID must contain at most 128 letters, digits, hyphens, underscores or dots".to_owned()));
+        }
+        let request_id =
+            incoming_request_id.map_or_else(|| uuid::Uuid::new_v4().to_string(), ToOwned::to_owned);
+        let result = self
+            .state
+            .backend
+            .clients()
+            .integration_health(&self.tenant.id, &id, self.tenant.issuer.as_str())
+            .await
+            .map_err(|error| AdminError::from_storage(crate::CLIENT_HEALTH_ID, &error))?;
+        let detail = Detail::new()
+            .label("operation", crate::CLIENT_HEALTH_ID)
+            .text("client_id", id.as_str())
+            .text("health_check_id", request_id.clone());
+        self.record(EventType::CLIENT_READ, detail).await;
+        let mut response = result;
+        if let Some(object) = response.as_object_mut() {
+            object.insert(
+                "request_id".to_owned(),
+                serde_json::Value::String(request_id),
+            );
+            object.insert(
+                "audit_event".to_owned(),
+                serde_json::Value::String(EventType::CLIENT_READ.as_str().to_owned()),
+            );
+        }
+        Ok(json_no_store(StatusCode::OK, &response))
     }
 
     /// `POST /clients` — registers a client from the console.
