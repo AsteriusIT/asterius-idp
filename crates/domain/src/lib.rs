@@ -29,6 +29,7 @@ pub mod rate_limit;
 pub mod secret;
 mod secret_audit;
 pub mod tenant_rate_limits;
+pub mod totp;
 
 pub use administration::{
     CredentialSummary, NewAccount, PasskeySummary, PasswordReset, SessionSummary, Terminated,

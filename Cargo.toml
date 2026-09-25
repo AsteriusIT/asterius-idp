@@ -51,6 +51,8 @@ time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"
 async-trait = "0.1"
 zeroize = { version = "1", features = ["derive"] }
 sha2 = "0.10"
+hmac = "0.12"
+sha1 = "0.10"
 hex = "0.4"
 # CBOR, for the WebAuthn attestation object and COSE keys (ast-2vk.3).
 # Pure Rust and no crypto: it decodes a byte string, which is exactly the
