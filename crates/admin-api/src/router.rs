@@ -312,6 +312,7 @@ async fn route_standard(
             ))
         }
         crate::SCIM_USER_READ_ID => context.scim_read_user().await,
+        crate::SCIM_USER_CREATE_ID => context.scim_create_user(body).await,
         crate::TENANTS_LIST_ID => context.list_tenants().await,
         crate::TENANT_READ_ID => context.read_tenant().await,
         crate::TENANT_CREATE_ID => context.create_tenant(body).await,
@@ -509,6 +510,43 @@ impl Handling<'_> {
                 self.tenant.issuer.as_str(),
                 crate::BASE_PATH
             ),
+            StatusCode::OK,
+        )
+    }
+
+    async fn scim_create_user(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let requested: scim::RequestedUser = self.parse_body(body).await?;
+        let mut account = users::accept_account(&requested.account()?, &self.tenant.id, self.now)?;
+        if !requested.active {
+            account.user.status = asterius_domain::UserStatus::Disabled;
+        }
+        let stored =
+            self.state
+                .backend
+                .users()
+                .create(account)
+                .await
+                .map_err(|error| match error {
+                    DomainError::Conflict(message) => AdminError::Conflict(message),
+                    other => AdminError::from_storage(crate::SCIM_USER_CREATE_ID, &other),
+                })?;
+        self.record_about(
+            EventType::USER_CREATED,
+            &stored.id,
+            Detail::new()
+                .label("operation", crate::SCIM_USER_CREATE_ID)
+                .flag("scim", true)
+                .flag("active", requested.active),
+        )
+        .await;
+        scim::user_response(
+            &stored,
+            &format!(
+                "{}{}/scim/v2",
+                self.tenant.issuer.as_str(),
+                crate::BASE_PATH
+            ),
+            StatusCode::CREATED,
         )
     }
 

@@ -226,6 +226,8 @@ pub const SCIM_SCHEMAS_ID: &str = "scim.schemas.list";
 pub const SCIM_RESOURCE_TYPES_ID: &str = "scim.resource_types.list";
 /// Reads one tenant User using the SCIM 2.0 representation.
 pub const SCIM_USER_READ_ID: &str = "scim.users.read";
+/// Creates a tenant User through the restricted SCIM profile.
+pub const SCIM_USER_CREATE_ID: &str = "scim.users.create";
 /// The `operationId` of `POST /groups`.
 pub const GROUP_CREATE_ID: &str = "groups.create";
 /// The `operationId` of `GET /groups/{group_id}`.
@@ -1473,8 +1475,16 @@ pub const SCIM_USER_READ: Operation = Operation::read(
     A::new(R::AutomationTenant, "admin.scim:read"),
     "One tenant User in the SCIM 2.0 representation",
 );
+/// Creates an account without accepting credentials or role grants.
+pub const SCIM_USER_CREATE: Operation = Operation::mutation(
+    SCIM_USER_CREATE_ID,
+    "/scim/v2/Users",
+    M::Post,
+    A::new(R::AutomationTenant, "admin.scim:write"),
+    "Creates one tenant User from the restricted SCIM profile",
+);
 
-static REGISTRY: [Operation; 100] = [
+static REGISTRY: [Operation; 101] = [
     SESSION_READ,
     SESSION_END,
     OVERVIEW_USERS,
@@ -1549,6 +1559,7 @@ static REGISTRY: [Operation; 100] = [
     SCIM_SCHEMAS,
     SCIM_RESOURCE_TYPES,
     SCIM_USER_READ,
+    SCIM_USER_CREATE,
     GROUP_CREATE,
     GROUP_READ,
     GROUP_UPDATE,

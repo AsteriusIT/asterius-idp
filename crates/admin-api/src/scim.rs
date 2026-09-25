@@ -5,6 +5,7 @@
 
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::AdminError;
@@ -27,6 +28,7 @@ pub fn is_route(id: &str) -> bool {
             | crate::SCIM_SCHEMAS_ID
             | crate::SCIM_RESOURCE_TYPES_ID
             | crate::SCIM_USER_READ_ID
+            | crate::SCIM_USER_CREATE_ID
     )
 }
 
@@ -71,7 +73,7 @@ pub fn error_response(error: &AdminError) -> Response {
     response
 }
 
-fn list(resources: Vec<Value>) -> Value {
+fn list(resources: &[Value]) -> Value {
     json!({
         "schemas": [LIST],
         "totalResults": resources.len(),
@@ -87,7 +89,7 @@ fn list(resources: Vec<Value>) -> Value {
 /// # Errors
 ///
 /// Fails closed if persisted timestamps cannot be represented as RFC 3339.
-pub fn user_response(user: &User, base: &str) -> Result<Response, AdminError> {
+pub fn user_response(user: &User, base: &str, status: StatusCode) -> Result<Response, AdminError> {
     let created = user
         .created_at
         .format(&Rfc3339)
@@ -111,7 +113,76 @@ pub fn user_response(user: &User, base: &str) -> Result<Response, AdminError> {
     if let Some(email) = &user.email {
         body["emails"] = json!([{"value": email, "type": "work", "primary": true}]);
     }
-    Ok(response(StatusCode::OK, body))
+    let mut response = response(status, body);
+    if status == StatusCode::CREATED {
+        let location = format!("{base}/Users/{}", user.id.as_uuid());
+        let value = HeaderValue::from_str(&location).map_err(|_| AdminError::Unavailable)?;
+        response.headers_mut().insert(header::LOCATION, value);
+    }
+    Ok(response)
+}
+
+/// The writable account subset. Unknown attributes are refused instead of
+/// being silently dropped, especially `password`, `roles` and extensions.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestedUser {
+    pub schemas: Vec<String>,
+    #[serde(rename = "userName")]
+    pub user_name: String,
+    #[serde(default = "default_active")]
+    pub active: bool,
+    #[serde(default)]
+    pub emails: Vec<RequestedEmail>,
+}
+
+const fn default_active() -> bool {
+    true
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestedEmail {
+    pub value: String,
+    #[serde(default, rename = "type")]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub primary: bool,
+}
+
+impl RequestedUser {
+    /// Maps the protocol document into the existing account admission path.
+    /// No SCIM input can set `email_verified` or a credential.
+    ///
+    /// # Errors
+    ///
+    /// Refuses unsupported extensions, multiple addresses and bad email types.
+    pub fn account(&self) -> Result<crate::users::RequestedAccount, AdminError> {
+        if self.schemas != [USER] {
+            return Err(AdminError::Invalid(
+                "unsupported SCIM User schema".to_owned(),
+            ));
+        }
+        if self.emails.len() > 1 {
+            return Err(AdminError::Invalid(
+                "one primary email is supported".to_owned(),
+            ));
+        }
+        if let Some(email) = self.emails.first()
+            && email.kind.as_deref().is_some_and(|kind| kind != "work")
+        {
+            return Err(AdminError::Invalid(
+                "only work email is supported".to_owned(),
+            ));
+        }
+        Ok(crate::users::RequestedAccount {
+            username: self.user_name.clone(),
+            email: self.emails.first().map(|email| email.value.clone()),
+            email_verified: false,
+            password: None,
+            claims: None,
+        })
+    }
 }
 
 /// Renders one registered discovery operation. Users and Groups will be added
@@ -136,7 +207,7 @@ pub fn discovery_response(id: &str, base: &str) -> Response {
             }],
             "meta": {"resourceType": "ServiceProviderConfig", "location": format!("{base}/ServiceProviderConfig")},
         }),
-        crate::SCIM_SCHEMAS_ID | crate::SCIM_RESOURCE_TYPES_ID => list(Vec::new()),
+        crate::SCIM_SCHEMAS_ID | crate::SCIM_RESOURCE_TYPES_ID => list(&[]),
         _ => return error_response(&AdminError::NotFound),
     };
     response(StatusCode::OK, body)
