@@ -95,7 +95,8 @@
     "openid",
     "profile",
     "email",
-    "offline_access"
+    "offline_access",
+    "bound_key"
   ],
   "subject_types_supported": [
     "public",

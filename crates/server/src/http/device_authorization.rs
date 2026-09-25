@@ -192,6 +192,7 @@ pub async fn authorize(
     let new = NewDeviceAuthorization {
         client_id: client.id.as_str().to_owned(),
         scopes: request.scopes.iter().cloned().collect(),
+        dpop_jkt: request.dpop_jkt,
         authorization_details: serde_json::Value::Array(request.authorization_details.to_json()),
         expires_at,
         interval: rfc8628::POLL_INTERVAL,

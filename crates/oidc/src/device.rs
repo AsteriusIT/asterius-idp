@@ -296,6 +296,8 @@ pub struct DeviceRequest {
     /// RFC 9396 §3's rich authorization, already checked against the client's
     /// §9.2 allow-list.
     pub authorization_details: AuthorizationDetails,
+    /// The key pinned by OpenID Connect Key Binding's `bound_key` request.
+    pub dpop_jkt: Option<String>,
 }
 
 /// Validates a device authorization request.
@@ -338,13 +340,6 @@ pub fn validate(
 
     let mut scopes = BTreeSet::new();
     for token in params.get("scope")?.unwrap_or_default().split_whitespace() {
-        // Key Binding 1.0 requires a pinned `dpop_jkt` at this endpoint and a
-        // code-bound DPoP proof at redemption. Until both travel with the
-        // device authorization row, fail closed instead of issuing an ID Token
-        // whose `cnf` has no relationship to the original device request.
-        if token == "bound_key" {
-            return Err(AuthorizationError::Invalid("scope"));
-        }
         // As at the authorization endpoint: an over-broad request is refused
         // rather than trimmed, so a client is never handed a token narrower
         // than the one it believes it asked for.
@@ -355,6 +350,28 @@ pub fn validate(
             return Err(AuthorizationError::Invalid("scope"));
         }
         scopes.insert(token.to_owned());
+    }
+
+    let dpop_jkt = params
+        .get("dpop_jkt")?
+        .map(|raw| {
+            if raw.len() == 43
+                && raw
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            {
+                Ok(raw.to_owned())
+            } else {
+                Err(AuthorizationError::Invalid("dpop_jkt"))
+            }
+        })
+        .transpose()?;
+    if scopes.contains("bound_key")
+        && (!scopes.contains("openid")
+            || dpop_jkt.is_none()
+            || !registration.token_binding.is_dpop_bound())
+    {
+        return Err(AuthorizationError::Invalid("bound_key"));
     }
 
     let authorization_details = match params.get("authorization_details")? {
@@ -375,6 +392,7 @@ pub fn validate(
     Ok(DeviceRequest {
         scopes,
         authorization_details,
+        dpop_jkt,
     })
 }
 

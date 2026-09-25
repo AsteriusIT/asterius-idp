@@ -582,7 +582,7 @@ pub fn provider_metadata(
         // honours (`ast-1sk.5`).
         "claims_parameter_supported": true,
 
-        "scopes_supported": ["openid", "profile", "email", "offline_access"],
+        "scopes_supported": ["openid", "profile", "email", "offline_access", "bound_key"],
         "claims_supported": claims_supported(),
         // `claims_locales_supported` is deliberately absent. OIDC Discovery §3
         // makes it OPTIONAL, and the honest value is the set of language tags

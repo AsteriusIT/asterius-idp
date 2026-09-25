@@ -58,7 +58,10 @@ use asterius_store_pg::{
 };
 use axum::Json;
 use axum::response::{IntoResponse, Response};
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use serde_json::json;
+use sha2::{Digest as _, Sha256};
 use time::OffsetDateTime;
 
 use crate::http::authorization_code::AuthorizationCode;
@@ -266,6 +269,23 @@ impl DeviceCode<'_> {
             GrantStatus::Pending | GrantStatus::Active
         ) {
             return Err(invalid_grant());
+        }
+        if grant.scopes.contains("bound_key") {
+            let proof = self.proof.ok_or_else(invalid_grant)?;
+            if !grant.scopes.contains("openid")
+                || !client.registration.token_binding.is_dpop_bound()
+                || redeemed.dpop_jkt.as_deref() != Some(proof.jkt.as_str())
+            {
+                return Err(invalid_grant());
+            }
+            let expected = B64.encode(Sha256::digest(presented.as_bytes()));
+            if !proof
+                .code_hash
+                .as_deref()
+                .is_some_and(|hash| asterius_domain::ct_eq(hash.as_bytes(), expected.as_bytes()))
+            {
+                return Err(invalid_grant());
+            }
         }
         let claimed = self.grants.claim(&redeemed.grant_id, self.now).await?;
 

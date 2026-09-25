@@ -968,7 +968,7 @@ pub fn check(
         }
     }
 
-    let public_jwk = Value::Object(header_jwk(unverified.raw_header())?);
+    let public_jwk = minimal_public_jwk(unverified.raw_header(), algorithm)?;
     let jkt = thumbprint_of(unverified.raw_header(), algorithm)?;
     let code_hash = claims
         .get("c_s256")
@@ -1018,6 +1018,29 @@ fn public_key(raw_header: &[u8], algorithm: SigningAlgorithm) -> Result<Verifyin
 fn thumbprint_of(raw_header: &[u8], algorithm: SigningAlgorithm) -> Result<Kid, DpopError> {
     let jwk = header_jwk(raw_header)?;
     store::thumbprint(&Value::Object(jwk)).map_err(|_| DpopError::UnusableKey(algorithm))
+}
+
+/// Only RFC 7638's required public members belong in an ID Token `cnf.jwk`.
+/// Optional JOSE header metadata can change between otherwise identical DPoP
+/// proofs; omitting it keeps a refreshed ID Token's `cnf` byte-for-byte stable.
+fn minimal_public_jwk(raw_header: &[u8], algorithm: SigningAlgorithm) -> Result<Value, DpopError> {
+    let jwk = header_jwk(raw_header)?;
+    let field = |name| {
+        jwk.get(name)
+            .cloned()
+            .ok_or(DpopError::UnusableKey(algorithm))
+    };
+    Ok(match algorithm {
+        SigningAlgorithm::EdDsa => serde_json::json!({
+            "kty": field("kty")?, "crv": field("crv")?, "x": field("x")?
+        }),
+        SigningAlgorithm::Es256 => serde_json::json!({
+            "kty": field("kty")?, "crv": field("crv")?, "x": field("x")?, "y": field("y")?
+        }),
+        SigningAlgorithm::Ps256 => serde_json::json!({
+            "kty": field("kty")?, "e": field("e")?, "n": field("n")?
+        }),
+    })
 }
 
 /// The `jwk` JOSE Header Parameter, as an object.
