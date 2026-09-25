@@ -32,8 +32,8 @@ pub mod tenant_rate_limits;
 pub mod totp;
 
 pub use administration::{
-    CredentialSummary, NewAccount, PasskeySummary, PasswordReset, ScimUserState, SessionSummary,
-    Terminated, UserAdministration,
+    CredentialSummary, NewAccount, PasskeySummary, PasswordReset, ScimProfileReplacement,
+    ScimUserState, SessionSummary, Terminated, UserAdministration,
 };
 pub use audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
 pub use capabilities::{Capabilities, Feature};

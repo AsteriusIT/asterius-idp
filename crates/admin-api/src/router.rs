@@ -314,6 +314,7 @@ async fn route_standard(
         crate::SCIM_USER_READ_ID => context.scim_read_user().await,
         crate::SCIM_USER_CREATE_ID => context.scim_create_user(body).await,
         crate::SCIM_USERS_LIST_ID => context.scim_list_users().await,
+        crate::SCIM_USER_REPLACE_ID => context.scim_replace_user(body).await,
         crate::TENANTS_LIST_ID => context.list_tenants().await,
         crate::TENANT_READ_ID => context.read_tenant().await,
         crate::TENANT_CREATE_ID => context.create_tenant(body).await,
@@ -488,6 +489,87 @@ struct Handling<'a> {
 }
 
 impl Handling<'_> {
+    async fn scim_replace_user(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let expected_revision = scim::expected_revision(self.headers)?;
+        let id = self
+            .path
+            .rsplit('/')
+            .next()
+            .and_then(|segment| uuid::Uuid::parse_str(segment).ok())
+            .map(asterius_domain::UserId::new)
+            .ok_or(AdminError::NotFound)?;
+        let client = self.scim_client()?;
+        let held = self
+            .state
+            .backend
+            .users()
+            .scim_find(&self.tenant.id, &client, id)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::SCIM_USER_REPLACE_ID, &error))?
+            .ok_or(AdminError::NotFound)?;
+        if held.revision != expected_revision {
+            return Err(AdminError::PreconditionFailed);
+        }
+        let requested: scim::RequestedUser = self.parse_body(body).await?;
+        if requested.active != held.user.can_authenticate() {
+            return Err(AdminError::Invalid(
+                "SCIM active changes are not available yet".to_owned(),
+            ));
+        }
+        let profile = requested.account()?;
+        let username = users::accept_username(&profile.username)?;
+        let email = profile
+            .email
+            .as_deref()
+            .map(users::accept_email)
+            .transpose()?;
+        let replacement = asterius_domain::ScimProfileReplacement {
+            tenant: self.tenant.id.clone(),
+            client,
+            user: id,
+            expected_revision,
+            username,
+            email,
+            external_id: requested.accepted_external_id()?.map(str::to_owned),
+        };
+        let saved = self
+            .state
+            .backend
+            .users()
+            .scim_replace_profile(replacement)
+            .await
+            .map_err(|error| match error {
+                DomainError::Conflict(message) if message == "SCIM revision changed" => {
+                    AdminError::PreconditionFailed
+                }
+                DomainError::Conflict(message) => AdminError::Conflict(message),
+                DomainError::NotFound => AdminError::NotFound,
+                other => AdminError::from_storage(crate::SCIM_USER_REPLACE_ID, &other),
+            })?;
+        self.record_about(
+            EventType::USER_SCIM_PROFILE_CHANGED,
+            &saved.user.id,
+            Detail::new()
+                .label("operation", crate::SCIM_USER_REPLACE_ID)
+                .flag(
+                    "username_changed",
+                    held.user.username != saved.user.username,
+                )
+                .flag("email_changed", held.user.email != saved.user.email)
+                .flag("external_id_changed", held.external_id != saved.external_id),
+        )
+        .await;
+        scim::user_response(
+            &saved,
+            &format!(
+                "{}{}/scim/v2",
+                self.tenant.issuer.as_str(),
+                crate::BASE_PATH
+            ),
+            StatusCode::OK,
+        )
+    }
+
     fn scim_client(&self) -> Result<asterius_domain::ClientId, AdminError> {
         match self.principal {
             Principal::Automation { subject, .. } => {
@@ -6413,6 +6495,30 @@ mod tests {
     /// What is counted here is the promise the port makes to this crate.
     #[async_trait::async_trait]
     impl asterius_domain::UserAdministration for Handle {
+        async fn scim_replace_profile(
+            &self,
+            replacement: asterius_domain::ScimProfileReplacement,
+        ) -> Result<asterius_domain::ScimUserState, DomainError> {
+            if replacement.expected_revision != 1 {
+                return Err(DomainError::Conflict("SCIM revision changed".to_owned()));
+            }
+            let mut accounts = self.0.accounts.lock().expect("an uncontended lock");
+            let user = accounts
+                .iter_mut()
+                .find(|user| user.tenant == replacement.tenant && user.id == replacement.user)
+                .ok_or(DomainError::NotFound)?;
+            user.username = replacement.username;
+            if user.email != replacement.email {
+                user.email_verified = false;
+            }
+            user.email = replacement.email;
+            Ok(asterius_domain::ScimUserState {
+                user: user.clone(),
+                external_id: replacement.external_id,
+                revision: 2,
+            })
+        }
+
         async fn scim_page(
             &self,
             tenant: &TenantId,

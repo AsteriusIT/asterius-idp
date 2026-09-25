@@ -116,6 +116,14 @@ pub enum AdminError {
     #[error("{0}")]
     Conflict(String),
 
+    /// A SCIM mutation omitted the required resource version.
+    #[error("a SCIM mutation requires If-Match")]
+    PreconditionRequired,
+
+    /// The resource changed after the client's last read.
+    #[error("the SCIM resource version changed")]
+    PreconditionFailed,
+
     /// A limit was reached.
     #[error("too many requests")]
     Throttled {
@@ -145,6 +153,8 @@ impl AdminError {
             Self::Invalid(_) => "invalid_request",
             Self::NotFound => "not_found",
             Self::Conflict(_) => "conflict",
+            Self::PreconditionRequired => "precondition_required",
+            Self::PreconditionFailed => "precondition_failed",
             Self::Throttled { .. } => "rate_limited",
             Self::Unavailable => "unavailable",
         }
@@ -168,6 +178,8 @@ impl AdminError {
             | Self::IdempotencyKeyMissing
             | Self::IdempotencyKeyInvalid(_) => StatusCode::FORBIDDEN,
             Self::IdempotencyReplay | Self::Conflict(_) => StatusCode::CONFLICT,
+            Self::PreconditionRequired => StatusCode::PRECONDITION_REQUIRED,
+            Self::PreconditionFailed => StatusCode::PRECONDITION_FAILED,
             Self::CursorInvalid | Self::Invalid(_) => StatusCode::BAD_REQUEST,
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::Throttled { .. } => StatusCode::TOO_MANY_REQUESTS,

@@ -168,6 +168,25 @@ pub struct ScimUserState {
     pub revision: i64,
 }
 
+/// One conditional SCIM edit to the approved profile fields.
+#[derive(Debug, Clone)]
+pub struct ScimProfileReplacement {
+    /// Tenant owning the account.
+    pub tenant: TenantId,
+    /// Provisioning client owning the external identifier.
+    pub client: ClientId,
+    /// Local account identifier.
+    pub user: UserId,
+    /// Version supplied by If-Match.
+    pub expected_revision: i64,
+    /// New login identifier.
+    pub username: String,
+    /// New email, or none to clear it.
+    pub email: Option<String>,
+    /// New client identifier, or none to clear it.
+    pub external_id: Option<String>,
+}
+
 /// Administering the accounts of one deployment (`ast-f7m.6`).
 ///
 /// One port rather than six handles, for the reason
@@ -177,6 +196,13 @@ pub struct ScimUserState {
 /// and forget the second.
 #[async_trait::async_trait]
 pub trait UserAdministration: Debug + Send + Sync {
+    /// Replaces only approved profile fields when the account version still
+    /// matches; the store commits the account and external ID in one transaction.
+    async fn scim_replace_profile(
+        &self,
+        replacement: ScimProfileReplacement,
+    ) -> Result<ScimUserState, DomainError>;
+
     /// Reads a User and its SCIM version/external ID for one provisioning client.
     async fn scim_find(
         &self,

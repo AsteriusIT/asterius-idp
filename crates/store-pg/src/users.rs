@@ -37,8 +37,8 @@ use crate::salts;
 use asterius_domain::audit::{Actor, AuditEvent, AuditSink as _, Detail, EventType, Outcome};
 use asterius_domain::ports::TenantScoped;
 use asterius_domain::{
-    ClaimSet, ClientId, DomainError, ScimUserState, SectorIdentifier, SubjectId, TenantId, User,
-    UserId, UserStatus,
+    ClaimSet, ClientId, DomainError, ScimProfileReplacement, ScimUserState, SectorIdentifier,
+    SubjectId, TenantId, User, UserId, UserStatus,
 };
 use asterius_jose::Kek;
 use sqlx::postgres::PgPool;
@@ -153,6 +153,82 @@ impl Row {
 }
 
 impl PgUserRepository {
+    /// Conditionally replaces the approved SCIM profile and external ID.
+    /// The revision predicate and both writes share one transaction.
+    pub async fn scim_replace_profile(
+        &self,
+        replacement: &ScimProfileReplacement,
+    ) -> Result<ScimUserState, DomainError> {
+        if replacement.tenant != self.tenant || replacement.expected_revision < 1 {
+            return Err(DomainError::invalid(
+                "scim.profile",
+                "invalid tenant or revision",
+            ));
+        }
+        let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
+        let updated = sqlx::query(
+            "update users set username = $4, email = $5,
+             email_verified = case when email is distinct from $5
+                                   then false else email_verified end
+             where tenant_id = $1 and user_id = $2 and scim_revision = $3",
+        )
+        .bind(self.tenant.as_str())
+        .bind(replacement.user.as_uuid())
+        .bind(replacement.expected_revision)
+        .bind(&replacement.username)
+        .bind(&replacement.email)
+        .execute(&mut *tx)
+        .await
+        .map_err(to_domain_error)?
+        .rows_affected();
+        if updated == 0 {
+            let exists: bool = sqlx::query_scalar(
+                "select exists(select 1 from users where tenant_id = $1 and user_id = $2)",
+            )
+            .bind(self.tenant.as_str())
+            .bind(replacement.user.as_uuid())
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(to_domain_error)?;
+            return Err(if exists {
+                DomainError::Conflict("SCIM revision changed".to_owned())
+            } else {
+                DomainError::NotFound
+            });
+        }
+        sqlx::query(
+            "insert into scim_user_external_ids
+             (tenant_id, client_id, user_id, external_id)
+             values ($1, $2, $3, $4)
+             on conflict (tenant_id, client_id, user_id)
+             do update set external_id = excluded.external_id",
+        )
+        .bind(self.tenant.as_str())
+        .bind(replacement.client.as_str())
+        .bind(replacement.user.as_uuid())
+        .bind(&replacement.external_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(to_domain_error)?;
+        let row: ScimRow = sqlx::query_as(
+            "select u.user_id, u.username, u.email, u.email_verified, u.status,
+                    u.claims, u.created_at, u.updated_at, u.scim_revision,
+                    e.external_id
+             from users u join scim_user_external_ids e
+               on e.tenant_id = u.tenant_id and e.user_id = u.user_id
+              and e.client_id = $3
+             where u.tenant_id = $1 and u.user_id = $2",
+        )
+        .bind(self.tenant.as_str())
+        .bind(replacement.user.as_uuid())
+        .bind(replacement.client.as_str())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(to_domain_error)?;
+        tx.commit().await.map_err(to_domain_error)?;
+        row.into_state(&self.tenant)
+    }
+
     /// Bounded SCIM page with version and per-client external identifiers.
     pub async fn scim_page(
         &self,

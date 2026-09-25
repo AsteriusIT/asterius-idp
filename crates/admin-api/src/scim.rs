@@ -3,7 +3,7 @@
 //! Resource catalogues remain empty until the Users and Groups provisioning
 //! handlers are complete. Discovery must never advertise incomplete resources.
 
-use axum::http::{HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -30,6 +30,7 @@ pub fn is_route(id: &str) -> bool {
             | crate::SCIM_USER_READ_ID
             | crate::SCIM_USER_CREATE_ID
             | crate::SCIM_USERS_LIST_ID
+            | crate::SCIM_USER_REPLACE_ID
     )
 }
 
@@ -52,6 +53,8 @@ pub fn error_response(error: &AdminError) -> Response {
         StatusCode::FORBIDDEN => "Provisioning access is denied",
         StatusCode::TOO_MANY_REQUESTS => "Too many provisioning requests",
         StatusCode::SERVICE_UNAVAILABLE => "Provisioning is temporarily unavailable",
+        StatusCode::PRECONDITION_REQUIRED => "If-Match is required",
+        StatusCode::PRECONDITION_FAILED => "SCIM resource version changed",
         _ => "Invalid provisioning request",
     };
     let mut response = response(
@@ -214,6 +217,31 @@ pub fn username_eq_filter(raw: &str) -> Result<String, AdminError> {
         return Err(AdminError::Invalid("SCIM filter is too long".to_owned()));
     }
     Ok(value)
+}
+
+/// Parses the monotonic resource version issued in `ETag`/`meta.version`.
+///
+/// # Errors
+///
+/// Missing preconditions are 428; malformed or wildcard values are 400.
+pub fn expected_revision(headers: &HeaderMap) -> Result<i64, AdminError> {
+    let value = headers
+        .get(header::IF_MATCH)
+        .ok_or(AdminError::PreconditionRequired)?
+        .to_str()
+        .map_err(|_| AdminError::Invalid("invalid If-Match".to_owned()))?;
+    let digits = value
+        .strip_prefix("W/\"")
+        .or_else(|| value.strip_prefix('"'))
+        .and_then(|rest| rest.strip_suffix('"'))
+        .ok_or_else(|| AdminError::Invalid("invalid If-Match".to_owned()))?;
+    let revision = digits
+        .parse::<i64>()
+        .map_err(|_| AdminError::Invalid("invalid If-Match".to_owned()))?;
+    if revision < 1 {
+        return Err(AdminError::Invalid("invalid If-Match".to_owned()));
+    }
+    Ok(revision)
 }
 
 impl RequestedUser {

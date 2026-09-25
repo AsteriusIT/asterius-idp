@@ -1266,6 +1266,17 @@ impl DeploymentUsers {
 
 #[async_trait::async_trait]
 impl asterius_domain::UserAdministration for DeploymentUsers {
+    async fn scim_replace_profile(
+        &self,
+        replacement: asterius_domain::ScimProfileReplacement,
+    ) -> Result<asterius_domain::ScimUserState, DomainError> {
+        self.store
+            .scope(replacement.tenant.clone())
+            .users(Arc::clone(&self.kek))
+            .scim_replace_profile(&replacement)
+            .await
+    }
+
     async fn scim_page(
         &self,
         tenant: &TenantId,

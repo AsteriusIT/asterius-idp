@@ -230,6 +230,8 @@ pub const SCIM_USER_READ_ID: &str = "scim.users.read";
 pub const SCIM_USER_CREATE_ID: &str = "scim.users.create";
 /// Lists one bounded tenant User page using SCIM offset pagination.
 pub const SCIM_USERS_LIST_ID: &str = "scim.users.list";
+/// Conditionally replaces the approved SCIM User profile.
+pub const SCIM_USER_REPLACE_ID: &str = "scim.users.replace";
 /// The `operationId` of `POST /groups`.
 pub const GROUP_CREATE_ID: &str = "groups.create";
 /// The `operationId` of `GET /groups/{group_id}`.
@@ -1493,8 +1495,16 @@ pub const SCIM_USERS_LIST: Operation = Operation::read(
     A::new(R::AutomationTenant, "admin.scim:read"),
     "One SCIM 2.0 User page",
 );
+/// Replaces only profile attributes after an If-Match check.
+pub const SCIM_USER_REPLACE: Operation = Operation::mutation(
+    SCIM_USER_REPLACE_ID,
+    "/scim/v2/Users/{user_id}",
+    M::Put,
+    A::new(R::AutomationTenant, "admin.scim:write"),
+    "Conditionally replaces one tenant User profile",
+);
 
-static REGISTRY: [Operation; 102] = [
+static REGISTRY: [Operation; 103] = [
     SESSION_READ,
     SESSION_END,
     OVERVIEW_USERS,
@@ -1571,6 +1581,7 @@ static REGISTRY: [Operation; 102] = [
     SCIM_USER_READ,
     SCIM_USER_CREATE,
     SCIM_USERS_LIST,
+    SCIM_USER_REPLACE,
     GROUP_CREATE,
     GROUP_READ,
     GROUP_UPDATE,
