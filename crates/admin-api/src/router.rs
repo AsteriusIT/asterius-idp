@@ -1830,6 +1830,15 @@ impl Handling<'_> {
             }
         };
 
+        let credential_issuance = match &requested.credential_issuance {
+            None => previous.credential_issuance().cloned(),
+            Some(serde_json::Value::Null) => None,
+            Some(document) => Some(
+                asterius_domain::CredentialConfiguration::from_json(document)
+                    .map_err(|error| AdminError::Invalid(error.to_string()))?,
+            ),
+        };
+
         // Start from the stored settings so unrelated policies survive older
         // clients. Every changed field still crosses its domain validator.
         let settings = previous
@@ -1844,6 +1853,7 @@ impl Handling<'_> {
             .map_err(|error| AdminError::Invalid(error.to_string()))?
             .with_rate_limits(rate_limits)
             .with_session_policy(session_policy)
+            .with_credential_issuance(credential_issuance)
             .with_registration(registration)
             .with_default_locale(default_locale)
             .with_messages(messages)
@@ -5260,9 +5270,20 @@ struct RequestedSettings {
     #[serde(default)]
     session_policy: Option<serde_json::Value>,
 
+    /// Omitted preserves the current policy; null disables issuance.
+    #[serde(default, deserialize_with = "present_json_value")]
+    credential_issuance: Option<serde_json::Value>,
+
     /// Absent preserves stored overrides; an empty object restores inheritance.
     #[serde(default)]
     rate_limits: Option<serde_json::Value>,
+}
+
+fn present_json_value<'de, D>(deserializer: D) -> Result<Option<serde_json::Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    <serde_json::Value as serde::Deserialize>::deserialize(deserializer).map(Some)
 }
 
 /// A settings document as this API renders it.
@@ -5301,6 +5322,7 @@ fn render_settings(tenant: &TenantId, settings: &TenantSettings) -> serde_json::
         "allow_ephemeral_subjects": settings.allows_ephemeral_subjects(),
         "ida_frameworks": settings.ida_frameworks(),
         "session_policy": settings.session_policy().unwrap_or_default().to_json(),
+        "credential_issuance": settings.credential_issuance().map(asterius_domain::CredentialConfiguration::to_json),
 
         "rate_limits": settings.rate_limits().to_json(),
         "supported_locales": asterius_domain::Locale::SUPPORTED_TAGS,
@@ -5455,6 +5477,47 @@ fn settings_diff(tenant: &TenantId, before: &TenantSettings, after: &TenantSetti
             .flag(
                 "allow_non_fapi_clients.after",
                 after.allows_non_fapi_clients(),
+            );
+    }
+    if before.credential_issuance() != after.credential_issuance() {
+        detail = detail
+            .flag(
+                "credential_issuance.before",
+                before.credential_issuance().is_some(),
+            )
+            .flag(
+                "credential_issuance.after",
+                after.credential_issuance().is_some(),
+            )
+            .text(
+                "credential_issuance.configuration",
+                after
+                    .credential_issuance()
+                    .map_or("none", asterius_domain::CredentialConfiguration::id),
+            )
+            .text(
+                "credential_issuance.scope.before",
+                before
+                    .credential_issuance()
+                    .map_or("none", asterius_domain::CredentialConfiguration::scope),
+            )
+            .text(
+                "credential_issuance.scope.after",
+                after
+                    .credential_issuance()
+                    .map_or("none", asterius_domain::CredentialConfiguration::scope),
+            )
+            .flag(
+                "credential_issuance.email.before",
+                before
+                    .credential_issuance()
+                    .is_some_and(|policy| policy.claims().contains("email")),
+            )
+            .flag(
+                "credential_issuance.email.after",
+                after
+                    .credential_issuance()
+                    .is_some_and(|policy| policy.claims().contains("email")),
             );
     }
     detail

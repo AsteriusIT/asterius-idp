@@ -165,6 +165,8 @@ impl EventType {
     pub const CODE_REPLAYED: Self = Self("code.replayed");
     /// A token was issued.
     pub const TOKEN_ISSUED: Self = Self("token.issued");
+    /// A wallet received a signed, holder-bound identity VC (OpenID4VCI).
+    pub const VC_ISSUED: Self = Self("vc.issued");
     /// A token request was refused.
     pub const TOKEN_REFUSED: Self = Self("token.refused");
     /// A token was exchanged for a narrower one (RFC 8693).

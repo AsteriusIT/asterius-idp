@@ -42,7 +42,7 @@ pub enum ProofError {
     /// The proof was signed for another credential issuer.
     #[error("OpenID4VCI key proof audience is invalid")]
     Audience,
-    /// The proof did not contain the expected server nonce.
+    /// The proof did not contain a usable server nonce.
     #[error("OpenID4VCI key proof nonce is invalid")]
     Nonce,
     /// The proof is stale or dated too far in the future.
@@ -52,8 +52,8 @@ pub enum ProofError {
 
 /// Verifies an ES256 proof with exactly one embedded public JWK.
 ///
-/// `expected_nonce` comes from the nonce repository, and the caller must
-/// consume that nonce atomically before signing. `expected_client` is the
+/// The caller must consume the returned nonce atomically before signing;
+/// until then it has no authority. `expected_client` is the
 /// wallet's OAuth client identifier; a present `iss` must match it.
 ///
 /// # Errors
@@ -63,7 +63,6 @@ pub fn verify(
     compact: &str,
     issuer: &Issuer,
     expected_client: &str,
-    expected_nonce: &str,
     now: OffsetDateTime,
 ) -> Result<VerifiedKeyProof, ProofError> {
     if compact.len() > MAX_PROOF_BYTES || compact.is_empty() {
@@ -89,6 +88,16 @@ pub fn verify(
         || jwk.get("kty").and_then(Value::as_str) != Some("EC")
         || jwk.get("crv").and_then(Value::as_str) != Some("P-256")
         || jwk
+            .get("use")
+            .is_some_and(|value| value.as_str() != Some("sig"))
+        || jwk.get("key_ops").is_some_and(|value| {
+            !value.as_array().is_some_and(|operations| {
+                operations
+                    .iter()
+                    .any(|operation| operation.as_str() == Some("verify"))
+            })
+        })
+        || jwk
             .get("alg")
             .is_some_and(|value| value.as_str() != Some(ALGORITHM.as_str()))
     {
@@ -112,7 +121,7 @@ pub fn verify(
         .get("nonce")
         .and_then(Value::as_str)
         .ok_or(ProofError::Nonce)?;
-    if nonce != expected_nonce {
+    if nonce.len() != 32 || !nonce.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(ProofError::Nonce);
     }
     let issued_at = claims

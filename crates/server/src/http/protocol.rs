@@ -28,6 +28,7 @@ use crate::http::interaction::{self, InteractionContext};
 use crate::http::introspection;
 use crate::http::invitation;
 use crate::http::logout;
+use crate::http::oid4vci;
 use crate::http::par::{self, PushContext};
 use crate::http::passkeys::{self, PasskeyContext, PasskeyLoginContext};
 use crate::http::recovery;
@@ -391,6 +392,7 @@ pub fn routes(state: ProtocolState) -> Router {
         // serves the path-appended and path-inserted spellings.
         .route("/.well-known/openid-configuration", get(discovery))
         .route("/.well-known/oauth-authorization-server", get(discovery))
+        .route(oid4vci::METADATA_PATH, get(credential_issuer_metadata))
         .route(
             crate::federation::CONFIGURATION_PATH,
             get(federation_configuration),
@@ -462,6 +464,18 @@ pub fn routes(state: ProtocolState) -> Router {
                 get(userinfo_endpoint)
                     .post(userinfo_endpoint)
                     .with_state(Arc::clone(&endpoints)),
+            )
+            .route(
+                oid4vci::OFFER_PATH,
+                get(credential_offer).with_state(Arc::clone(&endpoints)),
+            )
+            .route(
+                oid4vci::NONCE_PATH,
+                post(credential_nonce).with_state(Arc::clone(&endpoints)),
+            )
+            .route(
+                oid4vci::CREDENTIAL_PATH,
+                post(credential_issue).with_state(Arc::clone(&endpoints)),
             )
             // RFC 7591. No DPoP check: there is no client authentication at
             // this endpoint and no client yet to bind a proof to.
@@ -1708,6 +1722,257 @@ async fn userinfo_endpoint_inner(
         method,
         headers,
         uri.query(),
+    )
+    .await
+}
+
+/// Resolves the tenant's opt-in issuer policy. A tenant that suppresses
+/// `grant_id` cannot serve this profile, because the Credential Endpoint must
+/// re-read the exact grant an access token was minted from.
+async fn credential_configuration(
+    directory: Option<&SettingsDirectory>,
+    tenant: &Tenant,
+) -> Result<Option<asterius_domain::CredentialConfiguration>, DomainError> {
+    let settings = settings_for_directory(directory, &tenant.id).await?;
+    Ok(settings
+        .grant_id_in_access_token()
+        .then(|| settings.credential_issuance().cloned())
+        .flatten())
+}
+
+async fn credential_issuer_metadata(
+    State(state): State<ProtocolState>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+) -> Response {
+    if state.clients.is_none() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    match credential_configuration(state.tenant_settings.as_ref(), &tenant).await {
+        Ok(Some(configuration)) => {
+            let endpoints = state.clients.as_ref().expect("checked above");
+            match credential_ready(endpoints, &tenant, &configuration).await {
+                Ok(true) => oid4vci::metadata(&tenant, &configuration),
+                Ok(false) => unavailable(),
+                Err(error) => {
+                    tracing::error!(%error, tenant = %tenant.id, "cannot read credential signing keys");
+                    unavailable()
+                }
+            }
+        }
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read credential issuer policy");
+            unavailable()
+        }
+    }
+}
+
+async fn credential_offer(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+) -> Response {
+    match credential_configuration(endpoints.tenant_settings.as_ref(), &tenant).await {
+        Ok(Some(configuration)) => {
+            match credential_ready(&endpoints, &tenant, &configuration).await {
+                Ok(true) => oid4vci::offer(&tenant, &configuration),
+                Ok(false) => unavailable(),
+                Err(error) => {
+                    tracing::error!(%error, tenant = %tenant.id, "cannot read credential signing keys");
+                    unavailable()
+                }
+            }
+        }
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read credential offer policy");
+            unavailable()
+        }
+    }
+}
+
+async fn credential_ready(
+    endpoints: &ClientEndpoints,
+    tenant: &Tenant,
+    configuration: &asterius_domain::CredentialConfiguration,
+) -> Result<bool, DomainError> {
+    use asterius_domain::ResourceServerRepository as _;
+    let records = endpoints.keys.published_keys(&tenant.id).await?;
+    if !asterius_domain::keys::signs_with(&records, asterius_domain::SigningAlgorithm::EdDsa) {
+        return Ok(false);
+    }
+    let url = format!("{}{}", tenant.issuer.as_str(), oid4vci::CREDENTIAL_PATH);
+    let resources = endpoints
+        .store
+        .scope(tenant.id.clone())
+        .resource_servers()
+        .list()
+        .await?;
+    Ok(resources.iter().any(|resource| {
+        resource.identifier.as_str() == url
+            && resource.scopes.as_ref().is_some_and(|scopes| {
+                scopes.contains(configuration.scope())
+                    && (!configuration.claims().contains("email") || scopes.contains("email"))
+            })
+    }))
+}
+
+async fn credential_nonce(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
+) -> Response {
+    match credential_configuration(endpoints.tenant_settings.as_ref(), &tenant).await {
+        Ok(Some(configuration)) => {
+            match credential_ready(&endpoints, &tenant, &configuration).await {
+                Ok(true) => {}
+                Ok(false) => return unavailable(),
+                Err(error) => {
+                    tracing::error!(%error, tenant = %tenant.id, "cannot read credential issuer readiness");
+                    return unavailable();
+                }
+            }
+        }
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read credential nonce policy");
+            return unavailable();
+        }
+    }
+    let now = time::OffsetDateTime::now_utc();
+    let bucket =
+        asterius_domain::rate_limit::oid4vci_nonce_bucket(client.as_deref().map(|value| value.ip));
+    match credential_rate_limit(&endpoints, &tenant, &bucket, 60, now).await {
+        Ok(true) => {}
+        Ok(false) => return credential_slow_down(),
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot limit credential nonces");
+            return unavailable();
+        }
+    }
+    let nonces =
+        asterius_store_pg::PgOid4vciNonces::new(endpoints.store.pool().clone(), tenant.id.clone());
+    oid4vci::nonce(&nonces, now).await
+}
+
+async fn credential_rate_limit(
+    endpoints: &ClientEndpoints,
+    tenant: &Tenant,
+    bucket: &asterius_domain::rate_limit::Bucket,
+    max: u32,
+    now: time::OffsetDateTime,
+) -> Result<bool, DomainError> {
+    use asterius_domain::rate_limit::{RateLimit, RateLimitStore as _};
+    let limit = RateLimit {
+        max,
+        window: time::Duration::minutes(5),
+    };
+    let counter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
+    Ok(counter
+        .record(
+            &tenant.id,
+            bucket,
+            limit.window_start(now),
+            limit.window_end(now),
+        )
+        .await?
+        <= max)
+}
+
+fn credential_slow_down() -> Response {
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(json!({"error":"slow_down"})),
+    )
+        .into_response()
+}
+
+async fn credential_issue(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
+    certificate: Option<Extension<Arc<crate::mtls::PresentedCertificate>>>,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Body,
+) -> Response {
+    let configuration = match credential_configuration(endpoints.tenant_settings.as_ref(), &tenant)
+        .await
+    {
+        Ok(Some(configuration)) => configuration,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read credential issuance policy");
+            return unavailable();
+        }
+    };
+    match credential_ready(&endpoints, &tenant, &configuration).await {
+        Ok(true) => {}
+        Ok(false) => return unavailable(),
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read credential issuer readiness");
+            return unavailable();
+        }
+    }
+    let now = time::OffsetDateTime::now_utc();
+    let bucket = asterius_domain::rate_limit::oid4vci_credential_bucket(
+        client.as_deref().map(|value| value.ip),
+    );
+    match credential_rate_limit(&endpoints, &tenant, &bucket, 120, now).await {
+        Ok(true) => {}
+        Ok(false) => return credential_slow_down(),
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot limit credential requests");
+            return unavailable();
+        }
+    }
+    if headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        != Some("application/json")
+    {
+        return (
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            [(header::CACHE_CONTROL, "no-store")],
+            Json(json!({"error":"invalid_credential_request"})),
+        )
+            .into_response();
+    }
+    let body = match axum::body::to_bytes(body, 16 * 1024).await {
+        Ok(body) => body,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                [(header::CACHE_CONTROL, "no-store")],
+                Json(json!({"error":"invalid_credential_request"})),
+            )
+                .into_response();
+        }
+    };
+    let scope = endpoints.store.scope(tenant.id.clone());
+    let grants = scope.grants();
+    let users = scope.users(Arc::clone(&endpoints.kek));
+    let nonces =
+        asterius_store_pg::PgOid4vciNonces::new(endpoints.store.pool().clone(), tenant.id.clone());
+    oid4vci::credential(
+        oid4vci::IssueContext {
+            tenant: &tenant,
+            configuration: &configuration,
+            grants: &grants,
+            users: &users,
+            nonces: &nonces,
+            keys: endpoints.keys.as_ref(),
+            signer: endpoints.signer.as_ref(),
+            audit: endpoints.audit.as_ref(),
+            dpop: endpoints.dpop.as_ref(),
+            certificate: certificate.as_deref().map(|presented| &presented.leaf),
+            now,
+        },
+        &method,
+        &headers,
+        uri.query(),
+        &body,
     )
     .await
 }
