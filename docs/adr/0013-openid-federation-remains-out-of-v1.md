@@ -5,6 +5,27 @@
 - **Bead:** ast-s36.4
 - **Deciders:** Quentin RODIC
 
+## Post-v1 implementation decision (2026-09-25)
+
+The product owner requested implementation of `ast-s36`. The v1 exclusion
+above remains historical context. `ast-s36.14` now owns the OP Federation
+implementation in separate slices. The first slice publishes an OP leaf Entity
+Configuration only for tenants configured with a dedicated Ed25519 Federation
+private key and at least one immediate superior. It signs a five-minute
+`entity-statement+jwt` with that key, publishes its public JWK in the statement,
+and projects the existing OIDC discovery document into `openid_provider`
+metadata. The key cannot match a published OP token-signing key at startup.
+This slice follows [OpenID Federation 1.1 Final](https://openid.net/specs/openid-federation-1_1-final.html)
+and [OpenID Federation for OpenID Connect 1.1 Final](https://openid.net/specs/openid-federation-connect-1_1-final.html).
+
+This publication alone establishes no trust in an RP. `ast-s36.14.1` owns
+configured trust anchors, guarded statement retrieval, complete trust-chain
+validation, metadata policy, expiry-aware caching, and audit before Federation
+RP metadata can be used. Federation client registration is a separate slice.
+Until those slices are complete, the server makes no Federation conformance
+claim and does not accept a URL-shaped client merely because it published an
+Entity Configuration.
+
 ## Context
 
 [OpenID Federation 1.0](https://openid.net/specs/openid-federation-1_0-final.html)

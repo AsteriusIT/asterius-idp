@@ -108,6 +108,8 @@ pub struct ProtocolState {
     /// `signed_metadata` it has no key to produce. §9.1.3 is OPTIONAL, so the
     /// document without it is a smaller document and not an invalid one.
     pub signed_metadata: Option<Arc<dyn asterius_domain::keys::Signer>>,
+    /// Dedicated Federation Entity Statement signer, configured per tenant.
+    pub federation: crate::federation::FederationEntities,
 }
 
 /// The database-backed pieces the client-facing endpoints need.
@@ -296,6 +298,10 @@ pub fn routes(state: ProtocolState) -> Router {
         // serves the path-appended and path-inserted spellings.
         .route("/.well-known/openid-configuration", get(discovery))
         .route("/.well-known/oauth-authorization-server", get(discovery))
+        .route(
+            crate::federation::CONFIGURATION_PATH,
+            get(federation_configuration),
+        )
         // SSF 1.0 §7.2 (`ast-0ju.1`). Mounted whatever the deployment's flags
         // say and gated inside the handler; see [`ssf_configuration`].
         .route(&ssf_configuration_path(), get(ssf_configuration))
@@ -1070,6 +1076,56 @@ async fn discovery(
         settings.allows_non_fapi_clients(),
     );
     cacheable_json(&document, METADATA_MAX_AGE)
+}
+
+/// OpenID Federation 1.1 §9: a leaf OP publishes its self-signed Entity
+/// Configuration only when this tenant has a dedicated Federation key.
+async fn federation_configuration(
+    State(state): State<ProtocolState>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+) -> Response {
+    if !state.federation.contains(&tenant.id) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    // Use the same metadata producer and tenant capability decision as OIDC
+    // discovery. Federation must not claim an endpoint this OP has disabled.
+    let discovery_response = discovery(State(state.clone()), Extension(Arc::clone(&tenant))).await;
+    if !discovery_response.status().is_success() {
+        return discovery_response;
+    }
+    let bytes = match axum::body::to_bytes(discovery_response.into_body(), 64 * 1024).await {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read OP metadata for Federation");
+            return unavailable();
+        }
+    };
+    let metadata: Value = match serde_json::from_slice(&bytes) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot parse OP metadata for Federation");
+            return unavailable();
+        }
+    };
+    match state
+        .federation
+        .sign(&tenant.id, metadata, time::OffsetDateTime::now_utc())
+    {
+        Ok(Some(statement)) => (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "application/entity-statement+jwt"),
+                (header::CACHE_CONTROL, "public, max-age=240"),
+            ],
+            statement.as_str().to_owned(),
+        )
+            .into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot sign Federation Entity Configuration");
+            unavailable()
+        }
+    }
 }
 
 /// Where the SSF transmitter configuration is served (SSF 1.0 §7.2).

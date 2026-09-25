@@ -413,6 +413,7 @@ fn assemble(
     );
 
     let routes = protocol::routes(ProtocolState {
+        federation: Default::default(),
         keys: Arc::clone(&key_store),
         capabilities: Capabilities::default(),
         tenant_settings: Some(settings.clone()),

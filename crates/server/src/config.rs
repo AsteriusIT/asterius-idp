@@ -24,7 +24,7 @@ use asterius_domain::{
 };
 use ipnet::IpNet;
 use serde::Deserialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -301,6 +301,11 @@ pub struct TenantConfig {
     /// Absent from the file means FAPI 2.0 SP's position: no rotation, and a
     /// refresh token that only works with the DPoP key it was issued to.
     pub refresh: RefreshPolicy,
+    /// PKCS#8 DER private key used only for Federation Entity Statements.
+    /// A tenant without this key does not publish Federation metadata.
+    pub federation_signing_key_file: Option<PathBuf>,
+    /// Immediate superiors named in this tenant's Federation Entity Configuration.
+    pub federation_authority_hints: Vec<Issuer>,
 }
 
 /// The deployment admin seeded at boot (ADR-0010).
@@ -692,6 +697,8 @@ struct RawTenant {
     issuer: Option<String>,
     default_resource: Option<String>,
     refresh: Option<RawRefresh>,
+    federation_signing_key_file: Option<PathBuf>,
+    federation_authority_hints: Option<Vec<String>>,
 }
 
 /// `[tenant.refresh]`: what this tenant does with refresh tokens.
@@ -1920,6 +1927,49 @@ fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantCo
         };
 
         let refresh = validate_refresh(index, tenant.refresh, errors);
+        let federation_authority_hints = tenant
+            .federation_authority_hints
+            .unwrap_or_default()
+            .into_iter()
+            .enumerate()
+            .filter_map(|(hint_index, raw)| match Issuer::parse(&raw) {
+                Ok(hint) => Some(hint),
+                Err(error) => {
+                    errors.problem(
+                        format!("tenant[{index}].federation_authority_hints[{hint_index}]"),
+                        error.to_string(),
+                    );
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut seen_hints = BTreeSet::new();
+        for hint in &federation_authority_hints {
+            if !seen_hints.insert(hint.as_str()) {
+                errors.problem(
+                    format!("tenant[{index}].federation_authority_hints"),
+                    "duplicate immediate superior",
+                );
+            }
+            if issuer.as_ref() == Some(hint) {
+                errors.problem(
+                    format!("tenant[{index}].federation_authority_hints"),
+                    "an entity cannot be its own immediate superior",
+                );
+            }
+        }
+        if tenant.federation_signing_key_file.is_some() && federation_authority_hints.is_empty() {
+            errors.problem(
+                format!("tenant[{index}].federation_authority_hints"),
+                "at least one immediate superior is required when Federation is enabled",
+            );
+        }
+        if tenant.federation_signing_key_file.is_none() && !federation_authority_hints.is_empty() {
+            errors.problem(
+                format!("tenant[{index}].federation_signing_key_file"),
+                "a dedicated Federation key is required when authority hints are configured",
+            );
+        }
 
         if let (Some(id), Some(issuer)) = (id, issuer) {
             let default_resource = default_resource.unwrap_or_else(|| issuer.as_str().to_owned());
@@ -1928,6 +1978,8 @@ fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantCo
                 issuer,
                 default_resource,
                 refresh,
+                federation_signing_key_file: tenant.federation_signing_key_file,
+                federation_authority_hints,
             });
         }
     }

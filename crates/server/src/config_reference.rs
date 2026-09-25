@@ -1040,6 +1040,18 @@ fn tenant() -> Section {
                  separate API names that API here. An administrator may later replace \
                  or clear that client's list; an empty list authorizes no resource.",
             ),
+            key(
+                "federation_signing_key_file",
+                "path to Ed25519 PKCS#8 DER file",
+                "absent (Federation disabled)".to_owned(),
+                "Dedicated Federation Entity Statement signing key. It must differ from the OP token-signing keys. Configure authority hints with it; a missing or invalid file fails startup.",
+            ),
+            key(
+                "federation_authority_hints",
+                "array of HTTPS entity identifiers",
+                "empty".to_owned(),
+                "Immediate Federation superiors for this OP leaf. At least one is required when the Federation key is configured.",
+            ),
         ],
     }
 }

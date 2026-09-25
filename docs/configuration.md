@@ -292,6 +292,8 @@ A tenant is an issuer. This array is the source of truth for which tenants exist
 | `tenant.id` | string | **required** | Becomes a path segment in the issuer and in every request URL, so it is validated rather than trusted. |
 | `tenant.issuer` | https URL, no query, no fragment | **required** | Normalised once at startup — scheme and host lower-cased, a default `:443` dropped, a trailing slash removed — and the canonical form is what appears in every `iss` claim (RFC 8414 §2, OIDC Discovery §3). |
 | `tenant.default_resource` | https URL, no fragment | the tenant's `issuer` | The initial resource allow-list assigned by the server to each newly registered client (RFC 8707 §2, RFC 9068 §3). The default means "this server's own protected resources"; a deployment fronting a separate API names that API here. An administrator may later replace or clear that client's list; an empty list authorizes no resource. |
+| `tenant.federation_signing_key_file` | path to Ed25519 PKCS#8 DER file | absent (Federation disabled) | Dedicated Federation Entity Statement signing key. It must differ from the OP token-signing keys. Configure authority hints with it; a missing or invalid file fails startup. |
+| `tenant.federation_authority_hints` | array of HTTPS entity identifiers | empty | Immediate Federation superiors for this OP leaf. At least one is required when the Federation key is configured. |
 
 ## `[tenant.refresh]` — refresh tokens
 
