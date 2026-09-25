@@ -547,6 +547,25 @@ impl std::fmt::Debug for DeploymentSsf {
 }
 
 impl DeploymentSsf {
+    async fn receiver_peer(&self, tenant: &TenantId, peer: &ClientId) -> Result<(), DomainError> {
+        let clients = self.store.scope(tenant.clone()).clients(self.capabilities);
+        let Some(client) = clients.find(peer).await? else {
+            return Err(DomainError::NotFound);
+        };
+        if !client.is_active()
+            || !client
+                .registration
+                .scopes
+                .contains(crate::http::ssf_receiver::RECEIVE_SCOPE)
+        {
+            return Err(DomainError::NotFound);
+        }
+        asterius_domain::Issuer::parse(peer.as_str()).map_err(|_| {
+            DomainError::invalid("peer_client_id", "issuer must be an absolute URL")
+        })?;
+        Ok(())
+    }
+
     /// Queues §8.1.5's stream-updated event on one stream, or says in the log
     /// why it could not.
     ///
@@ -626,6 +645,44 @@ impl asterius_admin_api::ssf::SsfAdministration for DeploymentSsf {
                 queue_depth: stream.stats.queue_depth,
             })
             .collect())
+    }
+
+    async fn bind_receiver_subject(
+        &self,
+        tenant: &TenantId,
+        peer: &ClientId,
+        subject_key: &str,
+        user: uuid::Uuid,
+    ) -> Result<(), DomainError> {
+        self.receiver_peer(tenant, peer).await?;
+        let scope = self.store.scope(tenant.clone());
+        if scope
+            .users(Arc::clone(&self.kek))
+            .find(UserId::new(user))
+            .await?
+            .is_none()
+        {
+            return Err(DomainError::NotFound);
+        }
+        scope
+            .ssf_receiver()
+            .bind_subject(peer.as_str(), subject_key, user)
+            .await
+    }
+
+    async fn remove_receiver_subject(
+        &self,
+        tenant: &TenantId,
+        peer: &ClientId,
+        subject_key: &str,
+        user: uuid::Uuid,
+    ) -> Result<bool, DomainError> {
+        self.receiver_peer(tenant, peer).await?;
+        self.store
+            .scope(tenant.clone())
+            .ssf_receiver()
+            .remove_subject(peer.as_str(), subject_key, user)
+            .await
     }
 
     /// An operator's pause or re-enable, announced to the receiver as SSF 1.0

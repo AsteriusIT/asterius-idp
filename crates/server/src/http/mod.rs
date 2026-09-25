@@ -115,6 +115,7 @@ mod source_audit;
 pub mod ssf;
 pub mod ssf_management;
 pub mod ssf_poll;
+pub mod ssf_receiver;
 pub mod step_up;
 pub mod throttle;
 pub mod tls;

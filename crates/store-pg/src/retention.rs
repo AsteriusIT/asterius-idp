@@ -689,7 +689,7 @@ pub const POLICY: &[Retention] = &[
                             select ctid from initial_access_tokens
                              where tenant_id = $1
                                and expires_at is not null
-                               and expires_at <= $2
+                               and replay_until <= $2
                              limit $3))",
             // An expired initial access token admits nobody (`ast-cu3`), so
             // the row is only a digest and a spent counter. It is swept and
@@ -729,6 +729,23 @@ pub const POLICY: &[Retention] = &[
              an administrator chose is not an artefact of one authorization \
              and no timer should decide a tenant stops looking like itself",
         ),
+    },
+    Retention {
+        table: "ssf_receiver_subject_mappings",
+        rule: Rule::Kept(
+            "a peer's mapping is explicit identity configuration, removed only by an operator or when its peer/account is deleted",
+        ),
+    },
+    Retention {
+        table: "ssf_receiver_events",
+        rule: Rule::Sweep {
+            statement: "delete from ssf_receiver_events where ctid = any (array(
+                            select ctid from ssf_receiver_events
+                             where tenant_id = $1
+                               and expires_at <= $2
+                             limit $3))",
+            grace: Duration::ZERO,
+        },
     },
     Retention {
         table: "ssf_streams",

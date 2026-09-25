@@ -387,6 +387,8 @@ async fn route_standard(
         crate::SSF_STREAMS_LIST_ID => context.list_streams().await,
         crate::SSF_STREAM_STATUS_UPDATE_ID => context.update_stream_status(body).await,
         crate::SSF_STREAM_VERIFY_ID => context.verify_stream(body).await,
+        crate::SSF_RECEIVER_SUBJECT_BIND_ID => context.bind_receiver_subject(body).await,
+        crate::SSF_RECEIVER_SUBJECT_REMOVE_ID => context.remove_receiver_subject(body).await,
         crate::AUDIT_EVENTS_LIST_ID => context.list_audit_events().await,
         crate::AUDIT_EVENTS_EXPORT_ID => context.export_audit_events(),
         crate::USERS_LIST_ID => context.list_users().await,
@@ -2910,6 +2912,92 @@ impl Handling<'_> {
                 "stream_id": stream.as_str(),
                 "status": requested.status.as_str(),
                 "reason": requested.reason,
+            }),
+        ))
+    }
+
+    /// `PUT /ssf/receiver/subjects` — bind one upstream identity to one local
+    /// account. The personal subject value is not written to the audit trail.
+    async fn bind_receiver_subject(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let bytes = axum::body::to_bytes(body, ssf::MAX_BODY_BYTES)
+            .await
+            .map_err(|_| AdminError::Invalid("the request body is too large".to_owned()))?;
+        let binding = ssf::parse_receiver_subject_binding(&bytes)?;
+        self.state
+            .backend
+            .ssf()
+            .bind_receiver_subject(
+                &self.tenant.id,
+                &binding.peer,
+                &binding.subject_key,
+                binding.user,
+            )
+            .await
+            .map_err(|error| match error {
+                DomainError::NotFound => AdminError::NotFound,
+                DomainError::Invalid { .. } => AdminError::Invalid(
+                    "the peer or local account is not eligible for this mapping".to_owned(),
+                ),
+                other => AdminError::from_storage(crate::SSF_RECEIVER_SUBJECT_BIND_ID, &other),
+            })?;
+        self.record(
+            EventType::SSF_SUBJECT_ADDED,
+            Detail::new()
+                .label("operation", crate::SSF_RECEIVER_SUBJECT_BIND_ID)
+                .credential("peer_client_id", binding.peer.as_str())
+                .credential("user_id", binding.user.to_string()),
+        )
+        .await;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({
+                "peer_client_id": binding.peer.as_str(),
+                "user_id": binding.user,
+                "bound": true,
+            }),
+        ))
+    }
+
+    /// `DELETE /ssf/receiver/subjects` — remove one upstream identity mapping.
+    async fn remove_receiver_subject(
+        &self,
+        body: axum::body::Body,
+    ) -> Result<Response, AdminError> {
+        let bytes = axum::body::to_bytes(body, ssf::MAX_BODY_BYTES)
+            .await
+            .map_err(|_| AdminError::Invalid("the request body is too large".to_owned()))?;
+        let binding = ssf::parse_receiver_subject_binding(&bytes)?;
+        let removed = self
+            .state
+            .backend
+            .ssf()
+            .remove_receiver_subject(
+                &self.tenant.id,
+                &binding.peer,
+                &binding.subject_key,
+                binding.user,
+            )
+            .await
+            .map_err(|error| {
+                AdminError::from_storage(crate::SSF_RECEIVER_SUBJECT_REMOVE_ID, &error)
+            })?;
+        if !removed {
+            return Err(AdminError::NotFound);
+        }
+        self.record(
+            EventType::SSF_SUBJECT_REMOVED,
+            Detail::new()
+                .label("operation", crate::SSF_RECEIVER_SUBJECT_REMOVE_ID)
+                .credential("peer_client_id", binding.peer.as_str())
+                .credential("user_id", binding.user.to_string()),
+        )
+        .await;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({
+                "peer_client_id": binding.peer.as_str(),
+                "user_id": binding.user,
+                "removed": true,
             }),
         ))
     }

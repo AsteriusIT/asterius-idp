@@ -628,6 +628,7 @@ fn mount_ssf(
         return router;
     }
     router
+        .merge(crate::http::ssf_receiver::routes(Arc::clone(endpoints)))
         .route(
             SSF_STREAMS_PATH,
             any(ssf_streams).with_state(Arc::clone(endpoints)),
