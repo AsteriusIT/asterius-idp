@@ -1,5 +1,6 @@
 //! Tenant-scoped storage for explicit Identity Assurance verification records.
 
+use asterius_domain::audit::{Actor, AuditEvent, Detail, EventType, Outcome};
 use asterius_domain::ports::TenantScoped;
 use asterius_domain::{DomainError, Issuer, TenantId, UserId, VerifiedClaims};
 use sqlx::PgPool;
@@ -37,7 +38,13 @@ impl PgVerifiedClaims {
     /// # Errors
     /// Returns storage errors, `NotFound` for a missing user, or an invalid
     /// input error when the per-user bound is reached.
-    pub async fn insert(&self, user: UserId, bundle: &VerifiedClaims) -> Result<Uuid, DomainError> {
+    pub async fn insert(
+        &self,
+        user: UserId,
+        bundle: &VerifiedClaims,
+        actor: &str,
+        now: OffsetDateTime,
+    ) -> Result<Uuid, DomainError> {
         let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
         let present: Option<Uuid> = sqlx::query_scalar(
             "select user_id from users where tenant_id = $1 and user_id = $2 for update",
@@ -82,6 +89,24 @@ impl PgVerifiedClaims {
         .execute(&mut *tx)
         .await
         .map_err(to_domain_error)?;
+        crate::audit::append(
+            &mut *tx,
+            AuditEvent::new(
+                self.tenant.clone(),
+                EventType::USER_CLAIMS_CHANGED,
+                Outcome::Success,
+                Actor::Admin(actor.to_owned()),
+                now,
+            )
+            .subject(user.as_uuid().to_string())
+            .detail(
+                Detail::new()
+                    .label("operation", "ida.bundle.create")
+                    .text("bundle_id", id.to_string())
+                    .text("trust_framework", bundle.verification().trust_framework()),
+            ),
+        )
+        .await?;
         tx.commit().await.map_err(to_domain_error)?;
         Ok(id)
     }
@@ -120,8 +145,10 @@ impl PgVerifiedClaims {
         &self,
         user: UserId,
         id: Uuid,
+        actor: &str,
         now: OffsetDateTime,
     ) -> Result<bool, DomainError> {
+        let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
         let changed = sqlx::query(
             "update verified_claim_bundles set revoked_at = $4
              where tenant_id = $1 and user_id = $2 and bundle_id = $3 and revoked_at is null",
@@ -130,9 +157,29 @@ impl PgVerifiedClaims {
         .bind(user.as_uuid())
         .bind(id)
         .bind(now)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(to_domain_error)?;
+        if changed.rows_affected() == 1 {
+            crate::audit::append(
+                &mut *tx,
+                AuditEvent::new(
+                    self.tenant.clone(),
+                    EventType::USER_CLAIMS_CHANGED,
+                    Outcome::Success,
+                    Actor::Admin(actor.to_owned()),
+                    now,
+                )
+                .subject(user.as_uuid().to_string())
+                .detail(
+                    Detail::new()
+                        .label("operation", "ida.bundle.revoke")
+                        .text("bundle_id", id.to_string()),
+                ),
+            )
+            .await?;
+        }
+        tx.commit().await.map_err(to_domain_error)?;
         Ok(changed.rows_affected() == 1)
     }
 }
