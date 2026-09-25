@@ -296,7 +296,10 @@ impl AuthorizationCode<'_> {
         if grant.scopes.contains("bound_key") {
             // OpenID Connect Key Binding 1.0 §2.3 binds this particular code,
             // as well as the earlier pinned key, to the verified DPoP proof.
-            if !grant.scopes.contains("openid") || binding.dpop_jkt.is_none() {
+            if !grant.scopes.contains("openid")
+                || binding.dpop_jkt.is_none()
+                || !client.registration.token_binding.is_dpop_bound()
+            {
                 return Err(invalid_grant());
             }
             let proof = self.proof.ok_or_else(invalid_grant)?;
