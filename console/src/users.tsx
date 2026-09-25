@@ -764,6 +764,7 @@ function Account({
           >
             {disabled ? 'Enable account' : 'Disable account'}
           </Button>
+          </>
           ) : undefined
         }
       >
@@ -850,6 +851,7 @@ function Account({
         title="Credentials"
         actions={
           mayManageAccount(session) ? (
+          <>
           <Button
             variant="danger"
             disabled={busy}
