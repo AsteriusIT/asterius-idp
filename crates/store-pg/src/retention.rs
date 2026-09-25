@@ -616,6 +616,17 @@ pub const POLICY: &[Retention] = &[
         },
     },
     Retention {
+        table: "oid4vp_transactions",
+        rule: Rule::Sweep {
+            // A consumed or expired state cannot authorize a wallet response.
+            statement: "delete from oid4vp_transactions where ctid = any (array(
+                            select ctid from oid4vp_transactions
+                             where tenant_id = $1 and expires_at <= $2
+                             limit $3))",
+            grace: Duration::ZERO,
+        },
+    },
+    Retention {
         table: "signing_keys",
         rule: Rule::Kept(
             "a retired key's row survives so its `kid` is never handed out \

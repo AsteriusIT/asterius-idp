@@ -14,6 +14,7 @@ pub mod federation;
 pub mod http;
 pub mod mtls;
 pub mod observability;
+pub mod oid4vp;
 pub mod outbound;
 pub mod outbox;
 pub mod retention;

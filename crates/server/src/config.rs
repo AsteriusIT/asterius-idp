@@ -311,6 +311,25 @@ pub struct TenantConfig {
     pub federation_trust_anchors: Vec<FederationTrustAnchorConfig>,
     /// Explicit cross-domain grants this IdP may issue for managed agents.
     pub id_jag_approvals: Vec<IdJagApproval>,
+    /// Narrow OID4VP verifier profiles explicitly enabled for this tenant.
+    pub oid4vp_verifiers: Vec<Oid4vpVerifierConfig>,
+}
+
+/// Operator-pinned OID4VP verifier and credential trust policy.
+#[derive(Debug, Clone)]
+pub struct Oid4vpVerifierConfig {
+    pub id: String,
+    pub initiator_client_id: String,
+    pub wallet_client_id: String,
+    pub response_uri: String,
+    pub credential_id: String,
+    pub credential_type: String,
+    pub claim_paths: Vec<Vec<String>>,
+    pub holder: String,
+    pub holder_jwks_file: PathBuf,
+    pub credential_issuer: Issuer,
+    pub issuer_jwks_file: PathBuf,
+    pub accept_without_status: bool,
 }
 
 /// Operator approval binding one managed agent to a downstream OAuth client.
@@ -727,6 +746,25 @@ struct RawTenant {
     federation_authority_hints: Option<Vec<String>>,
     federation_trust_anchors: Option<Vec<RawFederationTrustAnchor>>,
     id_jag_approval: Option<Vec<RawIdJagApproval>>,
+    oid4vp_verifier: Option<Vec<RawOid4vpVerifier>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawOid4vpVerifier {
+    id: String,
+    initiator_client_id: String,
+    wallet_client_id: String,
+    response_uri: String,
+    credential_id: String,
+    credential_type: String,
+    claim_paths: Vec<Vec<String>>,
+    holder: String,
+    holder_jwks_file: PathBuf,
+    credential_issuer: String,
+    issuer_jwks_file: PathBuf,
+    #[serde(default)]
+    accept_without_status: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1985,6 +2023,8 @@ fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantCo
         let federation_trust_anchors =
             validate_federation_anchors(index, tenant.federation_trust_anchors, errors);
         let id_jag_approvals = validate_id_jag_approvals(index, tenant.id_jag_approval, errors);
+        let oid4vp_verifiers =
+            validate_oid4vp_verifiers(index, issuer.as_ref(), tenant.oid4vp_verifier, errors);
 
         if let (Some(id), Some(issuer)) = (id, issuer) {
             let default_resource = default_resource.unwrap_or_else(|| issuer.as_str().to_owned());
@@ -1998,6 +2038,7 @@ fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantCo
                 federation_authority_hints,
                 federation_trust_anchors,
                 id_jag_approvals,
+                oid4vp_verifiers,
             });
         }
     }
@@ -2183,6 +2224,71 @@ fn validate_id_jag_approvals(
                 subject_sector,
                 resources,
                 scopes,
+            })
+        })
+        .collect()
+}
+
+fn validate_oid4vp_verifiers(
+    tenant_index: usize,
+    tenant_issuer: Option<&Issuer>,
+    raw: Option<Vec<RawOid4vpVerifier>>,
+    errors: &mut Collector,
+) -> Vec<Oid4vpVerifierConfig> {
+    let mut ids = BTreeSet::new();
+    raw.unwrap_or_default()
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, raw)| {
+            let path = format!("tenant[{tenant_index}].oid4vp_verifier[{index}]");
+            let expected_uri = tenant_issuer
+                .map(|issuer| format!("{}/oid4vp/response", issuer.as_str().trim_end_matches('/')));
+            if raw.id.is_empty()
+                || raw.id.len() > 64
+                || !raw
+                    .id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+                || !ids.insert(raw.id.clone())
+                || raw.initiator_client_id.is_empty()
+                || raw.wallet_client_id.is_empty()
+                || raw.wallet_client_id.contains(':')
+                || expected_uri.as_deref() != Some(raw.response_uri.as_str())
+                || raw.credential_id.is_empty()
+                || raw.credential_type.is_empty()
+                || raw.holder.is_empty()
+                || raw.claim_paths.is_empty()
+                || raw.claim_paths.len() > 16
+                || raw.claim_paths.iter().any(|segments| {
+                    segments.first().map(String::as_str) != Some("credentialSubject")
+                        || segments.len() < 2
+                        || segments.len() > 8
+                        || segments.iter().any(String::is_empty)
+                })
+            {
+                errors.problem(path, "invalid OID4VP verifier, response URI or claim paths");
+                return None;
+            }
+            let credential_issuer = match Issuer::parse(&raw.credential_issuer) {
+                Ok(issuer) if issuer.as_str() == raw.credential_issuer => issuer,
+                _ => {
+                    errors.problem(path, "credential_issuer must be a canonical HTTPS issuer");
+                    return None;
+                }
+            };
+            Some(Oid4vpVerifierConfig {
+                id: raw.id,
+                initiator_client_id: raw.initiator_client_id,
+                wallet_client_id: raw.wallet_client_id,
+                response_uri: raw.response_uri,
+                credential_id: raw.credential_id,
+                credential_type: raw.credential_type,
+                claim_paths: raw.claim_paths,
+                holder: raw.holder,
+                holder_jwks_file: raw.holder_jwks_file,
+                credential_issuer,
+                issuer_jwks_file: raw.issuer_jwks_file,
+                accept_without_status: raw.accept_without_status,
             })
         })
         .collect()

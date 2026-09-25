@@ -59,6 +59,22 @@ impl Bucket {
     }
 }
 
+/// OID4VP's dedicated request bucket; it does not spend token or login limits.
+/// `route` is a fixed server-owned name, never a request parameter.
+#[must_use]
+pub fn oid4vp_address_bucket(route: &'static str, ip: Option<std::net::IpAddr>) -> Bucket {
+    ip.map_or_else(
+        || Bucket(format!("oid4vp:{route}:ip:unattributed")),
+        |ip| Bucket(format!("oid4vp:{route}:ip:{ip}")),
+    )
+}
+
+/// OID4VP request/result budget for an already authenticated OAuth client.
+#[must_use]
+pub fn oid4vp_client_bucket(client_id: &str) -> Bucket {
+    Bucket(format!("oid4vp:client:{client_id}"))
+}
+
 impl std::fmt::Display for Bucket {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)

@@ -100,6 +100,9 @@ pub fn verify_jwt_vc_json(
     if !has_type(presentation.get("type"), "VerifiablePresentation") {
         return Err(PresentationError::Presentation("VP type is invalid"));
     }
+    if !has_vc_context(presentation.get("@context")) {
+        return Err(PresentationError::Presentation("VP context is invalid"));
+    }
     if presentation.contains_key("proof") {
         return Err(PresentationError::Presentation(
             "embedded proof is unsupported",
@@ -131,6 +134,14 @@ fn verify_credential(
             "VC subject differs from holder",
         ));
     }
+    if credential
+        .claims
+        .get("nbf")
+        .and_then(Value::as_i64)
+        .is_none()
+    {
+        return Err(PresentationError::Credential("VC issuance time is missing"));
+    }
     let vc = credential
         .claims
         .get("vc")
@@ -138,6 +149,7 @@ fn verify_credential(
         .ok_or(PresentationError::Credential("vc claim is missing"))?;
     if !has_type(vc.get("type"), "VerifiableCredential")
         || !has_type(vc.get("type"), &policy.credential_type)
+        || !has_vc_context(vc.get("@context"))
     {
         return Err(PresentationError::Credential("VC type is not approved"));
     }
@@ -224,4 +236,12 @@ fn has_type(value: Option<&Value>, expected: &str) -> bool {
     value
         .and_then(Value::as_array)
         .is_some_and(|types| types.iter().any(|value| value.as_str() == Some(expected)))
+}
+
+fn has_vc_context(value: Option<&Value>) -> bool {
+    value
+        .and_then(Value::as_array)
+        .and_then(|contexts| contexts.first())
+        .and_then(Value::as_str)
+        == Some("https://www.w3.org/2018/credentials/v1")
 }

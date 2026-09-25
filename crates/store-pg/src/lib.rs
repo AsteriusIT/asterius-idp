@@ -31,6 +31,7 @@ mod key_store;
 mod keys;
 mod notifications;
 mod oid4vci_nonces;
+mod oid4vp_transactions;
 mod outbox;
 mod overview;
 mod passkeys;
@@ -92,6 +93,10 @@ pub use key_store::TenantKeyStore;
 pub use keys::{PgKeyRepository, Rotation, RotationSchedule};
 pub use notifications::{PgOutboxMailSender, QueuedNotification};
 pub use oid4vci_nonces::{NONCE_LIFETIME as OID4VCI_NONCE_LIFETIME, PgOid4vciNonces};
+pub use oid4vp_transactions::{
+    ConsumedOid4vpTransaction, NewOid4vpTransaction, Oid4vpTransactionResult, PgOid4vpTransactions,
+    TRANSACTION_LIFETIME as OID4VP_TRANSACTION_LIFETIME,
+};
 pub use outbox::{
     Backoff, DEFAULT_LEASE, DEFAULT_MAX_ATTEMPTS, NewOutboxEntry, Outcome, PgOutbox, PgTransaction,
     Verdict, enqueue,

@@ -299,6 +299,23 @@ A tenant is an issuer. This array is the source of truth for which tenants exist
 | `tenant.federation_authority_hints` | array of HTTPS entity identifiers | empty | Immediate Federation superiors for this OP leaf. At least one is required when the Federation key is configured. |
 | `tenant.federation_trust_anchors` | array of `{ entity_id, jwks_file }` tables | empty | Operator-pinned Federation roots for remote RP chains. Each `jwks_file` is a local JSON JWK Set. Invalid roots fail startup. |
 | `tenant.id_jag_approval` | array of `{ client_id, audience, downstream_client_id, subject_sector_uri, resources, scopes }` tables | empty | Explicit ID-JAG approvals for managed agents. The audience is the downstream AS issuer; the sector URI controls the target's pairwise `sub`. Requested resources and scopes must be within the configured sets. |
+| `tenant.oid4vp_verifier` | array of verifier policy tables | empty | Pins `id`, `initiator_client_id`, preregistered `wallet_client_id`, this tenant's HTTPS `/oid4vp/response` URI, `credential_id`, `credential_type`, `claim_paths` (arrays starting with `credentialSubject`), `holder`, `holder_jwks_file`, canonical HTTPS `credential_issuer`, and `issuer_jwks_file`. Both JWKS files are local and must contain usable keys. `accept_without_status = true` explicitly accepts credentials without revocation status; credentials with `credentialStatus` are refused until status verification is implemented. |
+
+An authenticated `initiator_client_id` can `POST` a form containing
+`verifier_id` and its normal client authentication to `/oid4vp/request`. The
+response contains an `openid4vp:` authorization URI and a state value. The
+wallet submits its form-encoded `state` and `vp_token` to the configured
+`/oid4vp/response` URI. The same initiating client can `POST` its state and
+`verifier_id` to `/oid4vp/result`; a verified result contains the holder,
+credential issuer and approved claim values in configured path order. The
+wallet response deadline is five minutes; a verified result remains readable
+for five minutes after acceptance. The state is a transaction secret and
+must not be logged or passed to another relying party.
+The result endpoint returns `202` while pending, `400` after a rejected wallet
+response, and `200` with approved claims after verification. The request,
+wallet response and result endpoints each admit at most 60 requests per minute
+per resolved client address; authenticated initiation and result calls also
+share a 120-per-minute client budget. Limiter storage failures refuse requests.
 
 An ID-JAG request uses token exchange with `requested_token_type=urn:ietf:params:oauth:token-type:id-jag` and an ID token issued to the authenticated agent as its subject token. The agent must prove its DPoP key. The server accepts one approved downstream AS audience, one approved HTTPS resource and explicit approved scopes. It issues a five-minute maximum `oauth-id-jag+jwt` with the downstream client ID, target sector subject, actor, and DPoP confirmation. SAML and refresh-token subject assertions, `actor_token`, and rich authorization details are refused until their validation and policy profiles are implemented. The approval table is the enterprise administrator's authorization; no cross-app grant is inferred from an ID token alone.
 

@@ -118,6 +118,8 @@ pub struct ProtocolState {
 /// Separate from [`ProtocolState`] so that the discovery and JWKS handlers —
 /// which need none of it — can be tested without a database.
 pub struct ClientEndpoints {
+    /// Operator-pinned OpenID4VP verifier policies, absent unless configured.
+    pub oid4vp_verifiers: Arc<crate::oid4vp::Oid4vpVerifiers>,
     /// Operator-approved cross-domain ID-JAG relationships, keyed by tenant.
     pub id_jag_approvals: Arc<std::collections::HashMap<String, Vec<crate::config::IdJagApproval>>>,
     /// Authenticates the client behind a request.
@@ -323,6 +325,7 @@ pub fn routes(state: ProtocolState) -> Router {
     // The endpoints that need an authenticated client, when the deployment has
     // the database wiring for them. `ast-gxh.1`, `ast-a05.1`.
     if let Some(endpoints) = built {
+        router = router.merge(crate::http::oid4vp::routes(Arc::clone(&endpoints)));
         router = router
             .route(
                 Endpoint::PushedAuthorizationRequest.path(),

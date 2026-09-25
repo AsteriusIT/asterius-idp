@@ -169,6 +169,8 @@ impl EventType {
     pub const TOKEN_REFUSED: Self = Self("token.refused");
     /// A token was exchanged for a narrower one (RFC 8693).
     pub const TOKEN_EXCHANGED: Self = Self("token.exchanged");
+    /// A wallet presentation was accepted or refused by the OID4VP verifier.
+    pub const OID4VP_PRESENTED: Self = Self("oid4vp.presented");
     /// A refresh token was presented at the token endpoint (RFC 6749 §6).
     ///
     /// Distinct from [`EventType::TOKEN_ISSUED`] because it answers a
@@ -563,7 +565,7 @@ impl EventType {
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 82] = [
+    pub const ALL: [Self; 83] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -590,6 +592,7 @@ impl EventType {
         Self::TOKEN_ISSUED,
         Self::TOKEN_REFUSED,
         Self::TOKEN_EXCHANGED,
+        Self::OID4VP_PRESENTED,
         Self::TOKEN_REFRESHED,
         Self::TOKEN_ISSUANCE_DENIED,
         Self::TOKEN_REVOKED,
