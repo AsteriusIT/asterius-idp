@@ -54,6 +54,14 @@ are cached for 30 seconds. Acceptance and refusal are recorded in operational
 logs without JWT content. The resolver is available through the server's
 Federation state, but no client registration route consumes it yet.
 
+The key lifecycle slice (`ast-s36.14.3.1`) stores dedicated Federation Ed25519
+keys under the deployment KEK. A legacy PKCS#8 file is imported only once;
+`federation_enabled = true` generates a fresh key without a file. The local
+`federation-rotate` command stages a successor for six minutes before a
+background sweep promotes it. The old public key stays published for ten more
+minutes, past Entity Statement and HTTP cache lifetimes. KEK rewrap covers
+these rows.
+
 ## Context
 
 [OpenID Federation 1.0](https://openid.net/specs/openid-federation-1_0-final.html)

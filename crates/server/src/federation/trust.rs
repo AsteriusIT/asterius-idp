@@ -200,10 +200,10 @@ impl FederationTrust {
         }
         match &outcome {
             Ok(chain) => {
-                tracing::info!(tenant = %tenant, entity = entity_id, anchor = chain.anchor_entity_id(), "Federation trust chain accepted")
+                tracing::info!(tenant = %tenant, entity = entity_id, anchor = chain.anchor_entity_id(), "Federation trust chain accepted");
             }
             Err(error) => {
-                tracing::warn!(tenant = %tenant, entity = entity_id, reason = %error, "Federation trust chain refused")
+                tracing::warn!(tenant = %tenant, entity = entity_id, reason = %error, "Federation trust chain refused");
             }
         }
         outcome

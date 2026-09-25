@@ -6,7 +6,8 @@
 pub mod trust;
 
 use asterius_domain::{Issuer, KeyStore, TenantId};
-use asterius_jose::{SigningKey, jws, store::thumbprint};
+use asterius_jose::jws;
+use asterius_store_pg::PgFederationKeys;
 use serde_json::{Value, json};
 use std::{
     collections::{HashMap, HashSet},
@@ -27,9 +28,8 @@ pub const CONFIGURATION_PATH: &str = "/.well-known/openid-federation";
 #[derive(Debug)]
 struct Entity {
     issuer: Issuer,
-    key: SigningKey,
-    kid: asterius_domain::Kid,
-    jwk: Value,
+    tenant: TenantId,
+    keys: PgFederationKeys,
     authority_hints: Vec<String>,
 }
 
@@ -41,41 +41,61 @@ pub struct FederationEntities {
 }
 
 impl FederationEntities {
-    /// Loads each tenant's dedicated PKCS#8 DER key. Boot fails on a missing,
-    /// malformed or reused OIDC token-signing key.
+    /// Loads or imports dedicated Federation signing keys. Key reuse fails boot.
     pub async fn load(
         tenants: &[TenantConfig],
         oidc_keys: &dyn KeyStore,
         fetcher: HttpsClientUrlFetcher,
+        federation_keys: PgFederationKeys,
     ) -> Result<Self, String> {
         let mut entities = HashMap::new();
         let mut federation_kids = HashSet::new();
         for tenant in tenants {
-            let Some(path) = &tenant.federation_signing_key_file else {
+            if !tenant.federation_enabled {
                 continue;
+            }
+            let legacy = if federation_keys
+                .has_key(&tenant.id)
+                .await
+                .map_err(|e| e.to_string())?
+            {
+                None
+            } else {
+                tenant
+                    .federation_signing_key_file
+                    .as_ref()
+                    .map(|path| {
+                        std::fs::read(path).map(Zeroizing::new).map_err(|e| {
+                            format!(
+                                "tenant {} Federation key file cannot be read: {e}",
+                                tenant.id
+                            )
+                        })
+                    })
+                    .transpose()?
             };
-            let bytes = Zeroizing::new(std::fs::read(path).map_err(|error| {
-                format!(
-                    "tenant {} Federation key file cannot be read: {error}",
-                    tenant.id
+            federation_keys
+                .initialize(
+                    &tenant.id,
+                    legacy.as_deref().map(Vec::as_slice),
+                    OffsetDateTime::now_utc(),
                 )
-            })?);
-            let key = SigningKey::from_pkcs8(asterius_domain::SigningAlgorithm::EdDsa, &bytes)
-                .map_err(|error| {
-                    format!("tenant {} Federation key is invalid: {error}", tenant.id)
-                })?;
-            let mut jwk = key.public_jwk().map_err(|error| error.to_string())?;
-            let kid = thumbprint(&jwk).map_err(|error| error.to_string())?;
-            if !federation_kids.insert(kid.as_str().to_owned()) {
+                .await
+                .map_err(|e| e.to_string())?;
+            let snapshot = federation_keys
+                .snapshot(&tenant.id)
+                .await
+                .map_err(|e| e.to_string())?;
+            if !federation_kids.insert(snapshot.kid.as_str().to_owned()) {
                 return Err(format!(
                     "tenant {} Federation key is reused by another tenant",
                     tenant.id
                 ));
             }
             if oidc_keys
-                .public_key(&tenant.id, &kid)
+                .public_key(&tenant.id, &snapshot.kid)
                 .await
-                .map_err(|error| error.to_string())?
+                .map_err(|e| e.to_string())?
                 .is_some()
             {
                 return Err(format!(
@@ -83,15 +103,12 @@ impl FederationEntities {
                     tenant.id
                 ));
             }
-            jwk["kid"] = json!(kid.as_str());
-            jwk["use"] = json!("sig");
             entities.insert(
                 tenant.id.as_str().to_owned(),
                 Entity {
                     issuer: tenant.issuer.clone(),
-                    key,
-                    kid,
-                    jwk,
+                    tenant: tenant.id.clone(),
+                    keys: federation_keys.clone(),
                     authority_hints: tenant
                         .federation_authority_hints
                         .iter()
@@ -104,6 +121,18 @@ impl FederationEntities {
             entities: Arc::new(entities),
             trust: Some(FederationTrust::load(tenants, fetcher)?),
         })
+    }
+
+    /// Advance published key rotation states for each enabled tenant.
+    pub async fn sweep_keys(&self, now: OffsetDateTime) -> Result<(), String> {
+        for entity in self.entities.values() {
+            entity
+                .keys
+                .sweep(&entity.tenant, now)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
 
     /// The tenant-pinned remote RP resolver, initialized at boot.
@@ -120,10 +149,10 @@ impl FederationEntities {
 
     /// Signs one short-lived Entity Configuration using the dedicated key.
     /// The OP metadata is supplied by the same producer as OIDC discovery.
-    pub fn sign(
+    pub async fn sign(
         &self,
         tenant: &TenantId,
-        op_metadata: Value,
+        op_metadata: &Value,
         now: OffsetDateTime,
     ) -> Result<Option<asterius_domain::CompactJws>, String> {
         let Some(entity) = self.entities.get(tenant.as_str()) else {
@@ -132,17 +161,27 @@ impl FederationEntities {
         if op_metadata.get("issuer").and_then(Value::as_str) != Some(entity.issuer.as_str()) {
             return Err("Federation OP metadata issuer disagrees with tenant issuer".to_owned());
         }
+        let snapshot = entity
+            .keys
+            .snapshot(&entity.tenant)
+            .await
+            .map_err(|e| e.to_string())?;
         let claims = json!({
             "iss": entity.issuer.as_str(),
             "sub": entity.issuer.as_str(),
             "iat": now.unix_timestamp(),
             "exp": now.unix_timestamp() + LIFETIME_SECONDS,
-            "jwks": {"keys": [entity.jwk.clone()]},
+            "jwks": {"keys": snapshot.jwks},
             "authority_hints": entity.authority_hints,
             "metadata": {"openid_provider": op_metadata},
         });
-        jws::sign(&entity.key, &entity.kid, "entity-statement+jwt", &claims)
-            .map(Some)
-            .map_err(|error| error.to_string())
+        jws::sign(
+            &snapshot.active,
+            &snapshot.kid,
+            "entity-statement+jwt",
+            &claims,
+        )
+        .map(Some)
+        .map_err(|error| error.to_string())
     }
 }

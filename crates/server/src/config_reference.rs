@@ -1041,16 +1041,22 @@ fn tenant() -> Section {
                  or clear that client's list; an empty list authorizes no resource.",
             ),
             key(
+                "federation_enabled",
+                "boolean",
+                "false".to_owned(),
+                "Publish a Federation Entity Configuration with a dedicated KEK-wrapped Ed25519 signing key. Configure authority hints. A new key is generated on first boot unless a legacy key file is provided.",
+            ),
+            key(
                 "federation_signing_key_file",
                 "path to Ed25519 PKCS#8 DER file",
-                "absent (Federation disabled)".to_owned(),
-                "Dedicated Federation Entity Statement signing key. It must differ from the OP token-signing keys. Configure authority hints with it; a missing or invalid file fails startup.",
+                "absent".to_owned(),
+                "Optional legacy Federation key import on first boot. A configured file also enables Federation. After import, the KEK-wrapped database key is used and the file is no longer read.",
             ),
             key(
                 "federation_authority_hints",
                 "array of HTTPS entity identifiers",
                 "empty".to_owned(),
-                "Immediate Federation superiors for this OP leaf. At least one is required when the Federation key is configured.",
+                "Immediate Federation superiors for this OP leaf. At least one is required when Federation is enabled.",
             ),
             key(
                 "federation_trust_anchors",

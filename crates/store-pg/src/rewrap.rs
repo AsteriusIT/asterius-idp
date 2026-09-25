@@ -93,6 +93,8 @@ pub struct Rewrap {
     /// because a sealed row the sweep does not know about is a sealed row an
     /// operator would strand by destroying the old key.
     pub ciba_ping_envelopes: u64,
+    /// Federation signing keys re-sealed under the new KEK.
+    pub federation_keys: u64,
     /// Rows still sealed under the old KEK when the transaction committed.
     ///
     /// Normally zero. It is not zero when a replica still running on the old
@@ -118,6 +120,7 @@ impl Rewrap {
             && !self.pairwise_salt
             && self.ssf_push_credentials == 0
             && self.ciba_ping_envelopes == 0
+            && self.federation_keys == 0
     }
 
     /// Whether the tenant is now wholly on the new KEK.
@@ -197,6 +200,7 @@ impl PgKekRewrap {
                 .await?,
             ciba_ping_envelopes: Self::ciba_ping_envelopes(&mut transaction, tenant, from, to)
                 .await?,
+            federation_keys: Self::federation_keys(&mut transaction, tenant, from, to).await?,
             left_behind: Self::count_under(&mut transaction, tenant, from.id()).await?,
             stranded: Self::count_stranded(&mut transaction, tenant, from, to).await?,
         };
@@ -549,6 +553,37 @@ impl PgKekRewrap {
     }
 
     /// How many of the tenant's sealed rows still name `kek_id`.
+    async fn federation_keys(
+        transaction: &mut Transaction<'_>,
+        tenant: &TenantId,
+        from: &dyn Kek,
+        to: &dyn Kek,
+    ) -> Result<u64, DomainError> {
+        let rows = sqlx::query("select kid, ciphertext, nonce, kek_id from federation_signing_keys where tenant_id = $1 and kek_id = $2 for update")
+            .bind(tenant.as_str()).bind(from.id()).fetch_all(&mut **transaction).await.map_err(to_domain_error)?;
+        let mut moved = 0;
+        for row in rows {
+            let kid: String = sqlx::Row::try_get(&row, "kid").map_err(to_domain_error)?;
+            let wrapped = WrappedKey::from_parts(
+                sqlx::Row::try_get::<String, _>(&row, "kek_id").map_err(to_domain_error)?,
+                sqlx::Row::try_get(&row, "nonce").map_err(to_domain_error)?,
+                sqlx::Row::try_get(&row, "ciphertext").map_err(to_domain_error)?,
+            )
+            .map_err(storage_error)?;
+            let binding = KeyBinding::row_secret(tenant, RowSecret::FederationSigningKey, &kid);
+            let plaintext = from
+                .unwrap(binding, &wrapped)
+                .await
+                .map_err(storage_error)?;
+            let resealed = to.wrap(binding, &plaintext).await.map_err(storage_error)?;
+            moved += sqlx::query("update federation_signing_keys set ciphertext = $1, nonce = $2, kek_id = $3 where tenant_id = $4 and kid = $5 and kek_id = $6")
+                .bind(resealed.ciphertext()).bind(resealed.nonce()).bind(resealed.kek_id())
+                .bind(tenant.as_str()).bind(&kid).bind(from.id())
+                .execute(&mut **transaction).await.map_err(to_domain_error)?.rows_affected();
+        }
+        Ok(moved)
+    }
+
     async fn count_under(
         transaction: &mut Transaction<'_>,
         tenant: &TenantId,
@@ -590,10 +625,19 @@ impl PgKekRewrap {
         .fetch_one(&mut **transaction)
         .await
         .map_err(to_domain_error)?;
+        let federation: i64 = sqlx::query_scalar(
+            "select count(*) from federation_signing_keys where tenant_id = $1 and kek_id = $2",
+        )
+        .bind(tenant.as_str())
+        .bind(kek_id)
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(to_domain_error)?;
         Ok(keys.unsigned_abs()
             + salts.unsigned_abs()
             + credentials.unsigned_abs()
-            + envelopes.unsigned_abs())
+            + envelopes.unsigned_abs()
+            + federation.unsigned_abs())
     }
 
     /// How many of the tenant's sealed rows name neither key.
@@ -650,10 +694,13 @@ impl PgKekRewrap {
         .fetch_one(&mut **transaction)
         .await
         .map_err(to_domain_error)?;
+        let federation: i64 = sqlx::query_scalar("select count(*) from federation_signing_keys where tenant_id = $1 and kek_id <> $2 and kek_id <> $3")
+            .bind(tenant.as_str()).bind(from.id()).bind(to.id()).fetch_one(&mut **transaction).await.map_err(to_domain_error)?;
         Ok(keys.unsigned_abs()
             + salts.unsigned_abs()
             + credentials.unsigned_abs()
-            + envelopes.unsigned_abs())
+            + envelopes.unsigned_abs()
+            + federation.unsigned_abs())
     }
 }
 
@@ -727,6 +774,7 @@ mod tests {
             pairwise_salt: true,
             ssf_push_credentials: 0,
             ciba_ping_envelopes: 0,
+            federation_keys: 0,
             left_behind: 1,
             stranded: 0,
         };

@@ -22,6 +22,7 @@ mod device_codes;
 mod email_change;
 mod email_verification;
 mod error;
+mod federation_keys;
 mod grants;
 mod groups;
 mod initial_access_tokens;
@@ -77,6 +78,7 @@ pub use device_codes::{
 pub use email_change::{ConfirmedEmailChange, PgEmailChangeRequests};
 pub use email_verification::PgEmailVerificationTokens;
 pub use error::to_domain_error;
+pub use federation_keys::{FederationKeySnapshot, PgFederationKeys};
 pub use grants::{PgGrantRepository, Revocation};
 pub use initial_access_tokens::PgInitialAccessTokens;
 pub use invitations::{
