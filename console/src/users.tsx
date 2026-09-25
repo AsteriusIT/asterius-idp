@@ -60,6 +60,7 @@ import {
 } from './ui';
 import { emailAddress, username as usernameComplaint } from './validation';
 import { UserGroups, mayReadMemberships } from './groups';
+import { VerifiedClaims } from './verifiedClaims';
 
 /** Whether an account may authenticate, mirroring `UserStatus`. */
 export type UserStatus = 'active' | 'disabled' | 'locked';
@@ -806,6 +807,7 @@ function Account({
           refresh();
         }}
       />
+      <VerifiedClaims session={session} userId={user.user_id} />
 
         </TabsContent>
         <TabsContent value="roles">
