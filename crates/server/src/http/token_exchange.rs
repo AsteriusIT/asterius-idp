@@ -104,6 +104,12 @@ const SUBJECT_REFUSED: &str = "the subject token cannot be exchanged";
 pub struct TokenExchange<'a> {
     /// Operator-approved cross-domain relationships for this routed tenant.
     pub id_jag_approvals: &'a [crate::config::IdJagApproval],
+    /// Native SSO is a distinct exchange profile with an approved app pair.
+    pub native_sso_approvals: &'a [crate::config::NativeSsoApproval],
+    pub native_sso: &'a asterius_store_pg::PgNativeSso,
+    pub refresh_tokens: &'a asterius_store_pg::PgRefreshTokenRepository,
+    pub sessions: &'a dyn asterius_domain::SessionRepository,
+    pub acr_policy: &'a asterius_domain::AcrPolicy,
     /// Resolves the ID-token subject to a local user and target pairwise subject.
     pub users: &'a asterius_store_pg::PgUserRepository,
     /// This tenant's clients — read to find the policy of the client the
@@ -157,9 +163,15 @@ impl<'a> TokenExchange<'a> {
         audit: &'a dyn AuditSink,
         agent_policy: crate::http::agent_issuance::AgentPolicy<'a>,
         id_jag_approvals: &'a [crate::config::IdJagApproval],
+        native_sso_approvals: &'a [crate::config::NativeSsoApproval],
     ) -> Self {
         Self {
             id_jag_approvals,
+            native_sso_approvals,
+            native_sso: code.native_sso,
+            refresh_tokens: code.refresh_tokens,
+            sessions: code.sessions,
+            acr_policy: code.acr_policy,
             users: code.users,
             clients,
             keys,
@@ -236,6 +248,11 @@ impl GrantHandler for TokenExchange<'_> {
     }
 
     async fn handle(&self, tenant: &Tenant, client: &Client, params: &Parameters) -> Response {
+        if params.get("actor_token_type").ok().flatten()
+            == Some(crate::http::native_sso::DEVICE_SECRET_TYPE)
+        {
+            return self.handle_native_sso(tenant, client, params).await;
+        }
         if params.get("requested_token_type").ok().flatten() == Some(token_exchange::ID_JAG) {
             return self.handle_id_jag(tenant, client, params).await;
         }
@@ -277,6 +294,353 @@ struct Issued {
 }
 
 impl TokenExchange<'_> {
+    /// Native SSO is an authentication exchange, not the narrowing-only RFC
+    /// 8693 delegation handled by `issue`. It has its own actor and policy.
+    async fn handle_native_sso(
+        &self,
+        tenant: &Tenant,
+        client: &Client,
+        params: &Parameters,
+    ) -> Response {
+        match self.issue_native_sso(tenant, client, params).await {
+            Ok(issued) => {
+                self.record(
+                    tenant,
+                    client,
+                    Outcome::Success,
+                    Some(&issued.grant),
+                    &[],
+                    issued.subject.as_ref(),
+                )
+                .await;
+                issued.response
+            }
+            Err(failure) => {
+                self.record(tenant, client, Outcome::Failure, None, &[], None)
+                    .await;
+                match failure {
+                    Failure::Client(code, description) => refused(code, description),
+                    Failure::Server(error) => not_issued(tenant, client, &error),
+                    Failure::Dpop(refusal) => refusal.into_response(),
+                }
+            }
+        }
+    }
+
+    async fn issue_native_sso(
+        &self,
+        tenant: &Tenant,
+        client: &Client,
+        params: &Parameters,
+    ) -> Result<Issued, Failure> {
+        use asterius_domain::{
+            ApplicationType, ClientComplianceProfile, SectorIdentifier, SessionId,
+        };
+        use asterius_oidc::tokens::access::Audience;
+        use asterius_store_pg::NewRefreshToken;
+        use base64::Engine as _;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
+
+        const INVALID: &str = "the native SSO assertion cannot be exchanged";
+        let bad = || Failure::Client("invalid_grant", INVALID);
+        let one = |name| {
+            params.get(name).map_err(|_| {
+                Failure::Client("invalid_request", "a parameter was sent more than once")
+            })
+        };
+        if client.registration.application_type != ApplicationType::Native
+            || client.registration.compliance_profile != ClientComplianceProfile::Oidc
+            || client.registration.token_binding != TokenBinding::Bearer
+            || !client.registration.scopes.contains("openid")
+            || self.constraint.proof_key.is_some()
+        {
+            return Err(Failure::Client(
+                "unauthorized_client",
+                "native SSO requires an approved native OIDC client",
+            ));
+        }
+        if one("subject_token_type")? != Some(token_exchange::ID_TOKEN)
+            || one("actor_token_type")? != Some(crate::http::native_sso::DEVICE_SECRET_TYPE)
+            || one("audience")? != Some(tenant.issuer.as_str())
+            || params.present("resource")
+            || one("requested_token_type")?.is_some_and(|kind| kind != token_exchange::ACCESS_TOKEN)
+        {
+            return Err(Failure::Client(
+                "invalid_request",
+                "invalid native SSO token exchange profile",
+            ));
+        }
+        let raw = one("subject_token")?
+            .filter(|value| {
+                !value.is_empty() && value.len() <= token_exchange::MAX_SUBJECT_TOKEN_BYTES
+            })
+            .ok_or(Failure::Client(
+                "invalid_request",
+                "subject_token is required",
+            ))?;
+        let secret = one("actor_token")?
+            .filter(|value| {
+                value.len() == 43
+                    && value
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+            })
+            .ok_or(Failure::Client(
+                "invalid_request",
+                "actor_token is required",
+            ))?;
+        let scopes: BTreeSet<String> = one("scope")?
+            .unwrap_or("openid")
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect();
+        if !scopes.contains("openid")
+            || scopes.is_empty()
+            || scopes.len() > 2
+            || scopes
+                .iter()
+                .any(|scope| scope != "openid" && scope != "offline_access")
+            || scopes.len() != one("scope")?.unwrap_or("openid").split_whitespace().count()
+            || !scopes.is_subset(&client.registration.scopes)
+        {
+            return Err(Failure::Client(
+                "interaction_required",
+                "requested scopes require interactive authorization",
+            ));
+        }
+        let hash = crate::http::native_sso::digest(secret);
+        let binding = self
+            .native_sso
+            .binding(&hash, self.now)
+            .await?
+            .ok_or_else(bad)?;
+        let source = self
+            .clients
+            .find(&binding.source_client)
+            .await?
+            .filter(Client::is_active)
+            .ok_or_else(bad)?;
+        if source.registration.application_type != ApplicationType::Native
+            || !source.registration.scopes.contains("device_sso")
+        {
+            return Err(bad());
+        }
+        let approval = self
+            .native_sso_approvals
+            .iter()
+            .find(|approval| {
+                approval.source_client_id == binding.source_client.as_str()
+                    && approval.target_client_id == client.id.as_str()
+            })
+            .ok_or_else(bad)?;
+        let verified = access_token::verify_native_sso_id_token(tenant, self.keys, raw, self.now)
+            .await
+            .map_err(|error| match error {
+                access_token::Rejected::Token(_) => bad(),
+                access_token::Rejected::Unavailable(error) => Failure::Server(error),
+            })?;
+        let expected_hash = B64.encode(hash);
+        if verified.claim_str("aud") != Some(binding.source_client.as_str())
+            || verified.claim_str("azp") != Some(binding.source_client.as_str())
+            || verified.claim_str("sid") != Some(binding.public_sid.as_str())
+            || !verified.claim_str("ds_hash").is_some_and(|value| {
+                asterius_domain::ct_eq(value.as_bytes(), expected_hash.as_bytes())
+            })
+        {
+            return Err(bad());
+        }
+        let source_grant =
+            self.grants
+                .find(&binding.source_grant)
+                .await?
+                .filter(|grant| {
+                    grant.status(self.now) == GrantStatus::Active
+                        && grant.user == Some(binding.user)
+                        && grant.client == binding.source_client
+                        && grant.scopes.contains("device_sso")
+                        && grant.subject.as_ref().is_some_and(|subject| {
+                            Some(subject.as_str()) == verified.claim_str("sub")
+                        })
+                })
+                .ok_or_else(bad)?;
+        let session = self
+            .sessions
+            .find(&binding.session_digest)
+            .await?
+            .filter(|session| {
+                session.status(self.now).is_usable()
+                    && session.public_sid == binding.public_sid
+                    && session.user == *binding.user.as_uuid()
+            })
+            .ok_or_else(bad)?;
+        let user = self
+            .users
+            .find(binding.user)
+            .await?
+            .filter(asterius_domain::User::can_authenticate)
+            .ok_or_else(bad)?;
+        if scopes.contains("offline_access")
+            && (!approval.allow_offline_access
+                || !source_grant.scopes.contains("offline_access")
+                || !client
+                    .registration
+                    .grant_types
+                    .contains(&GrantType::RefreshToken))
+        {
+            return Err(Failure::Client(
+                "interaction_required",
+                "offline access requires interactive authorization",
+            ));
+        }
+        let sector = SectorIdentifier::of_client(client).map_err(|_| bad())?;
+        let subject = self.users.subject(user.id, &sector).await?;
+        let mut grant = Grant::new(tenant.id.clone(), client.id.clone(), self.now);
+        grant.user = Some(user.id);
+        grant.subject = Some(subject.clone());
+        grant.scopes = scopes.clone();
+        grant.resources.insert(tenant.issuer.as_str().to_owned());
+        grant.parent = Some(source_grant.id.clone());
+        grant.session = Some(SessionId::new(binding.session_digest.clone()));
+        grant.authentication = source_grant.authentication.clone();
+        grant.claimed_at = Some(self.now);
+        grant.expires_at = Some(session.expires_at.min(session.idle_expires_at));
+        if grant
+            .expires_at
+            .is_none_or(|deadline| deadline - self.now < Duration::seconds(1))
+        {
+            return Err(bad());
+        }
+        let claimed = grant.claim(self.now).map_err(|_| bad())?;
+        let confirmation = self.constraint.confirmation(client).map_err(|_| bad())?;
+        let audience = Audience::new([tenant.issuer.as_str()])
+            .map_err(|e| Failure::Server(DomainError::invalid("audience", e.to_string())))?;
+        let access = AccessToken::new(
+            &tenant.issuer,
+            &grant,
+            &claimed,
+            audience,
+            confirmation,
+            JwtId::generate(),
+            self.now,
+        )
+        .authenticated_by(asterius_oidc::tokens::access::Authentication {
+            authenticated_at: session.authenticated_at,
+            acr: session.acr.clone(),
+            amr: session
+                .amr
+                .iter()
+                .map(|method| method.as_str().to_owned())
+                .collect(),
+        })
+        .with_grant_id_when(self.grant_id_claim)
+        .for_lifetime(
+            self.lifetimes
+                .access_token()
+                .min(grant.expires_at.ok_or_else(bad)? - self.now),
+        )
+        .build()
+        .map_err(|e| Failure::Server(DomainError::invalid("access_token", e.to_string())))?;
+        self.grants.create(&grant).await?;
+        if !self
+            .native_sso
+            .link_derivation(
+                &hash,
+                &grant.id,
+                &source_grant.id,
+                &binding.public_sid,
+                self.now,
+            )
+            .await?
+        {
+            let _ = self
+                .grants
+                .revoke(
+                    &grant.id,
+                    asterius_domain::RevocationReason::SessionEnded,
+                    &[],
+                    self.now,
+                )
+                .await;
+            return Err(bad());
+        }
+        let access_token = self
+            .signer
+            .sign(
+                &tenant.id,
+                access.required_algorithm(),
+                access.typ(),
+                access.claims(),
+            )
+            .await?;
+        issuance::remember_participant(self.sessions, &grant, self.now).await;
+        let mut facts = issuance::session_facts(self.sessions, &grant).await?;
+        facts.revalidate_acr(self.acr_policy);
+        let id_token = issuance::sign_id_token(
+            self.signer,
+            tenant,
+            client,
+            issuance::IdTokenParts {
+                acr_policy: self.acr_policy,
+                claimed: &claimed,
+                session: &facts,
+                access_token: access_token.as_str(),
+                nonce: None,
+                key_bound_jwk: None,
+                device_secret_hash: None,
+                released: issuance::ReleasedToIdToken {
+                    claims: serde_json::Map::new(),
+                    role_claims: BTreeSet::new(),
+                    held: asterius_domain::HeldRoles::empty(),
+                    managed_groups: Vec::new(),
+                },
+            },
+            self.now,
+        )
+        .await?;
+        let refresh_token = if scopes.contains("offline_access") {
+            let minted = asterius_oidc::refresh::MintedRefreshToken::generate();
+            let absolute = (self.now + tenant.refresh.absolute_lifetime)
+                .min(grant.expires_at.ok_or_else(bad)?);
+            self.refresh_tokens
+                .issue(
+                    minted.digest(),
+                    &NewRefreshToken {
+                        grant: grant.id.clone(),
+                        client: client.id.clone(),
+                        scopes: scopes.clone(),
+                        binding: self.constraint.refresh_binding(client).map_err(|_| bad())?,
+                        absolute_expires_at: absolute,
+                        idle_expires_at: tenant
+                            .refresh
+                            .idle_lifetime
+                            .map(|idle| (self.now + idle).min(absolute)),
+                    },
+                    self.now,
+                )
+                .await?;
+            Some(minted.expose().to_owned())
+        } else {
+            None
+        };
+        let mut body = json!({
+            "access_token": access_token.as_str(),
+            "issued_token_type": token_exchange::ACCESS_TOKEN,
+            "token_type": issuance::token_type(client),
+            "expires_in": self.lifetimes.access_token().min(grant.expires_at.ok_or_else(bad)? - self.now).whole_seconds(),
+            "scope": scopes.iter().cloned().collect::<Vec<_>>().join(" "),
+            "id_token": id_token,
+        });
+        if let Some(refresh) = refresh_token {
+            body["refresh_token"] = json!(refresh);
+        }
+        Ok(Issued {
+            response: (axum::http::StatusCode::OK, Json(body)).into_response(),
+            grant,
+            chain: Vec::new(),
+            subject: Some(subject),
+        })
+    }
+
     /// `ast-lh3.10`'s pre-issuance decision, for a client that is an agent.
     ///
     /// Called after §4.1's chain, the agent's static limits and the audience

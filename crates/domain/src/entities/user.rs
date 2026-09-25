@@ -283,6 +283,7 @@ const SERVER_ISSUED: &[&str] = &[
     "c_hash",
     "client_id",
     "cnf",
+    "ds_hash",
     "exp",
     "iat",
     "iss",

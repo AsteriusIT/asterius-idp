@@ -155,6 +155,16 @@ self_registration = false # sign-up page and prompt=create (Prompt Create 1.0 §
 id = "demo"
 issuer = "https://as.example/t/demo"
 
+# OpenID Native SSO draft-07 is off until at least one app pair is approved.
+# Both clients must be native; the source registers `device_sso`, and the
+# target registers token exchange under the standard OIDC bearer profile.
+# Only approve apps whose shared device storage and signing identity the
+# operator has verified. Derived offline access is a separate opt-in.
+# [[tenant.native_sso_approval]]
+# source_client_id = "https://mobile.example/app-one"
+# target_client_id = "https://mobile.example/app-two"
+# allow_offline_access = false
+
 # The `aud` an access token carries when the authorization request named no
 # `resource` of its own (RFC 8707 §2). RFC 9068 §3 requires the authorization
 # server to supply one: an access token must say which resource server it was

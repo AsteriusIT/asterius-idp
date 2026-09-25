@@ -82,6 +82,9 @@ pub struct AuthorizationCode<'a> {
     /// Refresh tokens for this tenant, written only when the grant carries
     /// `offline_access` (OIDC Core §11).
     pub refresh_tokens: &'a PgRefreshTokenRepository,
+    /// Native SSO secret storage and explicit source-client policy.
+    pub native_sso: &'a asterius_store_pg::PgNativeSso,
+    pub native_sso_approvals: &'a [crate::config::NativeSsoApproval],
     /// Sessions for this tenant, for `auth_time`, `acr` and `amr`.
     pub sessions: &'a dyn SessionRepository,
     /// This tenant's registered resource servers (RFC 8707), which decide what
@@ -316,10 +319,47 @@ impl AuthorizationCode<'_> {
                 return Err(invalid_grant());
             }
         }
+        if grant.scopes.contains("device_sso")
+            && (!self
+                .native_sso_approvals
+                .iter()
+                .any(|approval| approval.source_client_id == client.id.as_str())
+                || client.registration.application_type != asterius_domain::ApplicationType::Native
+                || grant.scopes.contains("bound_key"))
+        {
+            return Err(Failure::Client(
+                "invalid_scope",
+                "native SSO is not approved for this client",
+            ));
+        }
+        let requested_device_secret = params.get("device_secret").map_err(|_| {
+            Failure::Client("invalid_request", "device_secret was sent more than once")
+        })?;
+        if requested_device_secret.is_some() && !grant.scopes.contains("device_sso") {
+            return Err(Failure::Client(
+                "invalid_request",
+                "device_secret requires device_sso",
+            ));
+        }
         let claimed = self.grants.claim(&binding.grant_id, self.now).await?;
 
         let mut session = issuance::session_facts(self.sessions, &grant).await?;
         session.revalidate_acr(self.acr_policy);
+        let device_secret = if grant.scopes.contains("device_sso") {
+            let sid = session.sid.as_deref().ok_or_else(invalid_grant)?;
+            Some(
+                crate::http::native_sso::issue(
+                    self.native_sso,
+                    &grant,
+                    sid,
+                    requested_device_secret,
+                    self.now,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
         // OIDC Back-Channel Logout 1.0 §2.3: the set of logged-in RPs, which
         // the end-session endpoint reads to decide who is sent a logout token.
         // Recorded where the ID token is minted, because that is what makes a
@@ -381,6 +421,7 @@ impl AuthorizationCode<'_> {
         // than on the request, because the scope was settled at consent.
         let id_token = if grant.scopes.contains("openid") {
             let parts = issuance::IdTokenParts {
+                device_secret_hash: device_secret.as_ref().map(|issued| issued.ds_hash.as_str()),
                 acr_policy: self.acr_policy,
                 claimed: &claimed,
                 session: &session,
@@ -436,6 +477,7 @@ impl AuthorizationCode<'_> {
             // a fact stored on the grant would answer for every later refresh
             // too.
             binding.grant_management_action.is_some(),
+            device_secret.as_ref().map(|issued| issued.value.as_str()),
         ))
     }
 
@@ -598,6 +640,7 @@ impl AuthorizationCode<'_> {
         refresh_token: Option<&str>,
         access_token_lifetime: time::Duration,
         grant_management_action_requested: bool,
+        device_secret: Option<&str>,
     ) -> Response {
         let mut body = json!({
             "access_token": access_token,
@@ -642,6 +685,11 @@ impl AuthorizationCode<'_> {
             && let Some(object) = body.as_object_mut()
         {
             object.insert("refresh_token".to_owned(), json!(refresh_token));
+        }
+        if let Some(device_secret) = device_secret
+            && let Some(object) = body.as_object_mut()
+        {
+            object.insert("device_secret".to_owned(), json!(device_secret));
         }
         // Grant Management ID1 §5.5: "grant_id … The AS MUST return this
         // parameter if a valid grant management action was requested." Only

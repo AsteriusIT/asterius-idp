@@ -311,6 +311,8 @@ pub struct TenantConfig {
     pub federation_trust_anchors: Vec<FederationTrustAnchorConfig>,
     /// Explicit cross-domain grants this IdP may issue for managed agents.
     pub id_jag_approvals: Vec<IdJagApproval>,
+    /// Explicit native mobile clients allowed to share an authentication.
+    pub native_sso_approvals: Vec<NativeSsoApproval>,
     /// Narrow OID4VP verifier profiles explicitly enabled for this tenant.
     pub oid4vp_verifiers: Vec<Oid4vpVerifierConfig>,
     /// Operator-pinned Claims Providers eligible for aggregated delivery.
@@ -352,6 +354,15 @@ pub struct IdJagApproval {
     pub subject_sector: asterius_domain::SectorIdentifier,
     pub resources: BTreeSet<String>,
     pub scopes: BTreeSet<String>,
+}
+
+/// Operator approval for one source and destination native app pair.
+#[derive(Debug, Clone)]
+pub struct NativeSsoApproval {
+    pub source_client_id: String,
+    pub target_client_id: String,
+    /// Operator pre-authorizes a derived offline session for this app pair.
+    pub allow_offline_access: bool,
 }
 
 /// Public Federation root keys loaded from an operator-owned JSON JWK Set file.
@@ -757,6 +768,7 @@ struct RawTenant {
     federation_authority_hints: Option<Vec<String>>,
     federation_trust_anchors: Option<Vec<RawFederationTrustAnchor>>,
     id_jag_approval: Option<Vec<RawIdJagApproval>>,
+    native_sso_approval: Option<Vec<RawNativeSsoApproval>>,
     oid4vp_verifier: Option<Vec<RawOid4vpVerifier>>,
     claims_provider: Option<Vec<RawClaimsProvider>>,
 }
@@ -796,6 +808,15 @@ struct RawIdJagApproval {
     subject_sector_uri: String,
     resources: Vec<String>,
     scopes: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawNativeSsoApproval {
+    source_client_id: String,
+    target_client_id: String,
+    #[serde(default)]
+    allow_offline_access: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2043,6 +2064,8 @@ fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantCo
         let federation_trust_anchors =
             validate_federation_anchors(index, tenant.federation_trust_anchors, errors);
         let id_jag_approvals = validate_id_jag_approvals(index, tenant.id_jag_approval, errors);
+        let native_sso_approvals =
+            validate_native_sso_approvals(index, tenant.native_sso_approval, errors);
         let oid4vp_verifiers =
             validate_oid4vp_verifiers(index, issuer.as_ref(), tenant.oid4vp_verifier, errors);
         let claims_providers = validate_claims_providers(index, tenant.claims_provider, errors);
@@ -2059,12 +2082,46 @@ fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantCo
                 federation_authority_hints,
                 federation_trust_anchors,
                 id_jag_approvals,
+                native_sso_approvals,
                 oid4vp_verifiers,
                 claims_providers,
             });
         }
     }
     tenants
+}
+
+fn validate_native_sso_approvals(
+    tenant_index: usize,
+    raw: Option<Vec<RawNativeSsoApproval>>,
+    errors: &mut Collector,
+) -> Vec<NativeSsoApproval> {
+    let mut seen = BTreeSet::new();
+    raw.unwrap_or_default()
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, raw)| {
+            let path = format!("tenant[{tenant_index}].native_sso_approval[{index}]");
+            if raw.source_client_id.is_empty()
+                || raw.source_client_id.len() > 512
+                || raw.target_client_id.is_empty()
+                || raw.target_client_id.len() > 512
+                || raw.source_client_id == raw.target_client_id
+            {
+                errors.problem(path, "source and target must be distinct nonempty client identifiers of at most 512 bytes");
+                return None;
+            }
+            if !seen.insert((raw.source_client_id.clone(), raw.target_client_id.clone())) {
+                errors.problem(path, "duplicate native SSO approval");
+                return None;
+            }
+            Some(NativeSsoApproval {
+                source_client_id: raw.source_client_id,
+                target_client_id: raw.target_client_id,
+                allow_offline_access: raw.allow_offline_access,
+            })
+        })
+        .collect()
 }
 
 fn validate_federation_hints(

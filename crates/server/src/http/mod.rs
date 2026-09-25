@@ -96,6 +96,7 @@ pub mod invitation;
 pub mod issuance;
 pub mod limits;
 pub mod logout;
+pub mod native_sso;
 pub mod oid4vci;
 pub mod oid4vp;
 pub mod par;

@@ -30,6 +30,7 @@ mod initial_access_tokens;
 mod invitations;
 mod key_store;
 mod keys;
+mod native_sso;
 mod notifications;
 mod oid4vci_nonces;
 mod oid4vp_transactions;
@@ -94,6 +95,7 @@ pub use invitations::{
 };
 pub use key_store::TenantKeyStore;
 pub use keys::{PgKeyRepository, Rotation, RotationSchedule};
+pub use native_sso::{NativeSsoBinding, PgNativeSso};
 pub use notifications::{PgOutboxMailSender, QueuedNotification};
 pub use oid4vci_nonces::{NONCE_LIFETIME as OID4VCI_NONCE_LIFETIME, PgOid4vciNonces};
 pub use oid4vp_transactions::{

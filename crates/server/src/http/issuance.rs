@@ -808,6 +808,8 @@ pub struct IdTokenParts<'a> {
     pub nonce: Option<&'a str>,
     /// Public key from the verified DPoP proof for `bound_key` requests.
     pub key_bound_jwk: Option<&'a serde_json::Value>,
+    /// Native SSO SHA-256 binding, only with a live `sid`.
+    pub device_secret_hash: Option<&'a str>,
     /// The claims the grant covers, from [`released_claims`].
     pub released: ReleasedToIdToken,
 }
@@ -868,6 +870,7 @@ pub async fn sign_id_token(
         access_token,
         nonce,
         key_bound_jwk,
+        device_secret_hash,
         released,
     } = parts;
     let authentication = authentication_under(&session.authentication, acr_policy);
@@ -886,6 +889,9 @@ pub async fn sign_id_token(
     }
     if let Some(public_jwk) = key_bound_jwk {
         builder = builder.bound_to_key(public_jwk.clone());
+    }
+    if let Some(hash) = device_secret_hash {
+        builder = builder.with_device_secret_hash(hash.to_owned());
     }
     // OIDC Back-Channel Logout 1.0 §2.4: `sid` names a session a relying party
     // can be told about when it ends. A grant whose session is already gone has

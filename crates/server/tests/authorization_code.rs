@@ -529,6 +529,11 @@ impl Fixture {
         let claims_providers = asterius_server::claims_provider::ClaimsProviders::default();
         let ida_frameworks = std::collections::BTreeSet::new();
         let handler = AuthorizationCode {
+            native_sso: &asterius_store_pg::PgNativeSso::new(
+                self.store.pool().clone(),
+                self.tenant.id.clone(),
+            ),
+            native_sso_approvals: &[],
             acr_policy: &asterius_domain::AcrPolicy::default(),
             roles: &roles,
             groups: &groups,
