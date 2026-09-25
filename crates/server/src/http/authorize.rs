@@ -53,6 +53,8 @@ use time::OffsetDateTime;
 pub struct AuthorizeContext<'a> {
     /// The tenant the request arrived at.
     pub tenant: &'a Tenant,
+    /// Tenant key service for signed JARM responses.
+    pub signer: Option<&'a dyn asterius_domain::Signer>,
     /// The three layers a page's language is chosen from (OIDC Core §3.1.2.1).
     ///
     /// This endpoint renders exactly one page — the error page — and it renders
@@ -226,7 +228,7 @@ pub async fn authorize(
         | Interaction::StepUp
         | Interaction::Consent
         | Interaction::Register => {}
-        Interaction::Refuse(unmet) => return refuse(&context, &stored, unmet),
+        Interaction::Refuse(unmet) => return refuse(&context, &stored, unmet, now).await,
     }
 
     // The browser's credential. Minted here, never derived from the
@@ -491,7 +493,12 @@ fn requirements(context: &AuthorizeContext<'_>, stored: &PushedRequest) -> Requi
 /// signs in elsewhere and comes back should meet a request that can now be
 /// served, rather than one this server threw away while telling them to log in.
 /// The push's own expiry is what bounds it.
-fn refuse(context: &AuthorizeContext<'_>, stored: &PushedRequest, unmet: Unmet) -> Response {
+async fn refuse(
+    context: &AuthorizeContext<'_>,
+    stored: &PushedRequest,
+    unmet: Unmet,
+    now: OffsetDateTime,
+) -> Response {
     let string = |name: &str| {
         stored
             .parameters
@@ -523,14 +530,50 @@ fn refuse(context: &AuthorizeContext<'_>, stored: &PushedRequest, unmet: Unmet) 
         // including this one, so a client can tell which server answered.
         issuer: context.tenant.issuer.as_str().to_owned(),
     };
-    match crate::http::deliver::build(
-        context.tenant,
-        context.nonce,
-        &context.mount,
-        mode,
-        &response,
-        &redirect_uri,
-    ) {
+    let signed = if matches!(mode, ResponseMode::QueryJwt | ResponseMode::FormPostJwt) {
+        let Some(signer) = context.signer else {
+            return error_page(context, StatusCode::SERVICE_UNAVAILABLE);
+        };
+        match asterius_oidc::jarm::sign(
+            signer,
+            &context.tenant.id,
+            &response,
+            &stored.client,
+            now,
+            time::Duration::minutes(5),
+        )
+        .await
+        {
+            Ok(jwt) => Some(jwt),
+            Err(error) => {
+                tracing::error!(%error, tenant = %context.tenant.id, "cannot sign authorization response");
+                return error_page(context, StatusCode::SERVICE_UNAVAILABLE);
+            }
+        }
+    } else {
+        None
+    };
+    let delivered = if let Some(jwt) = signed.as_ref() {
+        crate::http::deliver::build_jarm(
+            context.tenant,
+            context.nonce,
+            &context.mount,
+            mode,
+            &response,
+            jwt,
+            &redirect_uri,
+        )
+    } else {
+        crate::http::deliver::build(
+            context.tenant,
+            context.nonce,
+            &context.mount,
+            mode,
+            &response,
+            &redirect_uri,
+        )
+    };
+    match delivered {
         Ok(response) => response,
         Err(error) => {
             tracing::error!(

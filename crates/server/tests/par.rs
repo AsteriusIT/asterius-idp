@@ -613,6 +613,8 @@ async fn a_response_mode_is_validated_at_the_push_and_stored() {
         (None, "query"),
         (Some("query"), "query"),
         (Some("form_post"), "form_post"),
+        (Some("query.jwt"), "query.jwt"),
+        (Some("form_post.jwt"), "form_post.jwt"),
     ] {
         // --- Arrange ---
         let mut pairs = valid_pairs();
@@ -640,7 +642,7 @@ async fn a_response_mode_is_validated_at_the_push_and_stored() {
 /// received.
 #[tokio::test]
 async fn fragment_and_every_unknown_response_mode_are_refused_at_the_push() {
-    for refused in ["fragment", "web_message", "form_post.jwt", "FORM_POST", ""] {
+    for refused in ["fragment", "web_message", "FORM_POST", ""] {
         let mut pairs = valid_pairs();
         pairs.push(("response_mode", refused));
 

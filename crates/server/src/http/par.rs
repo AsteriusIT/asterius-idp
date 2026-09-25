@@ -510,7 +510,10 @@ async fn hinted_subject(
 /// `None` when the request is servable, which is every request that did not
 /// ask for `form_post`.
 fn refuse_an_unservable_form_post(request: &authorize::AuthorizationRequest) -> Option<Response> {
-    if request.response_mode != authorize::ResponseMode::FormPost {
+    if !matches!(
+        request.response_mode,
+        authorize::ResponseMode::FormPost | authorize::ResponseMode::FormPostJwt
+    ) {
         return None;
     }
     let nameable = url::Url::parse(&request.redirect_uri)

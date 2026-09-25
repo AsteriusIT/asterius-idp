@@ -73,6 +73,8 @@ pub const SIGN_IN_QUERY: &str = "signin";
 pub struct InteractionContext<'a> {
     /// The tenant the request arrived at.
     pub tenant: &'a Tenant,
+    /// Tenant key service for signed JARM responses.
+    pub signer: Option<&'a dyn asterius_domain::Signer>,
     /// Validated branding selected for this tenant.
     pub theme: &'a asterius_domain::Theme,
     /// The three layers a page's language is chosen from (OIDC Core §3.1.2.1).
@@ -1482,6 +1484,76 @@ async fn complete(
         // `response` is already either a code or an error, so an error reaches
         // the client the way the client asked to be answered.
         ResponseMode::FormPost => form_post(context, &response, &redirect_uri),
+        ResponseMode::QueryJwt | ResponseMode::FormPostJwt => {
+            signed_delivery(
+                context,
+                mode,
+                &response,
+                &request.client,
+                &redirect_uri,
+                now,
+            )
+            .await
+        }
+    }
+}
+
+async fn signed_delivery(
+    context: &InteractionContext<'_>,
+    mode: ResponseMode,
+    response: &AuthorizationResponse,
+    client: &asterius_domain::ClientId,
+    redirect_uri: &str,
+    now: OffsetDateTime,
+) -> Response {
+    let Some(signer) = context.signer else {
+        return error_page(
+            context,
+            StatusCode::SERVICE_UNAVAILABLE,
+            InteractionError::NotAvailable,
+        );
+    };
+    let jwt = match asterius_oidc::jarm::sign(
+        signer,
+        &context.tenant.id,
+        response,
+        client,
+        now,
+        time::Duration::minutes(5),
+    )
+    .await
+    {
+        Ok(jwt) => jwt,
+        Err(error) => {
+            tracing::error!(%error, tenant = %context.tenant.id, "cannot sign authorization response");
+            return error_page(
+                context,
+                StatusCode::SERVICE_UNAVAILABLE,
+                InteractionError::NotAvailable,
+            );
+        }
+    };
+    match crate::http::deliver::build_jarm(
+        context.tenant,
+        context.nonce,
+        &context.mount,
+        mode,
+        response,
+        &jwt,
+        redirect_uri,
+    ) {
+        Ok(mut delivered) => {
+            clear(&mut delivered);
+            delivered
+        }
+        Err(error) => {
+            tracing::error!(%error, tenant = %context.tenant.id, "cannot deliver signed authorization response");
+            error_page(
+                context,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                InteractionError::NotAvailable,
+            )
+        }
     }
 }
 

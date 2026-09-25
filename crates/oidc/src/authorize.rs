@@ -429,7 +429,7 @@ impl AuthorizationPolicy {
 /// How the authorization response is delivered (OAuth 2.0 Multiple Response
 /// Type Encoding Practices §2.1).
 ///
-/// Two spellings, and they are the two this server advertises in
+/// The supported spellings are the ones this server advertises in
 /// `response_modes_supported`. A `response_mode` is part of what the client
 /// asked for, so an unrecognised one is refused rather than defaulted to
 /// `query`: a client that spelled `form_post` wrong and got a query response
@@ -472,6 +472,10 @@ pub enum ResponseMode {
     /// in the browser history, in a `Referer`, and in every access log on the
     /// way.
     FormPost,
+    /// A signed JARM response in the callback URI's query.
+    QueryJwt,
+    /// A signed JARM response posted by the browser.
+    FormPostJwt,
 }
 
 impl ResponseMode {
@@ -481,7 +485,12 @@ impl ResponseMode {
     /// this rather than written out a second time (`ast-iko`): what the server
     /// advertises and what [`Self::parse`] accepts are then the same list by
     /// construction.
-    pub const ALL: [Self; 2] = [Self::Query, Self::FormPost];
+    pub const ALL: [Self; 4] = [
+        Self::Query,
+        Self::FormPost,
+        Self::QueryJwt,
+        Self::FormPostJwt,
+    ];
 
     /// The wire spelling.
     #[must_use]
@@ -489,12 +498,14 @@ impl ResponseMode {
         match self {
             Self::Query => "query",
             Self::FormPost => "form_post",
+            Self::QueryJwt => "query.jwt",
+            Self::FormPostJwt => "form_post.jwt",
         }
     }
 
     /// Parses a `response_mode` parameter.
     ///
-    /// Exact, case-sensitive comparison against the two values this server
+    /// Exact, case-sensitive comparison against the values this server
     /// implements. §2.1 registers response modes as case-sensitive strings, so
     /// `Form_Post` is a different value rather than a typo to forgive — and a
     /// server that folded case here would accept a spelling its own metadata
@@ -509,6 +520,8 @@ impl ResponseMode {
         match raw {
             "query" => Ok(Self::Query),
             "form_post" => Ok(Self::FormPost),
+            "query.jwt" => Ok(Self::QueryJwt),
+            "form_post.jwt" => Ok(Self::FormPostJwt),
             _ => Err(UnsupportedResponseMode),
         }
     }
@@ -1350,8 +1363,6 @@ mod tests {
         for refused in [
             "fragment",
             "web_message",
-            "form_post.jwt",
-            "query.jwt",
             // Case-sensitive: §2.1 registers the values as they are spelled.
             "FORM_POST",
             "Query",
@@ -1397,7 +1408,7 @@ mod tests {
     /// as a string and read back is the mode that was validated.
     #[test]
     fn every_mode_round_trips_through_its_wire_spelling() {
-        for mode in [ResponseMode::Query, ResponseMode::FormPost] {
+        for mode in ResponseMode::ALL {
             assert_eq!(ResponseMode::parse(mode.as_str()), Ok(mode));
         }
     }

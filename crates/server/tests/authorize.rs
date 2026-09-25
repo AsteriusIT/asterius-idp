@@ -254,6 +254,7 @@ async fn run_mounted(
     authorize(
         AuthorizeContext {
             tenant: &tenant,
+            signer: None,
             language: &ENGLISH,
             requests: store,
             interactions: store,
