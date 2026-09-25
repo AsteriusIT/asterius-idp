@@ -25,6 +25,7 @@ pub mod jarm;
 pub mod logout;
 pub mod metadata;
 pub mod mtls;
+pub mod oid4vp;
 pub mod par;
 pub mod pkce;
 pub mod refresh;
