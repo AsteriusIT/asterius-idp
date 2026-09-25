@@ -3920,6 +3920,7 @@ async fn run_authorize(
     authorize::authorize(
         AuthorizeContext {
             tenant,
+            signer: Some(endpoints.signer.as_ref()),
             language: &language,
             requests: &requests,
             interactions: &requests,
@@ -4632,6 +4633,7 @@ async fn interaction_show(
     interaction::show(
         InteractionContext {
             tenant: &tenant,
+            signer: Some(endpoints.signer.as_ref()),
             theme,
             language: &language,
             requests: &requests,
@@ -4754,6 +4756,7 @@ async fn interaction_submit(
     interaction::submit(
         InteractionContext {
             tenant: &tenant,
+            signer: Some(endpoints.signer.as_ref()),
             theme,
             language: &language,
             requests: &requests,

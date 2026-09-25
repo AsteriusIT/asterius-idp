@@ -231,6 +231,19 @@ impl AuthorizationResponse {
     /// is the only safe reading of the impossible case, because the
     /// alternative is sending a browser somewhere unparsed.
     pub fn redirect_url(&self, redirect_uri: &str) -> Result<String, MalformedRedirect> {
+        Self::redirect_url_with(redirect_uri, &self.query())
+    }
+
+    /// Builds a callback URL for a response encoded as the supplied fields.
+    /// JARM uses this with exactly one field, `response`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MalformedRedirect`] when the stored URI is invalid.
+    pub fn redirect_url_with(
+        redirect_uri: &str,
+        fields: &[(&str, String)],
+    ) -> Result<String, MalformedRedirect> {
         let mut url = url::Url::parse(redirect_uri).map_err(|_| MalformedRedirect)?;
 
         // Collected first, which also ends the borrow `set_query` needs.
@@ -245,8 +258,8 @@ impl AuthorizationResponse {
             for (name, value) in &kept {
                 query.append_pair(name, value);
             }
-            for (name, value) in self.query() {
-                query.append_pair(name, &value);
+            for (name, value) in fields {
+                query.append_pair(name, value);
             }
         }
         Ok(url.into())
@@ -299,13 +312,14 @@ impl AuthorizationResponse {
 /// members are here even though this server does not send them, because a
 /// client parsing an error response reads them and a registration must not be
 /// able to supply one.
-pub const RESERVED: [&str; 6] = [
+pub const RESERVED: [&str; 7] = [
     "code",
     "state",
     "iss",
     "error",
     "error_description",
     "error_uri",
+    "response",
 ];
 
 /// A stored redirect URI that will not parse.

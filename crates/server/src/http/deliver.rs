@@ -1,9 +1,10 @@
 //! Sending an authorization response to the client, in the mode it asked for.
 //!
-//! One authorization request produces exactly one of two shapes: a 303 with the
+//! One authorization request produces a 303 with the
 //! parameters in the `redirect_uri`'s query (OAuth 2.0 Multiple Response Type
 //! Encoding Practices §2.1, the default for `response_type=code`), or a page
-//! the browser posts to that URI (OAuth 2.0 Form Post Response Mode §2). Which
+//! the browser posts to that URI (OAuth 2.0 Form Post Response Mode §2). JARM
+//! carries a signed JWT as the only `response` parameter in either shape. Which
 //! one was decided at the push and stored; `ast-gxh.5` is where that decision
 //! came from.
 //!
@@ -24,6 +25,7 @@
 
 use crate::http::form_action_origin;
 use crate::http::redirect::SeeOther;
+use asterius_domain::CompactJws;
 use asterius_domain::Tenant;
 use asterius_oidc::authorize::ResponseMode;
 use asterius_oidc::code::AuthorizationResponse;
@@ -70,6 +72,31 @@ pub fn build(
     match mode {
         ResponseMode::Query => query(response, redirect_uri),
         ResponseMode::FormPost => form_post(tenant, nonce, mount, response, redirect_uri),
+        ResponseMode::QueryJwt | ResponseMode::FormPostJwt => Err(Undeliverable::Unusable),
+    }
+}
+
+/// Delivers a signed JARM response as the sole authorization response field.
+///
+/// # Errors
+///
+/// Returns [`Undeliverable`] if the registered callback cannot carry it.
+pub fn build_jarm(
+    tenant: &Tenant,
+    nonce: &Nonce,
+    mount: &crate::tenancy::MountPrefix,
+    mode: ResponseMode,
+    response: &AuthorizationResponse,
+    jwt: &CompactJws,
+    redirect_uri: &str,
+) -> Result<Response, Undeliverable> {
+    let fields = [("response", jwt.as_str().to_owned())];
+    match mode {
+        ResponseMode::QueryJwt => query_fields(redirect_uri, &fields),
+        ResponseMode::FormPostJwt => {
+            form_post_fields(tenant, nonce, mount, response, redirect_uri, &fields)
+        }
+        ResponseMode::Query | ResponseMode::FormPost => Err(Undeliverable::Unusable),
     }
 }
 
@@ -80,8 +107,11 @@ pub fn build(
 /// leave available, and the helper is also where response splitting through a
 /// `Location` is refused.
 fn query(response: &AuthorizationResponse, redirect_uri: &str) -> Result<Response, Undeliverable> {
-    let location = response
-        .redirect_url(redirect_uri)
+    query_fields(redirect_uri, &response.query())
+}
+
+fn query_fields(redirect_uri: &str, fields: &[(&str, String)]) -> Result<Response, Undeliverable> {
+    let location = AuthorizationResponse::redirect_url_with(redirect_uri, fields)
         .map_err(|_| Undeliverable::Unusable)?;
     let see_other = SeeOther::to(&location).map_err(|_| Undeliverable::Unusable)?;
 
@@ -115,6 +145,24 @@ fn form_post(
     response: &AuthorizationResponse,
     redirect_uri: &str,
 ) -> Result<Response, Undeliverable> {
+    form_post_fields(
+        tenant,
+        nonce,
+        mount,
+        response,
+        redirect_uri,
+        &response.query(),
+    )
+}
+
+fn form_post_fields(
+    tenant: &Tenant,
+    nonce: &Nonce,
+    mount: &crate::tenancy::MountPrefix,
+    response: &AuthorizationResponse,
+    redirect_uri: &str,
+    fields: &[(&str, String)],
+) -> Result<Response, Undeliverable> {
     // Where this page fetches its face, under the prefix routing removed
     // (`ast-vn7`). This one is a `form_post` response and posts to the client,
     // but it is still a page of *this* server and draws itself in its face.
@@ -125,12 +173,11 @@ fn form_post(
         .form_action(redirect_uri)
         .map_err(|_| Undeliverable::Unusable)?;
 
-    let fields = response
-        .query()
-        .into_iter()
+    let fields = fields
+        .iter()
         .map(|(name, value)| ResponseField {
-            name: name.to_owned(),
-            value,
+            name: (*name).to_owned(),
+            value: value.clone(),
         })
         .collect();
     let document = Document::render(nonce, |nonce| {
