@@ -48,6 +48,7 @@ const TENANT_SCOPED_TABLES: &[&str] = &[
     "recovery_tokens",
     "email_verification_tokens",
     "email_change_requests",
+    "oid4vci_nonces",
 ];
 
 /// Statements that read across every tenant on purpose.

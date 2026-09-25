@@ -15,6 +15,7 @@ pub mod federation;
 pub mod jws;
 pub mod kek;
 pub mod key;
+pub mod oid4vci_proof;
 pub mod store;
 pub mod verify;
 

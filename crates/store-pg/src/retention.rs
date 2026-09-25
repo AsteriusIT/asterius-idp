@@ -605,6 +605,17 @@ pub const POLICY: &[Retention] = &[
         },
     },
     Retention {
+        table: "oid4vci_nonces",
+        rule: Rule::Sweep {
+            // An expired c_nonce cannot authorize a new wallet key proof.
+            statement: "delete from oid4vci_nonces where ctid = any (array(
+                            select ctid from oid4vci_nonces
+                             where tenant_id = $1 and expires_at <= $2
+                             limit $3))",
+            grace: Duration::ZERO,
+        },
+    },
+    Retention {
         table: "signing_keys",
         rule: Rule::Kept(
             "a retired key's row survives so its `kid` is never handed out \

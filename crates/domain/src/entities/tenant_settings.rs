@@ -259,6 +259,8 @@ pub struct TenantSettings {
     session_policy: Option<crate::entities::session::SessionPolicy>,
 
     rate_limits: crate::tenant_rate_limits::TenantRateLimits,
+    /// Explicit credential issuance policy. Absence preserves the pre-VC state.
+    credential_issuance: Option<crate::CredentialConfiguration>,
 }
 
 impl Default for TenantSettings {
@@ -285,11 +287,28 @@ impl Default for TenantSettings {
             session_policy: None,
 
             rate_limits: crate::tenant_rate_limits::TenantRateLimits::default(),
+            credential_issuance: None,
         }
     }
 }
 
 impl TenantSettings {
+    /// One configured credential type, or none when issuance is disabled.
+    #[must_use]
+    pub const fn credential_issuance(&self) -> Option<&crate::CredentialConfiguration> {
+        self.credential_issuance.as_ref()
+    }
+
+    /// Attaches an already validated credential policy.
+    #[must_use]
+    pub fn with_credential_issuance(
+        mut self,
+        configuration: Option<crate::CredentialConfiguration>,
+    ) -> Self {
+        self.credential_issuance = configuration;
+        self
+    }
+
     /// This tenant's session policy; absence preserves the issuance defaults.
     #[must_use]
     pub const fn session_policy(&self) -> Option<crate::entities::session::SessionPolicy> {
@@ -367,6 +386,7 @@ impl TenantSettings {
             session_policy: None,
 
             rate_limits: crate::tenant_rate_limits::TenantRateLimits::default(),
+            credential_issuance: None,
         })
     }
 
@@ -639,6 +659,7 @@ impl TenantSettings {
             "session_policy": self.session_policy.map(crate::entities::session::SessionPolicy::to_json),
 
             "rate_limits": self.rate_limits.to_json(),
+            "credential_issuance": self.credential_issuance.as_ref().map(crate::CredentialConfiguration::to_json),
         })
     }
 
@@ -774,6 +795,10 @@ impl TenantSettings {
             Some(serde_json::Value::Bool(allowed)) => *allowed,
             Some(_) => return Err(TenantSettingsError::NotABoolean("allow_non_fapi_clients")),
         };
+        let credential_issuance = match object.get("credential_issuance") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(document) => Some(crate::CredentialConfiguration::from_json(document)?),
+        };
 
         Self::validated(disabled_features, authorization_code, access_token)?
             .with_registration(registration)
@@ -791,6 +816,7 @@ impl TenantSettings {
             .with_rate_limits(crate::tenant_rate_limits::TenantRateLimits::from_json(
                 object.get("rate_limits"),
             )?)
+            .with_credential_issuance(credential_issuance)
             .with_acr_policy(acr_policy)
     }
 }
@@ -817,6 +843,9 @@ fn seconds(value: Option<&serde_json::Value>) -> Result<Option<Duration>, Tenant
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum TenantSettingsError {
+    /// An invalid stored credential issuance policy.
+    #[error(transparent)]
+    CredentialConfiguration(#[from] crate::CredentialConfigurationError),
     /// Invalid tenant session deadlines.
     #[error(transparent)]
     SessionPolicy(#[from] crate::entities::session::SessionPolicyError),
