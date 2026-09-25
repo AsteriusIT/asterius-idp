@@ -26,6 +26,17 @@ Until those slices are complete, the server makes no Federation conformance
 claim and does not accept a URL-shaped client merely because it published an
 Entity Configuration.
 
+The first trust-chain slice (`ast-s36.14.1.1`) adds an offline validator for a
+complete chain supplied by a caller. It pins a trust anchor to one tenant,
+bounds the number and size of statements, checks entity identifiers, lifetime,
+chain shape and exact `kid` matches, then verifies signatures from the pinned
+anchor down to the leaf and verifies the leaf self-signature. It returns the
+leaf metadata only after those checks. Chains carrying metadata policy,
+constraints, trust marks or other unimplemented extensions are rejected. This
+is a restricted validator foundation; it is not connected to client
+registration and does not fetch statements. `ast-s36.14.1.2` and `.3` own policy
+and guarded retrieval respectively.
+
 ## Context
 
 [OpenID Federation 1.0](https://openid.net/specs/openid-federation-1_0-final.html)
