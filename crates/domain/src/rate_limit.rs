@@ -95,6 +95,25 @@ pub fn device_verification_bucket(ip: Option<std::net::IpAddr>) -> Bucket {
     )
 }
 
+/// Public OID4VCI nonce issuance is a database write, so it has a distinct
+/// per-address bucket even though it is not part of the OAuth endpoint limits.
+#[must_use]
+pub fn oid4vci_nonce_bucket(ip: Option<std::net::IpAddr>) -> Bucket {
+    ip.map_or_else(
+        || Bucket("oid4vci:nonce:unattributed".to_owned()),
+        |ip| Bucket(format!("oid4vci:nonce:{ip}")),
+    )
+}
+
+/// The proof-verification budget for one address at the Credential Endpoint.
+#[must_use]
+pub fn oid4vci_credential_bucket(ip: Option<std::net::IpAddr>) -> Bucket {
+    ip.map_or_else(
+        || Bucket("oid4vci:credential:unattributed".to_owned()),
+        |ip| Bucket(format!("oid4vci:credential:{ip}")),
+    )
+}
+
 /// The bucket for one client address at the admin API (`ast-f7m.1`).
 ///
 /// Deliberately its own prefix rather than a share of [`ip_bucket`]'s: an

@@ -96,6 +96,7 @@ pub mod invitation;
 pub mod issuance;
 pub mod limits;
 pub mod logout;
+pub mod oid4vci;
 pub mod par;
 pub mod passkeys;
 pub mod protocol;

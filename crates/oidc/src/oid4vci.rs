@@ -1,10 +1,10 @@
 //! OpenID4VCI 1.0 issuer metadata and offer values.
 //!
-//! This module only builds protocol documents from an explicit configuration.
-//! A caller must publish them only after the matching authorization, nonce,
-//! proof, and credential endpoints are operational for the same tenant.
+//! Documents and claim sets are built from an explicit tenant configuration.
+//! The HTTP layer publishes them only where authorization, nonce, proof, and
+//! credential endpoints are operational for the same tenant.
 
-use asterius_domain::{CredentialConfiguration, Issuer};
+use asterius_domain::{CredentialConfiguration, Issuer, User};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -16,6 +16,71 @@ pub const FORMAT: &str = "jwt_vc_json";
 pub const PROOF_ALGORITHM: &str = "ES256";
 /// The supported credential issuer signature algorithm.
 pub const CREDENTIAL_ALGORITHM: &str = "EdDSA";
+/// VCDM 1.1 context used by the selected JWT VC JSON representation.
+pub const VC_CONTEXT: &str = "https://www.w3.org/2018/credentials/v1";
+
+/// Why the current account cannot substantiate its configured claim set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum CredentialClaimsError {
+    /// The policy opted in to email but the address is absent or unverified.
+    #[error("verified email is required by the credential policy")]
+    UnverifiedEmail,
+    /// The clock value could not be encoded as a VCDM timestamp.
+    #[error("credential issuance time cannot be encoded")]
+    InvalidTime,
+}
+
+/// Builds a short-lived JWT VC JSON payload from the grant's subject and only
+/// tenant-approved, current account fields. The caller signs it as `JWT` with
+/// an EdDSA issuer key after it has spent the wallet's one-time proof nonce.
+///
+/// # Errors
+/// An approved email claim without a verified current address fails closed.
+pub fn credential_claims(
+    issuer: &Issuer,
+    configuration: &CredentialConfiguration,
+    subject: &str,
+    user: &User,
+    wallet_jwk: &Value,
+    now: time::OffsetDateTime,
+) -> Result<Value, CredentialClaimsError> {
+    let mut credential_subject = serde_json::Map::new();
+    if configuration.claims().contains("email") {
+        let Some(email) = user.email.as_ref().filter(|_| user.email_verified) else {
+            return Err(CredentialClaimsError::UnverifiedEmail);
+        };
+        credential_subject.insert("email".to_owned(), json!(email));
+    }
+    let id = format!("{issuer}/credential/{}", uuid::Uuid::new_v4());
+    let subject_uri = format!("{issuer}/subjects/{subject}");
+    credential_subject.insert("id".to_owned(), json!(subject_uri));
+    let expiry = now + time::Duration::hours(1);
+    let issued_at = now.unix_timestamp();
+    let issuance_date = now
+        .format(&time::format_description::well_known::Rfc3339)
+        .map_err(|_| CredentialClaimsError::InvalidTime)?;
+    let expiration_date = expiry
+        .format(&time::format_description::well_known::Rfc3339)
+        .map_err(|_| CredentialClaimsError::InvalidTime)?;
+    Ok(json!({
+        "iss": issuer.as_str(),
+        "sub": subject,
+        "jti": id,
+        "iat": issued_at,
+        "nbf": issued_at,
+        "exp": expiry.unix_timestamp(),
+        "cnf": {"jwk": wallet_jwk},
+        "vc": {
+            "@context": [VC_CONTEXT],
+            "id": id,
+            "type": ["VerifiableCredential", configuration.credential_type()],
+            "issuer": issuer.as_str(),
+            "issuanceDate": issuance_date,
+            "expirationDate": expiration_date,
+            "credentialSubject": credential_subject,
+        }
+    }))
+}
 
 /// The canonical metadata URL for a tenant issuer.
 ///
@@ -34,10 +99,14 @@ pub fn metadata_url(issuer: &Issuer) -> String {
 /// Renders only the features that the credential service must implement.
 ///
 /// `nonce_endpoint` is advertised because this policy requires one-time key
-/// proof challenges. The service must not serve this document until the
-/// corresponding endpoints and OAuth scope gate are live.
+/// proof challenges. The service serves this only when the corresponding
+/// endpoints and OAuth scope gate are live.
 #[must_use]
 pub fn issuer_metadata(issuer: &Issuer, configuration: &CredentialConfiguration) -> Value {
+    let mut claims = vec![json!({"path": ["credentialSubject", "id"], "mandatory": true})];
+    if configuration.claims().contains("email") {
+        claims.push(json!({"path": ["credentialSubject", "email"], "mandatory": true}));
+    }
     json!({
         "credential_issuer": issuer.as_str(),
         "authorization_servers": [issuer.as_str()],
@@ -54,7 +123,8 @@ pub fn issuer_metadata(issuer: &Issuer, configuration: &CredentialConfiguration)
                 },
                 "credential_definition": {
                     "type": ["VerifiableCredential", configuration.credential_type()]
-                }
+                },
+                "credential_metadata": {"claims": claims}
             }
         }
     })
@@ -79,10 +149,32 @@ pub fn authorization_code_offer(issuer: &Issuer, configuration: &CredentialConfi
 pub struct CredentialRequest {
     pub credential_configuration_id: String,
     pub proofs: JwtProofs,
+    #[serde(
+        default,
+        rename = "credential_identifier",
+        deserialize_with = "reject_unsupported"
+    )]
+    _credential_identifier: (),
+    #[serde(
+        default,
+        rename = "credential_response_encryption",
+        deserialize_with = "reject_unsupported"
+    )]
+    _credential_response_encryption: (),
+}
+
+fn reject_unsupported<'de, D>(_deserializer: D) -> Result<(), D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Err(serde::de::Error::custom(
+        "unsupported credential request member",
+    ))
 }
 
 /// The supported proof envelope from OpenID4VCI §8.2.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct JwtProofs {
     pub jwt: Vec<String>,
 }
