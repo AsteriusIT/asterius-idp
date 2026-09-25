@@ -858,6 +858,8 @@ pub struct AccountPage<'a> {
     pub username: &'a str,
     /// Where the passkey list lives.
     pub passkeys_href: &'a str,
+    /// Where the authenticator settings live.
+    pub totp_href: &'a str,
     /// Where the password page lives.
     pub password_href: &'a str,
     /// The verified email change page.

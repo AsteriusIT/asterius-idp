@@ -381,6 +381,7 @@ pub async fn page(
     let passkeys_href = context
         .mount
         .absolute(crate::http::account_passkeys::PAGE_PATH);
+    let totp_href = context.mount.absolute(crate::http::account_totp::PAGE_PATH);
     let password_href = context
         .mount
         .absolute(crate::http::account_password::PAGE_PATH);
@@ -403,6 +404,7 @@ pub async fn page(
             tenant_name: &context.tenant.display_name,
             username: &username,
             passkeys_href: &passkeys_href,
+            totp_href: &totp_href,
             password_href: &password_href,
             email_href: &email_href,
             sessions_href: &sessions_href,

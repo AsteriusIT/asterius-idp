@@ -436,6 +436,7 @@ fn account(text: &Catalog) -> String {
         tenant_name: TENANT,
         username: USER,
         passkeys_href: "/account/passkeys",
+        totp_href: "/account/totp",
         password_href: "/account/password",
         email_href: "/account/email",
         sessions_href: "/account/sessions",

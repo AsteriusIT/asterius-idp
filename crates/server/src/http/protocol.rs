@@ -6339,6 +6339,7 @@ async fn account_totp_page(
     Extension(tenant): Extension<Arc<Tenant>>,
     Extension(nonce): Extension<asterius_web::csp::Nonce>,
     mount: Option<Extension<MountPrefix>>,
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
     headers: axum::http::HeaderMap,
 ) -> Response {
     let parts = match account_parts(&endpoints, &tenant).await {
@@ -6351,10 +6352,12 @@ async fn account_totp_page(
     let language = page_language(&endpoints, &tenant, &headers).await;
     let text = language.for_request(&asterius_domain::locale::UiLocales::default());
     let account = account_context(&tenant, &parts, &text, &nonce, mount);
+    let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
     let context = account_totp::TotpContext {
         account,
         credentials: &parts.totp_credentials,
         audit: endpoints.audit.as_ref(),
+        throttle: throttle(&endpoints, &limiter, client.as_deref()),
     };
     account_totp::page(&context, &headers, time::OffsetDateTime::now_utc()).await
 }
@@ -6365,6 +6368,7 @@ async fn account_totp_submit(
     Extension(tenant): Extension<Arc<Tenant>>,
     Extension(nonce): Extension<asterius_web::csp::Nonce>,
     mount: Option<Extension<MountPrefix>>,
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
@@ -6378,10 +6382,12 @@ async fn account_totp_submit(
     let language = page_language(&endpoints, &tenant, &headers).await;
     let text = language.for_request(&asterius_domain::locale::UiLocales::default());
     let account = account_context(&tenant, &parts, &text, &nonce, mount);
+    let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
     let context = account_totp::TotpContext {
         account,
         credentials: &parts.totp_credentials,
         audit: endpoints.audit.as_ref(),
+        throttle: throttle(&endpoints, &limiter, client.as_deref()),
     };
     account_totp::submit(&context, &headers, &body, time::OffsetDateTime::now_utc()).await
 }

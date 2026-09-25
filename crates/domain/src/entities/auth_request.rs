@@ -181,6 +181,8 @@ pub enum FirstPartyDestination {
     /// Setting or changing a password needs a fresh authentication, and this
     /// is where that authentication returns to.
     AccountPassword,
+    /// The authenticator page (`ast-s36.15.4`).
+    AccountTotp,
     /// The session list (`ast-1xd`).
     ///
     /// A person closing a session they do not recognise re-authenticates and
@@ -204,6 +206,7 @@ impl FirstPartyDestination {
             Self::AccountHome => "account_home",
             Self::AccountPasskeys => "account_passkeys",
             Self::AccountPassword => "account_password",
+            Self::AccountTotp => "account_totp",
             Self::AccountSessions => "account_sessions",
             Self::AccountActivity => "account_activity",
             Self::AccountEmail => "account_email",
@@ -226,6 +229,7 @@ impl FirstPartyDestination {
             "account_home" => Some(Self::AccountHome),
             "account_passkeys" => Some(Self::AccountPasskeys),
             "account_password" => Some(Self::AccountPassword),
+            "account_totp" => Some(Self::AccountTotp),
             "account_sessions" => Some(Self::AccountSessions),
             "account_activity" => Some(Self::AccountActivity),
             "account_email" => Some(Self::AccountEmail),
