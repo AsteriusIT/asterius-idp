@@ -51,6 +51,17 @@ pub struct InvitationReceipt {
     pub expires_at: i64,
 }
 
+/// A token-free invitation record for the support console.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct InvitationStatus {
+    pub id: uuid::Uuid,
+    pub email: String,
+    pub username: String,
+    pub created_at: i64,
+    pub expires_at: i64,
+    pub status: &'static str,
+}
+
 /// One independently-authorized overview aggregate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverviewMetric {
@@ -103,6 +114,16 @@ pub trait PolicyTrial: std::fmt::Debug + Send + Sync {
 /// What an admin API request needs from below the API.
 #[async_trait::async_trait]
 pub trait AdminBackend: std::fmt::Debug + Send + Sync {
+    /// Lists recent invitations without token material or notification bodies.
+    async fn invitation_statuses(
+        &self,
+        _tenant: &TenantId,
+        _limit: u32,
+        _now: time::OffsetDateTime,
+    ) -> Result<Vec<InvitationStatus>, DomainError> {
+        Err(DomainError::NotFound)
+    }
+
     /// Creates one tenant-bound invitation and queues its link.
     async fn invite_user(
         &self,

@@ -205,6 +205,11 @@ export function describeReset(result: Reset): string {
   return `${password}; ${mail}. ${describeTermination(result)}`;
 }
 
+/** Whether this caller can change account claims and security settings. */
+function mayManageAccount(session: Session): boolean {
+  return session.scopes.includes('admin.users:write');
+}
+
 /** An instant, as a person reads it. */
 export function moment(seconds: number | null): string {
   return seconds === null ? 'never' : new Date(seconds * 1000).toISOString();
@@ -726,6 +731,7 @@ function Account({
         className="flat-section account-details-section"
         title="Profile"
         actions={
+          mayManageAccount(session) ? (
           <Button
             variant={disabled ? 'secondary' : 'danger'}
             disabled={busy}
@@ -744,6 +750,7 @@ function Account({
           >
             {disabled ? 'Enable account' : 'Disable account'}
           </Button>
+          ) : undefined
         }
       >
         <dl className="stats account-summary">
@@ -762,6 +769,15 @@ function Account({
           </div>
         </dl>
       </Panel>
+
+      {(disabled || user.email === null || !user.email_verified) && (
+        <Panel className="flat-section" title="Sign-in and email diagnosis">
+          {disabled && <p>This account is disabled and cannot sign in. A tenant security administrator can enable it.</p>}
+          {user.email === null && <p>No email address is on the account, so verification and recovery links cannot be sent. A tenant security administrator must add an address.</p>}
+          {user.email !== null && !user.email_verified && <p>This address is not verified. Verification links are single use and expire; an expired or already-used link must be replaced by a fresh verification request.</p>}
+          {user.email !== null && <p>Mail status shows provider acceptance and failures without displaying message contents or tokens. An accepted message may still be filtered or undelivered by the recipient's mail service.</p>}
+        </Panel>
+      )}
 
         </TabsContent>
         <TabsContent value="claims">
@@ -819,6 +835,7 @@ function Account({
         id="credentials"
         title="Credentials"
         actions={
+          mayManageAccount(session) ? (
           <Button
             variant="danger"
             disabled={busy}
@@ -837,6 +854,7 @@ function Account({
           >
             Force a password reset
           </Button>
+          ) : undefined
         }
       >
         <p className="row">

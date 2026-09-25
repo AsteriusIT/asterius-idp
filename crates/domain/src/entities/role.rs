@@ -151,6 +151,8 @@ impl Role {
                     | "admin.sessions:write"
                     | "admin.grants:read"
                     | "admin.grants:write"
+                    | "admin.lifecycle:read"
+                    | "admin.lifecycle:write"
             ),
             Self::SecurityAuditor => action == "read",
         }
@@ -214,7 +216,10 @@ mod tests {
         assert!(role.grants("admin.sessions:write"));
         assert!(role.grants("admin.grants:read"));
         assert!(role.grants("admin.grants:write"));
+        assert!(role.grants("admin.lifecycle:read"));
+        assert!(role.grants("admin.lifecycle:write"));
         assert!(!role.grants("admin.users:write"));
+        assert!(!role.grants("admin.roles:write"));
         assert!(!role.grants("admin.clients:read"));
         assert!(!role.grants("admin.keys:write"));
     }

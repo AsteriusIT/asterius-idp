@@ -1503,6 +1503,42 @@ impl DeploymentUsers {
 
 #[async_trait::async_trait]
 impl AdminBackend for Deployment {
+    async fn invitation_statuses(
+        &self,
+        tenant: &TenantId,
+        limit: u32,
+        now: time::OffsetDateTime,
+    ) -> Result<Vec<asterius_admin_api::backend::InvitationStatus>, DomainError> {
+        self.store
+            .scope(tenant.clone())
+            .invitations()
+            .recent(limit)
+            .await
+            .map(|rows| {
+                rows.into_iter()
+                    .map(|row| {
+                        let status = if row.revoked_at.is_some() {
+                            "revoked"
+                        } else if row.consumed_at.is_some() {
+                            "accepted"
+                        } else if row.expires_at <= now {
+                            "expired"
+                        } else {
+                            "pending"
+                        };
+                        asterius_admin_api::backend::InvitationStatus {
+                            id: row.id,
+                            email: row.email,
+                            username: row.username,
+                            created_at: row.created_at.unix_timestamp(),
+                            expires_at: row.expires_at.unix_timestamp(),
+                            status,
+                        }
+                    })
+                    .collect()
+            })
+    }
+
     async fn invite_user(
         &self,
         tenant: &Tenant,

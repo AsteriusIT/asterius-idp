@@ -24,6 +24,18 @@ pub struct Invitation {
     pub revoked_at: Option<OffsetDateTime>,
 }
 
+/// A token-free row for support diagnosis.
+#[derive(Debug, Clone)]
+pub struct InvitationStatus {
+    pub id: Uuid,
+    pub email: String,
+    pub username: String,
+    pub created_at: OffsetDateTime,
+    pub expires_at: OffsetDateTime,
+    pub consumed_at: Option<OffsetDateTime>,
+    pub revoked_at: Option<OffsetDateTime>,
+}
+
 /// The address proved by a still-live invitation.
 #[derive(Debug, Clone)]
 pub struct InvitationPreview {
@@ -66,6 +78,33 @@ impl PgInvitations {
     #[must_use]
     pub const fn new(pool: PgPool, tenant: TenantId) -> Self {
         Self { pool, tenant }
+    }
+
+    /// Recent invitations, without token digests or outbox payloads.
+    pub async fn recent(&self, limit: u32) -> Result<Vec<InvitationStatus>, DomainError> {
+        let rows = sqlx::query(
+            "select invitation_id, email, username, created_at, expires_at, consumed_at, revoked_at
+               from invitations where tenant_id = $1 order by created_at desc limit $2",
+        )
+        .bind(self.tenant.as_str())
+        .bind(i64::from(limit.min(100)))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+        rows.into_iter()
+            .map(|row| {
+                use sqlx::Row as _;
+                Ok(InvitationStatus {
+                    id: row.try_get("invitation_id").map_err(to_domain_error)?,
+                    email: row.try_get("email").map_err(to_domain_error)?,
+                    username: row.try_get("username").map_err(to_domain_error)?,
+                    created_at: row.try_get("created_at").map_err(to_domain_error)?,
+                    expires_at: row.try_get("expires_at").map_err(to_domain_error)?,
+                    consumed_at: row.try_get("consumed_at").map_err(to_domain_error)?,
+                    revoked_at: row.try_get("revoked_at").map_err(to_domain_error)?,
+                })
+            })
+            .collect()
     }
 
     /// Creates an invitation and its queued mail in one transaction.
