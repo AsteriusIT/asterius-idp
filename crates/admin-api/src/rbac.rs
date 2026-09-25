@@ -47,6 +47,9 @@ pub enum Reach {
     /// One tenant: the one the request was routed to. A caller holding
     /// authority over that tenant, or over the deployment, is admitted.
     Tenant,
+    /// One tenant, held only by a client-credentials automation token.
+    /// Provisioning cannot inherit a browser administrator's ambient session.
+    AutomationTenant,
     /// The deployment: every tenant, including ones that do not exist yet.
     /// Creating a tenant is the archetype.
     Deployment,
@@ -152,6 +155,7 @@ impl Held {
             // needs no tenant comparison here.
             let deployment_wide = role.scope() == RoleScope::Deployment;
             let in_reach = match required.reach() {
+                Reach::AutomationTenant => false,
                 // "Some kind of administrator", wherever they administer: the
                 // two routes with this reach are about the caller themselves.
                 Reach::Authenticated => true,
@@ -176,6 +180,7 @@ impl Held {
         let in_reach = match required.reach() {
             // A token bound to one tenant cannot administer the deployment.
             Reach::Deployment => held_in.is_none(),
+            Reach::AutomationTenant => held_in == Some(tenant),
             Reach::Tenant | Reach::Authenticated => {
                 held_in.is_none_or(|issued_for| issued_for == tenant)
             }
@@ -372,5 +377,27 @@ mod tests {
 
         // Act / Assert
         assert!(!held.satisfies(ANY, &tenant("acme")));
+    }
+
+    #[test]
+    fn provisioning_reach_requires_a_token_for_this_tenant() {
+        let required = Authority::new(Reach::AutomationTenant, "admin.scim:read");
+        let scoped = Held::Scopes {
+            tenant: Some(tenant("acme")),
+            scopes: vec!["admin.scim:read".to_owned()],
+        };
+        let deployment = Held::Scopes {
+            tenant: None,
+            scopes: vec!["admin.scim:read".to_owned()],
+        };
+        let console = Held::Roles {
+            tenant: tenant("acme"),
+            roles: vec![Role::TenantAdmin],
+        };
+
+        assert!(scoped.satisfies(required, &tenant("acme")));
+        assert!(!scoped.satisfies(required, &tenant("other")));
+        assert!(!deployment.satisfies(required, &tenant("acme")));
+        assert!(!console.satisfies(required, &tenant("acme")));
     }
 }

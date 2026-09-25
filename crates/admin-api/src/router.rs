@@ -42,7 +42,7 @@ use crate::operations::{Method, Operation};
 use crate::pagination::{Cursor, Page, PageRequest};
 use crate::{
     audit, authorization_details_types, clients, csrf, groups, initial_access_tokens, keys,
-    openapi, outbox, policies, resource_servers, ssf, throttle, users,
+    openapi, outbox, policies, resource_servers, scim, ssf, throttle, users,
 };
 
 /// The client address, as this crate sees it.
@@ -153,6 +153,7 @@ impl AdminApi {
 async fn dispatch(operation: Operation, state: AdminState, request: Request) -> Response {
     match handle(operation, &state, request).await {
         Ok(response) => response,
+        Err(refusal) if scim::is_discovery(operation.id()) => scim::error_response(&refusal),
         Err(refusal) => refusal.into_response(),
     }
 }
@@ -300,6 +301,16 @@ async fn route_standard(
         crate::SESSION_READ_ID => context.session_document(),
         crate::SESSION_END_ID => context.end_session().await,
         crate::OPENAPI_READ_ID => Ok(openapi_response()),
+        crate::SCIM_CONFIG_ID | crate::SCIM_SCHEMAS_ID | crate::SCIM_RESOURCE_TYPES_ID => {
+            Ok(scim::discovery_response(
+                id,
+                &format!(
+                    "{}{}/scim/v2",
+                    context.tenant.issuer.as_str(),
+                    crate::BASE_PATH
+                ),
+            ))
+        }
         crate::TENANTS_LIST_ID => context.list_tenants().await,
         crate::TENANT_READ_ID => context.read_tenant().await,
         crate::TENANT_CREATE_ID => context.create_tenant(body).await,
@@ -861,9 +872,9 @@ impl Handling<'_> {
             if held.satisfies(crate::rbac::Authority::new(reach, scope), tenant) {
                 match reach {
                     crate::rbac::Reach::Deployment => everywhere.insert(scope.to_owned()),
-                    crate::rbac::Reach::Tenant | crate::rbac::Reach::Authenticated => {
-                        here.insert(scope.to_owned())
-                    }
+                    crate::rbac::Reach::Tenant
+                    | crate::rbac::Reach::Authenticated
+                    | crate::rbac::Reach::AutomationTenant => here.insert(scope.to_owned()),
                 };
             }
         }
@@ -9649,7 +9660,10 @@ mod tests {
             let refused = response.status() == StatusCode::FORBIDDEN;
             assert_eq!(
                 refused,
-                operation.authority().reach() == Reach::Deployment,
+                matches!(
+                    operation.authority().reach(),
+                    Reach::Deployment | Reach::AutomationTenant
+                ),
                 "{} answered {} for a tenant admin",
                 operation.id(),
                 response.status()
@@ -9675,7 +9689,10 @@ mod tests {
 
             // Assert
             let authority = operation.authority();
-            let allowed = authority.reach() != Reach::Deployment && role.grants(authority.scope());
+            let allowed = !matches!(
+                authority.reach(),
+                Reach::Deployment | Reach::AutomationTenant
+            ) && role.grants(authority.scope());
             assert_eq!(
                 response.status() == StatusCode::FORBIDDEN,
                 !allowed,
@@ -9802,12 +9819,16 @@ mod tests {
                 "{} is mounted with no handler",
                 operation.id()
             );
-            assert!(
-                response.status().is_success(),
-                "{} answered {} for a deployment admin",
-                operation.id(),
-                response.status()
-            );
+            if operation.authority().reach() == Reach::AutomationTenant {
+                assert_eq!(response.status(), StatusCode::FORBIDDEN);
+            } else {
+                assert!(
+                    response.status().is_success(),
+                    "{} answered {} for a deployment admin",
+                    operation.id(),
+                    response.status()
+                );
+            }
         }
     }
 
