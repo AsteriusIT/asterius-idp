@@ -114,6 +114,24 @@ pub trait PolicyTrial: std::fmt::Debug + Send + Sync {
 /// What an admin API request needs from below the API.
 #[async_trait::async_trait]
 pub trait AdminBackend: std::fmt::Debug + Send + Sync {
+    /// Public Federation key inventory for the routed tenant.
+    async fn federation_key_inventory(
+        &self,
+        _tenant: &TenantId,
+    ) -> Result<serde_json::Value, DomainError> {
+        Err(DomainError::NotFound)
+    }
+
+    /// Stage a Federation successor under the authenticated admin actor.
+    async fn federation_key_rotate(
+        &self,
+        _tenant: &TenantId,
+        _actor: &str,
+        _now: time::OffsetDateTime,
+    ) -> Result<String, DomainError> {
+        Err(DomainError::NotFound)
+    }
+
     /// Lists recent invitations without token material or notification bodies.
     async fn invitation_statuses(
         &self,

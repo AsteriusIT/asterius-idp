@@ -359,6 +359,8 @@ async fn route_standard(
         crate::KEYS_LIST_ID => context.list_keys().await,
         crate::KEYS_JWKS_ID => context.preview_jwks().await,
         crate::KEYS_ROTATE_ID => context.rotate_key(body).await,
+        crate::FEDERATION_KEYS_LIST_ID => context.list_federation_keys().await,
+        crate::FEDERATION_KEYS_ROTATE_ID => context.rotate_federation_key().await,
         crate::KEYS_RETIRE_ID => context.retire_key().await,
         crate::KEYS_PURGE_ID => context.purge_key(body).await,
         crate::KEYS_SCHEDULE_ID => context.set_key_schedule(body).await,
@@ -4577,6 +4579,31 @@ impl Handling<'_> {
             .await
             .map(|bytes| bytes.to_vec())
             .map_err(|_| AdminError::Invalid("the request body is too large".to_owned()))
+    }
+
+    /// `GET /federation/keys` — public key lifecycle inventory.
+    async fn list_federation_keys(&self) -> Result<Response, AdminError> {
+        let document = self
+            .state
+            .backend
+            .federation_key_inventory(&self.tenant.id)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::FEDERATION_KEYS_LIST_ID, &error))?;
+        Ok(json_no_store(StatusCode::OK, &document))
+    }
+
+    /// `POST /federation/keys/rotate` — stage a successor with actor attribution.
+    async fn rotate_federation_key(&self) -> Result<Response, AdminError> {
+        let kid = self
+            .state
+            .backend
+            .federation_key_rotate(&self.tenant.id, &self.principal.audit_actor(), self.now)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::FEDERATION_KEYS_ROTATE_ID, &error))?;
+        Ok(json_no_store(
+            StatusCode::ACCEPTED,
+            &serde_json::json!({"staged_kid": kid, "propagation_seconds": 360}),
+        ))
     }
 
     /// `GET /keys` — this tenant's keys and its rotation policies.

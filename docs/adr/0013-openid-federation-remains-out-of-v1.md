@@ -62,6 +62,16 @@ background sweep promotes it. The old public key stays published for ten more
 minutes, past Entity Statement and HTTP cache lifetimes. KEK rewrap covers
 these rows.
 
+The follow-up (`ast-s36.14.3.2`) records staging, activation and retirement
+in the tenant audit trail. The background sweep stages a new key after 90 days
+of active signing; it then uses the same publication and overlap windows as an
+operator-triggered rotation. Tenant administrators with `admin.keys:read` can
+inspect public Federation key records at `GET /federation/keys`, and those
+with `admin.keys:write` can stage a successor at
+`POST /federation/keys/rotate`. The endpoint names no tenant in its path:
+the routed tenant and the authenticated principal determine its scope and
+audit actor.
+
 ## Context
 
 [OpenID Federation 1.0](https://openid.net/specs/openid-federation-1_0-final.html)
