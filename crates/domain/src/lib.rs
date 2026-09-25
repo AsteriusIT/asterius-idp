@@ -33,7 +33,7 @@ pub mod totp;
 
 pub use administration::{
     CredentialSummary, NewAccount, PasskeySummary, PasswordReset, ScimProfileReplacement,
-    ScimUserState, SessionSummary, Terminated, UserAdministration,
+    ScimUserState, SessionSummary, Terminated, TotpReset, UserAdministration,
 };
 pub use audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
 pub use capabilities::{Capabilities, Feature};

@@ -26,6 +26,24 @@ pub enum TotpStatus {
     Active,
 }
 
+/// A session revoked as part of an administrator-assisted factor reset.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TotpResetSession {
+    /// Internal session lookup digest, used only for post-commit notification.
+    pub digest: String,
+    /// Public session identifier known to relying parties.
+    pub public_sid: String,
+}
+
+/// The atomic database effects of removing a lost TOTP factor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TotpResetResult {
+    /// Whether an active or pending factor existed.
+    pub factor_removed: bool,
+    /// Sessions revoked in the same transaction.
+    pub sessions: Vec<TotpResetSession>,
+}
+
 /// TOTP credential storage restricted to one tenant.
 #[derive(Clone)]
 pub struct PgTotpCredentials {
@@ -140,6 +158,48 @@ impl PgTotpCredentials {
                 .await
                 .map_err(crate::to_domain_error)?;
         Ok(result.rows_affected() == 1)
+    }
+
+    /// Atomically removes an account's factor and revokes its live sessions.
+    /// Notifications are post-commit and use the returned session identifiers.
+    pub async fn reset_with_sessions(
+        &self,
+        user_id: Uuid,
+        now: OffsetDateTime,
+    ) -> Result<TotpResetResult, DomainError> {
+        let mut tx = self.pool.begin().await.map_err(crate::to_domain_error)?;
+        let removed =
+            sqlx::query("delete from totp_credentials where tenant_id = $1 and user_id = $2")
+                .bind(self.tenant.as_str())
+                .bind(user_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(crate::to_domain_error)?
+                .rows_affected()
+                == 1;
+        let sessions = sqlx::query_as::<_, (String, String)>(
+            "update sessions
+                set revoked_at = coalesce(revoked_at, $3),
+                    revocation_reason = coalesce(revocation_reason, $4)
+              where tenant_id = $1 and user_id = $2
+                and revoked_at is null and expires_at > $3
+              returning session_id, public_sid",
+        )
+        .bind(self.tenant.as_str())
+        .bind(user_id)
+        .bind(now)
+        .bind(asterius_domain::SessionRevocation::CredentialChange.as_str())
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(crate::to_domain_error)?
+        .into_iter()
+        .map(|(digest, public_sid)| TotpResetSession { digest, public_sid })
+        .collect();
+        tx.commit().await.map_err(crate::to_domain_error)?;
+        Ok(TotpResetResult {
+            factor_removed: removed,
+            sessions,
+        })
     }
 
     /// Confirms an unexpired pending credential. A malformed or incorrect

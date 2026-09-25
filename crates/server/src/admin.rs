@@ -1800,6 +1800,61 @@ impl asterius_domain::UserAdministration for DeploymentUsers {
             terminated,
         })
     }
+
+    async fn reset_totp(
+        &self,
+        tenant: &TenantId,
+        user: UserId,
+        now: time::OffsetDateTime,
+    ) -> Result<asterius_domain::TotpReset, DomainError> {
+        let scope = self.store.scope(tenant.clone());
+        scope
+            .users(Arc::clone(&self.kek))
+            .find(user)
+            .await?
+            .ok_or(DomainError::NotFound)?;
+
+        let reset = scope
+            .totp_credentials(Arc::clone(&self.kek))
+            .reset_with_sessions(*user.as_uuid(), now)
+            .await?;
+        let mut terminated = asterius_domain::Terminated::default();
+        for session in reset.sessions {
+            terminated.sessions_revoked += 1;
+            terminated.logout_tokens_queued +=
+                self.notify_participants(tenant, &session.digest, now).await;
+            self.emit_signal(
+                tenant,
+                &crate::ssf::Cause::SessionRevoked {
+                    user,
+                    sid: session.public_sid,
+                    by: crate::ssf::RevokedBy::Administrator,
+                    locale: asterius_domain::Locale::default(),
+                },
+                now,
+            )
+            .await;
+        }
+        if reset.factor_removed {
+            self.emit_signal(
+                tenant,
+                &crate::ssf::Cause::CredentialChange {
+                    user,
+                    change: asterius_ssf::caep::CredentialChange::new(
+                        asterius_ssf::caep::CredentialType::App,
+                        asterius_ssf::caep::ChangeType::Delete,
+                    ),
+                    initiator: asterius_ssf::caep::InitiatingEntity::Admin,
+                },
+                now,
+            )
+            .await;
+        }
+        Ok(asterius_domain::TotpReset {
+            factor_removed: reset.factor_removed,
+            terminated,
+        })
+    }
 }
 
 impl DeploymentUsers {
