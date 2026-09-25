@@ -166,6 +166,17 @@ pub struct NewAccount {
 /// and forget the second.
 #[async_trait::async_trait]
 pub trait UserAdministration: Debug + Send + Sync {
+    /// A SCIM offset page and total count for the routed tenant.
+    ///
+    /// Callers cap `offset` and `limit` before invoking this port; the adapter
+    /// repeats those bounds so another caller cannot ask for an unbounded scan.
+    async fn page(
+        &self,
+        tenant: &TenantId,
+        offset: u32,
+        limit: u16,
+    ) -> Result<(u64, Vec<User>), DomainError>;
+
     /// One page of this tenant's accounts, ordered by username.
     ///
     /// `term` is matched against the username and the email address, and an

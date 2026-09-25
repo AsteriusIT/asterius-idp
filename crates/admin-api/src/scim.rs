@@ -29,6 +29,7 @@ pub fn is_route(id: &str) -> bool {
             | crate::SCIM_RESOURCE_TYPES_ID
             | crate::SCIM_USER_READ_ID
             | crate::SCIM_USER_CREATE_ID
+            | crate::SCIM_USERS_LIST_ID
     )
 }
 
@@ -73,11 +74,11 @@ pub fn error_response(error: &AdminError) -> Response {
     response
 }
 
-fn list(resources: &[Value]) -> Value {
+fn list(resources: &[Value], total: u64, start_index: u32) -> Value {
     json!({
         "schemas": [LIST],
-        "totalResults": resources.len(),
-        "startIndex": 1,
+        "totalResults": total,
+        "startIndex": start_index,
         "itemsPerPage": resources.len(),
         "Resources": resources,
     })
@@ -89,7 +90,7 @@ fn list(resources: &[Value]) -> Value {
 /// # Errors
 ///
 /// Fails closed if persisted timestamps cannot be represented as RFC 3339.
-pub fn user_response(user: &User, base: &str, status: StatusCode) -> Result<Response, AdminError> {
+fn user_document(user: &User, base: &str) -> Result<Value, AdminError> {
     let created = user
         .created_at
         .format(&Rfc3339)
@@ -113,13 +114,43 @@ pub fn user_response(user: &User, base: &str, status: StatusCode) -> Result<Resp
     if let Some(email) = &user.email {
         body["emails"] = json!([{"value": email, "type": "work", "primary": true}]);
     }
-    let mut response = response(status, body);
+    Ok(body)
+}
+
+/// A SCIM User response, including `Location` after creation.
+///
+/// # Errors
+///
+/// Fails closed if persisted timestamps or the resource URI cannot be represented.
+pub fn user_response(user: &User, base: &str, status: StatusCode) -> Result<Response, AdminError> {
+    let mut response = response(status, user_document(user, base)?);
     if status == StatusCode::CREATED {
         let location = format!("{base}/Users/{}", user.id.as_uuid());
         let value = HeaderValue::from_str(&location).map_err(|_| AdminError::Unavailable)?;
         response.headers_mut().insert(header::LOCATION, value);
     }
     Ok(response)
+}
+
+/// A bounded SCIM offset page with a separately counted tenant total.
+///
+/// # Errors
+///
+/// Fails closed if a persisted timestamp cannot be represented.
+pub fn users_list_response(
+    users: &[User],
+    total: u64,
+    start_index: u32,
+    base: &str,
+) -> Result<Response, AdminError> {
+    let resources = users
+        .iter()
+        .map(|user| user_document(user, base))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(response(
+        StatusCode::OK,
+        list(&resources, total, start_index),
+    ))
 }
 
 /// The writable account subset. Unknown attributes are refused instead of
@@ -207,7 +238,7 @@ pub fn discovery_response(id: &str, base: &str) -> Response {
             }],
             "meta": {"resourceType": "ServiceProviderConfig", "location": format!("{base}/ServiceProviderConfig")},
         }),
-        crate::SCIM_SCHEMAS_ID | crate::SCIM_RESOURCE_TYPES_ID => list(&[]),
+        crate::SCIM_SCHEMAS_ID | crate::SCIM_RESOURCE_TYPES_ID => list(&[], 0, 1),
         _ => return error_response(&AdminError::NotFound),
     };
     response(StatusCode::OK, body)

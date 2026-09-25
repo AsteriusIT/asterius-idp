@@ -74,6 +74,7 @@ impl TenantScoped for PgUserRepository {
 }
 
 /// One row of `users`, before it becomes an entity.
+#[derive(sqlx::FromRow)]
 struct Row {
     user_id: Uuid,
     username: String,
@@ -114,6 +115,36 @@ impl Row {
 }
 
 impl PgUserRepository {
+    /// One bounded SCIM offset page and the tenant's total account count.
+    /// Offset pagination is capped at 10,000 so a remote client cannot force
+    /// an arbitrarily deep index walk with one request.
+    pub async fn page(&self, offset: u32, limit: u16) -> Result<(u64, Vec<User>), DomainError> {
+        if offset > 10_000 || !(1..=200).contains(&limit) {
+            return Err(DomainError::invalid("page", "outside SCIM page bounds"));
+        }
+        let total: i64 = sqlx::query_scalar("select count(*) from users where tenant_id = $1")
+            .bind(self.tenant.as_str())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(to_domain_error)?;
+        let rows: Vec<Row> = sqlx::query_as(
+            "select user_id, username, email, email_verified, status, claims,
+                    created_at, updated_at from users where tenant_id = $1
+             order by username, user_id offset $2 limit $3",
+        )
+        .bind(self.tenant.as_str())
+        .bind(i64::from(offset))
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+        let users = rows
+            .into_iter()
+            .map(|row| row.into_entity(&self.tenant))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((u64::try_from(total).unwrap_or(0), users))
+    }
+
     /// Binds a pool to one tenant.
     ///
     /// `kek` is the key-encryption key the tenant's pairwise salt is sealed

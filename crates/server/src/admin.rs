@@ -1266,6 +1266,19 @@ impl DeploymentUsers {
 
 #[async_trait::async_trait]
 impl asterius_domain::UserAdministration for DeploymentUsers {
+    async fn page(
+        &self,
+        tenant: &TenantId,
+        offset: u32,
+        limit: u16,
+    ) -> Result<(u64, Vec<asterius_domain::User>), DomainError> {
+        self.store
+            .scope(tenant.clone())
+            .users(Arc::clone(&self.kek))
+            .page(offset, limit)
+            .await
+    }
+
     async fn search(
         &self,
         tenant: &TenantId,

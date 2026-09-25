@@ -313,6 +313,7 @@ async fn route_standard(
         }
         crate::SCIM_USER_READ_ID => context.scim_read_user().await,
         crate::SCIM_USER_CREATE_ID => context.scim_create_user(body).await,
+        crate::SCIM_USERS_LIST_ID => context.scim_list_users().await,
         crate::TENANTS_LIST_ID => context.list_tenants().await,
         crate::TENANT_READ_ID => context.read_tenant().await,
         crate::TENANT_CREATE_ID => context.create_tenant(body).await,
@@ -487,6 +488,60 @@ struct Handling<'a> {
 }
 
 impl Handling<'_> {
+    async fn scim_list_users(&self) -> Result<Response, AdminError> {
+        let mut start_index = None;
+        let mut count = None;
+        for (name, value) in url::form_urlencoded::parse(self.query.as_bytes()) {
+            match name.as_ref() {
+                "startIndex" if start_index.is_none() => {
+                    start_index =
+                        Some(value.parse::<u32>().map_err(|_| {
+                            AdminError::Invalid("invalid SCIM startIndex".to_owned())
+                        })?);
+                }
+                "count" if count.is_none() => {
+                    count = Some(
+                        value
+                            .parse::<u16>()
+                            .map_err(|_| AdminError::Invalid("invalid SCIM count".to_owned()))?,
+                    );
+                }
+                _ => {
+                    return Err(AdminError::Invalid(
+                        "unsupported or repeated SCIM query parameter".to_owned(),
+                    ));
+                }
+            }
+        }
+        let start_index = start_index.unwrap_or(1);
+        let count = count.unwrap_or(100);
+        if !(1..=10_001).contains(&start_index) || count > 200 {
+            return Err(AdminError::Invalid(
+                "SCIM page is outside supported bounds".to_owned(),
+            ));
+        }
+        let (total, mut users) = self
+            .state
+            .backend
+            .users()
+            .page(&self.tenant.id, start_index - 1, count.max(1))
+            .await
+            .map_err(|error| AdminError::from_storage(crate::SCIM_USERS_LIST_ID, &error))?;
+        if count == 0 {
+            users.clear();
+        }
+        scim::users_list_response(
+            &users,
+            total,
+            start_index,
+            &format!(
+                "{}{}/scim/v2",
+                self.tenant.issuer.as_str(),
+                crate::BASE_PATH
+            ),
+        )
+    }
+
     async fn scim_read_user(&self) -> Result<Response, AdminError> {
         let id = self
             .path
@@ -6307,6 +6362,33 @@ mod tests {
     /// What is counted here is the promise the port makes to this crate.
     #[async_trait::async_trait]
     impl asterius_domain::UserAdministration for Handle {
+        async fn page(
+            &self,
+            tenant: &TenantId,
+            offset: u32,
+            limit: u16,
+        ) -> Result<(u64, Vec<asterius_domain::User>), DomainError> {
+            let mut matched: Vec<_> = self
+                .0
+                .accounts
+                .lock()
+                .expect("an uncontended lock")
+                .iter()
+                .filter(|user| &user.tenant == tenant)
+                .cloned()
+                .collect();
+            matched.sort_by(|a, b| a.username.cmp(&b.username));
+            let total = u64::try_from(matched.len()).unwrap_or(0);
+            Ok((
+                total,
+                matched
+                    .into_iter()
+                    .skip(usize::try_from(offset).unwrap_or(usize::MAX))
+                    .take(usize::from(limit))
+                    .collect(),
+            ))
+        }
+
         async fn search(
             &self,
             tenant: &TenantId,

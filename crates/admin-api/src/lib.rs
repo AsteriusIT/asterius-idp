@@ -228,6 +228,8 @@ pub const SCIM_RESOURCE_TYPES_ID: &str = "scim.resource_types.list";
 pub const SCIM_USER_READ_ID: &str = "scim.users.read";
 /// Creates a tenant User through the restricted SCIM profile.
 pub const SCIM_USER_CREATE_ID: &str = "scim.users.create";
+/// Lists one bounded tenant User page using SCIM offset pagination.
+pub const SCIM_USERS_LIST_ID: &str = "scim.users.list";
 /// The `operationId` of `POST /groups`.
 pub const GROUP_CREATE_ID: &str = "groups.create";
 /// The `operationId` of `GET /groups/{group_id}`.
@@ -1483,8 +1485,16 @@ pub const SCIM_USER_CREATE: Operation = Operation::mutation(
     A::new(R::AutomationTenant, "admin.scim:write"),
     "Creates one tenant User from the restricted SCIM profile",
 );
+/// Lists one tenant's accounts through the provisioning profile.
+pub const SCIM_USERS_LIST: Operation = Operation::read(
+    SCIM_USERS_LIST_ID,
+    "/scim/v2/Users",
+    S::Get,
+    A::new(R::AutomationTenant, "admin.scim:read"),
+    "One SCIM 2.0 User page",
+);
 
-static REGISTRY: [Operation; 101] = [
+static REGISTRY: [Operation; 102] = [
     SESSION_READ,
     SESSION_END,
     OVERVIEW_USERS,
@@ -1560,6 +1570,7 @@ static REGISTRY: [Operation; 101] = [
     SCIM_RESOURCE_TYPES,
     SCIM_USER_READ,
     SCIM_USER_CREATE,
+    SCIM_USERS_LIST,
     GROUP_CREATE,
     GROUP_READ,
     GROUP_UPDATE,
