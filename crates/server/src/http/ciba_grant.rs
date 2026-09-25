@@ -103,6 +103,10 @@ pub struct CibaGrant<'a> {
     pub roles: &'a asterius_store_pg::PgApplicationRoles,
     /// Authoritative managed memberships resolved at issuance.
     pub groups: &'a asterius_store_pg::PgGroups,
+    /// Live verified identity bundles.
+    pub verified: &'a asterius_store_pg::PgVerifiedClaims,
+    /// Tenant-approved trust frameworks.
+    pub ida_frameworks: &'a std::collections::BTreeSet<String>,
     /// Signs both tokens.
     pub signer: &'a dyn Signer,
     /// Where issuances and refusals are recorded.
@@ -151,6 +155,8 @@ impl<'a> CibaGrant<'a> {
             users: code.users,
             roles: code.roles,
             groups: code.groups,
+            verified: code.verified,
+            ida_frameworks: code.ida_frameworks,
             signer: code.signer,
             acr_policy: code.acr_policy,
             audit,
@@ -347,8 +353,16 @@ impl CibaGrant<'_> {
                 session: &session,
                 access_token: access_token.as_str(),
                 nonce: None,
-                released: issuance::released_claims(self.users, self.groups, &grant, client, &held)
-                    .await?,
+                released: issuance::released_claims(
+                    self.users,
+                    self.groups,
+                    self.verified,
+                    self.ida_frameworks,
+                    &grant,
+                    client,
+                    &held,
+                )
+                .await?,
             };
             Some(issuance::sign_id_token(self.signer, tenant, client, parts, self.now).await?)
         } else {
