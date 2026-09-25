@@ -770,6 +770,13 @@ pub struct Proof {
     /// The value that goes in `cnf.jkt` (RFC 9449 §6.1), that is compared with
     /// `dpop_jkt` (§10), and that namespaces the `jti` in the replay store.
     pub jkt: Kid,
+    /// The verified public key from the protected JOSE header. OpenID Connect
+    /// Key Binding places this key in the ID Token's `cnf.jwk` claim.
+    pub public_jwk: Value,
+    /// An optional authorization or device code hash carried by the proof.
+    /// The grant handler compares this with its actual code when `bound_key`
+    /// was requested; a proof alone cannot establish that relationship.
+    pub code_hash: Option<String>,
     /// The `jti`, single use within the `iat` window.
     pub jti: String,
     /// The `iat`, as an instant.
@@ -961,10 +968,17 @@ pub fn check(
         }
     }
 
+    let public_jwk = Value::Object(header_jwk(unverified.raw_header())?);
     let jkt = thumbprint_of(unverified.raw_header(), algorithm)?;
+    let code_hash = claims
+        .get("c_s256")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
 
     Ok(Proof {
         jkt,
+        public_jwk,
+        code_hash,
         jti,
         issued_at,
         replay_expires_at: issued_at + max_age,

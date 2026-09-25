@@ -70,6 +70,9 @@ use time::{Duration, OffsetDateTime};
 /// `dpop+jwt` or `logout+jwt` is expected.
 pub const ID_TOKEN_TYP: &str = "JWT";
 
+/// OpenID Connect Key Binding 1.0's distinct type for proof-key-bound ID Tokens.
+pub const KEY_BOUND_ID_TOKEN_TYP: &str = "dpop+id_token";
+
 // ---------------------------------------------------------------------------
 // at_hash
 // ---------------------------------------------------------------------------
@@ -214,6 +217,7 @@ pub struct IdToken<'a> {
     roles: HeldRoles,
     role_claims: BTreeSet<RoleClaim>,
     managed_groups: Vec<String>,
+    key_bound_jwk: Option<Value>,
 }
 
 impl<'a> IdToken<'a> {
@@ -275,6 +279,7 @@ impl<'a> IdToken<'a> {
             roles: HeldRoles::empty(),
             role_claims: BTreeSet::new(),
             managed_groups: Vec::new(),
+            key_bound_jwk: None,
         }
     }
 
@@ -349,6 +354,14 @@ impl<'a> IdToken<'a> {
     /// Stable managed groups released for this token's client audience.
     pub fn with_managed_groups(mut self, groups: Vec<String>) -> Self {
         self.managed_groups = groups.into_iter().take(100).collect();
+        self
+    }
+
+    /// Binds the ID Token to the public key from a verified DPoP proof.
+    /// The caller must first compare the proof's thumbprint with the key
+    /// pinned by the authorization request and its `c_s256` with the code.
+    pub fn bound_to_key(mut self, public_jwk: Value) -> Self {
+        self.key_bound_jwk = Some(public_jwk);
         self
     }
 
@@ -482,6 +495,13 @@ impl<'a> IdToken<'a> {
             Value::String(token_hash(self.algorithm, self.access_token)),
         );
 
+        let typ = if let Some(jwk) = self.key_bound_jwk {
+            claims.insert("cnf".to_owned(), serde_json::json!({"jwk": jwk}));
+            KEY_BOUND_ID_TOKEN_TYP
+        } else {
+            ID_TOKEN_TYP
+        };
+
         // The application roles (`ast-mqt`), when this issuance asked for
         // them. After the released claims and among the server-issued ones,
         // because these are computed from the assignment tables and not read
@@ -495,7 +515,7 @@ impl<'a> IdToken<'a> {
         }
 
         Ok(UnsignedToken {
-            typ: ID_TOKEN_TYP,
+            typ,
             required_algorithm: Some(self.algorithm),
             claims: bounded(Value::Object(claims), MAX_ID_TOKEN_CLAIMS_BYTES)?,
         })

@@ -60,6 +60,11 @@ pub const USE_NONCE: &str = "use_dpop_nonce";
 pub struct Binding {
     /// The JWK thumbprint the issued token is to be bound to (RFC 9449 §6.1).
     pub jkt: Kid,
+    /// The verified DPoP public key, for key-bound ID Token issuance.
+    pub public_jwk: serde_json::Value,
+    /// The proof's optional `c_s256` claim, checked against the actual grant
+    /// code before a key-bound ID Token can be issued.
+    pub code_hash: Option<String>,
     /// The nonce to put on the response, when this deployment issues them.
     ///
     /// RFC 9449 §8.2 offers two ways to hand a client its next nonce: a 400
@@ -596,6 +601,8 @@ impl DpopEndpoint {
         {
             Ok(ReplayCheck::FirstUse) => Ok(Some(Binding {
                 jkt: proof.jkt,
+                public_jwk: proof.public_jwk,
+                code_hash: proof.code_hash,
                 next_nonce: self.fresh_nonce(issuer, now),
             })),
             Ok(ReplayCheck::Replay) => Err(Refusal {
