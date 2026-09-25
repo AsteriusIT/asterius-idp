@@ -185,11 +185,13 @@ pub enum RowSecret {
     /// it carries as a bearer, sealed together for one backchannel
     /// authentication request. The row is the hex digest of the `auth_req_id`.
     CibaPing,
+    /// An authenticator-app seed for one user. The row is the user's UUID.
+    TotpSeed,
 }
 
 impl RowSecret {
     /// Every secret this enum names, so a test can be exhaustive over them.
-    pub const ALL: [Self; 2] = [Self::SsfPushAuthorization, Self::CibaPing];
+    pub const ALL: [Self; 3] = [Self::SsfPushAuthorization, Self::CibaPing, Self::TotpSeed];
 
     /// The value that goes into the additional authenticated data.
     #[must_use]
@@ -197,6 +199,7 @@ impl RowSecret {
         match self {
             Self::SsfPushAuthorization => "ssf-push-authorization",
             Self::CibaPing => "ciba-ping",
+            Self::TotpSeed => "totp-seed",
         }
     }
 }

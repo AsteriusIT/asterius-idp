@@ -54,6 +54,7 @@ mod store;
 mod tenant_settings;
 mod tenants;
 mod themes;
+mod totp;
 mod users;
 
 pub use admin_seed::{DeploymentAdmin, PgAdminSeed, Seeded};
@@ -115,6 +116,7 @@ pub use store::{MIGRATOR, Store};
 pub use tenant_settings::PgTenantSettings;
 pub use tenants::PgTenantRepository;
 pub use themes::PgThemes;
+pub use totp::{PgTotpCredentials, TotpStatus};
 pub use users::PgUserRepository;
 
 pub use groups::PgGroups;
