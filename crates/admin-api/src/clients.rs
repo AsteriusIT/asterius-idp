@@ -278,7 +278,9 @@ pub fn requested_compliance_profile(
         Some(Value::String(profile)) => ClientComplianceProfile::parse(profile)
             .map(Some)
             .ok_or_else(|| {
-                AdminError::Invalid("compliance_profile: must be \"fapi\" or \"oidc\"".to_owned())
+                AdminError::Invalid(
+                    "compliance_profile: must be \"fapi\", \"oidc\" or \"public\"".to_owned(),
+                )
             }),
         Some(_) => Err(AdminError::Invalid(
             "compliance_profile: must be a string".to_owned(),

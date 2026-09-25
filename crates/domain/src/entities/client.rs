@@ -1,9 +1,9 @@
 //! The client entity, and the validating parser that produces it.
 //!
-//! Every supported profile is confidential. FAPI is the default; ADR-0014
-//! permits an administrator to select standard OIDC only after the tenant has
-//! opted in. In either profile, **a weaker value is rejected, never silently
-//! replaced with a safe one.**
+//! FAPI is the default; ADR-0014 permits explicitly gated confidential OIDC,
+//! and ADR-0012 permits an explicitly gated public OAuth profile. In every
+//! profile, **a weaker value is rejected, never silently replaced with a safe
+//! one.**
 //!
 //! Quietly upgrading a registration would leave the operator's records saying
 //! one thing and the server doing another. A client registered with
@@ -175,9 +175,12 @@ impl ClientMetadataError {
 ///
 /// The set is closed, and closed is the point: the one supported shared-secret
 /// method is explicit, while `client_secret_post`, `client_secret_jwt` and
-/// `none` cannot be accepted accidentally downstream (ADR-0014).
+/// `none` is accepted only by the explicitly configured public profile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum TokenEndpointAuthMethod {
+    /// No client authentication. Available only to the explicitly configured
+    /// public OAuth profile; authorization codes remain bound to PKCE S256.
+    None,
     /// HTTP Basic authentication with a server-issued shared secret (RFC 6749
     /// §2.3.1). Available only to an explicitly non-FAPI client.
     ClientSecretBasic,
@@ -192,7 +195,8 @@ pub enum TokenEndpointAuthMethod {
 
 impl TokenEndpointAuthMethod {
     /// Every permitted method, in the order metadata should advertise them.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
+        Self::None,
         Self::ClientSecretBasic,
         Self::PrivateKeyJwt,
         Self::TlsClientAuth,
@@ -207,6 +211,7 @@ impl TokenEndpointAuthMethod {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::None => "none",
             Self::ClientSecretBasic => "client_secret_basic",
             Self::PrivateKeyJwt => "private_key_jwt",
             Self::TlsClientAuth => "tls_client_auth",
@@ -216,8 +221,7 @@ impl TokenEndpointAuthMethod {
 
     /// Parses a `token_endpoint_auth_method` value.
     ///
-    /// Returns `None` for everything outside the allow-list, which is the whole
-    /// job: `client_secret_post`, `client_secret_jwt` and `none` all land here.
+    /// Returns `None` for everything outside the allow-list.
     #[must_use]
     pub fn parse(value: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|m| m.as_str() == value)
@@ -243,16 +247,20 @@ pub enum ClientComplianceProfile {
     /// Conventional confidential OIDC, still code + PKCE, but without the
     /// FAPI-only PAR and asymmetric-authentication requirements.
     Oidc,
+    /// Public OAuth 2.1 client. Requires PKCE S256 and DPoP-bound access
+    /// tokens; PAR may be used but is not required.
+    Public,
 }
 
 impl ClientComplianceProfile {
-    pub const ALL: [Self; 2] = [Self::Fapi, Self::Oidc];
+    pub const ALL: [Self; 3] = [Self::Fapi, Self::Oidc, Self::Public];
 
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Fapi => "fapi",
             Self::Oidc => "oidc",
+            Self::Public => "public",
         }
     }
 
@@ -266,6 +274,13 @@ impl ClientComplianceProfile {
     #[must_use]
     pub const fn requires_par(self) -> bool {
         matches!(self, Self::Fapi)
+    }
+
+    /// Whether this profile represents a client with no deployable
+    /// credential, and therefore needs PKCE rather than client auth.
+    #[must_use]
+    pub const fn is_public(self) -> bool {
+        matches!(self, Self::Public)
     }
 }
 
@@ -1681,7 +1696,26 @@ impl ClientMetadata {
         self.check_response_types(&grant_types)?;
         let redirect_uris = self.redirect_uris(application_type, &grant_types)?;
         let post_logout_redirect_uris = self.post_logout_redirect_uris(application_type)?;
-        let jwks = self.jwks(token_endpoint_auth_method)?;
+        let jwks = self.jwks(token_endpoint_auth_method, compliance_profile)?;
+        if compliance_profile.is_public() {
+            if !grant_types.contains(&GrantType::AuthorizationCode) {
+                return Err(ClientMetadataError::rejected(
+                    "grant_types",
+                    "public clients must use authorization_code",
+                ));
+            }
+            if grant_types.iter().any(|grant| {
+                !matches!(
+                    grant,
+                    GrantType::AuthorizationCode | GrantType::RefreshToken
+                )
+            }) {
+                return Err(ClientMetadataError::rejected(
+                    "grant_types",
+                    "public clients may use only authorization_code and refresh_token",
+                ));
+            }
+        }
         let (subject_type, sector_identifier_uri) = self.subject(&redirect_uris)?;
         let token_binding = self.token_binding(capabilities, compliance_profile)?;
         let backchannel = self.backchannel(&grant_types)?;
@@ -1978,6 +2012,12 @@ impl ClientMetadata {
     ) -> Result<TokenEndpointAuthMethod, ClientMetadataError> {
         const FIELD: &str = "token_endpoint_auth_method";
         let Some(raw) = self.token_endpoint_auth_method.as_deref() else {
+            if profile.is_public() {
+                return Err(ClientMetadataError::rejected(
+                    FIELD,
+                    "must be `none` for a public client",
+                ));
+            }
             return Ok(TokenEndpointAuthMethod::DEFAULT);
         };
         // The rejected value is not echoed: it is one of the few fields a
@@ -1986,7 +2026,7 @@ impl ClientMetadata {
         let method = TokenEndpointAuthMethod::parse(raw).ok_or_else(|| {
             ClientMetadataError::rejected(
                 FIELD,
-                "must be client_secret_basic, private_key_jwt, tls_client_auth or \
+                "must be none, client_secret_basic, private_key_jwt, tls_client_auth or \
                  self_signed_tls_client_auth",
             )
         })?;
@@ -1997,6 +2037,16 @@ impl ClientMetadata {
                 FIELD,
                 "client_secret_basic is available only to a client explicitly configured \
                  with the non-FAPI OIDC profile",
+            ));
+        }
+        if (method == TokenEndpointAuthMethod::None) != profile.is_public() {
+            return Err(ClientMetadataError::rejected(
+                FIELD,
+                if profile.is_public() {
+                    "a public client must use `none`"
+                } else {
+                    "`none` is available only to a client explicitly configured with the public profile"
+                },
             ));
         }
         if method.requires_mtls() && !capabilities.is_enabled(Feature::Mtls) {
@@ -2241,7 +2291,14 @@ impl ClientMetadata {
     fn jwks(
         &self,
         auth_method: TokenEndpointAuthMethod,
+        profile: ClientComplianceProfile,
     ) -> Result<JwksSource, ClientMetadataError> {
+        if profile.is_public() && (self.jwks.is_some() || self.jwks_uri.is_some()) {
+            return Err(ClientMetadataError::rejected(
+                "jwks",
+                "public clients do not authenticate with a JWK Set",
+            ));
+        }
         match (&self.jwks, &self.jwks_uri) {
             // RFC 7591 §2: "The jwks_uri and jwks parameters MUST NOT both be
             // present in the same request or response."
@@ -2251,7 +2308,12 @@ impl ClientMetadata {
             )),
             // An asymmetric client needs exactly one public-key source. The
             // shared-secret digest lives in a separate credential column.
-            (None, None) if auth_method == TokenEndpointAuthMethod::ClientSecretBasic => {
+            (None, None)
+                if matches!(
+                    auth_method,
+                    TokenEndpointAuthMethod::ClientSecretBasic | TokenEndpointAuthMethod::None
+                ) =>
+            {
                 Ok(JwksSource::None)
             }
             (None, None) => Err(ClientMetadataError::Missing { field: "jwks_uri" }),
@@ -2364,6 +2426,12 @@ impl ClientMetadata {
         if certificate && !capabilities.is_enabled(Feature::Mtls) {
             return Err(ClientMetadataError::needs(CERT_FIELD, Feature::Mtls));
         }
+        if profile.is_public() && certificate {
+            return Err(ClientMetadataError::rejected(
+                CERT_FIELD,
+                "public clients must use DPoP-bound access tokens",
+            ));
+        }
         TokenBinding::from_flags(dpop, certificate, profile)
     }
 
@@ -2371,6 +2439,9 @@ impl ClientMetadata {
     /// PAR remains mandatory for FAPI clients. ADR-0014 permits an explicitly
     /// gated standard OIDC client to use the direct authorization path.
     fn check_par(&self, profile: ClientComplianceProfile) -> Result<(), ClientMetadataError> {
+        if profile.is_public() {
+            return Ok(());
+        }
         if profile.requires_par() && self.require_pushed_authorization_requests == Some(false) {
             return Err(ClientMetadataError::rejected(
                 "require_pushed_authorization_requests",
@@ -2378,7 +2449,10 @@ impl ClientMetadata {
                  obtained from the pushed authorization request endpoint (RFC 9126 §2)",
             ));
         }
-        if !profile.requires_par() && self.require_pushed_authorization_requests == Some(true) {
+        if !profile.requires_par()
+            && !profile.is_public()
+            && self.require_pushed_authorization_requests == Some(true)
+        {
             return Err(ClientMetadataError::rejected(
                 "require_pushed_authorization_requests",
                 "must be false for the standard OIDC profile; PAR remains available but is not required",

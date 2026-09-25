@@ -241,6 +241,9 @@ pub struct Attempt<'a> {
 /// for it — that is the point of a closed enum here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Method {
+    /// No client authentication was presented. PAR and token endpoints may
+    /// accept this only after resolving an explicitly registered public client.
+    None,
     /// A client id and server-issued shared secret in HTTP Basic (RFC 6749
     /// §2.3.1). Whether the registered client may use it is checked later.
     ClientSecretBasic,
@@ -256,8 +259,7 @@ impl Attempt<'_> {
     /// # Errors
     ///
     /// [`ClientAuthError::MultipleMethods`] if it presents more than one,
-    /// [`ClientAuthError::NoMethod`] if none, and
-    /// [`ClientAuthError::IncompleteAssertion`] or
+    /// [`Method::None`] if none, and [`ClientAuthError::IncompleteAssertion`] or
     /// [`ClientAuthError::UnsupportedAssertionType`] if the assertion pair is
     /// malformed.
     pub fn method(&self) -> Result<Method, ClientAuthError> {
@@ -291,7 +293,7 @@ impl Attempt<'_> {
             return Ok(Method::ClientSecretBasic);
         }
 
-        Err(ClientAuthError::NoMethod)
+        Ok(Method::None)
     }
 }
 
@@ -875,8 +877,8 @@ mod tests {
     }
 
     #[test]
-    fn a_request_with_no_credential_fails_authentication() {
-        assert_eq!(Attempt::default().method(), Err(ClientAuthError::NoMethod));
+    fn a_request_with_no_credential_is_marked_for_public_client_lookup() {
+        assert_eq!(Attempt::default().method(), Ok(Method::None));
 
         // Method selection recognizes Basic; registration and digest checks
         // happen in the composed authenticator.

@@ -366,8 +366,8 @@ pub fn grant_types(capabilities: &Capabilities) -> Vec<&'static str> {
 /// `private_key_jwt` always; the mTLS methods only behind the flag. There is no
 /// FAPI advertises only asymmetric methods. A tenant that permits explicitly
 /// selected standard OIDC clients additionally advertises
-/// `client_secret_basic`; `client_secret_post`, `client_secret_jwt` and `none`
-/// remain absent (ADR-0014).
+/// `client_secret_basic` and `none`; `client_secret_post` and
+/// `client_secret_jwt` remain absent (ADR-0014 and ADR-0012).
 #[must_use]
 pub fn token_endpoint_auth_methods(
     capabilities: &Capabilities,
@@ -376,12 +376,26 @@ pub fn token_endpoint_auth_methods(
     let mut methods = vec!["private_key_jwt"];
     if allow_non_fapi_clients {
         methods.push("client_secret_basic");
+        methods.push("none");
     }
     if capabilities.mtls {
         methods.push("tls_client_auth");
         methods.push("self_signed_tls_client_auth");
     }
     methods
+}
+
+/// Methods shared-secret and asymmetric-auth endpoints accept. Public client
+/// authentication is limited to PAR and token exchange; introspection and
+/// revocation continue to require an authenticated client.
+fn authenticated_endpoint_methods(
+    capabilities: &Capabilities,
+    allow_non_fapi_clients: bool,
+) -> Vec<&'static str> {
+    token_endpoint_auth_methods(capabilities, allow_non_fapi_clients)
+        .into_iter()
+        .filter(|method| *method != "none")
+        .collect()
 }
 
 /// The response modes this server delivers, from the one enum that decides.
@@ -533,8 +547,8 @@ pub fn provider_metadata(
 
         "token_endpoint_auth_methods_supported": token_endpoint_auth_methods(capabilities, allow_non_fapi_clients),
         "introspection_endpoint_auth_methods_supported":
-            token_endpoint_auth_methods(capabilities, allow_non_fapi_clients),
-        "revocation_endpoint_auth_methods_supported": token_endpoint_auth_methods(capabilities, allow_non_fapi_clients),
+            authenticated_endpoint_methods(capabilities, allow_non_fapi_clients),
+        "revocation_endpoint_auth_methods_supported": authenticated_endpoint_methods(capabilities, allow_non_fapi_clients),
 
         // RFC 7636 §4.2 and FAPI 2.0 SP §5.3.2.1: S256 only. `plain` is not a
         // value this server accepts, so it is not a value it advertises.
@@ -1543,9 +1557,9 @@ mod tests {
     }
 
     #[test]
-    fn a_tenant_permitting_oidc_advertises_only_client_secret_basic() {
+    fn a_tenant_permitting_non_fapi_clients_advertises_public_methods() {
         let methods = token_endpoint_auth_methods(&Capabilities::default(), true);
-        assert_eq!(methods, ["private_key_jwt", "client_secret_basic"]);
+        assert_eq!(methods, ["private_key_jwt", "client_secret_basic", "none"]);
 
         let document = provider_metadata(
             &issuer(),

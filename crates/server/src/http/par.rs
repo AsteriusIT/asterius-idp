@@ -254,6 +254,15 @@ pub async fn push(
             Ok(jkt) => jkt,
             Err(refusal) => return refusal.into_response(),
         };
+    if client.registration.compliance_profile == asterius_domain::ClientComplianceProfile::Public
+        && dpop_jkt.is_none()
+    {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "public clients must bind the authorization code to a DPoP key",
+        );
+    }
 
     match store_request(&context, &client, &request, hinted_subject, dpop_jkt, now).await {
         Ok(minted) => (
@@ -308,7 +317,11 @@ pub async fn direct(
         })?
         .filter(Client::is_active)
         .ok_or_else(|| Box::new(error(StatusCode::BAD_REQUEST, "unauthorized_client", "client is unknown or disabled")))?;
-    if client.registration.compliance_profile != asterius_domain::ClientComplianceProfile::Oidc {
+    if !matches!(
+        client.registration.compliance_profile,
+        asterius_domain::ClientComplianceProfile::Oidc
+            | asterius_domain::ClientComplianceProfile::Public
+    ) {
         return Err(Box::new(error(
             StatusCode::BAD_REQUEST,
             "invalid_request",
@@ -346,6 +359,15 @@ pub async fn direct(
     }
     let dpop_jkt = crate::http::dpop::reconcile_par_key(None, request.dpop_jkt.as_deref())
         .map_err(|failure| Box::new(failure.into_response()))?;
+    if client.registration.compliance_profile == asterius_domain::ClientComplianceProfile::Public
+        && dpop_jkt.is_none()
+    {
+        return Err(Box::new(error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "public clients must bind the authorization code to a DPoP key",
+        )));
+    }
     let minted = store_request(&context, &client, &request, hinted_subject, dpop_jkt, now).await?;
     Ok((client.id.as_str().to_owned(), minted.uri().to_owned()))
 }

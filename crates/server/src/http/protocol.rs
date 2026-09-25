@@ -1428,6 +1428,14 @@ async fn pushed_authorization_request_inner(
     let request_objects = capabilities
         .is_enabled(asterius_domain::Feature::RequestObject)
         .then(|| endpoints.authenticator.client_keys().as_ref());
+    let public_profile_allowed =
+        match settings_for_directory(endpoints.tenant_settings.as_ref(), &tenant.id).await {
+            Ok(settings) => settings.allows_non_fapi_clients(),
+            Err(error) => {
+                tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+                return unavailable();
+            }
+        };
 
     // Grant Management ID1 §5.2, read exactly the way JAR is: one flag decides
     // both what the discovery document advertises and whether this endpoint has
@@ -1460,9 +1468,21 @@ async fn pushed_authorization_request_inner(
         headers,
         body,
         async |attempt: &Attempt<'_>, rules: &AssertionRules| {
-            authenticator
-                .authenticate(&tenant_for_auth, &clients_for_auth, attempt, rules, now)
-                .await
+            if public_profile_allowed {
+                authenticator
+                    .authenticate_public_profile(
+                        &tenant_for_auth,
+                        &clients_for_auth,
+                        attempt,
+                        rules,
+                        now,
+                    )
+                    .await
+            } else {
+                authenticator
+                    .authenticate(&tenant_for_auth, &clients_for_auth, attempt, rules, now)
+                    .await
+            }
         },
         binding.as_ref().map(|b| &b.jkt),
         now,
@@ -3283,6 +3303,14 @@ async fn token_endpoint_inner(
             return unavailable();
         }
     };
+    let public_profile_allowed =
+        match settings_for_directory(endpoints.tenant_settings.as_ref(), &tenant.id).await {
+            Ok(settings) => settings.allows_non_fapi_clients(),
+            Err(error) => {
+                tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+                return unavailable();
+            }
+        };
 
     dispatch_grants(
         endpoints,
@@ -3294,6 +3322,7 @@ async fn token_endpoint_inner(
             headers,
             body,
             binding: binding.as_ref(),
+            public_profile_allowed,
             now,
         },
     )
@@ -3310,6 +3339,7 @@ struct Dispatching<'a> {
     headers: &'a axum::http::HeaderMap,
     body: &'a axum::body::Bytes,
     binding: Option<&'a crate::http::dpop::Binding>,
+    public_profile_allowed: bool,
     now: time::OffsetDateTime,
 }
 
@@ -3384,7 +3414,10 @@ async fn dispatch_grants(
     // Named once, because every handler below takes all three and a request
     // judged against two clock readings is two requests.
     let Dispatching {
-        certificate, now, ..
+        certificate,
+        public_profile_allowed,
+        now,
+        ..
     } = request;
     let Issuing {
         acr_policy,
@@ -3510,9 +3543,21 @@ async fn dispatch_grants(
         request.headers,
         request.body,
         async |attempt: &Attempt<'_>, rules: &AssertionRules| {
-            authenticator
-                .authenticate(&tenant_for_auth, &clients_for_auth, attempt, rules, now)
-                .await
+            if public_profile_allowed {
+                authenticator
+                    .authenticate_public_profile(
+                        &tenant_for_auth,
+                        &clients_for_auth,
+                        attempt,
+                        rules,
+                        now,
+                    )
+                    .await
+            } else {
+                authenticator
+                    .authenticate(&tenant_for_auth, &clients_for_auth, attempt, rules, now)
+                    .await
+            }
         },
     )
     .await;

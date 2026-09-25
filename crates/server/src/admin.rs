@@ -823,6 +823,9 @@ fn registration_health_checks(
         });
     let auth_message = if auth_supported {
         match auth_method {
+            asterius_domain::TokenEndpointAuthMethod::None => {
+                "The client is public and uses PKCE S256 with DPoP-bound tokens instead of a client credential."
+            }
             asterius_domain::TokenEndpointAuthMethod::PrivateKeyJwt => {
                 "The client uses private_key_jwt. Confirm its signing key is available to the application and its public key is published."
             }

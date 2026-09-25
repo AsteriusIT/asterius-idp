@@ -32,6 +32,7 @@ export function ClientSecurity({ draft, discovery, refusal, busy, onChange }: Se
         options={[
           { value: 'fapi', label: 'FAPI 2.0 Security Profile' },
           { value: 'oidc', label: 'Non-FAPI compatibility exception' },
+          { value: 'public', label: 'Public OAuth client (PKCE + DPoP)' },
         ]}
         onValueChange={(value) => onChange(changeComplianceProfile(
           draft,
@@ -39,7 +40,9 @@ export function ClientSecurity({ draft, discovery, refusal, busy, onChange }: Se
         ))} />}
     </Field>
     <Field label="Client authentication" error={clientFieldError(refusal, 'token_endpoint_auth_method')}
-      hint={draft.token_endpoint_auth_method === 'client_secret_basic'
+      hint={draft.token_endpoint_auth_method === 'none'
+        ? 'Public clients have no deployable secret. Authorization codes require PKCE S256 and access tokens are DPoP bound.'
+        : draft.token_endpoint_auth_method === 'client_secret_basic'
         ? 'The server creates a secret and shows it once. Store it in your backend secret manager.'
         : 'Use private_key_jwt for a backend that signs assertions. Mutual TLS methods require this deployment’s certificate endpoints.'}>
       {(props) => <FormSelect {...props} disabled={busy} value={draft.token_endpoint_auth_method}
@@ -67,7 +70,7 @@ export function ClientSecurity({ draft, discovery, refusal, busy, onChange }: Se
           : draft.dpop_bound_access_tokens === false ? 'bearer' : 'dpop'}
         options={[
           { value: 'dpop', label: 'DPoP-bound tokens' },
-          ...((discovery?.mtls_endpoint_aliases || draft.tls_client_certificate_bound_access_tokens === true)
+          ...(draft.compliance_profile !== 'public' && (discovery?.mtls_endpoint_aliases || draft.tls_client_certificate_bound_access_tokens === true)
             ? [{ value: 'mtls', label: 'Certificate-bound tokens (mTLS)' }] : []),
           ...(draft.compliance_profile === 'oidc'
             ? [{ value: 'bearer', label: 'Bearer tokens (maximum compatibility)' }] : []),
