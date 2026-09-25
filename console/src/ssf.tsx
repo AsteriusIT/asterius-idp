@@ -28,6 +28,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { mutate, read, type Session } from './api';
 import { toast } from './components/ui/toast';
+import { SsfReceiverSubjects } from './ssf-receiver';
 import {
   Actions,
   Badge,
@@ -254,6 +255,8 @@ export function SharedSignals({ session }: Readonly<{ session: Session }>): JSX.
           onVerify={verify}
         />
       </Panel>
+
+      <SsfReceiverSubjects session={session} />
 
       {mayReadLetters && (
         <Panel
