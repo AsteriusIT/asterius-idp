@@ -119,9 +119,9 @@ pub async fn token(
         .map(|(k, v)| (k.into_owned(), v.into_owned()))
         .collect();
 
-    // RFC 6749 §3.2: the client authenticates here. Everything after this is a
-    // statement about a client that has proved who it is, which is what makes
-    // `unauthorized_client` safe to return.
+    // RFC 6749 §3.2: confidential clients authenticate here. The explicitly
+    // gated public profile is resolved by client_id and is safe to name only
+    // after the stored public registration has been found.
     let attempt = Attempt {
         assertion: find(&pairs, "client_assertion"),
         assertion_type: find(&pairs, "client_assertion_type"),

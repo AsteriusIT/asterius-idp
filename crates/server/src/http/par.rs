@@ -153,9 +153,10 @@ pub async fn push(
         .map(|(k, v)| (k.into_owned(), v.into_owned()))
         .collect();
 
-    // FAPI 2.0 SP §5.3.2.2 item 4: a pushed request without client
-    // authentication is rejected. Authentication comes first, so that every
-    // later error is one an authenticated client is entitled to see.
+    // FAPI 2.0 SP §5.3.2.2 item 4 requires client authentication for the FAPI
+    // profile. The explicit public profile may identify itself with client_id
+    // after the tenant gate has been checked by the caller. Authentication
+    // comes first so later errors are disclosed only to an accepted client.
     let attempt = Attempt {
         assertion: find(&pairs, "client_assertion"),
         assertion_type: find(&pairs, "client_assertion_type"),
