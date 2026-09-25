@@ -31,7 +31,7 @@ pub struct ClaimsProviderPolicy {
 }
 
 /// A signed claim set that survived pinned trust and disclosure checks.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct VerifiedClaimSet {
     /// Issuer whose pinned key verified this JWT.
     issuer: String,
@@ -43,6 +43,17 @@ pub struct VerifiedClaimSet {
     names: BTreeSet<String>,
     /// Expiry of the signed claim set.
     expires_at: OffsetDateTime,
+}
+
+impl std::fmt::Debug for VerifiedClaimSet {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("VerifiedClaimSet")
+            .field("issuer", &self.issuer)
+            .field("names", &self.names)
+            .field("expires_at", &self.expires_at)
+            .finish_non_exhaustive()
+    }
 }
 
 impl VerifiedClaimSet {
