@@ -31,11 +31,15 @@ complete chain supplied by a caller. It pins a trust anchor to one tenant,
 bounds the number and size of statements, checks entity identifiers, lifetime,
 chain shape and exact `kid` matches, then verifies signatures from the pinned
 anchor down to the leaf and verifies the leaf self-signature. It returns the
-leaf metadata only after those checks. Chains carrying metadata policy,
-constraints, trust marks or other unimplemented extensions are rejected. This
-is a restricted validator foundation; it is not connected to client
-registration and does not fetch statements. `ast-s36.14.1.2` and `.3` own policy
-and guarded retrieval respectively.
+leaf metadata only after those checks. The follow-up `ast-s36.14.1.2` resolves
+the seven standard metadata policy operators in superior-to-subordinate order,
+applies the immediate superior's metadata override, and enforces path length,
+DNS naming and allowed Entity Type constraints. Unknown noncritical policy
+operators and constraints are ignored as specified; critical policy extensions
+are rejected. The result includes typed RP metadata only after verification and
+policy resolution. Trust marks and other unimplemented extensions remain
+rejected. This validator is not connected to client registration and does not
+fetch statements. `ast-s36.14.1.3` owns guarded retrieval and expiry caching.
 
 ## Context
 

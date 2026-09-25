@@ -1,8 +1,7 @@
 //! Bounded, offline OpenID Federation 1.1 trust-chain validation.
 //!
-//! Fetching, caching, metadata policy and registration are separate trust
-//! boundaries. This validator accepts only a complete chain supplied by its
-//! caller and rejects policy-bearing chains until policy processing exists.
+//! Fetching, caching and registration are separate trust boundaries. This
+//! validator accepts only a complete chain supplied by its caller.
 //! No caller can obtain leaf metadata through this API before all signatures
 //! have been checked back to a tenant-pinned trust anchor.
 
@@ -12,6 +11,8 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashSet;
 use time::OffsetDateTime;
+
+mod policy;
 
 /// Bounds a compact Entity Statement before base64 decoding or JSON parsing.
 pub const MAX_STATEMENT_BYTES: usize = 65_536;
@@ -115,9 +116,6 @@ impl TrustAnchor {
             if index < last && statement.claims.iss != statements[index + 1].claims.sub {
                 return Err(ChainError::Invalid("issuer and next subject disagree"));
             }
-            if index > 0 && index < last && statement.claims.metadata.is_some() {
-                return Err(ChainError::Unsupported("superior metadata override"));
-            }
         }
         let first_superior = &statements[1].claims.iss;
         if !statements[0]
@@ -150,19 +148,19 @@ impl TrustAnchor {
             .map(|statement| statement.claims.exp)
             .min()
             .ok_or(ChainError::Invalid("empty chain"))?;
+        let metadata = policy::resolve(&statements)?;
+        let relying_party = metadata
+            .get("openid_relying_party")
+            .map(|value| serde_json::from_value(value.clone()))
+            .transpose()
+            .map_err(|_| ChainError::Invalid("resolved RP metadata"))?;
         let leaf = statements.remove(0);
-        let metadata = leaf
-            .claims
-            .metadata
-            .ok_or(ChainError::Invalid("leaf metadata is absent"))?;
-        if !metadata.is_object() {
-            return Err(ChainError::Invalid("leaf metadata is not an object"));
-        }
         Ok(VerifiedChain {
             leaf_entity_id: leaf.claims.iss,
             anchor_entity_id: self.entity_id.as_str().to_owned(),
             expires_at,
             metadata,
+            relying_party,
         })
     }
 }
@@ -174,6 +172,40 @@ pub struct VerifiedChain {
     anchor_entity_id: String,
     expires_at: i64,
     metadata: Value,
+    relying_party: Option<FederationRelyingPartyMetadata>,
+}
+
+/// The trusted OpenID RP metadata available to a later registration boundary.
+/// The registration flow still must validate URLs, keys and grant compatibility.
+#[derive(Debug, Clone, Deserialize)]
+pub struct FederationRelyingPartyMetadata {
+    /// Redirect URIs offered by the RP.
+    #[serde(default)]
+    pub redirect_uris: Option<Vec<String>>,
+    /// Response types offered by the RP.
+    #[serde(default)]
+    pub response_types: Option<Vec<String>>,
+    /// Grant types offered by the RP.
+    #[serde(default)]
+    pub grant_types: Option<Vec<String>>,
+    /// Federation registration modes offered by the RP.
+    #[serde(default)]
+    pub client_registration_types: Option<Vec<String>>,
+    /// Client authentication method requested by the RP.
+    #[serde(default)]
+    pub token_endpoint_auth_method: Option<String>,
+    /// RP signing keys, if carried by resolved metadata.
+    #[serde(default)]
+    pub jwks: Option<Value>,
+    /// Reference to RP signing keys, if present.
+    #[serde(default)]
+    pub jwks_uri: Option<String>,
+    /// Reference to signed RP keys, if present.
+    #[serde(default)]
+    pub signed_jwks_uri: Option<String>,
+    /// Other resolved RP metadata, retained for later registration checks.
+    #[serde(flatten)]
+    pub other: serde_json::Map<String, Value>,
 }
 
 impl VerifiedChain {
@@ -195,11 +227,17 @@ impl VerifiedChain {
         self.expires_at
     }
 
-    /// Resolved metadata. Policy-bearing chains are currently rejected, so
-    /// this is the leaf's signed metadata unchanged.
+    /// Resolved leaf metadata after superior overrides, constraints and policy.
     #[must_use]
     pub fn metadata(&self) -> &Value {
         &self.metadata
+    }
+
+    /// Typed RP metadata, present only when the verified and resolved leaf
+    /// declares the `openid_relying_party` Entity Type.
+    #[must_use]
+    pub fn relying_party_metadata(&self) -> Option<&FederationRelyingPartyMetadata> {
+        self.relying_party.as_ref()
     }
 }
 
@@ -268,14 +306,6 @@ impl Statement {
             || claims.exp <= claims.iat
         {
             return Err(ChainError::Invalid("Entity Statement lifetime"));
-        }
-        if claims.other.contains_key("metadata_policy")
-            || claims.other.contains_key("metadata_policy_crit")
-        {
-            return Err(ChainError::Unsupported("metadata policy"));
-        }
-        if claims.other.contains_key("constraints") {
-            return Err(ChainError::Unsupported("Federation constraints"));
         }
         if claims.other.contains_key("crit")
             || claims.other.contains_key("trust_marks")
