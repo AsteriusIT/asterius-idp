@@ -298,6 +298,9 @@ A tenant is an issuer. This array is the source of truth for which tenants exist
 | `tenant.federation_signing_key_file` | path to Ed25519 PKCS#8 DER file | absent | Optional legacy Federation key import on first boot. A configured file also enables Federation. After import, the KEK-wrapped database key is used and the file is no longer read. |
 | `tenant.federation_authority_hints` | array of HTTPS entity identifiers | empty | Immediate Federation superiors for this OP leaf. At least one is required when the Federation key is configured. |
 | `tenant.federation_trust_anchors` | array of `{ entity_id, jwks_file }` tables | empty | Operator-pinned Federation roots for remote RP chains. Each `jwks_file` is a local JSON JWK Set. Invalid roots fail startup. |
+| `tenant.id_jag_approval` | array of `{ client_id, audience, downstream_client_id, subject_sector_uri, resources, scopes }` tables | empty | Explicit ID-JAG approvals for managed agents. The audience is the downstream AS issuer; the sector URI controls the target's pairwise `sub`. Requested resources and scopes must be within the configured sets. |
+
+An ID-JAG request uses token exchange with `requested_token_type=urn:ietf:params:oauth:token-type:id-jag` and an ID token issued to the authenticated agent as its subject token. The agent must prove its DPoP key. The server accepts one approved downstream AS audience, one approved HTTPS resource and explicit approved scopes. It issues a five-minute maximum `oauth-id-jag+jwt` with the downstream client ID, target sector subject, actor, and DPoP confirmation. SAML and refresh-token subject assertions, `actor_token`, and rich authorization details are refused until their validation and policy profiles are implemented. The approval table is the enterprise administrator's authorization; no cross-app grant is inferred from an ID token alone.
 
 ## `[tenant.refresh]` — refresh tokens
 

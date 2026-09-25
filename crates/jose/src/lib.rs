@@ -12,6 +12,7 @@
 pub mod client_keys;
 pub mod dpop;
 pub mod federation;
+pub mod id_jag;
 pub mod jws;
 pub mod kek;
 pub mod key;

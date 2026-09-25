@@ -1347,6 +1347,7 @@ fn assemble(
         tenant_settings: Some(settings.clone()),
         signed_metadata: None,
         clients: Some(Arc::new(ClientEndpoints {
+            id_jag_approvals: Arc::default(),
             // `ast-lh3.10`: no policy decision point, which is what a
             // deployment with `[features] authzen` off wires. Agents are
             // bounded by their registration and nothing here is consulted.

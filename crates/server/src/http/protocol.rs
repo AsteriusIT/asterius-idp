@@ -118,6 +118,8 @@ pub struct ProtocolState {
 /// Separate from [`ProtocolState`] so that the discovery and JWKS handlers —
 /// which need none of it — can be tested without a database.
 pub struct ClientEndpoints {
+    /// Operator-approved cross-domain ID-JAG relationships, keyed by tenant.
+    pub id_jag_approvals: Arc<std::collections::HashMap<String, Vec<crate::config::IdJagApproval>>>,
     /// Authenticates the client behind a request.
     pub authenticator: Arc<ClientAuthenticator>,
     /// Tenant-scoped repositories.
@@ -1074,7 +1076,7 @@ async fn discovery(
         },
     };
 
-    let document = metadata::provider_metadata(
+    let mut document = metadata::provider_metadata(
         &tenant.issuer,
         &capabilities,
         settings.acr_policy(),
@@ -1082,6 +1084,17 @@ async fn discovery(
         grant_management,
         settings.allows_non_fapi_clients(),
     );
+    if capabilities.token_exchange
+        && state.clients.as_ref().is_some_and(|endpoints| {
+            endpoints
+                .id_jag_approvals
+                .get(tenant.id.as_str())
+                .is_some_and(|approvals| !approvals.is_empty())
+        })
+    {
+        document["identity_chaining_requested_token_types_supported"] =
+            serde_json::json!([asterius_oidc::token_exchange::ID_JAG]);
+    }
     cacheable_json(&document, METADATA_MAX_AGE)
 }
 
@@ -3551,6 +3564,11 @@ async fn dispatch_grants(
         endpoints.keys.as_ref(),
         endpoints.audit.as_ref(),
         agent_policy.clone(),
+        endpoints
+            .id_jag_approvals
+            .get(tenant.id.as_str())
+            .map(Vec::as_slice)
+            .unwrap_or(&[]),
     );
     let refresh_token = RefreshToken::sharing(&authorization_code, endpoints.audit.as_ref());
     // The sixth grant (CIBA Core 1.0 §10.1), on the same borrows as the device

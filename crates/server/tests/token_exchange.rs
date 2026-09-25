@@ -440,7 +440,13 @@ impl Fixture {
             .store
             .scope(self.tenant.id.clone())
             .clients(capabilities());
+        let users = self
+            .store
+            .scope(self.tenant.id.clone())
+            .users(Arc::clone(&self.kek));
         let handler = TokenExchange {
+            id_jag_approvals: &[],
+            users: &users,
             clients: &clients,
             grants: &grants,
             resource_servers: &resource_servers,

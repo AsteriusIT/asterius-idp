@@ -102,6 +102,10 @@ const SUBJECT_REFUSED: &str = "the subject token cannot be exchanged";
 /// the clock reading and the proven DPoP key are facts about *this* request,
 /// and [`GrantHandler::handle`] receives neither.
 pub struct TokenExchange<'a> {
+    /// Operator-approved cross-domain relationships for this routed tenant.
+    pub id_jag_approvals: &'a [crate::config::IdJagApproval],
+    /// Resolves the ID-token subject to a local user and target pairwise subject.
+    pub users: &'a asterius_store_pg::PgUserRepository,
     /// This tenant's clients — read to find the policy of the client the
     /// subject token was minted for, which is the only thing that can permit a
     /// token to be exchanged by somebody else.
@@ -152,8 +156,11 @@ impl<'a> TokenExchange<'a> {
         keys: &'a dyn KeyStore,
         audit: &'a dyn AuditSink,
         agent_policy: crate::http::agent_issuance::AgentPolicy<'a>,
+        id_jag_approvals: &'a [crate::config::IdJagApproval],
     ) -> Self {
         Self {
+            id_jag_approvals,
+            users: code.users,
             clients,
             keys,
             audit,
@@ -229,6 +236,9 @@ impl GrantHandler for TokenExchange<'_> {
     }
 
     async fn handle(&self, tenant: &Tenant, client: &Client, params: &Parameters) -> Response {
+        if params.get("requested_token_type").ok().flatten() == Some(token_exchange::ID_JAG) {
+            return self.handle_id_jag(tenant, client, params).await;
+        }
         match self.issue(tenant, client, params).await {
             Ok(issued) => {
                 self.record(
@@ -975,5 +985,256 @@ mod tests {
                 "a refusal echoed the request"
             );
         }
+    }
+}
+
+impl TokenExchange<'_> {
+    /// The ID-JAG profile of token exchange. A target exists only if an
+    /// operator configured the complete client/AS/sector/resource/scope
+    /// relationship; no field is inferred from a caller-supplied JWT.
+    async fn handle_id_jag(
+        &self,
+        tenant: &Tenant,
+        client: &Client,
+        params: &Parameters,
+    ) -> Response {
+        let issued = self.issue_id_jag(tenant, client, params).await;
+        let (outcome, subject, audience) = match &issued {
+            Ok((_, subject, audience)) => (
+                Outcome::Success,
+                Some(subject.as_str()),
+                Some(audience.as_str()),
+            ),
+            Err(_) => (Outcome::Failure, None, None),
+        };
+        let actor = match client.registration.agent.as_ref() {
+            Some(profile) => Actor::Agent {
+                client: client.id.clone(),
+                on_behalf_of: profile.owner().to_string(),
+            },
+            None => Actor::Client(client.id.clone()),
+        };
+        let mut detail = Detail::new()
+            .label("grant_type", "token_exchange")
+            .label("issued_token_type", "id_jag");
+        if let Some(audience) = audience {
+            detail = detail.text("audience", audience);
+        }
+        let mut event = AuditEvent::new(
+            tenant.id.clone(),
+            EventType::TOKEN_EXCHANGED,
+            outcome,
+            actor,
+            self.now,
+        )
+        .client(client.id.clone())
+        .actor_chain(vec![Actor::Client(client.id.clone())])
+        .detail(detail);
+        if let Some(subject) = subject {
+            event = event.subject(subject.to_owned());
+        }
+        if let Err(error) = self.audit.record(event).await {
+            tracing::error!(%error, tenant = %tenant.id, client = %client.id, "ID-JAG issuance was not written to the audit trail");
+        }
+        match issued {
+            Ok((response, _, _)) => response,
+            Err(Failure::Client(code, description)) => refused(code, description),
+            Err(Failure::Server(error)) => not_issued(tenant, client, &error),
+            Err(Failure::Dpop(refusal)) => refusal.into_response(),
+        }
+    }
+
+    async fn issue_id_jag(
+        &self,
+        tenant: &Tenant,
+        client: &Client,
+        params: &Parameters,
+    ) -> Result<(Response, SubjectId, String), Failure> {
+        let one = |name| {
+            params
+                .get(name)
+                .map_err(|_| Failure::Client("invalid_request", "a parameter was repeated"))
+        };
+        let profile = client.registration.agent.as_ref().ok_or(Failure::Client(
+            "unauthorized_client",
+            "this client is not an approved managed agent",
+        ))?;
+        let limits = profile.limits();
+        if !limits.grant_types().contains(&GrantType::TokenExchange) || limits.impersonation() {
+            return Err(Failure::Client(
+                "unauthorized_client",
+                "this agent cannot request an ID-JAG",
+            ));
+        }
+        if client.registration.token_binding != TokenBinding::Dpop
+            || self.constraint.proof_key.is_none()
+        {
+            return Err(Failure::Dpop(dpop::Refusal::missing_proof()));
+        }
+        if params.present("actor_token")
+            || params.present("actor_token_type")
+            || params.present("authorization_details")
+        {
+            return Err(Failure::Client(
+                "invalid_request",
+                "this ID-JAG profile does not accept actor tokens or authorization details",
+            ));
+        }
+        let raw = one("subject_token")?.ok_or(Failure::Client(
+            "invalid_request",
+            "subject_token is required",
+        ))?;
+        if raw.len() > token_exchange::MAX_SUBJECT_TOKEN_BYTES || raw.is_empty() {
+            return Err(Failure::Client(
+                "invalid_request",
+                "subject_token is invalid",
+            ));
+        }
+        if one("subject_token_type")? != Some(token_exchange::ID_TOKEN) {
+            return Err(Failure::Client(
+                "invalid_request",
+                "an ID token is required as subject_token",
+            ));
+        }
+        if one("requested_token_type")? != Some(token_exchange::ID_JAG) {
+            return Err(Failure::Client(
+                "invalid_request",
+                "requested_token_type is invalid",
+            ));
+        }
+        let audiences = params.multi("audience");
+        let resources = params.multi("resource");
+        if audiences.len() != 1 || resources.len() != 1 {
+            return Err(Failure::Client(INVALID_TARGET, TARGET_REFUSED));
+        }
+        let audience = audiences[0].as_str();
+        let resource = resources[0].as_str();
+        let approval = self
+            .id_jag_approvals
+            .iter()
+            .find(|approval| {
+                approval.client_id == client.id.as_str() && approval.audience.as_str() == audience
+            })
+            .ok_or(Failure::Client(INVALID_TARGET, TARGET_REFUSED))?;
+        if !approval.resources.contains(resource)
+            || limits
+                .audiences()
+                .is_some_and(|allowed| !allowed.contains(resource))
+        {
+            return Err(Failure::Client(INVALID_TARGET, TARGET_REFUSED));
+        }
+        let requested = one("scope")?.ok_or(Failure::Client(
+            "invalid_scope",
+            "an explicit scope is required",
+        ))?;
+        let scopes: BTreeSet<&str> = requested.split_whitespace().collect();
+        if scopes.is_empty()
+            || scopes.len() > 32
+            || scopes.len() != requested.split_whitespace().count()
+            || scopes.iter().any(|scope| {
+                !approval.scopes.contains(*scope)
+                    || limits
+                        .scopes()
+                        .is_some_and(|allowed| !allowed.contains(*scope))
+            })
+        {
+            return Err(Failure::Client(
+                "invalid_scope",
+                "requested scopes exceed the approved downstream grant",
+            ));
+        }
+        if profile
+            .scope_needing_human_approval(scopes.iter().copied())
+            .is_some()
+        {
+            return Err(Failure::Client(
+                "invalid_scope",
+                "a requested scope requires human approval",
+            ));
+        }
+        let verified = access_token::verify_id_token(tenant, self.keys, raw, self.now)
+            .await
+            .map_err(|error| match error {
+                access_token::Rejected::Token(_) => subject_refused(),
+                access_token::Rejected::Unavailable(error) => Failure::Server(error),
+            })?;
+        if !audienced_at(&verified.claims, client.id.as_str())
+            || !token_exchange::may_act_authorizes(
+                verified.claims.get("may_act"),
+                client.id.as_str(),
+            )
+        {
+            return Err(subject_refused());
+        }
+        if verified
+            .claims
+            .get("aud")
+            .and_then(Value::as_array)
+            .is_some_and(|audiences| audiences.len() > 1)
+            && verified.claim_str("azp") != Some(client.id.as_str())
+        {
+            return Err(subject_refused());
+        }
+        let original_sub = verified.claim_str("sub").ok_or_else(subject_refused)?;
+        let user = self
+            .users
+            .find_by_subject(&SubjectId::new(original_sub.to_owned()))
+            .await?
+            .filter(asterius_domain::User::can_authenticate)
+            .ok_or_else(subject_refused)?;
+        let subject = self
+            .users
+            .subject(user.id, &approval.subject_sector)
+            .await?;
+        let exp = verified
+            .claims
+            .get("exp")
+            .and_then(Value::as_i64)
+            .and_then(|value| OffsetDateTime::from_unix_timestamp(value).ok())
+            .ok_or_else(subject_refused)?;
+        let lifetime = (exp - self.now)
+            .min(Duration::minutes(5))
+            .min(profile.cap(self.lifetimes).access_token());
+        if lifetime <= Duration::ZERO {
+            return Err(subject_refused());
+        }
+        let proof_key = self
+            .constraint
+            .proof_key
+            .ok_or(Failure::Dpop(dpop::Refusal::missing_proof()))?;
+        let mut claims = json!({
+            "iss": tenant.issuer.as_str(),
+            "sub": subject.as_str(),
+            "aud": audience,
+            "client_id": approval.downstream_client_id,
+            "resource": resource,
+            "scope": scopes.iter().copied().collect::<Vec<_>>().join(" "),
+            "jti": JwtId::generate().as_str(),
+            "iat": self.now.unix_timestamp(),
+            "exp": (self.now + lifetime).unix_timestamp(),
+            "act": {"client_id": client.id.as_str()},
+            "cnf": {"jkt": proof_key.as_str()},
+        });
+        for field in ["auth_time", "acr", "amr"] {
+            if let Some(value) = verified.claims.get(field) {
+                claims[field] = value.clone();
+            }
+        }
+        let signed = self
+            .signer
+            .sign(&tenant.id, None, "oauth-id-jag+jwt", &claims)
+            .await?;
+        let response = (
+            axum::http::StatusCode::OK,
+            Json(json!({
+                "access_token": signed.as_str(),
+                "issued_token_type": token_exchange::ID_JAG,
+                "token_type": "N_A",
+                "scope": scopes.iter().copied().collect::<Vec<_>>().join(" "),
+                "expires_in": lifetime.whole_seconds(),
+            })),
+        )
+            .into_response();
+        Ok((response, subject, audience.to_owned()))
     }
 }
