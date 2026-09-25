@@ -101,8 +101,9 @@ pub use outbox::{DeadLetter, DeadLetterOperations, DeadLetterQuery, OutboxEvent}
 
 pub use ports::{
     ApplicationRoleDirectory, AuthRequestRepository, AuthorizationDetailsTypeRepository,
-    ClientAdministration, ClientConfiguration, ClientMetadataDocumentFetcher, ClientRegistry,
-    ClientRepository, ClientSecretUpdate, ClientUsageRecorder, CodeIssuer, CredentialVerifier,
+    CachedClientMetadataDocument, ClientAdministration, ClientConfiguration,
+    ClientMetadataDocumentCache, ClientMetadataDocumentFetcher, ClientRegistry, ClientRepository,
+    ClientSecretUpdate, ClientUsageRecorder, CodeIssuer, CredentialVerifier,
     EmailVerificationStore, FetchedClientMetadataDocument, GrantAmendments, GrantRepository,
     InitialAccessTokenStore, InteractionRepository, ManagedClient, PasskeyRepository, PolicyEngine,
     PolicyStore, PreviousRegistrationAccessToken, RecoveryTokenStore, ReplayCheck, ReplayGuard,

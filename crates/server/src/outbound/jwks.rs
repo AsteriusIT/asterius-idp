@@ -502,14 +502,34 @@ fn is_json_media_type(header: &str) -> bool {
 }
 
 fn bounded_max_age(cache_control: Option<&str>) -> Option<u64> {
-    cache_control?.split(',').find_map(|directive| {
-        let (name, value) = directive.trim().split_once('=')?;
-        if !name.trim().eq_ignore_ascii_case("max-age") {
-            return None;
-        }
-        let value = value.trim().trim_matches('"');
-        value.parse::<u64>().ok()
-    })
+    let cache_control = cache_control?;
+    if cache_control.split(',').any(|directive| {
+        matches!(
+            directive.trim().to_ascii_lowercase().as_str(),
+            "no-store" | "no-cache" | "private"
+        )
+    }) {
+        return Some(0);
+    }
+    let mut shared_max_age: Option<u64> = None;
+    let mut max_age: Option<u64> = None;
+    for directive in cache_control.split(',') {
+        let Some((name, value)) = directive.trim().split_once('=') else {
+            continue;
+        };
+        let target = if name.trim().eq_ignore_ascii_case("s-maxage") {
+            &mut shared_max_age
+        } else if name.trim().eq_ignore_ascii_case("max-age") {
+            &mut max_age
+        } else {
+            continue;
+        };
+        let Ok(value) = value.trim().trim_matches('"').parse::<u64>() else {
+            return Some(0);
+        };
+        *target = Some(target.map_or(value, |current| current.min(value)));
+    }
+    shared_max_age.or(max_age)
 }
 
 /// Whether a `Content-Type` names a media type a JWK Set may arrive as.

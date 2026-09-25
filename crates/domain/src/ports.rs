@@ -317,6 +317,34 @@ pub trait ClientMetadataDocumentFetcher: Debug + Send + Sync {
     ) -> Result<FetchedClientMetadataDocument, DomainError>;
 }
 
+/// A tenant-scoped cached CIMD response. The body is still revalidated before
+/// it can become client authorization policy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CachedClientMetadataDocument {
+    /// Previously fetched JSON bytes.
+    pub body: Vec<u8>,
+    /// Cache expiry after applying the response's bounded freshness policy.
+    pub expires_at: time::OffsetDateTime,
+}
+
+/// Stores successful CIMD responses by tenant and exact client ID URL.
+#[async_trait::async_trait]
+pub trait ClientMetadataDocumentCache: Debug + Send + Sync {
+    /// Reads a cached response, including expired entries for revalidation.
+    async fn find_document(
+        &self,
+        client_id: &crate::CimdClientId,
+    ) -> Result<Option<CachedClientMetadataDocument>, DomainError>;
+
+    /// Stores a successful response and its bounded expiry.
+    async fn store_document(
+        &self,
+        client_id: &crate::CimdClientId,
+        body: &[u8],
+        expires_at: time::OffsetDateTime,
+    ) -> Result<(), DomainError>;
+}
+
 /// Remembers, across replicas and restarts, that fetching a `jwks_uri` failed.
 ///
 /// The in-process negative cache in `asterius-jose`'s client key cache is

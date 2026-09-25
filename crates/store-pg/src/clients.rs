@@ -37,6 +37,7 @@ use asterius_domain::{
     ClientSecretUpdate, ClientStatus, DomainError, JwksSource, ManagedClient,
     PreviousRegistrationAccessToken, TenantId, TokenDeliveryMode,
 };
+use sha2::{Digest as _, Sha256};
 use sqlx::Acquire as _;
 use sqlx::Row as _;
 use sqlx::postgres::PgPool;
@@ -118,6 +119,65 @@ impl asterius_domain::ClientConfiguration for PgClientRepository {
         client_id: &ClientId,
     ) -> Result<(), DomainError> {
         Self::retire_previous_registration_access_token(self, client_id).await
+    }
+}
+
+#[async_trait::async_trait]
+impl asterius_domain::ClientMetadataDocumentCache for PgClientRepository {
+    async fn find_document(
+        &self,
+        client_id: &asterius_domain::CimdClientId,
+    ) -> Result<Option<asterius_domain::CachedClientMetadataDocument>, DomainError> {
+        let row = sqlx::query(
+            "select document_body, document_sha256, expires_at \
+             from cimd_client_documents where tenant_id = $1 and client_id = $2",
+        )
+        .bind(self.tenant.as_str())
+        .bind(client_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+        row.map(|row| {
+            let body: Vec<u8> = row.try_get("document_body").map_err(to_domain_error)?;
+            let digest: Vec<u8> = row.try_get("document_sha256").map_err(to_domain_error)?;
+            if digest.as_slice() != Sha256::digest(&body).as_slice() {
+                return Err(DomainError::Storage(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "CIMD document cache digest mismatch",
+                ))));
+            }
+            Ok(asterius_domain::CachedClientMetadataDocument {
+                body,
+                expires_at: row.try_get("expires_at").map_err(to_domain_error)?,
+            })
+        })
+        .transpose()
+    }
+
+    async fn store_document(
+        &self,
+        client_id: &asterius_domain::CimdClientId,
+        body: &[u8],
+        expires_at: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        sqlx::query(
+            "insert into cimd_client_documents \
+                 (tenant_id, client_id, document_body, document_sha256, expires_at) \
+             values ($1, $2, $3, $4, $5) \
+             on conflict (tenant_id, client_id) do update \
+             set document_body = excluded.document_body, \
+                 document_sha256 = excluded.document_sha256, \
+                 expires_at = excluded.expires_at",
+        )
+        .bind(self.tenant.as_str())
+        .bind(client_id.as_str())
+        .bind(body)
+        .bind(Sha256::digest(body).as_slice())
+        .bind(expires_at)
+        .execute(&self.pool)
+        .await
+        .map(|_| ())
+        .map_err(to_domain_error)
     }
 }
 
