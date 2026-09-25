@@ -16,6 +16,7 @@ pub mod id_jag;
 pub mod jws;
 pub mod kek;
 pub mod key;
+pub mod oid4vp;
 pub mod store;
 pub mod verify;
 

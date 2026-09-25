@@ -15,14 +15,17 @@ and one JWT VP under the requested DCQL credential ID. It does not treat parsing
 as signature or policy verification.
 
 The server must persist transaction state before exposing a request, then
-atomically reserve or consume the state when a response arrives. It must
-validate the VP holder proof against the request `nonce` and `client_id`, the
-credential signature and issuer trust, credential status, type and claims before
-using any credential data. Unsupported formats and response modes fail closed.
+atomically reserve or consume the state when a response arrives. The offline
+verifier requires separately pinned holder and credential issuer keys, exact
+VP `nonce` and `aud`, matching VC subject and holder, an approved VC type, and
+all requested claims. Credential status mechanisms have different trust and
+freshness rules; a credential with `credentialStatus` is rejected until its
+mechanism is implemented. A credential without status is accepted only when
+the operator explicitly opts into that policy. Unsupported formats and
+response modes fail closed.
 
 ## Consequences
 
 The pure protocol module can construct and parse a bounded exchange, while
-state persistence, wallet transport and complete cryptographic verification
-remain separate implementation steps. No production endpoint is enabled by
-this first slice.
+state persistence, wallet transport and stateful authorization remain separate
+implementation steps. No production endpoint is enabled by these pure slices.
