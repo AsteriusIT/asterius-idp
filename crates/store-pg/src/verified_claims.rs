@@ -76,8 +76,8 @@ impl PgVerifiedClaims {
         let id = Uuid::new_v4();
         sqlx::query(
             "insert into verified_claim_bundles
-             (tenant_id, user_id, bundle_id, trust_framework, verifier_issuer, verified_at, claims)
-             values ($1, $2, $3, $4, $5, $6, $7)",
+             (tenant_id, user_id, bundle_id, trust_framework, verifier_issuer, verified_at, claims, verification_process, evidence)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         )
         .bind(self.tenant.as_str())
         .bind(user.as_uuid())
@@ -86,6 +86,8 @@ impl PgVerifiedClaims {
         .bind(bundle.verification().verifier())
         .bind(bundle.verification().time())
         .bind(claims)
+        .bind(bundle.verification().verification_process())
+        .bind(serde_json::Value::Array(bundle.verification().evidence().to_vec()))
         .execute(&mut *tx)
         .await
         .map_err(to_domain_error)?;
@@ -117,7 +119,7 @@ impl PgVerifiedClaims {
     /// Returns a storage or validation error for a malformed row.
     pub async fn by_user(&self, user: UserId) -> Result<Vec<StoredVerifiedClaims>, DomainError> {
         let rows = sqlx::query_as::<_, Row>(
-            "select bundle_id, trust_framework, verifier_issuer, verified_at, claims
+            "select bundle_id, trust_framework, verifier_issuer, verified_at, claims, verification_process, evidence
              from verified_claim_bundles
              where tenant_id = $1 and user_id = $2 and revoked_at is null
              order by created_at desc, bundle_id limit 33",
@@ -197,18 +199,26 @@ struct Row {
     verifier_issuer: String,
     verified_at: OffsetDateTime,
     claims: serde_json::Value,
+    verification_process: Option<String>,
+    evidence: serde_json::Value,
 }
 
 impl Row {
     fn validated(self) -> Result<StoredVerifiedClaims, DomainError> {
         let issuer = Issuer::parse(&self.verifier_issuer)
             .map_err(|error| DomainError::invalid("verifier_issuer", error.to_string()))?;
+        let evidence = self
+            .evidence
+            .as_array()
+            .ok_or_else(|| DomainError::invalid("evidence", "expected an array"))?
+            .clone();
         let bundle = VerifiedClaims::from_storage(
             &self.trust_framework,
             &issuer,
             self.verified_at,
             &self.claims,
         )
+        .and_then(|bundle| bundle.with_evidence(self.verification_process.as_deref(), evidence))
         .map_err(|error| DomainError::invalid("verified_claims", error.to_string()))?;
         Ok(StoredVerifiedClaims {
             id: self.bundle_id,

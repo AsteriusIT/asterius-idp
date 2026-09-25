@@ -39,6 +39,10 @@ use time::OffsetDateTime;
 struct RequestedIdaBundle {
     verified_at: String,
     claims: serde_json::Value,
+    #[serde(default)]
+    verification_process: Option<String>,
+    #[serde(default)]
+    evidence: Vec<serde_json::Value>,
 }
 
 use crate::auth::{Credentials, Principal, authenticate};
@@ -3341,7 +3345,10 @@ impl Handling<'_> {
             .map_err(|error| AdminError::from_storage(crate::USER_IDA_LIST_ID, &error))?;
         let items: Vec<_> = rows
             .into_iter()
-            .map(|(id, bundle)| serde_json::json!({"bundle_id": id, "verified_claims": bundle.into_json()}))
+            .map(|(id, bundle)| {
+                let verifier = bundle.verification().verifier().to_owned();
+                serde_json::json!({"bundle_id": id, "verifier_issuer": verifier, "verified_claims": bundle.into_json()})
+            })
             .collect();
         Ok(json_no_store(
             StatusCode::OK,
@@ -3373,6 +3380,9 @@ impl Handling<'_> {
             verified_at,
             &request.claims,
         )
+        .and_then(|bundle| {
+            bundle.with_evidence(request.verification_process.as_deref(), request.evidence)
+        })
         .map_err(|error| AdminError::Invalid(error.to_string()))?;
         let bundle_id = self
             .state
@@ -3394,7 +3404,7 @@ impl Handling<'_> {
             })?;
         Ok(json_no_store(
             StatusCode::CREATED,
-            &serde_json::json!({"bundle_id": bundle_id, "verified_claims": bundle.into_json()}),
+            &serde_json::json!({"bundle_id": bundle_id, "verifier_issuer": bundle.verification().verifier(), "verified_claims": bundle.clone().into_json()}),
         ))
     }
 

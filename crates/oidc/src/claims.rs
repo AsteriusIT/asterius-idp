@@ -639,6 +639,15 @@ pub fn project_verified_claims(
     projected
         .as_object_mut()?
         .insert("claims".to_owned(), Value::Object(filtered));
+    // The request parser currently refuses evidence and process selectors.
+    // Retaining these internally must never make them implicit output.
+    if let Some(verification) = projected
+        .get_mut("verification")
+        .and_then(Value::as_object_mut)
+    {
+        verification.remove("evidence");
+        verification.remove("verification_process");
+    }
     Some(projected)
 }
 

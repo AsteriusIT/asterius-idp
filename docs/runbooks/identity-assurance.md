@@ -7,7 +7,10 @@ Assurance assertion.
 Tenant administrators with `admin.users:read` can list live records at
 `GET /admin/api/v1/users/{user_id}/verified-claims`. Creating one uses `POST`
 on the same path with an `Idempotency-Key` and JSON containing `verified_at`
-(RFC 3339) and a `claims` object. Revocation uses
+(RFC 3339) and a `claims` object. Trusted administrators may also supply a bounded
+`verification_process` reference and up to eight typed evidence descriptors
+(`document`, `electronic_record`, `vouch`, or `electronic_signature`). The
+verifier issuer is returned separately for internal provenance. Revocation uses
 `DELETE /admin/api/v1/users/{user_id}/verified-claims/{bundle_id}`. Mutations
 require a console session whose most recent authentication was a passkey
 within two minutes; automation credentials are refused. The verifier is the
@@ -28,6 +31,6 @@ remembered consent cannot silently cover a different framework or attribute.
 
 The server selects a current, nonrevoked bundle in an allowed framework at each
 ID Token issuance and UserInfo response. It releases only requested attributes
-with `verification` provenance, without the internal verifier issuer or any
-evidence. Revoking a bundle removes it from later refresh ID Tokens and
+with `verification` provenance, without the internal verifier issuer,
+verification process reference, or evidence. Revoking a bundle removes it from later refresh ID Tokens and
 UserInfo responses. Already issued ID Tokens remain valid until their expiry.

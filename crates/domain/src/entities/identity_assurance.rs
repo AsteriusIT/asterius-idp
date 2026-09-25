@@ -62,6 +62,10 @@ pub struct Verification {
     verifier: String,
     #[serde(with = "time::serde::rfc3339")]
     time: OffsetDateTime,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    verification_process: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    evidence: Vec<Value>,
 }
 
 /// Invalid or untrusted verification input.
@@ -77,6 +81,10 @@ pub enum VerifiedClaimsError {
     ClaimName,
     #[error("a verified claim bundle must be at most 64 KiB")]
     Size,
+    #[error("verification process must be a bounded nonempty identifier")]
+    VerificationProcess,
+    #[error("evidence must contain at most eight typed objects and at most 32 KiB")]
+    Evidence,
 }
 
 impl VerifiedClaims {
@@ -139,13 +147,58 @@ impl VerifiedClaims {
                 trust_framework: framework.to_owned(),
                 verifier: verifier.as_str().to_owned(),
                 time,
+                verification_process: None,
+                evidence: Vec::new(),
             },
             claims,
         })
     }
 
-    /// IDA `verified_claims` object, suitable for a consent-filtered OIDC
-    /// projection. Release policy must run before calling this method.
+    /// Attach trusted verification evidence and process provenance. Evidence is
+    /// retained for administration; OIDC release requires a separate request
+    /// parser and policy before it may be exposed to a relying party.
+    ///
+    /// # Errors
+    /// Refuses unbounded or untyped evidence and malformed process references.
+    pub fn with_evidence(
+        mut self,
+        process: Option<&str>,
+        evidence: Vec<Value>,
+    ) -> Result<Self, VerifiedClaimsError> {
+        if process.is_some_and(|value| {
+            value.is_empty()
+                || value.len() > 256
+                || !value.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':' | b'/')
+                })
+        }) {
+            return Err(VerifiedClaimsError::VerificationProcess);
+        }
+        if evidence.len() > 8
+            || serde_json::to_vec(&evidence).map_or(true, |encoded| encoded.len() > 32 * 1024)
+            || evidence.iter().any(|entry| {
+                !entry.as_object().is_some_and(|object| {
+                    object
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .is_some_and(|kind| {
+                            matches!(
+                                kind,
+                                "document" | "electronic_record" | "vouch" | "electronic_signature"
+                            )
+                        })
+                }) || !bounded_evidence(entry, 0)
+            })
+        {
+            return Err(VerifiedClaimsError::Evidence);
+        }
+        self.verification.verification_process = process.map(ToOwned::to_owned);
+        self.verification.evidence = evidence;
+        Ok(self)
+    }
+
+    /// Full IDA record for authorized administration, including retained
+    /// evidence. OIDC release must filter it by request and tenant policy.
     #[must_use]
     pub fn into_json(self) -> Value {
         serde_json::to_value(self).expect("validated verified claims serialize as JSON")
@@ -173,6 +226,18 @@ impl Verification {
 
     /// Issuer that asserted the verification.
     #[must_use]
+    pub fn verification_process(&self) -> Option<&str> {
+        self.verification_process.as_deref()
+    }
+
+    /// Retained evidence descriptors, never released without explicit policy.
+    #[must_use]
+    pub fn evidence(&self) -> &[Value] {
+        &self.evidence
+    }
+
+    /// Issuer that asserted the verification.
+    #[must_use]
     pub fn verifier(&self) -> &str {
         &self.verifier
     }
@@ -181,5 +246,25 @@ impl Verification {
     #[must_use]
     pub const fn time(&self) -> OffsetDateTime {
         self.time
+    }
+}
+
+/// Evidence JSON has a hard structural depth even when its byte length is small.
+fn bounded_evidence(value: &Value, depth: usize) -> bool {
+    if depth > 8 {
+        return false;
+    }
+    match value {
+        Value::Array(items) => {
+            items.len() <= 32 && items.iter().all(|item| bounded_evidence(item, depth + 1))
+        }
+        Value::Object(fields) => {
+            fields.len() <= 32
+                && fields
+                    .iter()
+                    .all(|(name, item)| name.len() <= 128 && bounded_evidence(item, depth + 1))
+        }
+        Value::String(text) => text.len() <= 4096,
+        _ => true,
     }
 }
