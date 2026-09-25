@@ -158,9 +158,9 @@ impl Row {
             .map_err(|error| DomainError::invalid("verifier_issuer", error.to_string()))?;
         let bundle = VerifiedClaims::from_storage(
             &self.trust_framework,
-            issuer,
+            &issuer,
             self.verified_at,
-            self.claims,
+            &self.claims,
         )
         .map_err(|error| DomainError::invalid("verified_claims", error.to_string()))?;
         Ok(StoredVerifiedClaims {

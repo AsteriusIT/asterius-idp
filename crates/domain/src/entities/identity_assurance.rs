@@ -87,9 +87,9 @@ impl VerifiedClaims {
     /// metadata. A damaged row is never projected into an OIDC response.
     pub fn from_storage(
         framework: &str,
-        verifier: Issuer,
+        verifier: &Issuer,
         time: OffsetDateTime,
-        claims: Value,
+        claims: &Value,
     ) -> Result<Self, VerifiedClaimsError> {
         let object = claims.as_object().ok_or(VerifiedClaimsError::ClaimValue)?;
         let mut validated = BTreeMap::new();
@@ -110,7 +110,7 @@ impl VerifiedClaims {
     /// unsafe claim map.
     pub fn new(
         framework: &str,
-        verifier: Issuer,
+        verifier: &Issuer,
         time: OffsetDateTime,
         claims: BTreeMap<VerifiedClaimName, Value>,
     ) -> Result<Self, VerifiedClaimsError> {
