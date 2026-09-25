@@ -258,6 +258,7 @@ pub struct TenantSettings {
     allow_non_fapi_clients: bool,
     session_policy: Option<crate::entities::session::SessionPolicy>,
 
+    ida_frameworks: BTreeSet<String>,
     rate_limits: crate::tenant_rate_limits::TenantRateLimits,
 }
 
@@ -284,12 +285,45 @@ impl Default for TenantSettings {
             allow_non_fapi_clients: false,
             session_policy: None,
 
+            ida_frameworks: BTreeSet::new(),
             rate_limits: crate::tenant_rate_limits::TenantRateLimits::default(),
         }
     }
 }
 
 impl TenantSettings {
+    /// Trust frameworks this tenant explicitly permits for OIDC IDA release.
+    /// Empty by default, so stored verification data is never released by
+    /// enabling the parser alone.
+    #[must_use]
+    pub const fn ida_frameworks(&self) -> &BTreeSet<String> {
+        &self.ida_frameworks
+    }
+
+    /// Sets the bounded framework allowlist used at issuance and UserInfo.
+    ///
+    /// # Errors
+    /// Refuses more than 16 names or names outside the verified-claim syntax.
+    pub fn with_ida_frameworks(
+        mut self,
+        frameworks: BTreeSet<String>,
+    ) -> Result<Self, TenantSettingsError> {
+        if frameworks.len() > 16
+            || frameworks.iter().any(|name| {
+                name.is_empty()
+                    || name.len() > 128
+                    || !name.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric()
+                            || matches!(byte, b'-' | b'_' | b'.' | b':' | b'/')
+                    })
+            })
+        {
+            return Err(TenantSettingsError::InvalidIdaFrameworks);
+        }
+        self.ida_frameworks = frameworks;
+        Ok(self)
+    }
+
     /// This tenant's session policy; absence preserves the issuance defaults.
     #[must_use]
     pub const fn session_policy(&self) -> Option<crate::entities::session::SessionPolicy> {
@@ -366,6 +400,7 @@ impl TenantSettings {
             allow_non_fapi_clients: false,
             session_policy: None,
 
+            ida_frameworks: BTreeSet::new(),
             rate_limits: crate::tenant_rate_limits::TenantRateLimits::default(),
         })
     }
@@ -638,6 +673,7 @@ impl TenantSettings {
             "allow_non_fapi_clients": self.allow_non_fapi_clients,
             "session_policy": self.session_policy.map(crate::entities::session::SessionPolicy::to_json),
 
+            "ida_frameworks": self.ida_frameworks,
             "rate_limits": self.rate_limits.to_json(),
         })
     }
@@ -775,6 +811,19 @@ impl TenantSettings {
             Some(_) => return Err(TenantSettingsError::NotABoolean("allow_non_fapi_clients")),
         };
 
+        let ida_frameworks = match object.get("ida_frameworks") {
+            None | Some(serde_json::Value::Null) => BTreeSet::new(),
+            Some(serde_json::Value::Array(names)) => names
+                .iter()
+                .map(|name| {
+                    name.as_str()
+                        .map(ToOwned::to_owned)
+                        .ok_or(TenantSettingsError::InvalidIdaFrameworks)
+                })
+                .collect::<Result<BTreeSet<_>, _>>()?,
+            Some(_) => return Err(TenantSettingsError::InvalidIdaFrameworks),
+        };
+
         Self::validated(disabled_features, authorization_code, access_token)?
             .with_registration(registration)
             .requiring_a_grant_management_action(grant_management_action_required)
@@ -788,6 +837,7 @@ impl TenantSettings {
             .with_session_policy(crate::entities::session::SessionPolicy::from_json(
                 object.get("session_policy"),
             )?)
+            .with_ida_frameworks(ida_frameworks)?
             .with_rate_limits(crate::tenant_rate_limits::TenantRateLimits::from_json(
                 object.get("rate_limits"),
             )?)
@@ -817,6 +867,9 @@ fn seconds(value: Option<&serde_json::Value>) -> Result<Option<Duration>, Tenant
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum TenantSettingsError {
+    /// The explicit IDA trust-framework allowlist is malformed or unbounded.
+    #[error("invalid IDA trust-framework allowlist")]
+    InvalidIdaFrameworks,
     /// Invalid tenant session deadlines.
     #[error(transparent)]
     SessionPolicy(#[from] crate::entities::session::SessionPolicyError),
