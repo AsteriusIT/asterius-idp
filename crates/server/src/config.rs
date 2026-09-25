@@ -309,6 +309,19 @@ pub struct TenantConfig {
     pub federation_authority_hints: Vec<Issuer>,
     /// Operator-pinned Federation trust anchors for validating remote RPs.
     pub federation_trust_anchors: Vec<FederationTrustAnchorConfig>,
+    /// Explicit cross-domain grants this IdP may issue for managed agents.
+    pub id_jag_approvals: Vec<IdJagApproval>,
+}
+
+/// Operator approval binding one managed agent to a downstream OAuth client.
+#[derive(Debug, Clone)]
+pub struct IdJagApproval {
+    pub client_id: String,
+    pub audience: Issuer,
+    pub downstream_client_id: String,
+    pub subject_sector: asterius_domain::SectorIdentifier,
+    pub resources: BTreeSet<String>,
+    pub scopes: BTreeSet<String>,
 }
 
 /// Public Federation root keys loaded from an operator-owned JSON JWK Set file.
@@ -713,6 +726,18 @@ struct RawTenant {
     federation_signing_key_file: Option<PathBuf>,
     federation_authority_hints: Option<Vec<String>>,
     federation_trust_anchors: Option<Vec<RawFederationTrustAnchor>>,
+    id_jag_approval: Option<Vec<RawIdJagApproval>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawIdJagApproval {
+    client_id: String,
+    audience: String,
+    downstream_client_id: String,
+    subject_sector_uri: String,
+    resources: Vec<String>,
+    scopes: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1959,6 +1984,7 @@ fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantCo
         );
         let federation_trust_anchors =
             validate_federation_anchors(index, tenant.federation_trust_anchors, errors);
+        let id_jag_approvals = validate_id_jag_approvals(index, tenant.id_jag_approval, errors);
 
         if let (Some(id), Some(issuer)) = (id, issuer) {
             let default_resource = default_resource.unwrap_or_else(|| issuer.as_str().to_owned());
@@ -1971,6 +1997,7 @@ fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantCo
                 federation_signing_key_file: tenant.federation_signing_key_file,
                 federation_authority_hints,
                 federation_trust_anchors,
+                id_jag_approvals,
             });
         }
     }
@@ -2066,6 +2093,96 @@ fn validate_federation_anchors(
             Some(FederationTrustAnchorConfig {
                 entity_id,
                 jwks_file: raw.jwks_file,
+            })
+        })
+        .collect()
+}
+
+fn validate_id_jag_approvals(
+    tenant_index: usize,
+    raw: Option<Vec<RawIdJagApproval>>,
+    errors: &mut Collector,
+) -> Vec<IdJagApproval> {
+    let mut seen = BTreeSet::new();
+    raw.unwrap_or_default()
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, raw)| {
+            let path = format!("tenant[{tenant_index}].id_jag_approval[{index}]");
+            if raw.client_id.is_empty()
+                || raw.client_id.len() > 512
+                || raw.downstream_client_id.is_empty()
+                || raw.downstream_client_id.len() > 512
+            {
+                errors.problem(
+                    path,
+                    "client identifiers must be nonempty and at most 512 bytes",
+                );
+                return None;
+            }
+            let audience = match Issuer::parse(&raw.audience) {
+                Ok(value) if value.as_str() == raw.audience => value,
+                _ => {
+                    errors.problem(path, "audience must be a canonical HTTPS issuer");
+                    return None;
+                }
+            };
+            let sector_uri = match Issuer::parse(&raw.subject_sector_uri) {
+                Ok(value) if value.as_str() == raw.subject_sector_uri => value,
+                _ => {
+                    errors.problem(path, "subject_sector_uri must be a canonical HTTPS URI");
+                    return None;
+                }
+            };
+            let subject_sector =
+                match asterius_domain::SectorIdentifier::of_uri(sector_uri.as_str()) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        errors.problem(path, error.to_string());
+                        return None;
+                    }
+                };
+            let resources: BTreeSet<String> = raw.resources.into_iter().collect();
+            if resources.is_empty()
+                || resources.len() > 8
+                || resources.iter().any(|resource| {
+                    !resource.starts_with("https://")
+                        || asterius_domain::ResourceIdentifier::parse(resource).is_err()
+                })
+            {
+                errors.problem(
+                    path,
+                    "resources must contain 1-8 HTTPS resource identifiers",
+                );
+                return None;
+            }
+            let scopes: BTreeSet<String> = raw.scopes.into_iter().collect();
+            if scopes.is_empty()
+                || scopes.len() > 32
+                || scopes.iter().any(|scope| {
+                    scope.len() > 128
+                        || scope.is_empty()
+                        || scope == "openid"
+                        || scope == "offline_access"
+                        || scope.bytes().any(|byte| {
+                            !(0x21..=0x7e).contains(&byte) || byte == b'"' || byte == b'\\'
+                        })
+                })
+            {
+                errors.problem(path, "scopes must contain 1-32 safe non-OIDC scope tokens");
+                return None;
+            }
+            if !seen.insert((raw.client_id.clone(), audience.as_str().to_owned())) {
+                errors.problem(path, "duplicate client and audience approval");
+                return None;
+            }
+            Some(IdJagApproval {
+                client_id: raw.client_id,
+                audience,
+                downstream_client_id: raw.downstream_client_id,
+                subject_sector,
+                resources,
+                scopes,
             })
         })
         .collect()

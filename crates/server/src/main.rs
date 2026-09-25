@@ -307,6 +307,18 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
             tenant_settings: Some(settings.clone()),
             signed_metadata: pdp_metadata_signer(&config, &keys),
             clients: Some(Arc::new(ClientEndpoints {
+                id_jag_approvals: Arc::new(
+                    config
+                        .tenants
+                        .iter()
+                        .map(|tenant| {
+                            (
+                                tenant.id.as_str().to_owned(),
+                                tenant.id_jag_approvals.clone(),
+                            )
+                        })
+                        .collect(),
+                ),
                 authenticator,
                 store: store.clone(),
                 keys: Arc::clone(&keys) as Arc<dyn asterius_domain::KeyStore>,

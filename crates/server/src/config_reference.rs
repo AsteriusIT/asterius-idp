@@ -1064,6 +1064,12 @@ fn tenant() -> Section {
                 "empty".to_owned(),
                 "Operator-pinned Federation trust roots for remote RP chains. Each jwks_file is a local JSON JWK Set; invalid or duplicate anchors fail startup. No remote statement can add a trust root.",
             ),
+            key(
+                "id_jag_approval",
+                "array of { client_id, audience, downstream_client_id, subject_sector_uri, resources, scopes } tables",
+                "empty (ID-JAG issuance disabled)".to_owned(),
+                "Explicit cross-domain ID-JAG approvals for managed agents. The audience is a downstream AS issuer; subject_sector_uri names its SSO subject sector; resources and scopes are strict allow-lists. No approval can be inferred from a token request.",
+            ),
         ],
     }
 }

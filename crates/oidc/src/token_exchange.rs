@@ -73,6 +73,8 @@ pub const REFRESH_TOKEN: &str = "urn:ietf:params:oauth:token-type:refresh_token"
 pub const ID_TOKEN: &str = "urn:ietf:params:oauth:token-type:id_token";
 /// `urn:ietf:params:oauth:token-type:jwt` (§3).
 pub const JWT: &str = "urn:ietf:params:oauth:token-type:jwt";
+/// The ID-JAG requested token type (draft-ietf-oauth-identity-assertion-authz-grant-04).
+pub const ID_JAG: &str = "urn:ietf:params:oauth:token-type:id-jag";
 
 /// The largest `subject_token` this endpoint will look at.
 ///
