@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 mod admin_seed;
+mod aggregated_claims;
 mod application_roles;
 mod audit;
 mod auth_requests;
@@ -62,6 +63,7 @@ mod users;
 mod verified_claims;
 
 pub use admin_seed::{DeploymentAdmin, PgAdminSeed, Seeded};
+pub use aggregated_claims::{PgAggregatedClaims, StoredClaimSource};
 pub use application_roles::PgApplicationRoles;
 pub use audit::{PgAuditSink, VerifiedChain};
 pub use auth_requests::PgAuthRequestRepository;

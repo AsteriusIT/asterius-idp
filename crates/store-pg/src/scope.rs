@@ -65,6 +65,12 @@ impl<'a> TenantScope<'a> {
         crate::PgVerifiedClaims::new(self.pool.clone(), self.tenant.clone())
     }
 
+    /// Signed Claims Provider sources retained for this tenant's users.
+    #[must_use]
+    pub fn aggregated_claims(&self) -> crate::PgAggregatedClaims {
+        crate::PgAggregatedClaims::new(self.pool.clone(), self.tenant.clone())
+    }
+
     /// The authorization-code repository for this tenant.
     #[must_use]
     pub fn codes(&self) -> PgCodeRepository {

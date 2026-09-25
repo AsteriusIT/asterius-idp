@@ -9,6 +9,7 @@
 //! ES256 and PS256, and nothing else. `none` is not a value that exists.
 #![forbid(unsafe_code)]
 
+pub mod claims_aggregation;
 pub mod client_keys;
 pub mod dpop;
 pub mod federation;
