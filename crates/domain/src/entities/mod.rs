@@ -9,6 +9,7 @@ pub mod authorization_details;
 pub mod client;
 pub mod email_verification;
 pub mod grant;
+pub mod identity_assurance;
 pub mod initial_access_token;
 pub mod passkey;
 pub mod password;
@@ -51,6 +52,9 @@ pub use email_verification::{
 pub use grant::{
     ClaimedGrant, Grant, GrantAuthentication, GrantError, GrantRecord, GrantStatus,
     LiveAccessToken, RevocationReason,
+};
+pub use identity_assurance::{
+    MAX_VERIFIED_CLAIMS, Verification, VerifiedClaims, VerifiedClaimsError,
 };
 pub use initial_access_token::{
     InitialAccessToken, MAX_LABEL_LEN as MAX_INITIAL_ACCESS_TOKEN_LABEL_LEN, NewInitialAccessToken,
