@@ -386,7 +386,9 @@ pub async fn released_claims(
     let requested = asterius_oidc::claims::ClaimsRequest::from_json(&grant.claims)
         .map_err(|error| DomainError::invalid("claims", error.to_string()))?;
     let locales = asterius_oidc::claims::ClaimsLocales::from_tags(&grant.claims_locales);
-    let resolved = asterius_oidc::claims::resolve(&user, &grant.scopes, &requested, &locales);
+    let resolved =
+        asterius_oidc::claims::resolve_checked(&user, &grant.scopes, &requested, &locales)
+            .map_err(|error| DomainError::invalid("claims", error.to_string()))?;
     let mut claims = resolved.id_token;
     if let Some(ida) = requested.ida_id_token() {
         if !ida_frameworks.is_empty() {

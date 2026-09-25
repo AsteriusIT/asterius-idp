@@ -251,6 +251,11 @@ fn claims_surface(request: &ClaimsRequest) -> BTreeSet<String> {
         .into_iter()
         .collect();
     surface.extend(section("userinfo", request.userinfo()));
+    // A remembered grant for one expression cannot cover a different
+    // transformation or a newly added omit/abort rule.
+    if let Some(asc) = request.advanced_claims_consent_surface() {
+        surface.insert(format!("asc:{asc}"));
+    }
     // A verified claim's trust framework is part of what the person grants.
     // Preserve it in the memory key so a prior consent for one framework or
     // destination cannot cover another.

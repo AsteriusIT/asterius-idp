@@ -4185,6 +4185,7 @@ const fn authorization_policy(
     asterius_oidc::authorize::AuthorizationPolicy::new(
         capabilities.is_enabled(asterius_domain::Feature::SelfRegistration),
     )
+    .with_advanced_claims(capabilities.is_enabled(asterius_domain::Feature::AdvancedClaims))
 }
 
 /// Where a self-service sign-up is written, for a tenant that offers one.

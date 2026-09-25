@@ -179,6 +179,7 @@ async fn every_advertised_endpoint_resolves_to_a_route() {
     let capabilities = Capabilities {
         mtls: true,
         grant_management: true,
+        advanced_claims: true,
         ciba: true,
         device_flow: true,
         token_exchange: true,
@@ -1074,6 +1075,7 @@ fn tenant_named(id: &str) -> Tenant {
 const ALL_ON: Capabilities = Capabilities {
     mtls: true,
     grant_management: true,
+    advanced_claims: true,
     ciba: true,
     device_flow: true,
     token_exchange: true,

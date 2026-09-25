@@ -634,6 +634,28 @@ pub fn provider_metadata(
         .as_object_mut()
         .expect("the literal above is an object");
 
+    if capabilities.advanced_claims {
+        // OpenID ASC draft-02 §§7.3, 8.6. The parser enforces these exact
+        // limits and refuses schema rules rather than treating them as simple.
+        object.insert("selective_abort_omit_supported".to_owned(), json!(true));
+        object.insert(
+            "selective_abort_omit_schema_supported".to_owned(),
+            json!(false),
+        );
+        object.insert(
+            "transformed_claims_functions_supported".to_owned(),
+            json!(crate::claims::ASC_FUNCTIONS),
+        );
+        object.insert(
+            "transformed_claims_max_depth".to_owned(),
+            json!(crate::claims::ASC_MAX_DEPTH),
+        );
+        object.insert(
+            "transformed_claims_max_count".to_owned(),
+            json!(crate::claims::ASC_MAX_COUNT),
+        );
+    }
+
     // Every enabled endpoint, and only those. A disabled feature contributes no
     // key at all rather than a key with a null or an empty string, because a
     // client that sees the member present treats the capability as present.
@@ -954,6 +976,7 @@ mod tests {
         Capabilities {
             mtls: true,
             grant_management: true,
+            advanced_claims: true,
             ciba: true,
             device_flow: true,
             token_exchange: true,

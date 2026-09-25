@@ -106,6 +106,13 @@
 </ul>
 {% endif %}
 
+{% if !transformed_claims.is_empty() %}
+<p class="muted">{{ text.consent_transformed_claims() }}</p>
+<ul class="scopes">
+{% for claim in transformed_claims %}<li>{{ claim }}</li>{% endfor %}
+</ul>
+{% endif %}
+
 {% if !resources.is_empty() %}
 <p class="muted">{{ text.consent_resources() }}</p>
 <ul class="scopes">

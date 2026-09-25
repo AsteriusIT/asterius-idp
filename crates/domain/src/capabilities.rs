@@ -17,6 +17,8 @@ pub enum Feature {
     Mtls,
     /// Grant Management for OAuth 2.0 (Implementer's Draft).
     GrantManagement,
+    /// OpenID Advanced Syntax for Claims, bounded transformation and SAO subset.
+    AdvancedClaims,
     /// CIBA Core 1.0 backchannel authentication (poll and ping).
     Ciba,
     /// Device Authorization Grant (RFC 8628).
@@ -77,9 +79,10 @@ pub enum Feature {
 
 impl Feature {
     /// Every flag, in a stable order. `/readyz` and the admin API iterate this.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Mtls,
         Self::GrantManagement,
+        Self::AdvancedClaims,
         Self::Ciba,
         Self::DeviceFlow,
         Self::TokenExchange,
@@ -98,6 +101,7 @@ impl Feature {
         match self {
             Self::Mtls => "mtls",
             Self::GrantManagement => "grant_management",
+            Self::AdvancedClaims => "advanced_claims",
             Self::Ciba => "ciba",
             Self::DeviceFlow => "device_flow",
             Self::TokenExchange => "token_exchange",
@@ -127,6 +131,7 @@ impl Feature {
             Self::DynamicClientRegistration | Self::AuthzenSearch => true,
             Self::Mtls
             | Self::GrantManagement
+            | Self::AdvancedClaims
             | Self::Ciba
             | Self::DeviceFlow
             | Self::TokenExchange
@@ -179,6 +184,8 @@ pub struct Capabilities {
     pub mtls: bool,
     /// Grant Management for OAuth 2.0 (Implementer's Draft).
     pub grant_management: bool,
+    /// Bounded OpenID Advanced Syntax for Claims support.
+    pub advanced_claims: bool,
     /// CIBA Core 1.0 backchannel authentication (poll and ping).
     pub ciba: bool,
     /// Device Authorization Grant (RFC 8628).
@@ -226,6 +233,7 @@ impl Capabilities {
         match feature {
             Feature::Mtls => self.mtls,
             Feature::GrantManagement => self.grant_management,
+            Feature::AdvancedClaims => self.advanced_claims,
             Feature::Ciba => self.ciba,
             Feature::DeviceFlow => self.device_flow,
             Feature::TokenExchange => self.token_exchange,
@@ -249,6 +257,7 @@ impl Capabilities {
         match feature {
             Feature::Mtls => self.mtls = false,
             Feature::GrantManagement => self.grant_management = false,
+            Feature::AdvancedClaims => self.advanced_claims = false,
             Feature::Ciba => self.ciba = false,
             Feature::DeviceFlow => self.device_flow = false,
             Feature::TokenExchange => self.token_exchange = false,
