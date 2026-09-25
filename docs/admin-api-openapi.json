@@ -1774,6 +1774,86 @@
         "x-asterius-scope": "admin.app_roles:write"
       }
     },
+    "/admin/api/v1/clients/{client_id}/health": {
+      "get": {
+        "operationId": "clients.health",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "client_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.clients:read"
+            ]
+          }
+        ],
+        "summary": "Checks a registered client's integration configuration without issuing tokens",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.clients:read"
+      }
+    },
     "/admin/api/v1/clients/{client_id}/resources": {
       "put": {
         "operationId": "clients.resources.update",
@@ -3390,6 +3470,74 @@
       }
     },
     "/admin/api/v1/invitations": {
+      "get": {
+        "operationId": "invitations.status",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.lifecycle:read"
+            ]
+          }
+        ],
+        "summary": "Lists recent invitations without bearer tokens or message contents",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.lifecycle:read"
+      },
       "post": {
         "operationId": "invitations.create",
         "parameters": [
@@ -3621,13 +3769,13 @@
           },
           {
             "adminToken": [
-              "admin.users:write"
+              "admin.lifecycle:write"
             ]
           }
         ],
         "summary": "Revokes an account invitation",
         "x-asterius-reach": "tenant",
-        "x-asterius-scope": "admin.users:write"
+        "x-asterius-scope": "admin.lifecycle:write"
       }
     },
     "/admin/api/v1/invitations/{invitation_id}/resend": {
@@ -3742,14 +3890,14 @@
           },
           {
             "adminToken": [
-              "admin.users:write"
+              "admin.lifecycle:write"
             ]
           }
         ],
         "summary": "Resends an account invitation",
         "x-asterius-idempotent": true,
         "x-asterius-reach": "tenant",
-        "x-asterius-scope": "admin.users:write"
+        "x-asterius-scope": "admin.lifecycle:write"
       }
     },
     "/admin/api/v1/keys": {
@@ -4425,13 +4573,13 @@
           },
           {
             "adminToken": [
-              "admin.outbox:read"
+              "admin.lifecycle:read"
             ]
           }
         ],
         "summary": "Lists this tenant's queued, accepted, failed and expired account mail",
         "x-asterius-reach": "tenant",
-        "x-asterius-scope": "admin.outbox:read"
+        "x-asterius-scope": "admin.lifecycle:read"
       }
     },
     "/admin/api/v1/openapi.json": {
