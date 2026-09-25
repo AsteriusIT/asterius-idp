@@ -678,11 +678,13 @@ async fn sign_in(
                 context,
                 presented,
                 state,
-                id,
-                record,
-                user,
-                vec![AuthenticationMethod::Password],
-                now,
+                SuccessfulAuthentication {
+                    id,
+                    record,
+                    user,
+                    methods: vec![AuthenticationMethod::Password],
+                    now,
+                },
             )
             .await
         }
@@ -810,14 +812,16 @@ async fn verify_totp_sign_in(
                 context,
                 presented,
                 state,
-                id,
-                record,
-                user,
-                vec![
-                    AuthenticationMethod::Password,
-                    AuthenticationMethod::OneTimeCode,
-                ],
-                now,
+                SuccessfulAuthentication {
+                    id,
+                    record,
+                    user,
+                    methods: vec![
+                        AuthenticationMethod::Password,
+                        AuthenticationMethod::OneTimeCode,
+                    ],
+                    now,
+                },
             )
             .await
         }
@@ -870,16 +874,27 @@ async fn verify_totp_sign_in(
 /// path — the console's entry (`ast-wr4`) reaches it through the same
 /// [`submit`], not through a login of its own — so the fresh id, the `amr` and
 /// the cookie attributes are one implementation rather than two that agree.
+struct SuccessfulAuthentication<'a> {
+    id: &'a str,
+    record: &'a InteractionRecord,
+    user: uuid::Uuid,
+    methods: Vec<AuthenticationMethod>,
+    now: OffsetDateTime,
+}
+
 async fn authenticated(
     context: &InteractionContext<'_>,
     presented: &InteractionId,
     mut state: StoredState,
-    id: &str,
-    record: &InteractionRecord,
-    user: uuid::Uuid,
-    methods: Vec<AuthenticationMethod>,
-    now: OffsetDateTime,
+    authentication: SuccessfulAuthentication<'_>,
 ) -> Response {
+    let SuccessfulAuthentication {
+        id,
+        record,
+        user,
+        methods,
+        now,
+    } = authentication;
     // `ast-vae`: an address this tenant requires to be proved, and has not
     // been. Before the session is established, which is the requirement — a
     // session is precisely what an unverified account must not get, so this
@@ -2268,11 +2283,13 @@ async fn create_account(
         context,
         presented,
         state,
-        id,
-        record,
-        *created.id.as_uuid(),
-        vec![AuthenticationMethod::Password],
-        now,
+        SuccessfulAuthentication {
+            id,
+            record,
+            user: *created.id.as_uuid(),
+            methods: vec![AuthenticationMethod::Password],
+            now,
+        },
     )
     .await
 }
