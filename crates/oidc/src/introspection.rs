@@ -54,7 +54,27 @@
 
 use crate::form::Parameters;
 use crate::revocation::TokenTypeHint;
+use asterius_domain::{ClientId, CompactJws, DomainError, Issuer, Signer, TenantId};
 use serde_json::{Map, Value};
+use thiserror::Error;
+use time::OffsetDateTime;
+
+/// RFC 9701 §5's JOSE type, distinct from access and ID tokens.
+pub const SIGNED_RESPONSE_TYP: &str = "token-introspection+jwt";
+
+/// The HTTP media type of a signed introspection response.
+pub const SIGNED_RESPONSE_MEDIA_TYPE: &str = "application/token-introspection+jwt";
+
+/// An invalid resource-server identity or unavailable tenant signing key.
+#[derive(Debug, Error)]
+pub enum SignedResponseError {
+    /// RFC 9701 requires a receiving resource-server audience.
+    #[error("a signed introspection response needs a resource-server audience")]
+    Audience,
+    /// The tenant cannot sign the response.
+    #[error("signed introspection response failed: {0}")]
+    Signing(#[from] DomainError),
+}
 
 /// The longest `token` this endpoint will look at.
 ///
@@ -245,6 +265,49 @@ impl IntrospectionResponse {
     #[must_use]
     pub fn into_json(self) -> Value {
         Value::Object(self.0)
+    }
+
+    /// RFC 9701 §5's JWT payload. Token members stay nested so the JWT cannot
+    /// be mistaken for an access token with top-level `sub`, `scope` or `exp`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SignedResponseError::Audience`] for an empty caller identity.
+    pub fn signed_claims(
+        &self,
+        issuer: &Issuer,
+        audience: &ClientId,
+        now: OffsetDateTime,
+    ) -> Result<Value, SignedResponseError> {
+        if audience.as_str().is_empty() {
+            return Err(SignedResponseError::Audience);
+        }
+        Ok(serde_json::json!({
+            "iss": issuer.as_str(),
+            "aud": audience.as_str(),
+            "iat": now.unix_timestamp(),
+            "token_introspection": self.0,
+        }))
+    }
+
+    /// Signs the RFC 9701 envelope with the tenant's published signing key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SignedResponseError`] when the audience or signing fails.
+    pub async fn sign(
+        &self,
+        signer: &dyn Signer,
+        tenant: &TenantId,
+        issuer: &Issuer,
+        audience: &ClientId,
+        now: OffsetDateTime,
+    ) -> Result<CompactJws, SignedResponseError> {
+        let claims = self.signed_claims(issuer, audience, now)?;
+        signer
+            .sign(tenant, None, SIGNED_RESPONSE_TYP, &claims)
+            .await
+            .map_err(SignedResponseError::from)
     }
 
     /// Whether this response says the token is active.
