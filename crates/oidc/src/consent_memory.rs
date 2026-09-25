@@ -251,6 +251,23 @@ fn claims_surface(request: &ClaimsRequest) -> BTreeSet<String> {
         .into_iter()
         .collect();
     surface.extend(section("userinfo", request.userinfo()));
+    // A verified claim's trust framework is part of what the person grants.
+    // Preserve it in the memory key so a prior consent for one framework or
+    // destination cannot cover another.
+    for (destination, ida) in [
+        ("id_token", request.ida_id_token()),
+        ("userinfo", request.ida_userinfo()),
+    ] {
+        if let Some(ida) = ida {
+            for name in ida.claims().keys() {
+                surface.insert(format!(
+                    "{destination}:verified_claims:{}:{}",
+                    ida.framework().unwrap_or("*"),
+                    name.as_str()
+                ));
+            }
+        }
+    }
     surface
 }
 

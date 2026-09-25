@@ -229,7 +229,8 @@ fn operation_object(operation: &Operation) -> Value {
                     "access_token_lifetime_seconds": {"type": "integer", "minimum": 1, "maximum": 900},
                     "acr_policy": {"$ref": "#/components/schemas/AcrPolicy"},
                     "session_policy": {"$ref": "#/components/schemas/SessionPolicy"},
-                    "rate_limits": {"$ref": "#/components/schemas/TenantRateLimits"}
+                    "rate_limits": {"$ref": "#/components/schemas/TenantRateLimits"},
+                    "ida_frameworks": {"type": "array", "maxItems": 16, "uniqueItems": true, "items": {"type": "string", "maxLength": 128}}
                 },
                 "description": "Omitted policies retain stored values. Updates are tenant-scoped and audited. Assurance replicas refresh within 30 seconds; session and rate-limit enforcement read committed settings directly."
             }}}
@@ -239,7 +240,8 @@ fn operation_object(operation: &Operation) -> Value {
         object["responses"]["200"]["content"]["application/json"]["schema"] = json!({
             "type": "object", "properties": { "acr_policy": {"$ref": "#/components/schemas/AcrPolicy"},
                     "session_policy": {"$ref": "#/components/schemas/SessionPolicy"},
-                    "rate_limits": {"$ref": "#/components/schemas/TenantRateLimits"} }
+                    "rate_limits": {"$ref": "#/components/schemas/TenantRateLimits"},
+                    "ida_frameworks": {"type": "array", "items": {"type": "string"}} }
         });
     }
     client_resources_documentation(operation, &mut object);

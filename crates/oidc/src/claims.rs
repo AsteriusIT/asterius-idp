@@ -605,6 +605,43 @@ impl IdaRequest {
     }
 }
 
+/// Select one current, policy-approved verification for a consented IDA request.
+///
+/// The caller supplies live records read at response time. This never copies
+/// unrequested attributes or internal verifier metadata into a token. The
+/// store returns newest records first, so the first eligible bundle wins.
+#[must_use]
+pub fn project_verified_claims(
+    request: &IdaRequest,
+    bundles: &[asterius_domain::VerifiedClaims],
+    allowed_frameworks: &BTreeSet<String>,
+) -> Option<Value> {
+    let bundle = bundles.iter().find(|bundle| {
+        let framework = bundle.verification().trust_framework();
+        allowed_frameworks.contains(framework)
+            && request.framework().is_none_or(|wanted| wanted == framework)
+            && request
+                .claims()
+                .keys()
+                .any(|name| bundle.claims().contains_key(name))
+    })?;
+    let mut projected = bundle.clone().into_json();
+    let filtered: Map<String, Value> = request
+        .claims()
+        .keys()
+        .filter_map(|name| {
+            bundle
+                .claims()
+                .get(name)
+                .map(|value| (name.as_str().to_owned(), value.clone()))
+        })
+        .collect();
+    projected
+        .as_object_mut()?
+        .insert("claims".to_owned(), Value::Object(filtered));
+    Some(projected)
+}
+
 /// One entry of a `claims` object (OIDC Core §5.5.1).
 ///
 /// `null` — "the Claim is being requested with default behaviour" — parses to

@@ -1540,6 +1540,16 @@ async fn userinfo_endpoint_inner(
         tenant: tenant.id.clone(),
         roles: scope.application_roles(),
         groups: asterius_store_pg::PgGroups::new(endpoints.store.pool().clone()),
+        verified: scope.verified_claims(),
+        ida_frameworks: match settings_for_directory(endpoints.tenant_settings.as_ref(), &tenant.id)
+            .await
+        {
+            Ok(settings) => settings.ida_frameworks().clone(),
+            Err(error) => {
+                tracing::error!(%error, tenant = %tenant.id, "cannot read IDA release policy");
+                return unavailable();
+            }
+        },
     };
 
     userinfo::userinfo(
@@ -3133,6 +3143,8 @@ struct StoredClaims {
     tenant: asterius_domain::TenantId,
     roles: asterius_store_pg::PgApplicationRoles,
     groups: asterius_store_pg::PgGroups,
+    verified: asterius_store_pg::PgVerifiedClaims,
+    ida_frameworks: std::collections::BTreeSet<String>,
 }
 
 #[async_trait::async_trait]
@@ -3160,6 +3172,28 @@ impl userinfo::UserInfoSource for StoredClaims {
     ) -> Result<asterius_domain::HeldRoles, asterius_domain::DomainError> {
         use asterius_domain::ports::ApplicationRoleDirectory;
         self.roles.held_by(&self.tenant, user).await
+    }
+
+    async fn verified_claims(
+        &self,
+        user: asterius_domain::UserId,
+        request: &asterius_oidc::claims::IdaRequest,
+    ) -> Result<Option<serde_json::Value>, asterius_domain::DomainError> {
+        if self.ida_frameworks.is_empty() {
+            return Ok(None);
+        }
+        let bundles = self
+            .verified
+            .by_user(user)
+            .await?
+            .into_iter()
+            .map(|record| record.bundle)
+            .collect::<Vec<_>>();
+        Ok(asterius_oidc::claims::project_verified_claims(
+            request,
+            &bundles,
+            &self.ida_frameworks,
+        ))
     }
 
     async fn managed_group_ids(
@@ -3393,6 +3427,7 @@ async fn dispatch_grants(
         grant_id_claim,
         grant_management,
         ssf,
+        ida_frameworks,
     } = issuing;
 
     let clients = scope.clients(endpoints.capabilities);
@@ -3416,6 +3451,7 @@ async fn dispatch_grants(
     let resource_servers = scope.resource_servers();
     let application_roles = scope.application_roles();
     let managed_groups = asterius_store_pg::PgGroups::new(endpoints.store.pool().clone());
+    let verified_claims = scope.verified_claims();
     // One value for every grant: what this request proved possession of. The
     // registration decides which half binds the token (RFC 9449 §6, RFC 8705
     // §3), so no grant handler chooses for itself.
@@ -3427,6 +3463,8 @@ async fn dispatch_grants(
         acr_policy: &acr_policy,
         roles: &application_roles,
         groups: &managed_groups,
+        verified: &verified_claims,
+        ida_frameworks: &ida_frameworks,
         codes: &codes,
         grants: &grants,
         refresh_tokens: &refresh_tokens,
@@ -4208,6 +4246,7 @@ struct Issuing {
     /// handler answers 404 there — so a token audienced at it would be a token
     /// for a URL that does not exist here.
     ssf: bool,
+    ida_frameworks: std::collections::BTreeSet<String>,
 }
 
 /// Reads the three, from one settings lookup.
@@ -4231,11 +4270,13 @@ async fn issuing_policy(
             ssf: endpoints
                 .capabilities
                 .is_enabled(asterius_domain::Feature::Ssf),
+            ida_frameworks: std::collections::BTreeSet::new(),
         });
     };
     let settings = directory.for_tenant(&tenant.id).await?;
     Ok(Issuing {
         acr_policy: settings.acr_policy().clone(),
+        ida_frameworks: settings.ida_frameworks().clone(),
         lifetimes: settings.lifetimes(),
         grant_id_claim: settings.grant_id_in_access_token(),
         grant_management: settings

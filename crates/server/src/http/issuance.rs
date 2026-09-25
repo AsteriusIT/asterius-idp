@@ -368,6 +368,8 @@ pub async fn remember_participant(
 pub async fn released_claims(
     users: &PgUserRepository,
     groups: &asterius_store_pg::PgGroups,
+    verified: &asterius_store_pg::PgVerifiedClaims,
+    ida_frameworks: &std::collections::BTreeSet<String>,
     grant: &Grant,
     client: &Client,
     held: &asterius_domain::HeldRoles,
@@ -385,8 +387,24 @@ pub async fn released_claims(
         .map_err(|error| DomainError::invalid("claims", error.to_string()))?;
     let locales = asterius_oidc::claims::ClaimsLocales::from_tags(&grant.claims_locales);
     let resolved = asterius_oidc::claims::resolve(&user, &grant.scopes, &requested, &locales);
+    let mut claims = resolved.id_token;
+    if let Some(ida) = requested.ida_id_token() {
+        if !ida_frameworks.is_empty() {
+            let bundles = verified
+                .by_user(id)
+                .await?
+                .into_iter()
+                .map(|record| record.bundle)
+                .collect::<Vec<_>>();
+            if let Some(projected) =
+                asterius_oidc::claims::project_verified_claims(ida, &bundles, ida_frameworks)
+            {
+                claims.insert("verified_claims".to_owned(), projected);
+            }
+        }
+    }
     Ok(ReleasedToIdToken {
-        claims: resolved.id_token,
+        claims,
         role_claims: role_claims(&requested, client),
         held: held.clone(),
         managed_groups: if client.registration.managed_groups_claim.is_issued() {

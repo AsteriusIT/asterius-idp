@@ -1852,7 +1852,15 @@ impl Handling<'_> {
                 requested
                     .allow_non_fapi_clients
                     .unwrap_or(previous.allows_non_fapi_clients()),
-            );
+            )
+            .with_ida_frameworks(
+                requested
+                    .ida_frameworks
+                    .as_ref()
+                    .map(|names| names.iter().cloned().collect())
+                    .unwrap_or_else(|| previous.ida_frameworks().clone()),
+            )
+            .map_err(|error| AdminError::Invalid(error.to_string()))?;
 
         repository
             .save(&named, &settings)
@@ -5221,6 +5229,9 @@ struct RequestedSettings {
     /// Tenant-level permission for explicit per-client OIDC profile opt-ins.
     #[serde(default)]
     allow_non_fapi_clients: Option<bool>,
+    /// Frameworks whose verified claims may be released to relying parties.
+    #[serde(default)]
+    ida_frameworks: Option<Vec<String>>,
     #[serde(default)]
     session_policy: Option<serde_json::Value>,
 
@@ -5262,6 +5273,7 @@ fn render_settings(tenant: &TenantId, settings: &TenantSettings) -> serde_json::
         "messages": settings.messages().to_json(),
         "always_ask_consent": settings.always_ask_consent(),
         "allow_non_fapi_clients": settings.allows_non_fapi_clients(),
+        "ida_frameworks": settings.ida_frameworks(),
         "session_policy": settings.session_policy().unwrap_or_default().to_json(),
 
         "rate_limits": settings.rate_limits().to_json(),

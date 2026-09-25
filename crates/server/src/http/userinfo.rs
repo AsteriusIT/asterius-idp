@@ -125,6 +125,16 @@ pub trait UserInfoSource: std::fmt::Debug + Send + Sync {
     /// holds is an authorization decision taken by an outage.
     async fn roles(&self, user: UserId) -> Result<asterius_domain::HeldRoles, DomainError>;
 
+    /// Current, tenant-approved verified identity attributes for this grant.
+    /// Sources without Identity Assurance support release nothing.
+    async fn verified_claims(
+        &self,
+        _user: UserId,
+        _request: &asterius_oidc::claims::IdaRequest,
+    ) -> Result<Option<Value>, DomainError> {
+        Ok(None)
+    }
+
     /// Stable managed-group references released for this client audience.
     /// Empty is the safe default for sources and clients that do not opt in.
     async fn managed_group_ids(
@@ -607,7 +617,15 @@ async fn release(
         // the grant, so a stored one that no longer parses is a damaged row.
         Refused::Server(DomainError::invalid("claims", error.to_string()))
     })?;
-    Ok(resolved.userinfo)
+    let mut claims = resolved.userinfo;
+    let requested = asterius_oidc::claims::ClaimsRequest::from_json(&grant.claims)
+        .map_err(|error| Refused::Server(DomainError::invalid("claims", error.to_string())))?;
+    if let Some(ida) = requested.ida_userinfo() {
+        if let Some(projected) = context.source.verified_claims(id, ida).await? {
+            claims.insert("verified_claims".to_owned(), projected);
+        }
+    }
+    Ok(claims)
 }
 
 /// JSON, or a signed JWT when the client registered an algorithm.

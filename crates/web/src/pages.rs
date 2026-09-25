@@ -259,6 +259,8 @@ pub struct ConsentPage<'a> {
     pub resources: Vec<String>,
     /// RFC 9396 `authorization_details`, one line per element.
     pub authorization_details: Vec<DetailLine>,
+    /// Verified attributes requested for each token destination.
+    pub verified_claims: Vec<String>,
     /// Where the form posts to.
     pub action: &'a str,
     /// The synchroniser token for this rendering.
@@ -1534,6 +1536,7 @@ mod tests {
                     actions: vec![(*hostile).to_owned()],
                     datatypes: vec![(*hostile).to_owned()],
                 }],
+                verified_claims: Vec::new(),
                 action: "/interaction/x/consent",
                 csrf: hostile,
                 nonce_attribute: nonce_attribute(&nonce),
@@ -1992,6 +1995,7 @@ mod tests {
                 offline_access: false,
                 resources: Vec::new(),
                 authorization_details: Vec::new(),
+                verified_claims: Vec::new(),
                 action: "/x",
                 csrf: "t",
                 nonce_attribute: nonce_attribute(&nonce),
@@ -2051,6 +2055,7 @@ mod tests {
                 offline_access: false,
                 resources: Vec::new(),
                 authorization_details: Vec::new(),
+                verified_claims: Vec::new(),
                 action: "/x",
                 csrf: "the-token",
                 nonce_attribute: nonce_attribute(&nonce),
@@ -2082,6 +2087,7 @@ mod tests {
             offline_access: false,
             resources: Vec::new(),
             authorization_details: Vec::new(),
+            verified_claims: Vec::new(),
             action: "/x",
             csrf: "t",
             nonce_attribute: nonce_attribute(&nonce),
@@ -2173,6 +2179,7 @@ mod tests {
             offline_access: offline,
             resources,
             authorization_details: Vec::new(),
+            verified_claims: Vec::new(),
             action: "/interaction/x",
             csrf: "t",
             nonce_attribute: nonce_attribute(&nonce),

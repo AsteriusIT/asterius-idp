@@ -18,6 +18,16 @@ Writes and revocations append a subject-bound audit event in the same database
 transaction, recording the bundle identifier and framework but no claim
 values. A revoked record is never returned by the live-record listing.
 
-OIDC release policy is tracked separately under `ast-s36.20.3`. Until it is
-configured, the presence of a bundle does not cause an ID Token or UserInfo
-response to include `verified_claims`.
+OIDC release is disabled by default. Set `ida_frameworks` in tenant settings to
+an explicit list of permitted trust framework identifiers, for example
+`["internal_admin_verification"]`. An empty list disables release. A client
+must request `verified_claims` in the authorization `claims` parameter under
+`id_token`, `userinfo`, or both. The consent page names each requested
+attribute, destination, and framework. The grant records that request;
+remembered consent cannot silently cover a different framework or attribute.
+
+The server selects a current, nonrevoked bundle in an allowed framework at each
+ID Token issuance and UserInfo response. It releases only requested attributes
+with `verification` provenance, without the internal verifier issuer or any
+evidence. Revoking a bundle removes it from later refresh ID Tokens and
+UserInfo responses. Already issued ID Tokens remain valid until their expiry.
