@@ -56,6 +56,7 @@ mod tenants;
 mod themes;
 mod totp;
 mod users;
+mod verified_claims;
 
 pub use admin_seed::{DeploymentAdmin, PgAdminSeed, Seeded};
 pub use application_roles::PgApplicationRoles;
@@ -118,5 +119,6 @@ pub use tenants::PgTenantRepository;
 pub use themes::PgThemes;
 pub use totp::{PgTotpCredentials, TotpStatus};
 pub use users::PgUserRepository;
+pub use verified_claims::{PgVerifiedClaims, StoredVerifiedClaims};
 
 pub use groups::PgGroups;

@@ -59,6 +59,12 @@ impl<'a> TenantScope<'a> {
         PgUserRepository::new(self.pool.clone(), self.tenant.clone(), kek)
     }
 
+    /// Explicit Identity Assurance records for this tenant.
+    #[must_use]
+    pub fn verified_claims(&self) -> crate::PgVerifiedClaims {
+        crate::PgVerifiedClaims::new(self.pool.clone(), self.tenant.clone())
+    }
+
     /// The authorization-code repository for this tenant.
     #[must_use]
     pub fn codes(&self) -> PgCodeRepository {
