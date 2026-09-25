@@ -1116,7 +1116,8 @@ async fn federation_configuration(
     };
     match state
         .federation
-        .sign(&tenant.id, metadata, time::OffsetDateTime::now_utc())
+        .sign(&tenant.id, &metadata, time::OffsetDateTime::now_utc())
+        .await
     {
         Ok(Some(statement)) => (
             StatusCode::OK,

@@ -17,13 +17,12 @@ const OPERATORS: [&str; 7] = [
 pub(super) fn resolve(chain: &[Statement]) -> Result<Value, ChainError> {
     let last = chain.len() - 1;
     for (index, statement) in chain.iter().enumerate() {
-        if index == 0 || index == last {
-            if ["metadata_policy", "metadata_policy_crit", "constraints"]
+        if (index == 0 || index == last)
+            && ["metadata_policy", "metadata_policy_crit", "constraints"]
                 .iter()
                 .any(|key| statement.claims.other.contains_key(*key))
-            {
-                return Err(ChainError::Invalid("policy claim on Entity Configuration"));
-            }
+        {
+            return Err(ChainError::Invalid("policy claim on Entity Configuration"));
         }
     }
     let mut metadata = chain[0]
@@ -257,10 +256,10 @@ fn validate_operators(operators: &Map<String, Value>) -> Result<(), ChainError> 
         if value.is_null() && operators.contains_key("default") {
             return Err(ChainError::Invalid("null value and default policy"));
         }
-        if let Some(one_of) = operators.get("one_of") {
-            if !one_of.as_array().is_some_and(|items| items.contains(value)) {
-                return Err(ChainError::Invalid("value outside one_of policy"));
-            }
+        if let Some(one_of) = operators.get("one_of")
+            && !one_of.as_array().is_some_and(|items| items.contains(value))
+        {
+            return Err(ChainError::Invalid("value outside one_of policy"));
         }
         if let Some(add) = operators.get("add") {
             let Some(array) = value.as_array() else {
@@ -318,8 +317,7 @@ fn validate_operators(operators: &Map<String, Value>) -> Result<(), ChainError> 
 fn valid_scalar_or_array(value: &Value, nullable: bool) -> Result<(), ChainError> {
     match value {
         Value::Null if nullable => Ok(()),
-        Value::String(_) | Value::Number(_) | Value::Bool(_) => Ok(()),
-        Value::Array(_) => Ok(()),
+        Value::String(_) | Value::Number(_) | Value::Bool(_) | Value::Array(_) => Ok(()),
         _ => Err(ChainError::Unsupported("object metadata policy value")),
     }
 }
@@ -374,14 +372,12 @@ fn apply_policy(
             let operators = object(operators, "parameter policy")?;
             let scope = name == "scope";
             let mut value = fields.get(name).cloned();
-            if scope {
-                if let Some(Value::String(text)) = &value {
-                    value = Some(Value::Array(
-                        text.split_whitespace()
-                            .map(|word| Value::String(word.to_owned()))
-                            .collect(),
-                    ));
-                }
+            if scope && let Some(Value::String(text)) = &value {
+                value = Some(Value::Array(
+                    text.split_whitespace()
+                        .map(|word| Value::String(word.to_owned()))
+                        .collect(),
+                ));
             }
             if let Some(fixed) = operators.get("value") {
                 value = (!fixed.is_null()).then(|| fixed.clone());
@@ -401,37 +397,37 @@ fn apply_policy(
             if value.is_none() {
                 value = operators.get("default").cloned();
             }
-            if let Some(allowed) = operators.get("one_of") {
-                if value.as_ref().is_some_and(|value| {
+            if let Some(allowed) = operators.get("one_of")
+                && value.as_ref().is_some_and(|value| {
                     !allowed
                         .as_array()
                         .is_some_and(|items| items.contains(value))
-                }) {
-                    return Err(ChainError::Invalid("one_of policy violated"));
-                }
+                })
+            {
+                return Err(ChainError::Invalid("one_of policy violated"));
             }
-            if let Some(allowed) = operators.get("subset_of") {
-                if let Some(value) = &mut value {
-                    let items = value
-                        .as_array_mut()
-                        .ok_or(ChainError::Invalid("subset target is not an array"))?;
-                    let allowed = allowed
-                        .as_array()
-                        .ok_or(ChainError::Invalid("subset_of policy"))?;
-                    items.retain(|item| allowed.contains(item));
-                }
+            if let Some(allowed) = operators.get("subset_of")
+                && let Some(value) = &mut value
+            {
+                let items = value
+                    .as_array_mut()
+                    .ok_or(ChainError::Invalid("subset target is not an array"))?;
+                let allowed = allowed
+                    .as_array()
+                    .ok_or(ChainError::Invalid("subset_of policy"))?;
+                items.retain(|item| allowed.contains(item));
             }
-            if let Some(required) = operators.get("superset_of") {
-                if let Some(value) = &value {
-                    let items = value
-                        .as_array()
-                        .ok_or(ChainError::Invalid("superset target is not an array"))?;
-                    if !required
-                        .as_array()
-                        .is_some_and(|required| required.iter().all(|item| items.contains(item)))
-                    {
-                        return Err(ChainError::Invalid("superset_of policy violated"));
-                    }
+            if let Some(required) = operators.get("superset_of")
+                && let Some(value) = &value
+            {
+                let items = value
+                    .as_array()
+                    .ok_or(ChainError::Invalid("superset target is not an array"))?;
+                if !required
+                    .as_array()
+                    .is_some_and(|required| required.iter().all(|item| items.contains(item)))
+                {
+                    return Err(ChainError::Invalid("superset_of policy violated"));
                 }
             }
             if value.is_none() && operators.get("essential") == Some(&Value::Bool(true)) {

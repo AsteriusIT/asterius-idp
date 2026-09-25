@@ -612,6 +612,10 @@ pub const POLICY: &[Retention] = &[
         ),
     },
     Retention {
+        table: "federation_signing_keys",
+        rule: Rule::Kept("retired Federation key identifiers remain reserved for incident history"),
+    },
+    Retention {
         table: "key_rotation_schedules",
         rule: Rule::Kept("one row per tenant and algorithm, rewritten rather than accumulated"),
     },

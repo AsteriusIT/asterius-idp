@@ -28,7 +28,7 @@ use asterius_server::tenancy::{TenantDirectory, TenantState};
 use asterius_server::tenant_settings::SettingsDirectory;
 use asterius_server::{Config, VERSION};
 use asterius_store_pg::{
-    DeploymentAdmin, PgAdminSeed, PgAuditSink, PgClientKeyFetches, PgClientUsage,
+    DeploymentAdmin, PgAdminSeed, PgAuditSink, PgClientKeyFetches, PgClientUsage, PgFederationKeys,
     PgInitialAccessTokens, PgKekRewrap, PgReplayGuard, PgRetention, PgTenantRepository,
     PgTenantSettings, ProvisionedTenants, RewrapOutcome, Store, TenantKeyStore,
 };
@@ -40,6 +40,7 @@ use time::OffsetDateTime;
 const DEFAULT_CONFIG_PATH: &str = "asterius.toml";
 const USAGE: &str = "usage: asterius [--config <path>] [--config-reference] [--admin-openapi]\n       \
                      asterius mail-test <recipient> [--config <path>]\n       \
+                     asterius federation-rotate <tenant> [--config <path>]\n       \
                      asterius rewrap-kek [--new-kek-file <path> | --new-kek-env <var>] \
                      [--config <path>]";
 
@@ -62,6 +63,7 @@ fn run() -> Result<(), String> {
         Command::Serve => serve_forever(&invocation.config),
         Command::RewrapKek(new_kek) => rewrap_kek(&invocation.config, new_kek.as_ref()),
         Command::MailTest(recipient) => mail_test(&invocation.config, &recipient),
+        Command::FederationRotate(tenant) => federation_rotate(&invocation.config, &tenant),
     }
 }
 
@@ -78,6 +80,41 @@ fn mail_test(path: &std::path::Path, recipient: &str) -> Result<(), String> {
     runtime.block_on(sender.send_test(recipient))?;
     println!("mail provider accepted the test message");
     Ok(())
+}
+
+fn federation_rotate(path: &std::path::Path, tenant: &str) -> Result<(), String> {
+    let config = Config::load(path).map_err(|error| error.to_string())?;
+    let tenant = asterius_domain::TenantId::parse(tenant).map_err(|error| error.to_string())?;
+    if !config
+        .tenants
+        .iter()
+        .any(|entry| entry.id == tenant && entry.federation_enabled)
+    {
+        return Err(format!(
+            "tenant {tenant} has no configured Federation Entity"
+        ));
+    }
+    let current = load_kek(&config.kek, "the key-encryption key")?;
+    let kek = with_previous_kek(current, config.kek_previous.as_ref())?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("cannot start Federation rotation: {error}"))?;
+    runtime.block_on(async move {
+        let store = Store::connect(
+            config.database.url.expose(),
+            config.database.max_connections,
+        )
+        .await
+        .map_err(|error| format!("cannot connect to the database: {error}"))?;
+        let keys = PgFederationKeys::new(store.pool().clone(), kek);
+        let kid = keys
+            .stage(&tenant, OffsetDateTime::now_utc())
+            .await
+            .map_err(|error| error.to_string())?;
+        println!("Federation key {kid} staged; it becomes active after six minutes");
+        Ok(())
+    })
 }
 
 /// RFC 8705 §2 (`ast-m9c.3`), switched on in both places at once.
@@ -187,9 +224,26 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
         bootstrap_admin(&store, &kek, config.admin.as_ref()).await?;
         let outbound_https = HttpsClientUrlFetcher::new()
             .map_err(|e| format!("cannot build the outbound TLS client: {e}"))?;
-        let federation =
-            FederationEntities::load(&config.tenants, keys.as_ref(), outbound_https.clone())
-                .await?;
+        let federation = FederationEntities::load(
+            &config.tenants,
+            keys.as_ref(),
+            outbound_https.clone(),
+            PgFederationKeys::new(store.pool().clone(), Arc::clone(&kek)),
+        )
+        .await?;
+        let federation_for_sweep = federation.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                if let Err(error) = federation_for_sweep
+                    .sweep_keys(OffsetDateTime::now_utc())
+                    .await
+                {
+                    tracing::error!(%error, "Federation key lifecycle sweep failed");
+                }
+            }
+        });
 
         // One `dyn TenantRepository` for the process, and it is
         // `ProvisionedTenants`: see `admin_routes` for why that matters.
@@ -1051,6 +1105,8 @@ enum Command {
     Serve,
     /// Send a harmless message through the configured provider and exit.
     MailTest(String),
+    /// Publish a successor key before it becomes an active signer.
+    FederationRotate(String),
     /// Re-seal everything under the KEK named on the command line, and exit.
     ///
     /// `None` means "the destination is in the configuration": the deployment
@@ -1113,6 +1169,14 @@ impl Invocation {
                             .map_err(|_| "mail-test needs a UTF-8 recipient")?,
                     );
                 }
+                Some("federation-rotate") => {
+                    let value = arguments.next().ok_or("federation-rotate needs a tenant")?;
+                    command = Command::FederationRotate(
+                        value
+                            .into_string()
+                            .map_err(|_| "federation-rotate needs a UTF-8 tenant")?,
+                    );
+                }
                 Some("--new-kek-file") => {
                     let value = arguments.next().ok_or("--new-kek-file needs a path")?;
                     new_kek_file = Some(PathBuf::from(value));
@@ -1156,7 +1220,8 @@ impl Invocation {
             }
             (Command::Serve, None, None) => Command::Serve,
             (Command::MailTest(recipient), None, None) => Command::MailTest(recipient),
-            (Command::MailTest(_) | Command::Serve, _, _) => {
+            (Command::FederationRotate(tenant), None, None) => Command::FederationRotate(tenant),
+            (Command::MailTest(_) | Command::FederationRotate(_) | Command::Serve, _, _) => {
                 return Err(format!(
                     "--new-kek-file and --new-kek-env belong to rewrap-kek\n{USAGE}"
                 ));

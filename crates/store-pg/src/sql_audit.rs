@@ -37,6 +37,7 @@ const TENANT_SCOPED_TABLES: &[&str] = &[
     "access_token_cutoffs",
     "jti_replay",
     "signing_keys",
+    "federation_signing_keys",
     "key_rotation_schedules",
     "audit_events",
     "outbox",

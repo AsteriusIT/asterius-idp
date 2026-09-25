@@ -41,6 +41,7 @@ KEK it was sealed under:
 
 ```sql
 select kek_id, count(*) from signing_keys group by kek_id;
+select kek_id, count(*) from federation_signing_keys group by kek_id;
 select kek_id, count(*) from tenant_pairwise_salts group by kek_id;
 ```
 

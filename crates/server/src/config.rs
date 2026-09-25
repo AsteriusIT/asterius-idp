@@ -301,8 +301,9 @@ pub struct TenantConfig {
     /// Absent from the file means FAPI 2.0 SP's position: no rotation, and a
     /// refresh token that only works with the DPoP key it was issued to.
     pub refresh: RefreshPolicy,
-    /// PKCS#8 DER private key used only for Federation Entity Statements.
-    /// A tenant without this key does not publish Federation metadata.
+    /// Enable a Federation Entity Configuration for this tenant.
+    pub federation_enabled: bool,
+    /// Legacy PKCS#8 DER private key imported once into KEK-wrapped storage.
     pub federation_signing_key_file: Option<PathBuf>,
     /// Immediate superiors named in this tenant's Federation Entity Configuration.
     pub federation_authority_hints: Vec<Issuer>,
@@ -708,6 +709,7 @@ struct RawTenant {
     issuer: Option<String>,
     default_resource: Option<String>,
     refresh: Option<RawRefresh>,
+    federation_enabled: Option<bool>,
     federation_signing_key_file: Option<PathBuf>,
     federation_authority_hints: Option<Vec<String>>,
     federation_trust_anchors: Option<Vec<RawFederationTrustAnchor>>,
@@ -1946,10 +1948,12 @@ fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantCo
         };
 
         let refresh = validate_refresh(index, tenant.refresh, errors);
+        let federation_enabled = tenant.federation_enabled.unwrap_or(false)
+            || tenant.federation_signing_key_file.is_some();
         let federation_authority_hints = validate_federation_hints(
             index,
             issuer.as_ref(),
-            tenant.federation_signing_key_file.is_some(),
+            federation_enabled,
             tenant.federation_authority_hints,
             errors,
         );
@@ -1963,6 +1967,7 @@ fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantCo
                 issuer,
                 default_resource,
                 refresh,
+                federation_enabled,
                 federation_signing_key_file: tenant.federation_signing_key_file,
                 federation_authority_hints,
                 federation_trust_anchors,
@@ -1975,7 +1980,7 @@ fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantCo
 fn validate_federation_hints(
     index: usize,
     issuer: Option<&Issuer>,
-    has_signing_key: bool,
+    enabled: bool,
     raw: Option<Vec<String>>,
     errors: &mut Collector,
 ) -> Vec<Issuer> {
@@ -2016,16 +2021,16 @@ fn validate_federation_hints(
             );
         }
     }
-    if has_signing_key && hints.is_empty() {
+    if enabled && hints.is_empty() {
         errors.problem(
             format!("tenant[{index}].federation_authority_hints"),
             "at least one immediate superior is required when Federation is enabled",
         );
     }
-    if !has_signing_key && !hints.is_empty() {
+    if !enabled && !hints.is_empty() {
         errors.problem(
-            format!("tenant[{index}].federation_signing_key_file"),
-            "a dedicated Federation key is required when authority hints are configured",
+            format!("tenant[{index}].federation_enabled"),
+            "Federation must be enabled when authority hints are configured",
         );
     }
     hints
