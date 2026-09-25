@@ -481,23 +481,27 @@ async fn describe(
         .get("claims")
         .and_then(|value| asterius_oidc::claims::ClaimsRequest::from_json(value).ok())
         .map(|claims| {
-            [
+            let mut lines = Vec::new();
+            for (destination, request) in [
                 ("ID token", claims.ida_id_token()),
                 ("UserInfo", claims.ida_userinfo()),
-            ]
-            .into_iter()
-            .flat_map(|(destination, ida)| {
-                ida.into_iter().flat_map(move |ida| {
-                    ida.claims().keys().map(move |name| {
-                        format!(
-                            "{destination}: {} (framework: {})",
-                            name.as_str(),
-                            ida.framework().unwrap_or("any permitted")
-                        )
-                    })
-                })
-            })
-            .collect()
+            ] {
+                if let Some(ida) = request {
+                    let framework = ida.framework().unwrap_or("any permitted");
+                    lines.extend(ida.claims().keys().map(|name| {
+                        format!("{destination}: {} (framework: {framework})", name.as_str())
+                    }));
+                    lines.extend(ida.evidence_types().iter().map(|kind| {
+                        format!("{destination}: {kind} evidence (framework: {framework})")
+                    }));
+                    if ida.verification_process() {
+                        lines.push(format!(
+                            "{destination}: verification process reference (framework: {framework})"
+                        ));
+                    }
+                }
+            }
+            lines
         })
         .unwrap_or_default();
 

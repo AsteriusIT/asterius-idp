@@ -266,6 +266,18 @@ fn claims_surface(request: &ClaimsRequest) -> BTreeSet<String> {
                     name.as_str()
                 ));
             }
+            for kind in ida.evidence_types() {
+                surface.insert(format!(
+                    "{destination}:verified_claims:{}:evidence:{kind}",
+                    ida.framework().unwrap_or("*")
+                ));
+            }
+            if ida.verification_process() {
+                surface.insert(format!(
+                    "{destination}:verified_claims:{}:verification_process",
+                    ida.framework().unwrap_or("*")
+                ));
+            }
         }
     }
     surface

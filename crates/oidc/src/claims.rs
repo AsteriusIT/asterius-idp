@@ -508,13 +508,15 @@ pub enum ClaimsRequestError {
 
 /// The supported, explicit subset of an OpenID Identity Assurance request.
 ///
-/// Evidence, assurance-level and value filters are refused until the release
-/// policy can evaluate them. This type records only attributes that the
-/// client requested; it never turns ordinary user claims into verified ones.
+/// A bounded evidence-type filter and process reference are supported. Nested
+/// evidence selectors, assurance-level and claim-value filters are refused.
+/// This type never turns ordinary user claims into verified ones.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IdaRequest {
     framework: Option<String>,
     claims: BTreeMap<VerifiedClaimName, bool>,
+    evidence_types: BTreeSet<String>,
+    verification_process: bool,
 }
 
 impl IdaRequest {
@@ -531,6 +533,18 @@ impl IdaRequest {
         &self.claims
     }
 
+    /// Evidence types the client explicitly requested.
+    #[must_use]
+    pub const fn evidence_types(&self) -> &BTreeSet<String> {
+        &self.evidence_types
+    }
+
+    /// Whether the client explicitly requested the process reference.
+    #[must_use]
+    pub const fn verification_process(&self) -> bool {
+        self.verification_process
+    }
+
     fn parse(value: &Value) -> Result<Self, ClaimsRequestError> {
         let bad = ClaimsRequestError::UnsupportedIdentityAssurance;
         let object = value.as_object().ok_or(bad.clone())?;
@@ -541,8 +555,51 @@ impl IdaRequest {
             return Err(bad);
         }
         let verification = object["verification"].as_object().ok_or(bad.clone())?;
-        if verification.len() != 1 {
+        if !(1..=3).contains(&verification.len())
+            || verification.keys().any(|key| {
+                !matches!(
+                    key.as_str(),
+                    "trust_framework" | "evidence" | "verification_process"
+                )
+            })
+        {
             return Err(bad);
+        }
+        let verification_process = match verification.get("verification_process") {
+            None => false,
+            Some(Value::Null) => true,
+            _ => return Err(bad),
+        };
+        let mut evidence_types = BTreeSet::new();
+        if let Some(evidence) = verification.get("evidence") {
+            let entries = evidence.as_array().ok_or(bad.clone())?;
+            if entries.is_empty() || entries.len() > 4 {
+                return Err(bad);
+            }
+            for entry in entries {
+                let object = entry.as_object().ok_or(bad.clone())?;
+                if object.len() != 1 {
+                    return Err(bad);
+                }
+                let constraint = object
+                    .get("type")
+                    .and_then(Value::as_object)
+                    .ok_or(bad.clone())?;
+                if constraint.len() != 1 {
+                    return Err(bad);
+                }
+                let kind = constraint
+                    .get("value")
+                    .and_then(Value::as_str)
+                    .ok_or(bad.clone())?;
+                if !matches!(
+                    kind,
+                    "document" | "electronic_record" | "vouch" | "electronic_signature"
+                ) {
+                    return Err(bad);
+                }
+                evidence_types.insert(kind.to_owned());
+            }
         }
         let framework = match verification.get("trust_framework") {
             Some(Value::Null) => None,
@@ -582,7 +639,12 @@ impl IdaRequest {
             };
             claims.insert(name, essential);
         }
-        Ok(Self { framework, claims })
+        Ok(Self {
+            framework,
+            claims,
+            evidence_types,
+            verification_process,
+        })
     }
 
     fn to_json(&self) -> Value {
@@ -598,10 +660,28 @@ impl IdaRequest {
                 (name.as_str().to_owned(), entry)
             })
             .collect();
-        serde_json::json!({
-            "verification": {"trust_framework": self.framework.as_ref().map_or(Value::Null, |value| serde_json::json!({"value": value}))},
-            "claims": claims,
-        })
+        let mut verification = Map::new();
+        verification.insert(
+            "trust_framework".to_owned(),
+            self.framework
+                .as_ref()
+                .map_or(Value::Null, |value| serde_json::json!({"value": value})),
+        );
+        if self.verification_process {
+            verification.insert("verification_process".to_owned(), Value::Null);
+        }
+        if !self.evidence_types.is_empty() {
+            verification.insert(
+                "evidence".to_owned(),
+                Value::Array(
+                    self.evidence_types
+                        .iter()
+                        .map(|kind| serde_json::json!({"type": {"value": kind}}))
+                        .collect(),
+                ),
+            );
+        }
+        serde_json::json!({"verification": verification, "claims": claims})
     }
 }
 
@@ -624,6 +704,13 @@ pub fn project_verified_claims(
                 .claims()
                 .keys()
                 .any(|name| bundle.claims().contains_key(name))
+            && (request.evidence_types().is_empty()
+                || bundle.verification().evidence().iter().any(|entry| {
+                    entry
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .is_some_and(|kind| request.evidence_types().contains(kind))
+                }))
     })?;
     let mut projected = bundle.clone().into_json();
     let filtered: Map<String, Value> = request
@@ -639,14 +726,39 @@ pub fn project_verified_claims(
     projected
         .as_object_mut()?
         .insert("claims".to_owned(), Value::Object(filtered));
-    // The request parser currently refuses evidence and process selectors.
-    // Retaining these internally must never make them implicit output.
+    // The stored bundle is an administrative record; project only fields the
+    // consented request named, with evidence limited to type names.
     if let Some(verification) = projected
         .get_mut("verification")
         .and_then(Value::as_object_mut)
     {
         verification.remove("evidence");
         verification.remove("verification_process");
+        if request.verification_process() {
+            if let Some(process) = bundle.verification().verification_process() {
+                verification.insert(
+                    "verification_process".to_owned(),
+                    Value::String(process.to_owned()),
+                );
+            }
+        }
+        if !request.evidence_types().is_empty() {
+            let evidence: Vec<Value> = bundle
+                .verification()
+                .evidence()
+                .iter()
+                .filter_map(|entry| {
+                    entry
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .filter(|kind| request.evidence_types().contains(*kind))
+                        .map(|kind| serde_json::json!({"type": kind}))
+                })
+                .collect();
+            if !evidence.is_empty() {
+                verification.insert("evidence".to_owned(), Value::Array(evidence));
+            }
+        }
     }
     Some(projected)
 }
@@ -747,10 +859,9 @@ impl ClaimsRequest {
 
     /// How deep the JSON may nest.
     ///
-    /// §5.5's structure is three levels — the object, a section, one claim's
-    /// members — and a `values` array of JSON values adds a few more. Six is
-    /// generous for every shape the specification defines and refuses the
-    /// shapes it does not.
+    /// §5.5's structure is three levels. An IDA evidence type selector adds
+    /// a verification object, array entry, and type constraint; eight admits
+    /// that bounded shape while refusing deeper documents.
     ///
     /// This is not what keeps the parse off the stack: `serde_json` enforces
     /// its own recursion limit (128 by default, and the `unbounded_depth`
@@ -759,7 +870,7 @@ impl ClaimsRequest {
     /// measured, the document is already known to be shallow enough to walk.
     /// What this bound adds is a limit on what the server will *store* and
     /// copy, which is a different question from what it will parse.
-    pub const MAX_DEPTH: usize = 6;
+    pub const MAX_DEPTH: usize = 8;
 
     /// The most claims one section may name.
     pub const MAX_CLAIMS: usize = 64;

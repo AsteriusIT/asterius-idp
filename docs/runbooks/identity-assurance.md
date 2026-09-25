@@ -29,8 +29,16 @@ must request `verified_claims` in the authorization `claims` parameter under
 attribute, destination, and framework. The grant records that request;
 remembered consent cannot silently cover a different framework or attribute.
 
+The `claims` request may include a bounded `verification.evidence` array whose
+entries each have `{"type":{"value":"document"}}` (or another supported
+type), and `verification.verification_process: null`. The consent page names
+each selected evidence type and process reference. Evidence selectors that
+request nested document fields or unsupported filters are refused.
+
 The server selects a current, nonrevoked bundle in an allowed framework at each
 ID Token issuance and UserInfo response. It releases only requested attributes
 with `verification` provenance, without the internal verifier issuer,
-verification process reference, or evidence. Revoking a bundle removes it from later refresh ID Tokens and
+verification process reference, or evidence unless expressly requested and
+shown at consent. Only selected evidence type names are released; nested
+evidence details stay in the administrative record. Revoking a bundle removes it from later refresh ID Tokens and
 UserInfo responses. Already issued ID Tokens remain valid until their expiry.
