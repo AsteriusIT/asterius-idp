@@ -1914,6 +1914,50 @@ impl DeploymentUsers {
 
 #[async_trait::async_trait]
 impl AdminBackend for Deployment {
+    async fn federation_key_inventory(
+        &self,
+        tenant: &TenantId,
+    ) -> Result<serde_json::Value, DomainError> {
+        let keys = asterius_store_pg::PgFederationKeys::new(
+            self.store.pool().clone(),
+            Arc::clone(&self.kek),
+            self.audit(),
+        );
+        let records = keys.inventory(tenant).await?;
+        if records.is_empty() {
+            return Err(DomainError::NotFound);
+        }
+        Ok(serde_json::json!({
+            "rotation_period_seconds": asterius_store_pg::ROTATION_PERIOD.whole_seconds(),
+            "keys": records.into_iter().map(|record| serde_json::json!({
+                "kid": record.kid,
+                "state": record.state,
+                "public_jwk": asterius_admin_api::keys::public_members(&record.public_jwk),
+                "created_at": record.created_at.unix_timestamp(),
+                "activated_at": record.activated_at.map(time::OffsetDateTime::unix_timestamp),
+                "retired_at": record.retired_at.map(time::OffsetDateTime::unix_timestamp),
+            })).collect::<Vec<_>>()
+        }))
+    }
+
+    async fn federation_key_rotate(
+        &self,
+        tenant: &TenantId,
+        actor: &str,
+        now: time::OffsetDateTime,
+    ) -> Result<String, DomainError> {
+        let keys = asterius_store_pg::PgFederationKeys::new(
+            self.store.pool().clone(),
+            Arc::clone(&self.kek),
+            self.audit(),
+        );
+        if !keys.has_key(tenant).await? {
+            return Err(DomainError::NotFound);
+        }
+        keys.stage(tenant, asterius_domain::Actor::Admin(actor.to_owned()), now)
+            .await
+    }
+
     async fn invitation_statuses(
         &self,
         tenant: &TenantId,

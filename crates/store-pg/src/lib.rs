@@ -78,7 +78,9 @@ pub use device_codes::{
 pub use email_change::{ConfirmedEmailChange, PgEmailChangeRequests};
 pub use email_verification::PgEmailVerificationTokens;
 pub use error::to_domain_error;
-pub use federation_keys::{FederationKeySnapshot, PgFederationKeys};
+pub use federation_keys::{
+    FederationKeyRecord, FederationKeySnapshot, PgFederationKeys, ROTATION_PERIOD,
+};
 pub use grants::{PgGrantRepository, Revocation};
 pub use initial_access_tokens::PgInitialAccessTokens;
 pub use invitations::{

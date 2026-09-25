@@ -156,6 +156,10 @@ pub const KEYS_LIST_ID: &str = "keys.list";
 pub const KEYS_JWKS_ID: &str = "keys.jwks";
 /// The `operationId` of `POST /keys/rotate`.
 pub const KEYS_ROTATE_ID: &str = "keys.rotate";
+/// The `operationId` of `GET /federation/keys`.
+pub const FEDERATION_KEYS_LIST_ID: &str = "federation.keys.list";
+/// The `operationId` of `POST /federation/keys/rotate`.
+pub const FEDERATION_KEYS_ROTATE_ID: &str = "federation.keys.rotate";
 /// The `operationId` of `POST /keys/{kid}/retire`.
 pub const KEYS_RETIRE_ID: &str = "keys.retire";
 /// The `operationId` of `POST /keys/{kid}/purge`.
@@ -712,6 +716,24 @@ pub const KEYS_ROTATE: Operation = Operation::mutation(
     M::Post,
     A::new(R::Tenant, "admin.keys:write"),
     "Rotates a signing key now",
+);
+
+/// Lists only public Federation key material and lifecycle states.
+pub const FEDERATION_KEYS_LIST: Operation = Operation::read(
+    FEDERATION_KEYS_LIST_ID,
+    "/federation/keys",
+    S::Get,
+    A::new(R::Tenant, "admin.keys:read"),
+    "Lists this tenant's Federation signing keys",
+);
+
+/// Stages a successor while the existing key continues to sign.
+pub const FEDERATION_KEYS_ROTATE: Operation = Operation::mutation(
+    FEDERATION_KEYS_ROTATE_ID,
+    "/federation/keys/rotate",
+    M::Post,
+    A::new(R::Tenant, "admin.keys:write"),
+    "Stages a Federation signing key successor",
 );
 
 /// Takes one key out of the published set.
@@ -1630,7 +1652,7 @@ pub const SCIM_GROUP_DELETE: Operation = Operation::mutation(
     "Conditionally deletes one SCIM Group",
 );
 
-static REGISTRY: [Operation; 115] = [
+static REGISTRY: [Operation; 117] = [
     SESSION_READ,
     SESSION_END,
     OVERVIEW_USERS,
@@ -1669,6 +1691,8 @@ static REGISTRY: [Operation; 115] = [
     KEYS_LIST,
     KEYS_JWKS,
     KEYS_ROTATE,
+    FEDERATION_KEYS_LIST,
+    FEDERATION_KEYS_ROTATE,
     KEYS_RETIRE,
     KEYS_PURGE,
     KEYS_SCHEDULE,
