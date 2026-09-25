@@ -77,7 +77,8 @@ pub use entities::{
     SoftwareStatementIssuer, SoftwareStatementRule, SubjectError, SubjectType, Tenant, TenantIcon,
     TenantSettings, TenantSettingsError, TenantStatus, Theme, ThemeError, TlsClientAuthSubject,
     TokenBinding, TokenDeliveryMode, TokenEndpointAuthMethod, TokenLifetimes, User, UserId,
-    UserRole, UserStatus, Verification, VerifiedAddress, VerifiedClaims, VerifiedClaimsError,
+    UserRole, UserStatus, Verification, VerifiedAddress, VerifiedClaimName, VerifiedClaims,
+    VerifiedClaimsError,
 };
 pub use error::DomainError;
 pub use ids::{ClientId, GrantId, SessionId, SubjectId, TenantId, TenantIdError};

@@ -16,11 +16,41 @@ use crate::{ClaimName, Issuer, json_sentinel::names_a_serde_json_sentinel};
 /// The maximum number of claims in one verification record.
 pub const MAX_VERIFIED_CLAIMS: usize = 32;
 
+/// A person attribute eligible for an IDA verified-claims bundle.
+///
+/// Unlike ordinary [`ClaimName`], this can name `email` and
+/// `email_verified`. It cannot be inserted into an ordinary claim bag.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(transparent)]
+pub struct VerifiedClaimName(String);
+
+impl VerifiedClaimName {
+    /// Validate a verified attribute name without accepting token claims.
+    ///
+    /// # Errors
+    /// Returns an error for a server-issued or malformed name.
+    pub fn parse(raw: &str) -> Result<Self, VerifiedClaimsError> {
+        if !matches!(raw, "email" | "email_verified") {
+            ClaimName::parse(raw).map_err(|_| VerifiedClaimsError::ClaimName)?;
+        }
+        if raw == "verified_claims" {
+            return Err(VerifiedClaimsError::ClaimName);
+        }
+        Ok(Self(raw.to_owned()))
+    }
+
+    /// JSON member name.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// A verified set of identity attributes with its explicit provenance.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct VerifiedClaims {
     verification: Verification,
-    claims: BTreeMap<ClaimName, Value>,
+    claims: BTreeMap<VerifiedClaimName, Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -64,7 +94,7 @@ impl VerifiedClaims {
         let object = claims.as_object().ok_or(VerifiedClaimsError::ClaimValue)?;
         let mut validated = BTreeMap::new();
         for (raw, value) in object {
-            let name = ClaimName::parse(raw).map_err(|_| VerifiedClaimsError::ClaimName)?;
+            let name = VerifiedClaimName::parse(raw)?;
             validated.insert(name, value.clone());
         }
         Self::new(framework, verifier, time, validated)
@@ -72,7 +102,7 @@ impl VerifiedClaims {
 
     /// Construct a bundle after a trusted verifier has authenticated its
     /// assertion. Callers must not pass user-supplied verification metadata.
-    /// Claim names are already validated by [`ClaimName`], including refusal
+    /// Claim names are already validated by [`VerifiedClaimName`], including refusal
     /// of server-issued names such as `sub`, `iss` and `aud`.
     ///
     /// # Errors
@@ -82,7 +112,7 @@ impl VerifiedClaims {
         framework: &str,
         verifier: Issuer,
         time: OffsetDateTime,
-        claims: BTreeMap<ClaimName, Value>,
+        claims: BTreeMap<VerifiedClaimName, Value>,
     ) -> Result<Self, VerifiedClaimsError> {
         if framework.is_empty()
             || framework.len() > 128
@@ -95,11 +125,10 @@ impl VerifiedClaims {
         if !(1..=MAX_VERIFIED_CLAIMS).contains(&claims.len()) {
             return Err(VerifiedClaimsError::ClaimCount);
         }
-        if claims.iter().any(|(name, value)| {
-            name.base() == "verified_claims"
-                || value.is_null()
-                || names_a_serde_json_sentinel(value)
-        }) {
+        if claims
+            .values()
+            .any(|value| value.is_null() || names_a_serde_json_sentinel(value))
+        {
             return Err(VerifiedClaimsError::ClaimValue);
         }
         if serde_json::to_vec(&claims).map_or(true, |encoded| encoded.len() > 64 * 1024) {
@@ -130,7 +159,7 @@ impl VerifiedClaims {
 
     /// The attributes to be filtered by release policy.
     #[must_use]
-    pub const fn claims(&self) -> &BTreeMap<ClaimName, Value> {
+    pub const fn claims(&self) -> &BTreeMap<VerifiedClaimName, Value> {
         &self.claims
     }
 }
