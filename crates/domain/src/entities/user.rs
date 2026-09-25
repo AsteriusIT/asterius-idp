@@ -294,6 +294,7 @@ const SERVER_ISSUED: &[&str] = &[
     "scope",
     "sid",
     "sub",
+    "verified_claims",
 ];
 
 /// Claims [`User`] already carries in a field of its own.
