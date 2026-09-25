@@ -597,6 +597,19 @@ fn context_with<'a>(
     issued: &'a Issued,
     limits: LoginLimits,
 ) -> InteractionContext<'a> {
+    static TOTP_CREDENTIALS: std::sync::LazyLock<asterius_store_pg::PgTotpCredentials> =
+        std::sync::LazyLock::new(|| {
+            let pool = sqlx::postgres::PgPoolOptions::new()
+                .connect_lazy("postgres://unused:unused@localhost/unused")
+                .expect("a lazy PostgreSQL pool can be configured without connecting");
+            let key = asterius_jose::LocalKek::from_bytes(&[7; 32])
+                .expect("fixed test key has the required length");
+            asterius_store_pg::PgTotpCredentials::new(
+                pool,
+                TenantId::new("demo"),
+                std::sync::Arc::new(key),
+            )
+        });
     static THEME: std::sync::LazyLock<asterius_domain::Theme> =
         std::sync::LazyLock::new(asterius_domain::Theme::default);
     InteractionContext {
@@ -637,6 +650,7 @@ fn context_with<'a>(
         // what the setting defaults to (`ast-vae`). The gate is exercised where
         // it is on, in `crates/server/tests/email_verification.rs`.
         verification: None,
+        totp_credentials: &TOTP_CREDENTIALS,
     }
 }
 
