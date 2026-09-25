@@ -9,7 +9,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::AdminError;
-use asterius_domain::User;
+use asterius_domain::ScimUserState;
 use time::format_description::well_known::Rfc3339;
 
 /// SCIM media type required by RFC 7644 §3.1.
@@ -90,7 +90,8 @@ fn list(resources: &[Value], total: u64, start_index: u32) -> Value {
 /// # Errors
 ///
 /// Fails closed if persisted timestamps cannot be represented as RFC 3339.
-fn user_document(user: &User, base: &str) -> Result<Value, AdminError> {
+fn user_document(state: &ScimUserState, base: &str) -> Result<Value, AdminError> {
+    let user = &state.user;
     let created = user
         .created_at
         .format(&Rfc3339)
@@ -108,11 +109,15 @@ fn user_document(user: &User, base: &str) -> Result<Value, AdminError> {
             "resourceType": "User",
             "created": created,
             "lastModified": modified,
+            "version": format!("W/\"{}\"", state.revision),
             "location": format!("{base}/Users/{}", user.id.as_uuid()),
         },
     });
     if let Some(email) = &user.email {
         body["emails"] = json!([{"value": email, "type": "work", "primary": true}]);
+    }
+    if let Some(external_id) = &state.external_id {
+        body["externalId"] = json!(external_id);
     }
     Ok(body)
 }
@@ -122,10 +127,17 @@ fn user_document(user: &User, base: &str) -> Result<Value, AdminError> {
 /// # Errors
 ///
 /// Fails closed if persisted timestamps or the resource URI cannot be represented.
-pub fn user_response(user: &User, base: &str, status: StatusCode) -> Result<Response, AdminError> {
-    let mut response = response(status, user_document(user, base)?);
+pub fn user_response(
+    state: &ScimUserState,
+    base: &str,
+    status: StatusCode,
+) -> Result<Response, AdminError> {
+    let mut response = response(status, user_document(state, base)?);
+    let etag = HeaderValue::from_str(&format!("W/\"{}\"", state.revision))
+        .map_err(|_| AdminError::Unavailable)?;
+    response.headers_mut().insert(header::ETAG, etag);
     if status == StatusCode::CREATED {
-        let location = format!("{base}/Users/{}", user.id.as_uuid());
+        let location = format!("{base}/Users/{}", state.user.id.as_uuid());
         let value = HeaderValue::from_str(&location).map_err(|_| AdminError::Unavailable)?;
         response.headers_mut().insert(header::LOCATION, value);
     }
@@ -138,7 +150,7 @@ pub fn user_response(user: &User, base: &str, status: StatusCode) -> Result<Resp
 ///
 /// Fails closed if a persisted timestamp cannot be represented.
 pub fn users_list_response(
-    users: &[User],
+    users: &[ScimUserState],
     total: u64,
     start_index: u32,
     base: &str,
@@ -161,6 +173,8 @@ pub struct RequestedUser {
     pub schemas: Vec<String>,
     #[serde(rename = "userName")]
     pub user_name: String,
+    #[serde(default, rename = "externalId")]
+    pub external_id: Option<String>,
     #[serde(default = "default_active")]
     pub active: bool,
     #[serde(default)]
@@ -203,6 +217,18 @@ pub fn username_eq_filter(raw: &str) -> Result<String, AdminError> {
 }
 
 impl RequestedUser {
+    /// Client-controlled stable key, bounded before it reaches the database.
+    pub fn accepted_external_id(&self) -> Result<Option<&str>, AdminError> {
+        match self.external_id.as_deref() {
+            Some(value)
+                if value.is_empty() || value.len() > 256 || value.chars().any(char::is_control) =>
+            {
+                Err(AdminError::Invalid("invalid SCIM externalId".to_owned()))
+            }
+            other => Ok(other),
+        }
+    }
+
     /// Maps the protocol document into the existing account admission path.
     /// No SCIM input can set `email_verified` or a credential.
     ///

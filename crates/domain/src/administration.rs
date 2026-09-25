@@ -32,7 +32,7 @@
 use crate::entities::grant::Grant;
 use crate::entities::user::{User, UserStatus};
 use crate::error::DomainError;
-use crate::ids::{GrantId, TenantId};
+use crate::ids::{ClientId, GrantId, TenantId};
 use crate::{AcceptedPassword, AuthenticationMethod, UserId};
 use std::fmt::Debug;
 use time::OffsetDateTime;
@@ -157,6 +157,17 @@ pub struct NewAccount {
     pub password: Option<AcceptedPassword>,
 }
 
+/// SCIM's client-specific handle on an existing tenant account.
+#[derive(Debug, Clone)]
+pub struct ScimUserState {
+    /// The canonical account.
+    pub user: User,
+    /// Opaque identifier supplied by this provisioning client.
+    pub external_id: Option<String>,
+    /// Monotonic version changed by every account write, including console edits.
+    pub revision: i64,
+}
+
 /// Administering the accounts of one deployment (`ast-f7m.6`).
 ///
 /// One port rather than six handles, for the reason
@@ -166,6 +177,32 @@ pub struct NewAccount {
 /// and forget the second.
 #[async_trait::async_trait]
 pub trait UserAdministration: Debug + Send + Sync {
+    /// Reads a User and its SCIM version/external ID for one provisioning client.
+    async fn scim_find(
+        &self,
+        tenant: &TenantId,
+        client: &ClientId,
+        id: UserId,
+    ) -> Result<Option<ScimUserState>, DomainError>;
+
+    /// Atomically creates a credential-free user and claims its external ID.
+    async fn scim_create(
+        &self,
+        client: &ClientId,
+        user: User,
+        external_id: Option<&str>,
+    ) -> Result<ScimUserState, DomainError>;
+
+    /// One tenant page with each user's current SCIM version and this
+    /// client's external ID.
+    async fn scim_page(
+        &self,
+        tenant: &TenantId,
+        client: &ClientId,
+        offset: u32,
+        limit: u16,
+    ) -> Result<(u64, Vec<ScimUserState>), DomainError>;
+
     /// Exact tenant username lookup for SCIM's `userName eq` filter.
     async fn find_by_username(
         &self,

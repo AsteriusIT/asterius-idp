@@ -1266,6 +1266,46 @@ impl DeploymentUsers {
 
 #[async_trait::async_trait]
 impl asterius_domain::UserAdministration for DeploymentUsers {
+    async fn scim_page(
+        &self,
+        tenant: &TenantId,
+        client: &ClientId,
+        offset: u32,
+        limit: u16,
+    ) -> Result<(u64, Vec<asterius_domain::ScimUserState>), DomainError> {
+        self.store
+            .scope(tenant.clone())
+            .users(Arc::clone(&self.kek))
+            .scim_page(client, offset, limit)
+            .await
+    }
+
+    async fn scim_find(
+        &self,
+        tenant: &TenantId,
+        client: &ClientId,
+        id: UserId,
+    ) -> Result<Option<asterius_domain::ScimUserState>, DomainError> {
+        self.store
+            .scope(tenant.clone())
+            .users(Arc::clone(&self.kek))
+            .scim_find(client, id)
+            .await
+    }
+
+    async fn scim_create(
+        &self,
+        client: &ClientId,
+        user: asterius_domain::User,
+        external_id: Option<&str>,
+    ) -> Result<asterius_domain::ScimUserState, DomainError> {
+        self.store
+            .scope(user.tenant.clone())
+            .users(Arc::clone(&self.kek))
+            .scim_create(client, &user, external_id)
+            .await
+    }
+
     async fn find_by_username(
         &self,
         tenant: &TenantId,

@@ -37,7 +37,8 @@ use crate::salts;
 use asterius_domain::audit::{Actor, AuditEvent, AuditSink as _, Detail, EventType, Outcome};
 use asterius_domain::ports::TenantScoped;
 use asterius_domain::{
-    ClaimSet, DomainError, SectorIdentifier, SubjectId, TenantId, User, UserId, UserStatus,
+    ClaimSet, ClientId, DomainError, ScimUserState, SectorIdentifier, SubjectId, TenantId, User,
+    UserId, UserStatus,
 };
 use asterius_jose::Kek;
 use sqlx::postgres::PgPool;
@@ -86,6 +87,43 @@ struct Row {
     updated_at: OffsetDateTime,
 }
 
+#[derive(sqlx::FromRow)]
+struct ScimRow {
+    user_id: Uuid,
+    username: String,
+    email: Option<String>,
+    email_verified: bool,
+    status: String,
+    claims: serde_json::Value,
+    created_at: OffsetDateTime,
+    updated_at: OffsetDateTime,
+    scim_revision: i64,
+    external_id: Option<String>,
+}
+
+impl ScimRow {
+    fn into_state(self, tenant: &TenantId) -> Result<ScimUserState, DomainError> {
+        let revision = self.scim_revision;
+        let external_id = self.external_id;
+        let user = Row {
+            user_id: self.user_id,
+            username: self.username,
+            email: self.email,
+            email_verified: self.email_verified,
+            status: self.status,
+            claims: self.claims,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        }
+        .into_entity(tenant)?;
+        Ok(ScimUserState {
+            user,
+            external_id,
+            revision,
+        })
+    }
+}
+
 impl Row {
     /// Converts a row into an entity, re-validating what the schema cannot
     /// express.
@@ -115,6 +153,128 @@ impl Row {
 }
 
 impl PgUserRepository {
+    /// Bounded SCIM page with version and per-client external identifiers.
+    pub async fn scim_page(
+        &self,
+        client: &ClientId,
+        offset: u32,
+        limit: u16,
+    ) -> Result<(u64, Vec<ScimUserState>), DomainError> {
+        if offset > 10_000 || !(1..=200).contains(&limit) {
+            return Err(DomainError::invalid("page", "outside SCIM page bounds"));
+        }
+        let total: i64 = sqlx::query_scalar("select count(*) from users where tenant_id = $1")
+            .bind(self.tenant.as_str())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(to_domain_error)?;
+        let rows: Vec<ScimRow> = sqlx::query_as(
+            "select u.user_id, u.username, u.email, u.email_verified, u.status,
+                    u.claims, u.created_at, u.updated_at, u.scim_revision,
+                    e.external_id
+             from users u left join scim_user_external_ids e
+               on e.tenant_id = u.tenant_id and e.user_id = u.user_id
+              and e.client_id = $2
+             where u.tenant_id = $1
+             order by u.username, u.user_id offset $3 limit $4",
+        )
+        .bind(self.tenant.as_str())
+        .bind(client.as_str())
+        .bind(i64::from(offset))
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+        let states = rows
+            .into_iter()
+            .map(|row| row.into_state(&self.tenant))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((u64::try_from(total).unwrap_or(0), states))
+    }
+
+    /// Reads a canonical account with this client's SCIM metadata.
+    pub async fn scim_find(
+        &self,
+        client: &ClientId,
+        id: UserId,
+    ) -> Result<Option<ScimUserState>, DomainError> {
+        let row: Option<ScimRow> = sqlx::query_as(
+            "select u.user_id, u.username, u.email, u.email_verified, u.status,
+                    u.claims, u.created_at, u.updated_at, u.scim_revision,
+                    e.external_id
+             from users u left join scim_user_external_ids e
+               on e.tenant_id = u.tenant_id and e.user_id = u.user_id
+              and e.client_id = $3
+             where u.tenant_id = $1 and u.user_id = $2",
+        )
+        .bind(self.tenant.as_str())
+        .bind(id.as_uuid())
+        .bind(client.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+        row.map(|row| row.into_state(&self.tenant)).transpose()
+    }
+
+    /// Creates a credential-free account and its client-owned external ID in
+    /// one transaction. A uniqueness conflict rolls back both records.
+    pub async fn scim_create(
+        &self,
+        client: &ClientId,
+        user: &User,
+        external_id: Option<&str>,
+    ) -> Result<ScimUserState, DomainError> {
+        if user.tenant != self.tenant {
+            return Err(DomainError::invalid("tenant_id", "does not match scope"));
+        }
+        let claims = serde_json::to_value(&user.claims)
+            .map_err(|error| DomainError::invalid("claims", error.to_string()))?;
+        let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
+        sqlx::query(
+            "insert into users (tenant_id, user_id, username, email,
+                                email_verified, status, claims)
+             values ($1, $2, $3, $4, false, $5, $6)",
+        )
+        .bind(self.tenant.as_str())
+        .bind(user.id.as_uuid())
+        .bind(&user.username)
+        .bind(&user.email)
+        .bind(user.status.as_str())
+        .bind(claims)
+        .execute(&mut *tx)
+        .await
+        .map_err(to_domain_error)?;
+        sqlx::query(
+            "insert into scim_user_external_ids
+             (tenant_id, client_id, user_id, external_id)
+             values ($1, $2, $3, $4)",
+        )
+        .bind(self.tenant.as_str())
+        .bind(client.as_str())
+        .bind(user.id.as_uuid())
+        .bind(external_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(to_domain_error)?;
+        let row: ScimRow = sqlx::query_as(
+            "select u.user_id, u.username, u.email, u.email_verified, u.status,
+                    u.claims, u.created_at, u.updated_at, u.scim_revision,
+                    e.external_id
+             from users u join scim_user_external_ids e
+               on e.tenant_id = u.tenant_id and e.user_id = u.user_id
+              and e.client_id = $3
+             where u.tenant_id = $1 and u.user_id = $2",
+        )
+        .bind(self.tenant.as_str())
+        .bind(user.id.as_uuid())
+        .bind(client.as_str())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(to_domain_error)?;
+        tx.commit().await.map_err(to_domain_error)?;
+        row.into_state(&self.tenant)
+    }
+
     /// One bounded SCIM offset page and the tenant's total account count.
     /// Offset pagination is capped at 10,000 so a remote client cannot force
     /// an arbitrarily deep index walk with one request.

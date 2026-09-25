@@ -488,6 +488,15 @@ struct Handling<'a> {
 }
 
 impl Handling<'_> {
+    fn scim_client(&self) -> Result<asterius_domain::ClientId, AdminError> {
+        match self.principal {
+            Principal::Automation { subject, .. } => {
+                Ok(asterius_domain::ClientId::new(subject.clone()))
+            }
+            Principal::Console { .. } => Err(AdminError::Forbidden),
+        }
+    }
+
     async fn scim_list_users(&self) -> Result<Response, AdminError> {
         let mut start_index = None;
         let mut count = None;
@@ -534,7 +543,20 @@ impl Handling<'_> {
                 .map_err(|error| AdminError::from_storage(crate::SCIM_USERS_LIST_ID, &error))?;
             let total = u64::from(matched.is_some());
             let users = if start_index == 1 {
-                matched.into_iter().collect()
+                match matched {
+                    Some(user) => self
+                        .state
+                        .backend
+                        .users()
+                        .scim_find(&self.tenant.id, &self.scim_client()?, user.id)
+                        .await
+                        .map_err(|error| {
+                            AdminError::from_storage(crate::SCIM_USERS_LIST_ID, &error)
+                        })?
+                        .into_iter()
+                        .collect(),
+                    None => Vec::new(),
+                }
             } else {
                 Vec::new()
             };
@@ -543,7 +565,12 @@ impl Handling<'_> {
             self.state
                 .backend
                 .users()
-                .page(&self.tenant.id, start_index - 1, count.max(1))
+                .scim_page(
+                    &self.tenant.id,
+                    &self.scim_client()?,
+                    start_index - 1,
+                    count.max(1),
+                )
                 .await
                 .map_err(|error| AdminError::from_storage(crate::SCIM_USERS_LIST_ID, &error))?
         };
@@ -570,16 +597,16 @@ impl Handling<'_> {
             .and_then(|segment| uuid::Uuid::parse_str(segment).ok())
             .map(asterius_domain::UserId::new)
             .ok_or(AdminError::NotFound)?;
-        let user = self
+        let state = self
             .state
             .backend
             .users()
-            .find(&self.tenant.id, id)
+            .scim_find(&self.tenant.id, &self.scim_client()?, id)
             .await
             .map_err(|error| AdminError::from_storage(crate::SCIM_USER_READ_ID, &error))?
             .ok_or(AdminError::NotFound)?;
         scim::user_response(
-            &user,
+            &state,
             &format!(
                 "{}{}/scim/v2",
                 self.tenant.issuer.as_str(),
@@ -595,19 +622,23 @@ impl Handling<'_> {
         if !requested.active {
             account.user.status = asterius_domain::UserStatus::Disabled;
         }
-        let stored =
-            self.state
-                .backend
-                .users()
-                .create(account)
-                .await
-                .map_err(|error| match error {
-                    DomainError::Conflict(message) => AdminError::Conflict(message),
-                    other => AdminError::from_storage(crate::SCIM_USER_CREATE_ID, &other),
-                })?;
+        let stored = self
+            .state
+            .backend
+            .users()
+            .scim_create(
+                &self.scim_client()?,
+                account.user,
+                requested.accepted_external_id()?,
+            )
+            .await
+            .map_err(|error| match error {
+                DomainError::Conflict(message) => AdminError::Conflict(message),
+                other => AdminError::from_storage(crate::SCIM_USER_CREATE_ID, &other),
+            })?;
         self.record_about(
             EventType::USER_CREATED,
-            &stored.id,
+            &stored.user.id,
             Detail::new()
                 .label("operation", crate::SCIM_USER_CREATE_ID)
                 .flag("scim", true)
@@ -6382,6 +6413,76 @@ mod tests {
     /// What is counted here is the promise the port makes to this crate.
     #[async_trait::async_trait]
     impl asterius_domain::UserAdministration for Handle {
+        async fn scim_page(
+            &self,
+            tenant: &TenantId,
+            _client: &asterius_domain::ClientId,
+            offset: u32,
+            limit: u16,
+        ) -> Result<(u64, Vec<asterius_domain::ScimUserState>), DomainError> {
+            let mut users: Vec<_> = self
+                .0
+                .accounts
+                .lock()
+                .expect("an uncontended lock")
+                .iter()
+                .filter(|user| &user.tenant == tenant)
+                .cloned()
+                .collect();
+            users.sort_by(|a, b| a.username.cmp(&b.username));
+            let total = u64::try_from(users.len()).unwrap_or(0);
+            let states = users
+                .into_iter()
+                .skip(usize::try_from(offset).unwrap_or(usize::MAX))
+                .take(usize::from(limit))
+                .map(|user| asterius_domain::ScimUserState {
+                    user,
+                    external_id: None,
+                    revision: 1,
+                })
+                .collect();
+            Ok((total, states))
+        }
+
+        async fn scim_find(
+            &self,
+            tenant: &TenantId,
+            _client: &asterius_domain::ClientId,
+            id: UserId,
+        ) -> Result<Option<asterius_domain::ScimUserState>, DomainError> {
+            Ok(self
+                .0
+                .accounts
+                .lock()
+                .expect("an uncontended lock")
+                .iter()
+                .find(|user| &user.tenant == tenant && user.id == id)
+                .cloned()
+                .map(|user| asterius_domain::ScimUserState {
+                    user,
+                    external_id: None,
+                    revision: 1,
+                }))
+        }
+
+        async fn scim_create(
+            &self,
+            _client: &asterius_domain::ClientId,
+            user: asterius_domain::User,
+            external_id: Option<&str>,
+        ) -> Result<asterius_domain::ScimUserState, DomainError> {
+            self.0
+                .accounts
+                .lock()
+                .expect("an uncontended lock")
+                .push(user.clone());
+            Ok(asterius_domain::ScimUserState {
+                user,
+                external_id: external_id.map(str::to_owned),
+                revision: 1,
+            })
+        }
+
         async fn find_by_username(
             &self,
             tenant: &TenantId,
