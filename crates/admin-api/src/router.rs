@@ -1857,6 +1857,11 @@ impl Handling<'_> {
                     .allow_non_fapi_clients
                     .unwrap_or(previous.allows_non_fapi_clients()),
             )
+            .with_ephemeral_subjects(
+                requested
+                    .allow_ephemeral_subjects
+                    .unwrap_or(previous.allows_ephemeral_subjects()),
+            )
             .with_ida_frameworks(
                 requested
                     .ida_frameworks
@@ -3147,6 +3152,13 @@ impl Handling<'_> {
             .settings(&self.tenant.id)
             .await
             .map_err(|error| AdminError::from_storage(operation, &error))?;
+        if registration.subject_type == asterius_domain::SubjectType::Ephemeral
+            && !settings.allows_ephemeral_subjects()
+        {
+            return Err(AdminError::Invalid(
+                "subject_type: ephemeral is disabled for this tenant".to_owned(),
+            ));
+        }
         settings
             .registration()
             .evaluate(registration)
@@ -5239,6 +5251,9 @@ struct RequestedSettings {
     /// Tenant-level permission for explicit per-client OIDC profile opt-ins.
     #[serde(default)]
     allow_non_fapi_clients: Option<bool>,
+    /// Permit per-authorization ephemeral subject clients.
+    #[serde(default)]
+    allow_ephemeral_subjects: Option<bool>,
     /// Frameworks whose verified claims may be released to relying parties.
     #[serde(default)]
     ida_frameworks: Option<Vec<String>>,
@@ -5283,6 +5298,7 @@ fn render_settings(tenant: &TenantId, settings: &TenantSettings) -> serde_json::
         "messages": settings.messages().to_json(),
         "always_ask_consent": settings.always_ask_consent(),
         "allow_non_fapi_clients": settings.allows_non_fapi_clients(),
+        "allow_ephemeral_subjects": settings.allows_ephemeral_subjects(),
         "ida_frameworks": settings.ida_frameworks(),
         "session_policy": settings.session_policy().unwrap_or_default().to_json(),
 

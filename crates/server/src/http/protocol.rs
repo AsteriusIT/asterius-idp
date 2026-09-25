@@ -1084,6 +1084,10 @@ async fn discovery(
         grant_management,
         settings.allows_non_fapi_clients(),
     );
+    if settings.allows_ephemeral_subjects() && settings.allows_non_fapi_clients() {
+        document["subject_types_supported"] =
+            serde_json::json!(["public", "pairwise", "ephemeral"]);
+    }
     if capabilities.token_exchange
         && state.clients.as_ref().is_some_and(|endpoints| {
             endpoints
@@ -4761,6 +4765,7 @@ async fn interaction_show(
             grants: &grants,
             grant_amendments,
             memory,
+            ephemeral_subjects_allowed: settings.allows_ephemeral_subjects(),
             authorization_details_types: Some(&detail_types),
             codes: &codes,
             subjects: &users,
@@ -4886,6 +4891,7 @@ async fn interaction_submit(
             grants: &grants,
             grant_amendments,
             memory,
+            ephemeral_subjects_allowed: settings.allows_ephemeral_subjects(),
             authorization_details_types: Some(&detail_types),
             codes: &codes,
             subjects: &users,

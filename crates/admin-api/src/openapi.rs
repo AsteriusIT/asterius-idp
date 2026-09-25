@@ -230,7 +230,8 @@ fn operation_object(operation: &Operation) -> Value {
                     "acr_policy": {"$ref": "#/components/schemas/AcrPolicy"},
                     "session_policy": {"$ref": "#/components/schemas/SessionPolicy"},
                     "rate_limits": {"$ref": "#/components/schemas/TenantRateLimits"},
-                    "ida_frameworks": {"type": "array", "maxItems": 16, "uniqueItems": true, "items": {"type": "string", "maxLength": 128}}
+                    "ida_frameworks": {"type": "array", "maxItems": 16, "uniqueItems": true, "items": {"type": "string", "maxLength": 128}},
+                    "allow_ephemeral_subjects": {"type": "boolean"}
                 },
                 "description": "Omitted policies retain stored values. Updates are tenant-scoped and audited. Assurance replicas refresh within 30 seconds; session and rate-limit enforcement read committed settings directly."
             }}}
@@ -241,7 +242,8 @@ fn operation_object(operation: &Operation) -> Value {
             "type": "object", "properties": { "acr_policy": {"$ref": "#/components/schemas/AcrPolicy"},
                     "session_policy": {"$ref": "#/components/schemas/SessionPolicy"},
                     "rate_limits": {"$ref": "#/components/schemas/TenantRateLimits"},
-                    "ida_frameworks": {"type": "array", "items": {"type": "string"}} }
+                    "ida_frameworks": {"type": "array", "items": {"type": "string"}},
+                    "allow_ephemeral_subjects": {"type": "boolean"} }
         });
     }
     client_resources_documentation(operation, &mut object);

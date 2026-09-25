@@ -161,6 +161,21 @@ string_id!(
     /// The `sub` claim value as seen by one client (public or pairwise).
     SubjectId
 );
+impl SubjectId {
+    /// Draw a fresh, unlinkable subject for one authentication request.
+    ///
+    /// The Ephemeral Subject Identifier draft requires at most 2^-128 guessing
+    /// probability and recommends 160 bits. A 256-bit OS CSPRNG draw also
+    /// makes accidental reuse infeasible across workers and restarts. Callers
+    /// must persist the result on the grant so refresh and UserInfo agree with
+    /// the ID Token issued for that one authorization.
+    #[must_use]
+    pub fn mint_ephemeral() -> Self {
+        let drawn = crate::OpaqueToken::generate_bits::<256>();
+        Self::new(drawn.expose().to_owned())
+    }
+}
+
 string_id!(
     /// A revocable grant that every issued token links back to.
     GrantId

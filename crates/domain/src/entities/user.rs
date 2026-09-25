@@ -849,6 +849,11 @@ impl SectorIdentifier {
     /// registration says `pairwise`. Such a client has to name a
     /// `sector_identifier_uri`.
     pub fn of_client(client: &Client) -> Result<Self, SubjectError> {
+        if client.registration.subject_type == SubjectType::Ephemeral {
+            return Err(SubjectError::Sector(
+                "ephemeral subjects have no stable sector",
+            ));
+        }
         if client.registration.subject_type == SubjectType::Public {
             return Ok(Self::public());
         }

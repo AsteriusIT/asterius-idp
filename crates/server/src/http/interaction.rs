@@ -130,6 +130,8 @@ pub struct InteractionContext<'a> {
     /// Whether this tenant remembers a consent it already has, and for how long
     /// it remembers an `offline_access` one.
     pub memory: MemoryPolicy,
+    /// Live tenant opt-in for per-authorization ephemeral subjects.
+    pub ephemeral_subjects_allowed: bool,
     /// Where the code that carries it is stored.
     ///
     /// The issuing half only. This handler has no way to *redeem* a code, and
@@ -1817,18 +1819,25 @@ async fn mint(
     };
     let session = session_for_consent(context, digest, request, now).await?;
 
-    // OIDC Core §8.1. A pairwise client sees its own sector's `sub`; a public
-    // one sees the sector every public subject shares.
-    let Ok(sector) = SectorIdentifier::of_client(&client) else {
-        tracing::error!(tenant = %context.tenant.id, "this client has no sector to identify in");
-        return Err("server_error");
-    };
     let user = UserId::new(session.user);
-    let subject = match context.subjects.subject(user, &sector).await {
-        Ok(subject) => subject,
-        Err(error) => {
-            tracing::error!(%error, tenant = %context.tenant.id, "cannot resolve a subject");
+    let subject = if client.registration.subject_type == asterius_domain::SubjectType::Ephemeral {
+        if !context.ephemeral_subjects_allowed {
+            return Err("access_denied");
+        }
+        // Draw once, at grant creation, and persist it on the grant. Refresh
+        // and UserInfo read that row; a later authorization draws a new value.
+        asterius_domain::SubjectId::mint_ephemeral()
+    } else {
+        let Ok(sector) = SectorIdentifier::of_client(&client) else {
+            tracing::error!(tenant = %context.tenant.id, "this client has no sector to identify in");
             return Err("server_error");
+        };
+        match context.subjects.subject(user, &sector).await {
+            Ok(subject) => subject,
+            Err(error) => {
+                tracing::error!(%error, tenant = %context.tenant.id, "cannot resolve a subject");
+                return Err("server_error");
+            }
         }
     };
 
@@ -1890,6 +1899,13 @@ async fn mint(
     // request named instead of creating a new one, and the client keeps the
     // `grant_id` it already had. `create`, and every request that asked for
     // nothing, take the path this server has always taken.
+    if client.registration.subject_type == asterius_domain::SubjectType::Ephemeral
+        && request.parameters.get("grant_id").is_some()
+    {
+        // An amended grant would keep its earlier sub or replace it with a
+        // later one. Neither is a fresh subject for one authorization.
+        return Err("invalid_request");
+    }
     let amendment = amended(context, &request.parameters, &mut grant, user, now).await?;
     let grant_id = if let Some(existing) = amendment {
         existing

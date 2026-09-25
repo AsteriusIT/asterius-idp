@@ -631,6 +631,7 @@ fn context_with<'a>(
         // deployment without one shows a rich authorization by type name.
         authorization_details_types: None,
         memory: asterius_oidc::consent_memory::MemoryPolicy::default(),
+        ephemeral_subjects_allowed: false,
         codes: &issued.codes,
         subjects: &FakeSubjects,
         code_lifetime: asterius_oidc::code::DEFAULT_LIFETIME,

@@ -521,6 +521,8 @@ pub enum SubjectType {
     Public,
     /// A `sub` per sector, so two clients cannot correlate a user by it.
     Pairwise,
+    /// A fresh `sub` for every authentication request.
+    Ephemeral,
 }
 
 impl SubjectType {
@@ -530,6 +532,7 @@ impl SubjectType {
         match self {
             Self::Public => "public",
             Self::Pairwise => "pairwise",
+            Self::Ephemeral => "ephemeral",
         }
     }
 
@@ -539,6 +542,7 @@ impl SubjectType {
         match value {
             "public" => Some(Self::Public),
             "pairwise" => Some(Self::Pairwise),
+            "ephemeral" => Some(Self::Ephemeral),
             _ => None,
         }
     }
@@ -1717,6 +1721,20 @@ impl ClientMetadata {
             }
         }
         let (subject_type, sector_identifier_uri) = self.subject(&redirect_uris)?;
+        if subject_type == SubjectType::Ephemeral
+            && (compliance_profile != ClientComplianceProfile::Public
+                || grant_types.iter().any(|grant| {
+                    !matches!(
+                        grant,
+                        GrantType::AuthorizationCode | GrantType::RefreshToken
+                    )
+                }))
+        {
+            return Err(ClientMetadataError::rejected(
+                "subject_type",
+                "ephemeral requires a public authorization-code client",
+            ));
+        }
         let token_binding = self.token_binding(capabilities, compliance_profile)?;
         let backchannel = self.backchannel(&grant_types)?;
         check_ciba_sector(
@@ -2364,12 +2382,20 @@ impl ClientMetadata {
         let subject_type = match self.subject_type.as_deref() {
             None => SubjectType::default(),
             Some(raw) => SubjectType::parse(raw).ok_or_else(|| {
-                ClientMetadataError::rejected("subject_type", "must be `public` or `pairwise`")
+                ClientMetadataError::rejected(
+                    "subject_type",
+                    "must be `public`, `pairwise` or `ephemeral`",
+                )
             })?,
         };
 
         let sector = self.sector_identifier_uri.as_deref().map(str::trim);
         match (subject_type, sector) {
+            (SubjectType::Ephemeral, Some(_)) => Err(ClientMetadataError::rejected(
+                FIELD,
+                "is not meaningful for an ephemeral subject",
+            )),
+            (SubjectType::Ephemeral, None) => Ok((subject_type, None)),
             (SubjectType::Public, Some(_)) => {
                 // The sector identifier is only consulted when computing a
                 // pairwise `sub` (OIDC Core §8.1). Stored against a public
