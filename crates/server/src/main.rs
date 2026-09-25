@@ -2,7 +2,7 @@
 #![forbid(unsafe_code)]
 
 use asterius_domain::ports::TenantRepository as _;
-use asterius_domain::{Argon2Parameters, Lifetimes, ReplayGuard, Secret, TokenLifetimes};
+use asterius_domain::{Actor, Argon2Parameters, Lifetimes, ReplayGuard, Secret, TokenLifetimes};
 use asterius_domain::{Feature, Tenant, TenantStatus};
 use asterius_jose::client_keys::ClientKeyCache;
 use asterius_jose::kek::Kek;
@@ -107,9 +107,17 @@ fn federation_rotate(path: &std::path::Path, tenant: &str) -> Result<(), String>
         )
         .await
         .map_err(|error| format!("cannot connect to the database: {error}"))?;
-        let keys = PgFederationKeys::new(store.pool().clone(), kek);
+        let keys = PgFederationKeys::new(
+            store.pool().clone(),
+            kek,
+            Arc::new(PgAuditSink::new(store.pool().clone())),
+        );
         let kid = keys
-            .stage(&tenant, OffsetDateTime::now_utc())
+            .stage(
+                &tenant,
+                Actor::Admin("local-cli".to_owned()),
+                OffsetDateTime::now_utc(),
+            )
             .await
             .map_err(|error| error.to_string())?;
         println!("Federation key {kid} staged; it becomes active after six minutes");
@@ -228,7 +236,11 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
             &config.tenants,
             keys.as_ref(),
             outbound_https.clone(),
-            PgFederationKeys::new(store.pool().clone(), Arc::clone(&kek)),
+            PgFederationKeys::new(
+                store.pool().clone(),
+                Arc::clone(&kek),
+                Arc::new(PgAuditSink::new(store.pool().clone())),
+            ),
         )
         .await?;
         let federation_for_sweep = federation.clone();

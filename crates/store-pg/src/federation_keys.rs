@@ -1,5 +1,6 @@
 //! KEK-wrapped, tenant-scoped Federation signing key lifecycle.
 use crate::error::to_domain_error;
+use asterius_domain::audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
 use asterius_domain::{DomainError, TenantId, keys::SigningAlgorithm};
 use asterius_jose::{Kek, KeyBinding, RowSecret, SigningKey, WrappedKey, thumbprint};
 use serde_json::Value;
@@ -14,6 +15,7 @@ const RETIREMENT: Duration = Duration::minutes(10);
 pub struct PgFederationKeys {
     pool: PgPool,
     kek: Arc<dyn Kek>,
+    audit: Arc<dyn AuditSink>,
 }
 
 #[derive(Debug)]
@@ -25,8 +27,8 @@ pub struct FederationKeySnapshot {
 
 impl PgFederationKeys {
     #[must_use]
-    pub const fn new(pool: PgPool, kek: Arc<dyn Kek>) -> Self {
-        Self { pool, kek }
+    pub const fn new(pool: PgPool, kek: Arc<dyn Kek>, audit: Arc<dyn AuditSink>) -> Self {
+        Self { pool, kek, audit }
     }
 
     pub async fn has_key(&self, tenant: &TenantId) -> Result<bool, DomainError> {
@@ -78,6 +80,7 @@ impl PgFederationKeys {
     pub async fn stage(
         &self,
         tenant: &TenantId,
+        actor: Actor,
         now: OffsetDateTime,
     ) -> Result<String, DomainError> {
         let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
@@ -107,6 +110,7 @@ impl PgFederationKeys {
         let key = SigningKey::generate(SigningAlgorithm::EdDsa).map_err(storage)?;
         let kid = self.insert(&mut tx, tenant, &key, "pending", now).await?;
         tx.commit().await.map_err(to_domain_error)?;
+        self.record(tenant, actor, now, "staged", &kid).await?;
         Ok(kid)
     }
 
@@ -120,15 +124,39 @@ impl PgFederationKeys {
             .map_err(to_domain_error)?;
         let pending: Option<String> = sqlx::query_scalar("select kid from federation_signing_keys where tenant_id = $1 and state = 'pending' and created_at <= $2")
             .bind(tenant.as_str()).bind(now - PROPAGATION).fetch_optional(&mut *tx).await.map_err(to_domain_error)?;
-        if let Some(kid) = pending {
+        if let Some(kid) = &pending {
             sqlx::query("update federation_signing_keys set state = 'retiring', retired_at = $2 where tenant_id = $1 and state = 'active'")
                 .bind(tenant.as_str()).bind(now).execute(&mut *tx).await.map_err(to_domain_error)?;
             sqlx::query("update federation_signing_keys set state = 'active', activated_at = $3 where tenant_id = $1 and kid = $2 and state = 'pending'")
                 .bind(tenant.as_str()).bind(kid).bind(now).execute(&mut *tx).await.map_err(to_domain_error)?;
         }
-        sqlx::query("update federation_signing_keys set state = 'retired' where tenant_id = $1 and state = 'retiring' and retired_at <= $2")
-            .bind(tenant.as_str()).bind(now - RETIREMENT).execute(&mut *tx).await.map_err(to_domain_error)?;
-        tx.commit().await.map_err(to_domain_error)
+        let retired = sqlx::query("update federation_signing_keys set state = 'retired' where tenant_id = $1 and state = 'retiring' and retired_at <= $2")
+            .bind(tenant.as_str()).bind(now - RETIREMENT).execute(&mut *tx).await.map_err(to_domain_error)?.rows_affected();
+        tx.commit().await.map_err(to_domain_error)?;
+        if let Some(kid) = pending {
+            self.record(tenant, Actor::System, now, "activated", &kid)
+                .await?;
+        }
+        if retired > 0 {
+            self.audit
+                .record(
+                    AuditEvent::new(
+                        tenant.clone(),
+                        EventType::KEY_ROTATED,
+                        Outcome::Success,
+                        Actor::System,
+                        now,
+                    )
+                    .detail(
+                        Detail::new()
+                            .label("purpose", "federation")
+                            .label("action", "retired")
+                            .number("count", i64::try_from(retired).unwrap_or(i64::MAX)),
+                    ),
+                )
+                .await?;
+        }
+        Ok(())
     }
 
     pub async fn snapshot(&self, tenant: &TenantId) -> Result<FederationKeySnapshot, DomainError> {
@@ -199,6 +227,33 @@ impl PgFederationKeys {
             .bind(tenant.as_str()).bind(&kid).bind(jwk).bind(wrapped.ciphertext()).bind(wrapped.nonce()).bind(wrapped.kek_id()).bind(state).bind(now).bind((state == "active").then_some(now))
             .execute(&mut **tx).await.map_err(to_domain_error)?;
         Ok(kid)
+    }
+
+    async fn record(
+        &self,
+        tenant: &TenantId,
+        actor: Actor,
+        now: OffsetDateTime,
+        action: &'static str,
+        kid: &str,
+    ) -> Result<(), DomainError> {
+        self.audit
+            .record(
+                AuditEvent::new(
+                    tenant.clone(),
+                    EventType::KEY_ROTATED,
+                    Outcome::Success,
+                    actor,
+                    now,
+                )
+                .detail(
+                    Detail::new()
+                        .label("purpose", "federation")
+                        .label("action", action)
+                        .credential("kid", kid),
+                ),
+            )
+            .await
     }
 }
 
