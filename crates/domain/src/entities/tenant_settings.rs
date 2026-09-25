@@ -256,6 +256,8 @@ pub struct TenantSettings {
     /// tenant. This is only the tenant-level permission; every application
     /// must still opt in independently.
     allow_non_fapi_clients: bool,
+    /// Explicit permission for per-authorization ephemeral subject clients.
+    allow_ephemeral_subjects: bool,
     session_policy: Option<crate::entities::session::SessionPolicy>,
 
     ida_frameworks: BTreeSet<String>,
@@ -283,6 +285,7 @@ impl Default for TenantSettings {
             require_verified_email: false,
             always_ask_consent: false,
             allow_non_fapi_clients: false,
+            allow_ephemeral_subjects: false,
             session_policy: None,
 
             ida_frameworks: BTreeSet::new(),
@@ -398,6 +401,7 @@ impl TenantSettings {
             require_verified_email: false,
             always_ask_consent: false,
             allow_non_fapi_clients: false,
+            allow_ephemeral_subjects: false,
             session_policy: None,
 
             ida_frameworks: BTreeSet::new(),
@@ -559,6 +563,19 @@ impl TenantSettings {
         self.allow_non_fapi_clients
     }
 
+    /// Whether this tenant permits ephemeral subject registrations and use.
+    #[must_use]
+    pub const fn allows_ephemeral_subjects(&self) -> bool {
+        self.allow_ephemeral_subjects
+    }
+
+    /// Opt in to per-authorization ephemeral subject identifiers.
+    #[must_use]
+    pub const fn with_ephemeral_subjects(mut self, allowed: bool) -> Self {
+        self.allow_ephemeral_subjects = allowed;
+        self
+    }
+
     /// Whether ending a session here also revokes the refresh tokens issued
     /// under it (`ast-o4u.2`).
     ///
@@ -671,6 +688,7 @@ impl TenantSettings {
             "require_verified_email": self.require_verified_email,
             "always_ask_consent": self.always_ask_consent,
             "allow_non_fapi_clients": self.allow_non_fapi_clients,
+            "allow_ephemeral_subjects": self.allow_ephemeral_subjects,
             "session_policy": self.session_policy.map(crate::entities::session::SessionPolicy::to_json),
 
             "ida_frameworks": self.ida_frameworks,
@@ -811,6 +829,12 @@ impl TenantSettings {
             Some(_) => return Err(TenantSettingsError::NotABoolean("allow_non_fapi_clients")),
         };
 
+        let allow_ephemeral_subjects = match object.get("allow_ephemeral_subjects") {
+            None | Some(serde_json::Value::Null) => false,
+            Some(serde_json::Value::Bool(allowed)) => *allowed,
+            Some(_) => return Err(TenantSettingsError::NotABoolean("allow_ephemeral_subjects")),
+        };
+
         let ida_frameworks = match object.get("ida_frameworks") {
             None | Some(serde_json::Value::Null) => BTreeSet::new(),
             Some(serde_json::Value::Array(names)) => names
@@ -834,6 +858,7 @@ impl TenantSettings {
             .requiring_a_verified_email(require_verified_email)
             .with_always_ask_consent(always_ask_consent)
             .with_non_fapi_clients(allow_non_fapi_clients)
+            .with_ephemeral_subjects(allow_ephemeral_subjects)
             .with_session_policy(crate::entities::session::SessionPolicy::from_json(
                 object.get("session_policy"),
             )?)

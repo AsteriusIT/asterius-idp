@@ -399,3 +399,13 @@ chmod 400 /etc/asterius/kek
 # An initial access token: 128 bits of entropy, base64url, unpadded.
 head -c 16 /dev/urandom | basenc --base64url | tr -d '='
 ```
+
+## Ephemeral OIDC subject identifiers
+
+A tenant administrator may set both `allow_non_fapi_clients` and
+`allow_ephemeral_subjects` to `true`, then create a public authorization-code
+client with `subject_type: "ephemeral"`. Dynamic registration continues to
+reject this profile. Each authorization draws a fresh 256-bit random `sub`;
+the grant retains it for refresh and UserInfo. Turning the tenant setting off
+blocks new authorizations, while existing grants retain their issued subject.
+Consent memory never bypasses the screen for an ephemeral client.
