@@ -6062,7 +6062,9 @@ mod tests {
             client_id: &asterius_domain::ClientId,
             _issuer: &str,
         ) -> Result<serde_json::Value, DomainError> {
-            self.find(tenant, client_id).await?.ok_or(DomainError::NotFound)?;
+            self.find(tenant, client_id)
+                .await?
+                .ok_or(DomainError::NotFound)?;
             Ok(serde_json::json!({"checks": []}))
         }
 
