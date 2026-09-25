@@ -166,6 +166,7 @@ fn routes_over(
 
     let directory = TenantDirectory::new(Arc::new(OneTenant(tenant())));
     let routes = protocol::routes(ProtocolState {
+        federation: Default::default(),
         keys: Arc::clone(keys) as Arc<dyn KeyStore>,
         capabilities,
         tenant_settings: settings,

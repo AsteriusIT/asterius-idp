@@ -19,6 +19,7 @@ async-trait.workspace = true
 uuid.workspace = true
 time.workspace = true
 asterius-jose.workspace = true
+zeroize.workspace = true
 asterius-oidc.workspace = true
 asterius-ssf.workspace = true
 asterius-store-pg.workspace = true

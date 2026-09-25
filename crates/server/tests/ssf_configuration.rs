@@ -132,6 +132,7 @@ fn server_with(capabilities: Capabilities, settings: Option<SettingsDirectory>) 
 
     let directory = TenantDirectory::new(Arc::new(OneTenant(tenant)));
     let routes = protocol::routes(ProtocolState {
+        federation: Default::default(),
         keys: Arc::clone(&keys) as Arc<dyn KeyStore>,
         capabilities,
         tenant_settings: settings,

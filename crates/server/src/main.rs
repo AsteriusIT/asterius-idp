@@ -10,6 +10,7 @@ use asterius_jose::{CompositeKek, LocalKek};
 use asterius_oidc::par;
 use asterius_server::client_auth::ClientAuthenticator;
 use asterius_server::config::{AdminConfig, KekSource, PasswordSource};
+use asterius_server::federation::FederationEntities;
 use asterius_server::http::dpop::DpopEndpoint;
 use asterius_server::http::protocol::{self, ClientEndpoints, ProtocolState};
 use asterius_server::http::server::{OperationalRoutes, app, not_found, serve, shutdown_signal};
@@ -184,6 +185,7 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
         let (keys, repository) = tenant_repository(&store, &kek);
         bootstrap_tenants(&repository, &config).await?;
         bootstrap_admin(&store, &kek, config.admin.as_ref()).await?;
+        let federation = FederationEntities::load(&config.tenants, keys.as_ref()).await?;
 
         // One `dyn TenantRepository` for the process, and it is
         // `ProvisionedTenants`: see `admin_routes` for why that matters.
@@ -233,6 +235,7 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
 
         let routes = protocol::routes(ProtocolState {
             keys: Arc::clone(&keys) as Arc<dyn asterius_domain::KeyStore>,
+            federation,
             capabilities: config.features,
             tenant_settings: Some(settings.clone()),
             signed_metadata: pdp_metadata_signer(&config, &keys),
