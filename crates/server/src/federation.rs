@@ -1,8 +1,9 @@
 //! Tenant-scoped OpenID Federation leaf Entity Configurations.
 //!
-//! This is the publishing boundary only. A signed self-statement does not
-//! establish trust in a remote entity; chain resolution and metadata policy
-//! are separate work under `ast-s36.14.1`.
+//! A signed self-statement does not establish trust in a remote entity. The
+//! tenant-pinned resolver in [`trust`] verifies remote RP paths separately.
+
+pub mod trust;
 
 use asterius_domain::{Issuer, KeyStore, TenantId};
 use asterius_jose::{SigningKey, jws, store::thumbprint};
@@ -15,6 +16,8 @@ use time::OffsetDateTime;
 use zeroize::Zeroizing;
 
 use crate::config::TenantConfig;
+use crate::outbound::jwks::HttpsClientUrlFetcher;
+use trust::FederationTrust;
 
 /// Five minutes, matching the metadata cache boundary.
 pub const LIFETIME_SECONDS: i64 = 300;
@@ -34,12 +37,17 @@ struct Entity {
 #[derive(Debug, Clone, Default)]
 pub struct FederationEntities {
     entities: Arc<HashMap<String, Entity>>,
+    trust: Option<FederationTrust>,
 }
 
 impl FederationEntities {
     /// Loads each tenant's dedicated PKCS#8 DER key. Boot fails on a missing,
     /// malformed or reused OIDC token-signing key.
-    pub async fn load(tenants: &[TenantConfig], oidc_keys: &dyn KeyStore) -> Result<Self, String> {
+    pub async fn load(
+        tenants: &[TenantConfig],
+        oidc_keys: &dyn KeyStore,
+        fetcher: HttpsClientUrlFetcher,
+    ) -> Result<Self, String> {
         let mut entities = HashMap::new();
         let mut federation_kids = HashSet::new();
         for tenant in tenants {
@@ -94,7 +102,14 @@ impl FederationEntities {
         }
         Ok(Self {
             entities: Arc::new(entities),
+            trust: Some(FederationTrust::load(tenants, fetcher)?),
         })
+    }
+
+    /// The tenant-pinned remote RP resolver, initialized at boot.
+    #[must_use]
+    pub fn trust(&self) -> Option<&FederationTrust> {
+        self.trust.as_ref()
     }
 
     /// Whether this tenant explicitly opted in at boot.

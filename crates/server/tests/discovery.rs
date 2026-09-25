@@ -120,7 +120,7 @@ fn server_with(capabilities: Capabilities, settings: Option<SettingsDirectory>) 
     let config = server_config();
     let directory = TenantDirectory::new(Arc::new(OneTenant(tenant)));
     let routes = protocol::routes(ProtocolState {
-        federation: Default::default(),
+        federation: asterius_server::federation::FederationEntities::default(),
         keys: Arc::clone(&keys) as Arc<dyn KeyStore>,
         capabilities,
         tenant_settings: settings,
@@ -1112,7 +1112,7 @@ fn two_tenant_server(demo: asterius_domain::TenantSettings) -> Router {
     let config = server_config();
     let directory = TenantDirectory::new(Arc::new(TwoTenants(tenants)));
     let routes = protocol::routes(ProtocolState {
-        federation: Default::default(),
+        federation: asterius_server::federation::FederationEntities::default(),
         keys: Arc::clone(&keys) as Arc<dyn KeyStore>,
         capabilities: ALL_ON,
         tenant_settings: Some(SettingsDirectory::new(repository as _)),

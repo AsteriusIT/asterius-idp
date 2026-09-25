@@ -1338,7 +1338,7 @@ fn assemble(
     );
 
     let routes = protocol::routes(ProtocolState {
-        federation: Default::default(),
+        federation: asterius_server::federation::FederationEntities::default(),
         keys: Arc::clone(&key_store),
         capabilities,
         // The real repository, as the binary wires it: a tenant that has

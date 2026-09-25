@@ -41,6 +41,19 @@ policy resolution. Trust marks and other unimplemented extensions remain
 rejected. This validator is not connected to client registration and does not
 fetch statements. `ast-s36.14.1.3` owns guarded retrieval and expiry caching.
 
+The retrieval slice (`ast-s36.14.1.3`) loads tenant-specific trust-anchor JWK
+Sets from local operator files at boot. It obtains Entity Configurations and
+Subordinate Statements through the existing outbound HTTPS guard: DNS answers
+are checked before connecting to a vetted address, redirects are refused, and
+the whole fetch has a five-second timeout and a 64 KiB body cap. Discovery has
+a separate 15-second and 32-fetch budget. Intermediate Entity Configurations
+must verify under the keys delegated by their superiors and name those
+superiors in `authority_hints`. The resolver caches accepted chains only until
+the earliest statement expiry or five minutes, whichever is sooner; refusals
+are cached for 30 seconds. Acceptance and refusal are recorded in operational
+logs without JWT content. The resolver is available through the server's
+Federation state, but no client registration route consumes it yet.
+
 ## Context
 
 [OpenID Federation 1.0](https://openid.net/specs/openid-federation-1_0-final.html)
