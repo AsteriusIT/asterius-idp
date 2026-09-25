@@ -373,6 +373,16 @@ impl asterius_domain::ports::ClientUrlFetcher for NoFetching {
     }
 }
 
+#[async_trait::async_trait]
+impl asterius_domain::ports::ClientMetadataDocumentFetcher for NoFetching {
+    async fn fetch_document(
+        &self,
+        _client_id: &asterius_domain::CimdClientId,
+    ) -> Result<asterius_domain::FetchedClientMetadataDocument, asterius_domain::DomainError> {
+        panic!("a test reached the CIMD network path")
+    }
+}
+
 /// The application, assembled the way the binary assembles it.
 fn assemble(
     store: &Store,
@@ -434,6 +444,7 @@ fn assemble(
             kek: Arc::clone(kek),
             registration: RegistrationPolicy::Closed,
             outbound,
+            cimd_documents: Arc::new(NoFetching),
             audit,
             session_lifetimes: Lifetimes::default().clamped(),
             argon2: Some(Argon2Parameters::default()),

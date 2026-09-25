@@ -285,7 +285,10 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
         // `sector_identifier_uri` through it, and so does the admin API's
         // client screen (`ast-f7m.5`). ADR-0006 says one path, and one instance
         // is how that is spelt here.
-        let outbound: Arc<dyn asterius_domain::ports::ClientUrlFetcher> = Arc::new(outbound_https);
+        let outbound: Arc<dyn asterius_domain::ports::ClientUrlFetcher> =
+            Arc::new(outbound_https.clone());
+        let cimd_documents: Arc<dyn asterius_domain::ports::ClientMetadataDocumentFetcher> =
+            Arc::new(outbound_https);
         // One `PgOutbox` for the process: the delivery worker claims through it
         // and the admin API's dead-letter screen reads through it, so the
         // screen reports the schedule the worker is enforcing (`ast-0ju.9`).
@@ -326,6 +329,7 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
                     store.pool().clone(),
                 ))),
                 outbound,
+                cimd_documents,
                 audit: Arc::new(PgAuditSink::new(store.pool().clone())),
                 session_lifetimes: Lifetimes::default().clamped(),
                 // Passwords are the legacy path and passkeys are primary, but

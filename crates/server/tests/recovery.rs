@@ -608,6 +608,7 @@ fn assemble(
             kek: Arc::clone(kek),
             registration: RegistrationPolicy::Closed,
             outbound,
+            cimd_documents: Arc::new(NoFetching),
             audit,
             session_lifetimes: Lifetimes::default().clamped(),
             argon2: Some(Argon2Parameters::default()),
@@ -640,6 +641,16 @@ struct NoFetching;
 impl asterius_domain::ports::ClientUrlFetcher for NoFetching {
     async fn fetch(&self, _url: &str) -> Result<Vec<u8>, asterius_domain::DomainError> {
         panic!("a test reached the network");
+    }
+}
+
+#[async_trait::async_trait]
+impl asterius_domain::ports::ClientMetadataDocumentFetcher for NoFetching {
+    async fn fetch_document(
+        &self,
+        _client_id: &asterius_domain::CimdClientId,
+    ) -> Result<asterius_domain::FetchedClientMetadataDocument, asterius_domain::DomainError> {
+        panic!("a test reached the CIMD network path")
     }
 }
 
