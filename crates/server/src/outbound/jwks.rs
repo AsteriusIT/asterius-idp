@@ -86,6 +86,7 @@ const MAX_ATTEMPTS: usize = 2;
 /// else — `text/html` above all — is a login page, an error page, or a captive
 /// portal, and parsing it would only produce a confusing failure later.
 const JWK_SET_MEDIA_TYPES: [&str; 2] = ["application/jwk-set+json", "application/json"];
+const ENTITY_STATEMENT_MEDIA_TYPES: [&str; 1] = ["application/entity-statement+jwt"];
 
 /// Why a JWK Set could not be fetched.
 #[derive(Debug, thiserror::Error)]
@@ -158,8 +159,8 @@ pub enum FetchError {
         /// The status.
         status: u16,
     },
-    /// The response is not a JSON media type.
-    #[error("{host} served {found:?}, not a JWK Set media type")]
+    /// The response does not use the requested document media type.
+    #[error("{host} served unexpected media type {found:?}")]
     MediaType {
         /// The name.
         host: String,
@@ -254,11 +255,21 @@ impl HttpsClientUrlFetcher {
     }
 
     /// The fetch, minus the timeout that wraps it.
-    async fn get(&self, url: &str) -> Result<Vec<u8>, FetchError> {
+    async fn get(&self, url: &str, media_types: &[&str]) -> Result<Vec<u8>, FetchError> {
         let target = ssrf::check_url(url)?;
         let addresses = vetted_addresses(&target).await?;
         let stream = self.connect(&target, &addresses).await?;
-        read_jwk_set(&target, stream).await
+        read_document(&target, stream, media_types).await
+    }
+
+    /// Fetches a Federation Entity Configuration or Subordinate Statement using
+    /// the same guarded connection path as client JWKS retrieval.
+    pub async fn fetch_entity_statement(&self, url: &str) -> Result<Vec<u8>, FetchError> {
+        tokio::time::timeout(TOTAL_TIMEOUT, self.get(url, &ENTITY_STATEMENT_MEDIA_TYPES))
+            .await
+            .map_err(|_| FetchError::TimedOut {
+                host: ssrf::check_url(url).map_or_else(|_| "the URL".to_owned(), |t| t.host),
+            })?
     }
 
     /// Opens a TLS connection to one of the vetted addresses.
@@ -347,9 +358,10 @@ pub(super) async fn vetted_addresses(target: &Target) -> Result<Vec<SocketAddr>,
 }
 
 /// Sends the request and reads the answer, within the limits.
-async fn read_jwk_set(
+async fn read_document(
     target: &Target,
     stream: tokio_rustls::client::TlsStream<TcpStream>,
+    media_types: &[&str],
 ) -> Result<Vec<u8>, FetchError> {
     let failed = || FetchError::Http {
         host: target.host.clone(),
@@ -369,7 +381,7 @@ async fn read_jwk_set(
         .method(hyper::Method::GET)
         .uri(&target.request_target)
         .header(HOST, &target.authority)
-        .header(ACCEPT, JWK_SET_MEDIA_TYPES.join(", "))
+        .header(ACCEPT, media_types.join(", "))
         .header(USER_AGENT, format!("asterius/{}", crate::VERSION))
         // One request per connection. Nothing here reuses it, and saying so
         // lets the other end close instead of holding a socket open.
@@ -400,7 +412,7 @@ async fn read_jwk_set(
         .and_then(|value| value.to_str().ok())
         .unwrap_or_default()
         .to_owned();
-    if !is_jwk_set_media_type(&content_type) {
+    if !is_media_type(&content_type, media_types) {
         pump.abort();
         return Err(FetchError::MediaType {
             host: target.host.clone(),
@@ -435,14 +447,19 @@ async fn read_jwk_set(
 /// The parameters are ignored — `; charset=utf-8` is common and harmless — and
 /// the type is compared case-insensitively, as RFC 9110 §8.3 requires.
 #[must_use]
-fn is_jwk_set_media_type(header: &str) -> bool {
+fn is_media_type(header: &str, accepted: &[&str]) -> bool {
     let media_type = header
         .split(';')
         .next()
         .unwrap_or_default()
         .trim()
         .to_ascii_lowercase();
-    JWK_SET_MEDIA_TYPES.contains(&media_type.as_str())
+    accepted.contains(&media_type.as_str())
+}
+
+#[cfg(test)]
+fn is_jwk_set_media_type(header: &str) -> bool {
+    is_media_type(header, &JWK_SET_MEDIA_TYPES)
 }
 
 #[async_trait::async_trait]
@@ -451,12 +468,13 @@ impl ClientUrlFetcher for HttpsClientUrlFetcher {
         // One timeout over the whole exchange, resolution included. A per-step
         // timeout would let a server that is slow at every step hold the
         // request for the sum of them.
-        let outcome = match tokio::time::timeout(TOTAL_TIMEOUT, self.get(url)).await {
-            Ok(outcome) => outcome,
-            Err(_) => Err(FetchError::TimedOut {
-                host: ssrf::check_url(url).map_or_else(|_| "the URL".to_owned(), |t| t.host),
-            }),
-        };
+        let outcome =
+            match tokio::time::timeout(TOTAL_TIMEOUT, self.get(url, &JWK_SET_MEDIA_TYPES)).await {
+                Ok(outcome) => outcome,
+                Err(_) => Err(FetchError::TimedOut {
+                    host: ssrf::check_url(url).map_or_else(|_| "the URL".to_owned(), |t| t.host),
+                }),
+            };
 
         match outcome {
             Ok(body) => Ok(body),

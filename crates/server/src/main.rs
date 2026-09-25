@@ -185,7 +185,11 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
         let (keys, repository) = tenant_repository(&store, &kek);
         bootstrap_tenants(&repository, &config).await?;
         bootstrap_admin(&store, &kek, config.admin.as_ref()).await?;
-        let federation = FederationEntities::load(&config.tenants, keys.as_ref()).await?;
+        let outbound_https = HttpsClientUrlFetcher::new()
+            .map_err(|e| format!("cannot build the outbound TLS client: {e}"))?;
+        let federation =
+            FederationEntities::load(&config.tenants, keys.as_ref(), outbound_https.clone())
+                .await?;
 
         // One `dyn TenantRepository` for the process, and it is
         // `ProvisionedTenants`: see `admin_routes` for why that matters.
@@ -215,10 +219,7 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
         // `sector_identifier_uri` through it, and so does the admin API's
         // client screen (`ast-f7m.5`). ADR-0006 says one path, and one instance
         // is how that is spelt here.
-        let outbound: Arc<dyn asterius_domain::ports::ClientUrlFetcher> = Arc::new(
-            HttpsClientUrlFetcher::new()
-                .map_err(|e| format!("cannot build the outbound TLS client: {e}"))?,
-        );
+        let outbound: Arc<dyn asterius_domain::ports::ClientUrlFetcher> = Arc::new(outbound_https);
         // One `PgOutbox` for the process: the delivery worker claims through it
         // and the admin API's dead-letter screen reads through it, so the
         // screen reports the schedule the worker is enforcing (`ast-0ju.9`).

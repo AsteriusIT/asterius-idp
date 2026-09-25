@@ -1052,6 +1052,12 @@ fn tenant() -> Section {
                 "empty".to_owned(),
                 "Immediate Federation superiors for this OP leaf. At least one is required when the Federation key is configured.",
             ),
+            key(
+                "federation_trust_anchors",
+                "array of { entity_id, jwks_file } tables",
+                "empty".to_owned(),
+                "Operator-pinned Federation trust roots for remote RP chains. Each jwks_file is a local JSON JWK Set; invalid or duplicate anchors fail startup. No remote statement can add a trust root.",
+            ),
         ],
     }
 }

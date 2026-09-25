@@ -294,6 +294,7 @@ A tenant is an issuer. This array is the source of truth for which tenants exist
 | `tenant.default_resource` | https URL, no fragment | the tenant's `issuer` | The initial resource allow-list assigned by the server to each newly registered client (RFC 8707 §2, RFC 9068 §3). The default means "this server's own protected resources"; a deployment fronting a separate API names that API here. An administrator may later replace or clear that client's list; an empty list authorizes no resource. |
 | `tenant.federation_signing_key_file` | path to Ed25519 PKCS#8 DER file | absent (Federation disabled) | Dedicated Federation Entity Statement signing key. It must differ from the OP token-signing keys. Configure authority hints with it; a missing or invalid file fails startup. |
 | `tenant.federation_authority_hints` | array of HTTPS entity identifiers | empty | Immediate Federation superiors for this OP leaf. At least one is required when the Federation key is configured. |
+| `tenant.federation_trust_anchors` | array of `{ entity_id, jwks_file }` tables | empty | Operator-pinned Federation roots for remote RP chains. Each `jwks_file` is a local JSON JWK Set. Invalid roots fail startup. |
 
 ## `[tenant.refresh]` — refresh tokens
 

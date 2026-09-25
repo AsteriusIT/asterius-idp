@@ -48,6 +48,12 @@ pub struct TrustAnchor {
 }
 
 impl TrustAnchor {
+    /// Entity Identifier fixed by operator configuration.
+    #[must_use]
+    pub fn entity_id(&self) -> &str {
+        self.entity_id.as_str()
+    }
+
     /// Validates the pinned JWK Set before it can be used as a trust root.
     pub fn new(tenant: TenantId, entity_id: Issuer, jwks: &Value) -> Result<Self, ChainError> {
         let bytes = serde_json::to_vec(jwks).map_err(|_| ChainError::Invalid("anchor JWKS"))?;
@@ -162,6 +168,45 @@ impl TrustAnchor {
             metadata,
             relying_party,
         })
+    }
+
+    /// Validates a fetched chain and the intermediate Entity Configurations
+    /// used to discover its fetch endpoints. Configurations are ordered from
+    /// the leaf's immediate superior up to (but excluding) the trust anchor.
+    pub fn validate_with_intermediates(
+        &self,
+        tenant: &TenantId,
+        compact_statements: &[&str],
+        intermediate_configurations: &[&str],
+        now: OffsetDateTime,
+    ) -> Result<VerifiedChain, ChainError> {
+        if intermediate_configurations.len() + 3 != compact_statements.len() {
+            return Err(ChainError::Invalid("intermediate configuration count"));
+        }
+        let verified = self.validate(tenant, compact_statements, now)?;
+        for (offset, raw) in intermediate_configurations.iter().enumerate() {
+            let index = offset + 1;
+            let configuration = Statement::parse(raw, now)?;
+            let delegation = Statement::parse(compact_statements[index + 1], now)?;
+            if configuration.claims.iss != configuration.claims.sub
+                || configuration.claims.sub != delegation.claims.sub
+            {
+                return Err(ChainError::Invalid("intermediate configuration identity"));
+            }
+            if !configuration
+                .claims
+                .authority_hints
+                .as_ref()
+                .is_some_and(|hints| hints.contains(&delegation.claims.iss))
+            {
+                return Err(ChainError::Invalid("intermediate authority hint"));
+            }
+            let delegated_keys = statement_keys(&delegation)?;
+            verify_with(&configuration, &delegated_keys)?;
+            let self_keys = statement_keys(&configuration)?;
+            verify_with(&configuration, &self_keys)?;
+        }
+        Ok(verified)
     }
 }
 
@@ -312,11 +357,26 @@ impl Statement {
             || claims.other.contains_key("trust_mark_issuers")
             || claims.other.contains_key("trust_mark_owners")
             || claims.other.contains_key("trust_anchor_hints")
-            || claims.other.contains_key("source_endpoint")
             || claims.other.contains_key("ref")
             || claims.other.contains_key("delegation")
         {
             return Err(ChainError::Unsupported("critical claim or trust mark"));
+        }
+        if let Some(source) = claims.other.get("source_endpoint") {
+            let source = source
+                .as_str()
+                .ok_or(ChainError::Invalid("source_endpoint"))?;
+            let url =
+                url::Url::parse(source).map_err(|_| ChainError::Invalid("source_endpoint"))?;
+            if claims.iss == claims.sub
+                || url.scheme() != "https"
+                || url.host().is_none()
+                || !url.username().is_empty()
+                || url.password().is_some()
+                || url.fragment().is_some()
+            {
+                return Err(ChainError::Invalid("source_endpoint"));
+            }
         }
         if let Some(hints) = &claims.authority_hints {
             if claims.iss != claims.sub || hints.is_empty() {

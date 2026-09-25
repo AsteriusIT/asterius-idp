@@ -306,6 +306,17 @@ pub struct TenantConfig {
     pub federation_signing_key_file: Option<PathBuf>,
     /// Immediate superiors named in this tenant's Federation Entity Configuration.
     pub federation_authority_hints: Vec<Issuer>,
+    /// Operator-pinned Federation trust anchors for validating remote RPs.
+    pub federation_trust_anchors: Vec<FederationTrustAnchorConfig>,
+}
+
+/// Public Federation root keys loaded from an operator-owned JSON JWK Set file.
+#[derive(Debug)]
+pub struct FederationTrustAnchorConfig {
+    /// Entity Identifier of the trust anchor.
+    pub entity_id: Issuer,
+    /// Path to a JSON JWK Set; this file is never fetched from the network.
+    pub jwks_file: PathBuf,
 }
 
 /// The deployment admin seeded at boot (ADR-0010).
@@ -699,6 +710,14 @@ struct RawTenant {
     refresh: Option<RawRefresh>,
     federation_signing_key_file: Option<PathBuf>,
     federation_authority_hints: Option<Vec<String>>,
+    federation_trust_anchors: Option<Vec<RawFederationTrustAnchor>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawFederationTrustAnchor {
+    entity_id: String,
+    jwks_file: PathBuf,
 }
 
 /// `[tenant.refresh]`: what this tenant does with refresh tokens.
@@ -1927,49 +1946,15 @@ fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantCo
         };
 
         let refresh = validate_refresh(index, tenant.refresh, errors);
-        let federation_authority_hints = tenant
-            .federation_authority_hints
-            .unwrap_or_default()
-            .into_iter()
-            .enumerate()
-            .filter_map(|(hint_index, raw)| match Issuer::parse(&raw) {
-                Ok(hint) => Some(hint),
-                Err(error) => {
-                    errors.problem(
-                        format!("tenant[{index}].federation_authority_hints[{hint_index}]"),
-                        error.to_string(),
-                    );
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-        let mut seen_hints = BTreeSet::new();
-        for hint in &federation_authority_hints {
-            if !seen_hints.insert(hint.as_str()) {
-                errors.problem(
-                    format!("tenant[{index}].federation_authority_hints"),
-                    "duplicate immediate superior",
-                );
-            }
-            if issuer.as_ref() == Some(hint) {
-                errors.problem(
-                    format!("tenant[{index}].federation_authority_hints"),
-                    "an entity cannot be its own immediate superior",
-                );
-            }
-        }
-        if tenant.federation_signing_key_file.is_some() && federation_authority_hints.is_empty() {
-            errors.problem(
-                format!("tenant[{index}].federation_authority_hints"),
-                "at least one immediate superior is required when Federation is enabled",
-            );
-        }
-        if tenant.federation_signing_key_file.is_none() && !federation_authority_hints.is_empty() {
-            errors.problem(
-                format!("tenant[{index}].federation_signing_key_file"),
-                "a dedicated Federation key is required when authority hints are configured",
-            );
-        }
+        let federation_authority_hints = validate_federation_hints(
+            index,
+            issuer.as_ref(),
+            tenant.federation_signing_key_file.is_some(),
+            tenant.federation_authority_hints,
+            errors,
+        );
+        let federation_trust_anchors =
+            validate_federation_anchors(index, tenant.federation_trust_anchors, errors);
 
         if let (Some(id), Some(issuer)) = (id, issuer) {
             let default_resource = default_resource.unwrap_or_else(|| issuer.as_str().to_owned());
@@ -1980,10 +1965,105 @@ fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantCo
                 refresh,
                 federation_signing_key_file: tenant.federation_signing_key_file,
                 federation_authority_hints,
+                federation_trust_anchors,
             });
         }
     }
     tenants
+}
+
+fn validate_federation_hints(
+    index: usize,
+    issuer: Option<&Issuer>,
+    has_signing_key: bool,
+    raw: Option<Vec<String>>,
+    errors: &mut Collector,
+) -> Vec<Issuer> {
+    let hints = raw
+        .unwrap_or_default()
+        .into_iter()
+        .enumerate()
+        .filter_map(|(hint_index, raw)| match Issuer::parse(&raw) {
+            Ok(hint) if hint.as_str() == raw => Some(hint),
+            Ok(_) => {
+                errors.problem(
+                    format!("tenant[{index}].federation_authority_hints[{hint_index}]"),
+                    "noncanonical Entity Identifier",
+                );
+                None
+            }
+            Err(error) => {
+                errors.problem(
+                    format!("tenant[{index}].federation_authority_hints[{hint_index}]"),
+                    error.to_string(),
+                );
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut seen = BTreeSet::new();
+    for hint in &hints {
+        if !seen.insert(hint.as_str()) {
+            errors.problem(
+                format!("tenant[{index}].federation_authority_hints"),
+                "duplicate immediate superior",
+            );
+        }
+        if issuer == Some(hint) {
+            errors.problem(
+                format!("tenant[{index}].federation_authority_hints"),
+                "an entity cannot be its own immediate superior",
+            );
+        }
+    }
+    if has_signing_key && hints.is_empty() {
+        errors.problem(
+            format!("tenant[{index}].federation_authority_hints"),
+            "at least one immediate superior is required when Federation is enabled",
+        );
+    }
+    if !has_signing_key && !hints.is_empty() {
+        errors.problem(
+            format!("tenant[{index}].federation_signing_key_file"),
+            "a dedicated Federation key is required when authority hints are configured",
+        );
+    }
+    hints
+}
+
+fn validate_federation_anchors(
+    index: usize,
+    raw: Option<Vec<RawFederationTrustAnchor>>,
+    errors: &mut Collector,
+) -> Vec<FederationTrustAnchorConfig> {
+    let mut seen = BTreeSet::new();
+    raw.unwrap_or_default()
+        .into_iter()
+        .enumerate()
+        .filter_map(|(anchor_index, raw)| {
+            let path =
+                format!("tenant[{index}].federation_trust_anchors[{anchor_index}].entity_id");
+            let entity_id = match Issuer::parse(&raw.entity_id) {
+                Ok(id) if id.as_str() == raw.entity_id => id,
+                Ok(_) => {
+                    errors.problem(path, "noncanonical Entity Identifier");
+                    return None;
+                }
+                Err(error) => {
+                    errors.problem(path, error.to_string());
+                    return None;
+                }
+            };
+            if !seen.insert(entity_id.as_str().to_owned()) {
+                errors.problem(path, "duplicate trust anchor");
+                return None;
+            }
+            Some(FederationTrustAnchorConfig {
+                entity_id,
+                jwks_file: raw.jwks_file,
+            })
+        })
+        .collect()
 }
 
 /// Validates `[tenant.refresh]`.

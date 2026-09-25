@@ -413,7 +413,7 @@ fn assemble(
     );
 
     let routes = protocol::routes(ProtocolState {
-        federation: Default::default(),
+        federation: asterius_server::federation::FederationEntities::default(),
         keys: Arc::clone(&key_store),
         capabilities: Capabilities::default(),
         tenant_settings: Some(settings.clone()),
