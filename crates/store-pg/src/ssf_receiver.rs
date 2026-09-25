@@ -1,7 +1,8 @@
 //! Tenant-scoped identity bindings and atomic, replay-safe inbound SET effects.
 
 use crate::error::to_domain_error;
-use asterius_domain::{DomainError, SessionRevocation, TenantId};
+use asterius_domain::audit::{Actor, AuditEvent, Detail, EventType, Outcome};
+use asterius_domain::{ClientId, DomainError, SessionRevocation, TenantId};
 use sqlx::PgPool;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -13,6 +14,10 @@ pub enum ReceiverAction {
     SessionRevoked,
     /// Disable the mapped account and revoke its active sessions.
     AccountDisabled,
+    /// Revoke current sessions after an upstream credential revocation/removal.
+    CredentialCompromised,
+    /// Record a creation/update event without changing local credentials.
+    ObserveOnly,
 }
 
 impl ReceiverAction {
@@ -20,6 +25,8 @@ impl ReceiverAction {
         match self {
             Self::SessionRevoked => "session-revoked",
             Self::AccountDisabled => "account-disabled",
+            Self::CredentialCompromised => "credential-compromised",
+            Self::ObserveOnly => "credential-observed",
         }
     }
 }
@@ -31,6 +38,8 @@ pub enum ReceiverOutcome {
     Applied,
     /// This peer's `jti` was already processed; no action was repeated.
     Duplicate,
+    /// The verified event was older than the last event for this subject.
+    Stale,
 }
 
 /// The durable receiver store for one tenant.
@@ -112,6 +121,7 @@ impl PgSsfReceiver {
         jti: &str,
         replay_until: OffsetDateTime,
         action: ReceiverAction,
+        event_at: OffsetDateTime,
         now: OffsetDateTime,
     ) -> Result<ReceiverOutcome, DomainError> {
         let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
@@ -134,7 +144,7 @@ impl PgSsfReceiver {
         let user_id: Option<Uuid> = sqlx::query_scalar(
             "select user_id from ssf_receiver_subject_mappings
              where tenant_id = $1 and peer_client_id = $2 and subject_key = $3
-             for share",
+             for update",
         )
         .bind(self.tenant.as_str())
         .bind(peer_client_id)
@@ -148,10 +158,28 @@ impl PgSsfReceiver {
                 "the event subject is not configured for this peer",
             ));
         };
+        // Serialize signals arriving through different peer mappings for the
+        // same account, not merely duplicate signals on one mapping row.
+        sqlx::query("select user_id from users where tenant_id = $1 and user_id = $2 for update")
+            .bind(self.tenant.as_str())
+            .bind(user_id)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(to_domain_error)?;
+        let latest: Option<OffsetDateTime> = sqlx::query_scalar(
+            "select max(event_timestamp) from ssf_receiver_events
+             where tenant_id = $1 and user_id = $2",
+        )
+        .bind(self.tenant.as_str())
+        .bind(user_id)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(to_domain_error)?;
+        let stale = latest.is_some_and(|latest| event_at <= latest);
         let inserted = sqlx::query(
             "insert into ssf_receiver_events
-                (tenant_id, peer_client_id, jti, replay_until, user_id, event_type, processed_at)
-             values ($1, $2, $3, $4, $5, $6, $7)
+                (tenant_id, peer_client_id, jti, replay_until, user_id, event_type, event_timestamp, outcome, processed_at)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
              on conflict (tenant_id, peer_client_id, jti) do nothing",
         )
         .bind(self.tenant.as_str())
@@ -160,6 +188,8 @@ impl PgSsfReceiver {
         .bind(replay_until)
         .bind(user_id)
         .bind(action.as_str())
+        .bind(event_at)
+        .bind(if stale { "stale" } else { "applied" })
         .bind(now)
         .execute(&mut *transaction)
         .await
@@ -168,6 +198,37 @@ impl PgSsfReceiver {
         if inserted == 0 {
             transaction.rollback().await.map_err(to_domain_error)?;
             return Ok(ReceiverOutcome::Duplicate);
+        }
+
+        let (event_type, outcome) = match action {
+            ReceiverAction::AccountDisabled => (EventType::ACCOUNT_DISABLED, Outcome::Success),
+            ReceiverAction::CredentialCompromised | ReceiverAction::ObserveOnly => {
+                (EventType::CREDENTIAL_CHANGED, Outcome::Success)
+            }
+            ReceiverAction::SessionRevoked => (EventType::SESSION_REVOKED, Outcome::Success),
+        };
+        crate::audit::append(
+            &mut transaction,
+            AuditEvent::new(
+                self.tenant.clone(),
+                event_type,
+                if stale { Outcome::Failure } else { outcome },
+                Actor::Client(ClientId::new(peer_client_id)),
+                now,
+            )
+            .subject(user_id.to_string())
+            .detail(
+                Detail::new()
+                    .label("source", "ssf.receiver")
+                    .label("action", action.as_str())
+                    .label("result", if stale { "stale" } else { "accepted" }),
+            ),
+        )
+        .await?;
+
+        if stale {
+            transaction.commit().await.map_err(to_domain_error)?;
+            return Ok(ReceiverOutcome::Stale);
         }
 
         match action {
@@ -187,6 +248,10 @@ impl PgSsfReceiver {
                 .map_err(to_domain_error)?;
                 revoke_sessions(&mut transaction, &self.tenant, user_id, now).await?;
             }
+            ReceiverAction::CredentialCompromised => {
+                revoke_sessions(&mut transaction, &self.tenant, user_id, now).await?;
+            }
+            ReceiverAction::ObserveOnly => {}
         }
         transaction.commit().await.map_err(to_domain_error)?;
         Ok(ReceiverOutcome::Applied)

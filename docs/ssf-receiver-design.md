@@ -2,8 +2,8 @@
 
 Status: initial, bounded push receiver implementation in `ast-s36.26`. This is
 not a claim of full SSF or CAEP Interoperability Profile conformance. The
-implementation currently accepts configured OAuth client peers, two lifecycle
-event types, and operator-provisioned per-peer subject mappings; the complete
+implementation accepts configured OAuth client peers, three CAEP event types,
+and operator-provisioned per-peer subject mappings. Complete
 stream-establishment, metadata-validation and delivery-profile work below
 remains future scope.
 
@@ -65,12 +65,22 @@ username: an administrator binds a parsed RFC 9493 subject to a local user
 through `PUT` or `DELETE /admin/ssf/receiver/subjects`, under
 `admin.ssf:write`. The canonical identifier is not included in audit detail.
 
+`credential-change` is accepted with `ssf.receive`: creation/update is recorded
+without local credential mutation, while revoke/delete revokes sessions only.
+The upstream credential identifier is never treated as a local credential
+identifier. Events require a valid CAEP `event_timestamp`; older events are
+durably marked stale and acknowledged without applying an action. User-row
+locking serializes order even when signals arrive through separate peer
+mappings. These verified actions and audit-chain records share a transaction
+with the durable inbox.
+
 This slice does not yet create receiver streams from upstream metadata, accept
-poll delivery, implement the complete CAEP event vocabulary, order events by
-`event_timestamp`, or transactionally queue this server's resulting outbound
-notifications. The CAEP Interoperability Profile's RS256 requirement also
-remains unresolved against ADR-0003; this receiver accepts only EdDSA and ES256
-and makes no interoperability-profile conformance claim.
+poll delivery, implement the complete CAEP event vocabulary, or transactionally
+queue this server's resulting outbound logout/SSF notifications. The missing
+outbound queue integration means the full atomic lifecycle guarantee is not
+met. The CAEP Interoperability Profile's RS256 requirement also remains
+unresolved against ADR-0003; this receiver accepts only EdDSA and ES256 and
+makes no interoperability-profile conformance claim.
 
 ## Proposed processing boundary
 
