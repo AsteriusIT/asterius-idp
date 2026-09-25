@@ -43,9 +43,33 @@ pub enum VerifiedClaimsError {
     ClaimCount,
     #[error("a verified claim value must be non-null and contain no reserved JSON members")]
     ClaimValue,
+    #[error("a stored verified claim name is invalid")]
+    ClaimName,
+    #[error("a verified claim bundle must be at most 64 KiB")]
+    Size,
 }
 
 impl VerifiedClaims {
+    /// Rebuild a stored record through the same validation as a new assertion.
+    ///
+    /// # Errors
+    /// Returns an error for a malformed claim map or invalid verification
+    /// metadata. A damaged row is never projected into an OIDC response.
+    pub fn from_storage(
+        framework: &str,
+        verifier: Issuer,
+        time: OffsetDateTime,
+        claims: Value,
+    ) -> Result<Self, VerifiedClaimsError> {
+        let object = claims.as_object().ok_or(VerifiedClaimsError::ClaimValue)?;
+        let mut validated = BTreeMap::new();
+        for (raw, value) in object {
+            let name = ClaimName::parse(raw).map_err(|_| VerifiedClaimsError::ClaimName)?;
+            validated.insert(name, value.clone());
+        }
+        Self::new(framework, verifier, time, validated)
+    }
+
     /// Construct a bundle after a trusted verifier has authenticated its
     /// assertion. Callers must not pass user-supplied verification metadata.
     /// Claim names are already validated by [`ClaimName`], including refusal
@@ -77,6 +101,9 @@ impl VerifiedClaims {
                 || names_a_serde_json_sentinel(value)
         }) {
             return Err(VerifiedClaimsError::ClaimValue);
+        }
+        if serde_json::to_vec(&claims).map_or(true, |encoded| encoded.len() > 64 * 1024) {
+            return Err(VerifiedClaimsError::Size);
         }
         Ok(Self {
             verification: Verification {
