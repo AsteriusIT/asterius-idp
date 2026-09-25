@@ -166,6 +166,13 @@ pub struct NewAccount {
 /// and forget the second.
 #[async_trait::async_trait]
 pub trait UserAdministration: Debug + Send + Sync {
+    /// Exact tenant username lookup for SCIM's `userName eq` filter.
+    async fn find_by_username(
+        &self,
+        tenant: &TenantId,
+        username: &str,
+    ) -> Result<Option<User>, DomainError>;
+
     /// A SCIM offset page and total count for the routed tenant.
     ///
     /// Callers cap `offset` and `limit` before invoking this port; the adapter

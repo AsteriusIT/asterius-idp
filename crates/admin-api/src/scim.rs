@@ -181,6 +181,27 @@ pub struct RequestedEmail {
     pub primary: bool,
 }
 
+/// The first supported SCIM filter shape. The literal is decoded by JSON's
+/// string parser, so escaped quotes cannot break the expression boundary.
+///
+/// # Errors
+///
+/// Returns a 400 for unsupported expressions or an oversized literal.
+pub fn username_eq_filter(raw: &str) -> Result<String, AdminError> {
+    let (attribute, literal) = raw
+        .split_once(" eq ")
+        .ok_or_else(|| AdminError::Invalid("unsupported SCIM filter".to_owned()))?;
+    if attribute != "userName" {
+        return Err(AdminError::Invalid("unsupported SCIM filter".to_owned()));
+    }
+    let value: String = serde_json::from_str(literal)
+        .map_err(|_| AdminError::Invalid("invalid SCIM filter literal".to_owned()))?;
+    if value.len() > crate::users::MAX_USERNAME_LEN {
+        return Err(AdminError::Invalid("SCIM filter is too long".to_owned()));
+    }
+    Ok(value)
+}
+
 impl RequestedUser {
     /// Maps the protocol document into the existing account admission path.
     /// No SCIM input can set `email_verified` or a credential.

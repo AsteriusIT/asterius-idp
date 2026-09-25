@@ -491,6 +491,7 @@ impl Handling<'_> {
     async fn scim_list_users(&self) -> Result<Response, AdminError> {
         let mut start_index = None;
         let mut count = None;
+        let mut filter = None;
         for (name, value) in url::form_urlencoded::parse(self.query.as_bytes()) {
             match name.as_ref() {
                 "startIndex" if start_index.is_none() => {
@@ -506,6 +507,9 @@ impl Handling<'_> {
                             .map_err(|_| AdminError::Invalid("invalid SCIM count".to_owned()))?,
                     );
                 }
+                "filter" if filter.is_none() => {
+                    filter = Some(scim::username_eq_filter(&value)?);
+                }
                 _ => {
                     return Err(AdminError::Invalid(
                         "unsupported or repeated SCIM query parameter".to_owned(),
@@ -520,13 +524,29 @@ impl Handling<'_> {
                 "SCIM page is outside supported bounds".to_owned(),
             ));
         }
-        let (total, mut users) = self
-            .state
-            .backend
-            .users()
-            .page(&self.tenant.id, start_index - 1, count.max(1))
-            .await
-            .map_err(|error| AdminError::from_storage(crate::SCIM_USERS_LIST_ID, &error))?;
+        let (total, mut users) = if let Some(username) = filter {
+            let matched = self
+                .state
+                .backend
+                .users()
+                .find_by_username(&self.tenant.id, &username)
+                .await
+                .map_err(|error| AdminError::from_storage(crate::SCIM_USERS_LIST_ID, &error))?;
+            let total = u64::from(matched.is_some());
+            let users = if start_index == 1 {
+                matched.into_iter().collect()
+            } else {
+                Vec::new()
+            };
+            (total, users)
+        } else {
+            self.state
+                .backend
+                .users()
+                .page(&self.tenant.id, start_index - 1, count.max(1))
+                .await
+                .map_err(|error| AdminError::from_storage(crate::SCIM_USERS_LIST_ID, &error))?
+        };
         if count == 0 {
             users.clear();
         }
@@ -6362,6 +6382,21 @@ mod tests {
     /// What is counted here is the promise the port makes to this crate.
     #[async_trait::async_trait]
     impl asterius_domain::UserAdministration for Handle {
+        async fn find_by_username(
+            &self,
+            tenant: &TenantId,
+            username: &str,
+        ) -> Result<Option<asterius_domain::User>, DomainError> {
+            Ok(self
+                .0
+                .accounts
+                .lock()
+                .expect("an uncontended lock")
+                .iter()
+                .find(|user| &user.tenant == tenant && user.username == username)
+                .cloned())
+        }
+
         async fn page(
             &self,
             tenant: &TenantId,
