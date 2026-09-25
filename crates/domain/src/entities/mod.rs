@@ -54,7 +54,7 @@ pub use grant::{
     LiveAccessToken, RevocationReason,
 };
 pub use identity_assurance::{
-    MAX_VERIFIED_CLAIMS, Verification, VerifiedClaims, VerifiedClaimsError,
+    MAX_VERIFIED_CLAIMS, Verification, VerifiedClaimName, VerifiedClaims, VerifiedClaimsError,
 };
 pub use initial_access_token::{
     InitialAccessToken, MAX_LABEL_LEN as MAX_INITIAL_ACCESS_TOKEN_LABEL_LEN, NewInitialAccessToken,
