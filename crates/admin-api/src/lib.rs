@@ -1428,7 +1428,7 @@ pub const GROUP_CLIENT_APP_ROLE_WITHDRAW: Operation = Operation::mutation(
 /// A `static` rather than a function building a `Vec`, so that the router, the
 /// document and the tests are looking at one object and cannot be handed
 /// different copies of it.
-static REGISTRY: [Operation; 95] = [
+static REGISTRY: [Operation; 96] = [
     SESSION_READ,
     SESSION_END,
     OVERVIEW_USERS,
