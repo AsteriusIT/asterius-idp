@@ -18,11 +18,19 @@ reuse of the requesting client's pairwise subject. The grant is typed
 within five minutes and within the source ID Token's lifetime.
 
 The current [ID-JAG draft -04](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-identity-assertion-authz-grant-04)
-leaves `actor_token` processing undefined. This profile refuses it and uses the
-authenticated client as the actor. SAML and refresh-token subject assertions,
-rich authorization details, and downstream redemption are separate work. The
-issuer advertises ID-JAG only for a tenant with at least one configured
-approval and Token Exchange enabled.
+leaves `actor_token` validation and `act` processing to future profiles (§4.3.3
+and §9.7). It also states that `client_id` continuity does not authenticate an
+actor named by `act` (§4.4.1). This issuer refuses `actor_token` and records the
+authenticated client in `act`. The offline downstream validator accepts only
+keys pinned to an issuer by its caller and requires exact audience, client,
+resource, scope, lifetime and DPoP bindings. It refuses `act` and `may_act`
+until an actor validation profile is approved. Therefore it deliberately
+refuses grants from this issuer; it is a protective verification seam, not an
+enabled redemption path. SAML and refresh-token subject assertions, rich
+authorization details, actor-chain validation, replay reservation, user
+mapping, consent and downstream redemption remain separate work. The issuer
+advertises ID-JAG only for a tenant with at least one configured approval and
+Token Exchange enabled.
 
 ## Consequences
 
