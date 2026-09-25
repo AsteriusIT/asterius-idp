@@ -13,6 +13,7 @@ pub mod claims_aggregation;
 pub mod client_keys;
 pub mod dpop;
 pub mod federation;
+pub mod http_signatures;
 pub mod id_jag;
 pub mod jws;
 pub mod kek;
