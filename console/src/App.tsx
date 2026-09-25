@@ -24,6 +24,8 @@ import { Button, CenteredCard, Panel, Screen } from './ui';
 import { Users } from './users';
 import { Overview } from './overview';
 import { Groups } from './groups';
+import { ScimProvisioning } from './scim';
+import { FederationKeys } from './federation-keys';
 
 /**
  * What the shell is doing, as one value.
@@ -162,6 +164,7 @@ function RouteScreen({
     return <Users session={session} />;
   }
   if (route === 'groups') return <Groups session={session} />;
+  if (route === 'scim') return <ScimProvisioning session={session} />;
   if (route === 'clients') {
     return <Clients session={session} />;
   }
@@ -174,6 +177,7 @@ function RouteScreen({
   if (route === 'keys') {
     return <Keys session={session} />;
   }
+  if (route === 'federation') return <FederationKeys session={session} />;
   if (route === 'settings') {
     // The subject is the session's own tenant unless the Tenants screen named
     // another one, which only a deployment-scoped caller can have reached.
