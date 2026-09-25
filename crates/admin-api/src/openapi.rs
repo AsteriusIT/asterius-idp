@@ -597,6 +597,7 @@ fn page_schema() -> Value {
 const fn reach_name(reach: Reach) -> &'static str {
     match reach {
         Reach::Tenant => "tenant",
+        Reach::AutomationTenant => "automation_tenant",
         Reach::Deployment => "deployment",
         Reach::Authenticated => "authenticated",
     }

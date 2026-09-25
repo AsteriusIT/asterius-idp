@@ -63,6 +63,7 @@ pub mod rbac;
 pub mod resource_servers;
 pub mod roles;
 pub mod router;
+pub mod scim;
 pub mod ssf;
 pub mod theme_image;
 pub mod throttle;
@@ -217,6 +218,12 @@ pub const USER_ROLES_READ_ID: &str = "users.roles.read";
 pub const USER_ROLES_UPDATE_ID: &str = "users.roles.update";
 /// The `operationId` of `GET /groups`.
 pub const GROUPS_LIST_ID: &str = "groups.list";
+/// SCIM 2.0 service capabilities, only for a tenant-bound automation token.
+pub const SCIM_CONFIG_ID: &str = "scim.config.read";
+/// SCIM 2.0 resource schema catalogue.
+pub const SCIM_SCHEMAS_ID: &str = "scim.schemas.list";
+/// SCIM 2.0 resource type catalogue.
+pub const SCIM_RESOURCE_TYPES_ID: &str = "scim.resource_types.list";
 /// The `operationId` of `POST /groups`.
 pub const GROUP_CREATE_ID: &str = "groups.create";
 /// The `operationId` of `GET /groups/{group_id}`.
@@ -1428,7 +1435,35 @@ pub const GROUP_CLIENT_APP_ROLE_WITHDRAW: Operation = Operation::mutation(
 /// A `static` rather than a function building a `Vec`, so that the router, the
 /// document and the tests are looking at one object and cannot be handed
 /// different copies of it.
-static REGISTRY: [Operation; 96] = [
+/// SCIM discovery is accessible only to a tenant-scoped automation token.
+/// The scope is separate from generic account administration.
+pub const SCIM_CONFIG: Operation = Operation::read(
+    SCIM_CONFIG_ID,
+    "/scim/v2/ServiceProviderConfig",
+    S::Get,
+    A::new(R::AutomationTenant, "admin.scim:read"),
+    "SCIM 2.0 service provider capabilities",
+);
+
+/// Supported SCIM resource schemas.
+pub const SCIM_SCHEMAS: Operation = Operation::read(
+    SCIM_SCHEMAS_ID,
+    "/scim/v2/Schemas",
+    S::Get,
+    A::new(R::AutomationTenant, "admin.scim:read"),
+    "SCIM 2.0 resource schemas",
+);
+
+/// Supported SCIM resource types.
+pub const SCIM_RESOURCE_TYPES: Operation = Operation::read(
+    SCIM_RESOURCE_TYPES_ID,
+    "/scim/v2/ResourceTypes",
+    S::Get,
+    A::new(R::AutomationTenant, "admin.scim:read"),
+    "SCIM 2.0 resource types",
+);
+
+static REGISTRY: [Operation; 99] = [
     SESSION_READ,
     SESSION_END,
     OVERVIEW_USERS,
@@ -1499,6 +1534,9 @@ static REGISTRY: [Operation; 96] = [
     USER_ROLES_READ,
     USER_ROLES_UPDATE,
     GROUPS_LIST,
+    SCIM_CONFIG,
+    SCIM_SCHEMAS,
+    SCIM_RESOURCE_TYPES,
     GROUP_CREATE,
     GROUP_READ,
     GROUP_UPDATE,
