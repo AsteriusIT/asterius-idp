@@ -192,6 +192,8 @@ pub trait IntrospectionSource: std::fmt::Debug + Send + Sync {
 pub struct IntrospectionContext<'a> {
     /// The tenant the request arrived at.
     pub tenant: &'a Tenant,
+    /// Tenant key service for opt-in RFC 9701 responses.
+    pub signer: Option<&'a dyn asterius_domain::Signer>,
     /// This tenant's clients, for the authenticator.
     pub clients: &'a dyn ClientRepository,
     /// The rows.
@@ -306,6 +308,9 @@ pub async fn introspect(
 
     match answer(&context, &caller, request.token).await {
         Ok(response) => {
+            if wants_signed_response(headers) {
+                return signed_response(&context, &caller, &response, request.hint).await;
+            }
             record(&context, &caller, request.hint, response.is_active()).await;
             // §2.2: "the introspection endpoint responds with a JSON object".
             // `no-store` because the object describes a live credential:
@@ -331,6 +336,76 @@ pub async fn introspect(
             )
         }
     }
+}
+
+async fn signed_response(
+    context: &IntrospectionContext<'_>,
+    caller: &Client,
+    response: &IntrospectionResponse,
+    hint: TokenTypeHint,
+) -> Response {
+    let (Some(signer), Some(algorithm)) = (
+        context.signer,
+        caller.registration.introspection_signed_response_alg,
+    ) else {
+        return oauth_error(
+            StatusCode::NOT_ACCEPTABLE,
+            "invalid_request",
+            "signed introspection is not registered for this client",
+        );
+    };
+    let jwt = match response
+        .sign(
+            signer,
+            &context.tenant.id,
+            &context.tenant.issuer,
+            &caller.id,
+            algorithm,
+            context.now,
+        )
+        .await
+    {
+        Ok(jwt) => jwt,
+        Err(error) => {
+            tracing::error!(%error, tenant = %context.tenant.id, "cannot sign introspection response");
+            return oauth_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "temporarily_unavailable",
+                "signed introspection is unavailable",
+            );
+        }
+    };
+    record(context, caller, hint, response.is_active()).await;
+    (
+        StatusCode::OK,
+        no_store(),
+        [(
+            header::CONTENT_TYPE,
+            introspection::SIGNED_RESPONSE_MEDIA_TYPE,
+        )],
+        jwt.as_str().to_owned(),
+    )
+        .into_response()
+}
+
+/// Explicit RFC 9701 media type wins over generic JSON negotiation. `*/*`
+/// keeps the existing RFC 7662 response for older resource servers.
+fn wants_signed_response(headers: &HeaderMap) -> bool {
+    headers
+        .get_all(header::ACCEPT)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .any(|part| {
+            let mut fields = part.split(';');
+            let media = fields.next().unwrap_or_default().trim();
+            media == introspection::SIGNED_RESPONSE_MEDIA_TYPE
+                && !fields.any(|field| {
+                    field.trim().strip_prefix("q=").is_some_and(|raw| {
+                        raw.parse::<f32>().map_or(true, |q| !(q > 0.0 && q <= 1.0))
+                    })
+                })
+        })
 }
 
 /// Works out what to say about the presented value.

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select client_id, client_name, compliance_profile, token_endpoint_auth_method, redirect_uris,\n                    post_logout_redirect_uris, grant_types, response_types, scopes, resources, jwks, jwks_uri,\n                    id_token_signed_response_alg, application_type, subject_type, sector_identifier_uri,\n                    request_object_signing_alg, backchannel_authentication_request_signing_alg,\n                    dpop_bound_access_tokens, tls_client_certificate_bound_access_tokens,\n                    authorization_details_types, use_mtls_endpoint_aliases,\n                    tls_client_auth_field, tls_client_auth_value,\n                    userinfo_signed_response_alg,\n                    backchannel_token_delivery_mode, backchannel_client_notification_endpoint,\n                    backchannel_user_code_parameter,\n                    is_agent, agent_owner_user_id, agent_policy,\n                    backchannel_logout_uri, backchannel_logout_session_required,\n                    roles_in_id_token, managed_groups_claim,\n                    status, created_at, updated_at\n             from clients\n             where tenant_id = $1\n             order by client_id",
+  "query": "select client_id, client_name, compliance_profile, token_endpoint_auth_method, redirect_uris,\n                    post_logout_redirect_uris, grant_types, response_types, scopes, resources, jwks, jwks_uri,\n                    id_token_signed_response_alg, application_type, subject_type, sector_identifier_uri,\n                    request_object_signing_alg, backchannel_authentication_request_signing_alg,\n                    dpop_bound_access_tokens, tls_client_certificate_bound_access_tokens,\n                    authorization_details_types, use_mtls_endpoint_aliases,\n                    tls_client_auth_field, tls_client_auth_value,\n                    userinfo_signed_response_alg, introspection_signed_response_alg,\n                    backchannel_token_delivery_mode, backchannel_client_notification_endpoint,\n                    backchannel_user_code_parameter,\n                    is_agent, agent_owner_user_id, agent_policy,\n                    backchannel_logout_uri, backchannel_logout_session_required,\n                    roles_in_id_token, managed_groups_claim,\n                    status, created_at, updated_at\n             from clients\n             where tenant_id = $1\n             order by client_id",
   "describe": {
     "columns": [
       {
@@ -130,66 +130,71 @@
       },
       {
         "ordinal": 25,
-        "name": "backchannel_token_delivery_mode",
+        "name": "introspection_signed_response_alg",
         "type_info": "Text"
       },
       {
         "ordinal": 26,
-        "name": "backchannel_client_notification_endpoint",
+        "name": "backchannel_token_delivery_mode",
         "type_info": "Text"
       },
       {
         "ordinal": 27,
+        "name": "backchannel_client_notification_endpoint",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 28,
         "name": "backchannel_user_code_parameter",
         "type_info": "Bool"
       },
       {
-        "ordinal": 28,
+        "ordinal": 29,
         "name": "is_agent",
         "type_info": "Bool"
       },
       {
-        "ordinal": 29,
+        "ordinal": 30,
         "name": "agent_owner_user_id",
         "type_info": "Uuid"
       },
       {
-        "ordinal": 30,
+        "ordinal": 31,
         "name": "agent_policy",
         "type_info": "Jsonb"
       },
       {
-        "ordinal": 31,
+        "ordinal": 32,
         "name": "backchannel_logout_uri",
         "type_info": "Text"
       },
       {
-        "ordinal": 32,
+        "ordinal": 33,
         "name": "backchannel_logout_session_required",
         "type_info": "Bool"
       },
       {
-        "ordinal": 33,
+        "ordinal": 34,
         "name": "roles_in_id_token",
         "type_info": "Bool"
       },
       {
-        "ordinal": 34,
+        "ordinal": 35,
         "name": "managed_groups_claim",
         "type_info": "Bool"
       },
       {
-        "ordinal": 35,
+        "ordinal": 36,
         "name": "status",
         "type_info": "Text"
       },
       {
-        "ordinal": 36,
+        "ordinal": 37,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 37,
+        "ordinal": 38,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
@@ -227,6 +232,7 @@
       true,
       true,
       true,
+      true,
       false,
       false,
       true,
@@ -240,5 +246,5 @@
       false
     ]
   },
-  "hash": "ad81cd9dc42fb227037e5c0418d511ff92a86d0a33937f94e0f34a82430458b5"
+  "hash": "b8ebdf4cbddfc9f173450c7871b293ea8e8d928a55a5093726938249201e8eac"
 }

@@ -54,7 +54,9 @@
 
 use crate::form::Parameters;
 use crate::revocation::TokenTypeHint;
-use asterius_domain::{ClientId, CompactJws, DomainError, Issuer, Signer, TenantId};
+use asterius_domain::{
+    ClientId, CompactJws, DomainError, Issuer, Signer, SigningAlgorithm, TenantId,
+};
 use serde_json::{Map, Value};
 use thiserror::Error;
 use time::OffsetDateTime;
@@ -301,11 +303,12 @@ impl IntrospectionResponse {
         tenant: &TenantId,
         issuer: &Issuer,
         audience: &ClientId,
+        algorithm: SigningAlgorithm,
         now: OffsetDateTime,
     ) -> Result<CompactJws, SignedResponseError> {
         let claims = self.signed_claims(issuer, audience, now)?;
         signer
-            .sign(tenant, None, SIGNED_RESPONSE_TYP, &claims)
+            .sign(tenant, Some(algorithm), SIGNED_RESPONSE_TYP, &claims)
             .await
             .map_err(SignedResponseError::from)
     }

@@ -1117,6 +1117,12 @@ pub(crate) fn client_information(
             json!(alg.as_str()),
         );
     }
+    if let Some(alg) = registration.introspection_signed_response_alg {
+        object.insert(
+            "introspection_signed_response_alg".to_owned(),
+            json!(alg.as_str()),
+        );
+    }
     if let Some(uri) = &registration.sector_identifier_uri {
         object.insert("sector_identifier_uri".to_owned(), json!(uri));
     }
@@ -1905,6 +1911,7 @@ mod tests {
             "request_object_signing_alg",
             "backchannel_authentication_request_signing_alg",
             "userinfo_signed_response_alg",
+            "introspection_signed_response_alg",
             "sector_identifier_uri",
             // CIBA Core 1.0 §4's members, which only a CIBA client has —
             // `backchannel_user_code_parameter` included, whose §4 default is

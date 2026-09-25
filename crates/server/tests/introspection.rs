@@ -280,6 +280,7 @@ impl Fixture {
         introspect(
             IntrospectionContext {
                 tenant: &tenant,
+                signer: None,
                 clients: &clients,
                 source: &self.rows,
                 keys: self.keys.as_ref(),
@@ -344,6 +345,7 @@ async fn an_unauthenticated_caller_is_refused_with_401() {
     let response = introspect(
         IntrospectionContext {
             tenant: &tenant,
+            signer: None,
             clients: &clients,
             source: &fixture.rows,
             keys: fixture.keys.as_ref(),
@@ -380,6 +382,7 @@ async fn a_request_without_a_token_is_a_400() {
     let response = introspect(
         IntrospectionContext {
             tenant: &tenant,
+            signer: None,
             clients: &clients,
             source: &fixture.rows,
             keys: fixture.keys.as_ref(),
