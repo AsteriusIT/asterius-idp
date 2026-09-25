@@ -106,7 +106,10 @@ impl TrustAnchor {
                     "a subordinate statement is self-issued",
                 ));
             }
-            if !issuers.insert(statement.claims.iss.as_str()) {
+            // The last subordinate statement and the trust anchor's own
+            // configuration have the same issuer by design. Any earlier
+            // repeated issuer is a cycle in the path from leaf to anchor.
+            if index < last && !issuers.insert(statement.claims.iss.as_str()) {
                 return Err(ChainError::Invalid("entity cycle in trust chain"));
             }
             if index < last && statement.claims.iss != statements[index + 1].claims.sub {
