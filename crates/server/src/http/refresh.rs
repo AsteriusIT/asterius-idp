@@ -119,6 +119,8 @@ pub struct RefreshToken<'a> {
     pub groups: &'a asterius_store_pg::PgGroups,
     /// Live verified identity bundles.
     pub verified: &'a asterius_store_pg::PgVerifiedClaims,
+    pub aggregated: &'a asterius_store_pg::PgAggregatedClaims,
+    pub claims_providers: &'a crate::claims_provider::ClaimsProviders,
     /// Tenant-approved trust frameworks.
     pub ida_frameworks: &'a std::collections::BTreeSet<String>,
     /// Signs both tokens.
@@ -179,6 +181,8 @@ impl<'a> RefreshToken<'a> {
             roles: code.roles,
             groups: code.groups,
             verified: code.verified,
+            aggregated: code.aggregated,
+            claims_providers: code.claims_providers,
             ida_frameworks: code.ida_frameworks,
             signer: code.signer,
             acr_policy: code.acr_policy,
@@ -496,13 +500,17 @@ impl RefreshToken<'_> {
                     None
                 },
                 released: issuance::released_claims(
+                    tenant,
                     self.users,
                     self.groups,
                     self.verified,
+                    self.aggregated,
+                    self.claims_providers,
                     self.ida_frameworks,
                     &narrowed,
                     client,
                     &held,
+                    self.now,
                 )
                 .await?,
             };

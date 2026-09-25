@@ -135,6 +135,19 @@ pub trait UserInfoSource: std::fmt::Debug + Send + Sync {
         Ok(None)
     }
 
+    /// Whole, signed CP claim sets the user consented to release here.
+    /// Sources without Claims Aggregation return none.
+    async fn aggregated_claims(
+        &self,
+        _tenant: &Tenant,
+        _user: UserId,
+        _request: &asterius_oidc::claims::ClaimsRequest,
+        _direct: &Map<String, Value>,
+        _now: OffsetDateTime,
+    ) -> Result<Map<String, Value>, DomainError> {
+        Ok(Map::new())
+    }
+
     /// Stable managed-group references released for this client audience.
     /// Empty is the safe default for sources and clients that do not opt in.
     async fn managed_group_ids(
@@ -625,6 +638,12 @@ async fn release(
             claims.insert("verified_claims".to_owned(), projected);
         }
     }
+    claims.extend(
+        context
+            .source
+            .aggregated_claims(context.tenant, id, &requested, &claims, context.now)
+            .await?,
+    );
     Ok(claims)
 }
 

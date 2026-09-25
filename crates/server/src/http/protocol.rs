@@ -121,6 +121,8 @@ pub struct ProtocolState {
 pub struct ClientEndpoints {
     /// Operator-pinned OpenID4VP verifier policies, absent unless configured.
     pub oid4vp_verifiers: Arc<crate::oid4vp::Oid4vpVerifiers>,
+    /// Operator-pinned Claims Provider trust profiles.
+    pub claims_providers: Arc<crate::claims_provider::ClaimsProviders>,
     /// Operator-approved cross-domain ID-JAG relationships, keyed by tenant.
     pub id_jag_approvals: Arc<std::collections::HashMap<String, Vec<crate::config::IdJagApproval>>>,
     /// Authenticates the client behind a request.
@@ -1699,6 +1701,8 @@ async fn userinfo_endpoint_inner(
         roles: scope.application_roles(),
         groups: asterius_store_pg::PgGroups::new(endpoints.store.pool().clone()),
         verified: scope.verified_claims(),
+        aggregated: scope.aggregated_claims(),
+        claims_providers: Arc::clone(&endpoints.claims_providers),
         ida_frameworks: match settings_for_directory(endpoints.tenant_settings.as_ref(), &tenant.id)
             .await
         {
@@ -3553,11 +3557,31 @@ struct StoredClaims {
     roles: asterius_store_pg::PgApplicationRoles,
     groups: asterius_store_pg::PgGroups,
     verified: asterius_store_pg::PgVerifiedClaims,
+    aggregated: asterius_store_pg::PgAggregatedClaims,
+    claims_providers: Arc<crate::claims_provider::ClaimsProviders>,
     ida_frameworks: std::collections::BTreeSet<String>,
 }
 
 #[async_trait::async_trait]
 impl userinfo::UserInfoSource for StoredClaims {
+    async fn aggregated_claims(
+        &self,
+        tenant: &asterius_domain::Tenant,
+        user: asterius_domain::UserId,
+        request: &asterius_oidc::claims::ClaimsRequest,
+        direct: &serde_json::Map<String, serde_json::Value>,
+        now: time::OffsetDateTime,
+    ) -> Result<serde_json::Map<String, serde_json::Value>, asterius_domain::DomainError> {
+        let rows = self.aggregated.by_user(user, now).await?;
+        self.claims_providers.deliver(
+            tenant,
+            request,
+            crate::claims_provider::Destination::UserInfo,
+            direct,
+            &rows,
+            now,
+        )
+    }
     async fn grant(
         &self,
         id: &asterius_domain::GrantId,
@@ -3874,6 +3898,7 @@ async fn dispatch_grants(
     let application_roles = scope.application_roles();
     let managed_groups = asterius_store_pg::PgGroups::new(endpoints.store.pool().clone());
     let verified_claims = scope.verified_claims();
+    let aggregated_claims = scope.aggregated_claims();
     // One value for every grant: what this request proved possession of. The
     // registration decides which half binds the token (RFC 9449 §6, RFC 8705
     // §3), so no grant handler chooses for itself.
@@ -3886,6 +3911,8 @@ async fn dispatch_grants(
         roles: &application_roles,
         groups: &managed_groups,
         verified: &verified_claims,
+        aggregated: &aggregated_claims,
+        claims_providers: endpoints.claims_providers.as_ref(),
         ida_frameworks: &ida_frameworks,
         codes: &codes,
         grants: &grants,

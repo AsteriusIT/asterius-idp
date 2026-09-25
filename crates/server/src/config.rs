@@ -313,6 +313,17 @@ pub struct TenantConfig {
     pub id_jag_approvals: Vec<IdJagApproval>,
     /// Narrow OID4VP verifier profiles explicitly enabled for this tenant.
     pub oid4vp_verifiers: Vec<Oid4vpVerifierConfig>,
+    /// Operator-pinned Claims Providers eligible for aggregated delivery.
+    pub claims_providers: Vec<ClaimsProviderConfig>,
+}
+
+/// Static CP registration and trust profile. The OAuth setup flow owns the
+/// access token; no issuer or endpoint is learned from a signed response.
+#[derive(Debug, Clone)]
+pub struct ClaimsProviderConfig {
+    pub issuer: Issuer,
+    pub jwks_file: PathBuf,
+    pub allowed_claims: BTreeSet<String>,
 }
 
 /// Operator-pinned OID4VP verifier and credential trust policy.
@@ -747,6 +758,15 @@ struct RawTenant {
     federation_trust_anchors: Option<Vec<RawFederationTrustAnchor>>,
     id_jag_approval: Option<Vec<RawIdJagApproval>>,
     oid4vp_verifier: Option<Vec<RawOid4vpVerifier>>,
+    claims_provider: Option<Vec<RawClaimsProvider>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawClaimsProvider {
+    issuer: String,
+    jwks_file: PathBuf,
+    allowed_claims: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2025,6 +2045,7 @@ fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantCo
         let id_jag_approvals = validate_id_jag_approvals(index, tenant.id_jag_approval, errors);
         let oid4vp_verifiers =
             validate_oid4vp_verifiers(index, issuer.as_ref(), tenant.oid4vp_verifier, errors);
+        let claims_providers = validate_claims_providers(index, tenant.claims_provider, errors);
 
         if let (Some(id), Some(issuer)) = (id, issuer) {
             let default_resource = default_resource.unwrap_or_else(|| issuer.as_str().to_owned());
@@ -2039,6 +2060,7 @@ fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantCo
                 federation_trust_anchors,
                 id_jag_approvals,
                 oid4vp_verifiers,
+                claims_providers,
             });
         }
     }
@@ -2289,6 +2311,61 @@ fn validate_oid4vp_verifiers(
                 credential_issuer,
                 issuer_jwks_file: raw.issuer_jwks_file,
                 accept_without_status: raw.accept_without_status,
+            })
+        })
+        .collect()
+}
+
+fn validate_claims_providers(
+    tenant_index: usize,
+    raw: Option<Vec<RawClaimsProvider>>,
+    errors: &mut Collector,
+) -> Vec<ClaimsProviderConfig> {
+    let entries = raw.unwrap_or_default();
+    if entries.len() > 4 {
+        errors.problem(
+            format!("tenant[{tenant_index}].claims_provider"),
+            "at most four Claims Providers may be configured",
+        );
+        return Vec::new();
+    }
+    let mut issuers = BTreeSet::new();
+    entries
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, entry)| {
+            let path = format!("tenant[{tenant_index}].claims_provider[{index}]");
+            let issuer = match Issuer::parse(&entry.issuer) {
+                Ok(issuer) if issuer.as_str() == entry.issuer && issuers.insert(entry.issuer) => {
+                    issuer
+                }
+                _ => {
+                    errors.problem(path, "issuer must be a unique canonical HTTPS issuer");
+                    return None;
+                }
+            };
+            let allowed_claims: BTreeSet<String> = entry.allowed_claims.into_iter().collect();
+            if allowed_claims.is_empty()
+                || allowed_claims.len() > 16
+                || allowed_claims.iter().any(|name| {
+                    name.starts_with('_')
+                        || name.len() > 128
+                        || !name
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+                        || asterius_oidc::claims::ReleasableClaim::parse(name).is_none()
+                })
+            {
+                errors.problem(
+                    path,
+                    "allowed_claims must name 1 to 16 releasable attributes",
+                );
+                return None;
+            }
+            Some(ClaimsProviderConfig {
+                issuer,
+                jwks_file: entry.jwks_file,
+                allowed_claims,
             })
         })
         .collect()

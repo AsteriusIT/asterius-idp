@@ -321,6 +321,11 @@ impl ReleasableClaim {
         if AUTHORISATION_CLAIMS.contains(&base_name(raw)) {
             return None;
         }
+        // OIDC Core §5.6.2's aggregate pointers are assembled by the OP from
+        // verified CP JWTs. A user record can never supply either half.
+        if matches!(base_name(raw), "_claim_names" | "_claim_sources") {
+            return None;
+        }
         UserAttribute::parse(raw).map_or_else(
             || ClaimName::parse(raw).ok().map(Self::Stored),
             |attribute| Some(Self::Attribute(attribute)),

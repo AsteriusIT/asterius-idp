@@ -135,6 +135,40 @@ pub fn token_hash(algorithm: SigningAlgorithm, token: &str) -> String {
     B64.encode(&digest[..digest.len() / 2])
 }
 
+/// The only exception to ordinary releasable claims: a paired, bounded OIDC
+/// Core §5.6.2 aggregate assembled by the server's pinned CP verifier.
+fn valid_aggregated_pair(released: &Map<String, Value>) -> bool {
+    let (Some(names), Some(sources)) = (
+        released.get("_claim_names").and_then(Value::as_object),
+        released.get("_claim_sources").and_then(Value::as_object),
+    ) else {
+        return !released.contains_key("_claim_names") && !released.contains_key("_claim_sources");
+    };
+    if names.is_empty() || names.len() > 16 || sources.is_empty() || sources.len() > 4 {
+        return false;
+    }
+    let mut used = std::collections::BTreeSet::new();
+    for (name, reference) in names {
+        let Some(source_id) = reference.as_str() else {
+            return false;
+        };
+        if ReleasableClaim::parse(name).is_none() || !sources.contains_key(source_id) {
+            return false;
+        }
+        used.insert(source_id);
+    }
+    sources.iter().all(|(source_id, value)| {
+        used.contains(source_id.as_str())
+            && value.as_object().is_some_and(|object| {
+                object.len() == 1
+                    && object
+                        .get("JWT")
+                        .and_then(Value::as_str)
+                        .is_some_and(|jwt| !jwt.is_empty() && jwt.len() <= 8192)
+            })
+    })
+}
+
 // ---------------------------------------------------------------------------
 // sid
 // ---------------------------------------------------------------------------
@@ -394,8 +428,16 @@ impl<'a> IdToken<'a> {
         // follows makes the overwrite unreachable; writing them in this order
         // means that removing the guard would still not produce a token whose
         // `sub` came from a user record.
+        let aggregate_allowed = valid_aggregated_pair(&self.released);
         let mut claims = Map::new();
         for (name, value) in self.released {
+            if matches!(name.as_str(), "_claim_names" | "_claim_sources") {
+                if !aggregate_allowed {
+                    return Err(IssuanceError::UnreleasableClaim);
+                }
+                claims.insert(name, value);
+                continue;
+            }
             // Directory membership is server-resolved. A user claim with the
             // same spelling is never allowed to shadow it, even when release
             // is disabled for this client.

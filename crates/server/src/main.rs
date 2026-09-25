@@ -245,6 +245,9 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
         )
         .await?;
         let oid4vp_verifiers = Arc::new(Oid4vpVerifiers::load(&config.tenants)?);
+        let claims_providers = Arc::new(asterius_server::claims_provider::ClaimsProviders::load(
+            &config.tenants,
+        )?);
         let federation_for_sweep = federation.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
@@ -313,6 +316,7 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
             signed_metadata: pdp_metadata_signer(&config, &keys),
             clients: Some(Arc::new(ClientEndpoints {
                 oid4vp_verifiers,
+                claims_providers,
                 id_jag_approvals: Arc::new(
                     config
                         .tenants
