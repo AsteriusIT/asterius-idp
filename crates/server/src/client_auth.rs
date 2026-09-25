@@ -410,7 +410,39 @@ impl ClientAuthenticator {
         rules: &AssertionRules,
         now: OffsetDateTime,
     ) -> Result<Client, ClientAuthError> {
-        match self.decide(tenant, clients, attempt, rules, now).await {
+        self.authenticate_request(tenant, clients, attempt, rules, now, false)
+            .await
+    }
+
+    /// Authenticates at an endpoint that supports registered public clients.
+    /// Use only for authorization code issuance paths (PAR and token); all
+    /// other client-authenticated endpoints must continue calling
+    /// [`Self::authenticate`].
+    pub async fn authenticate_public_profile(
+        &self,
+        tenant: &Tenant,
+        clients: &dyn ClientRepository,
+        attempt: &Attempt<'_>,
+        rules: &AssertionRules,
+        now: OffsetDateTime,
+    ) -> Result<Client, ClientAuthError> {
+        self.authenticate_request(tenant, clients, attempt, rules, now, true)
+            .await
+    }
+
+    async fn authenticate_request(
+        &self,
+        tenant: &Tenant,
+        clients: &dyn ClientRepository,
+        attempt: &Attempt<'_>,
+        rules: &AssertionRules,
+        now: OffsetDateTime,
+        allow_public_profile: bool,
+    ) -> Result<Client, ClientAuthError> {
+        match self
+            .decide(tenant, clients, attempt, rules, now, allow_public_profile)
+            .await
+        {
             Ok(client) => Ok(client),
             Err(refusal) => {
                 // One place, so that no endpoint can refuse a client quietly
@@ -433,8 +465,35 @@ impl ClientAuthenticator {
         attempt: &Attempt<'_>,
         rules: &AssertionRules,
         now: OffsetDateTime,
+        allow_public_profile: bool,
     ) -> Result<Client, Refusal> {
         match attempt.method()? {
+            Method::None => {
+                if !allow_public_profile {
+                    return Err(Refusal::new(ClientAuthError::NoMethod));
+                }
+                let client_id = attempt
+                    .client_id
+                    .map(ClientId::new)
+                    .ok_or_else(|| Refusal::new(ClientAuthError::NoMethod))?;
+                let client = clients.find(&client_id).await.map_err(|error| {
+                    Refusal::new(ClientAuthError::KeysUnavailable)
+                        .by(&client_id)
+                        .because(format!("the client repository failed: {error}"))
+                })?;
+                let Some(client) = client.filter(|client| {
+                    client.is_active()
+                        && client.registration.compliance_profile.is_public()
+                        && client.registration.token_endpoint_auth_method
+                            == TokenEndpointAuthMethod::None
+                }) else {
+                    return Err(Refusal::new(ClientAuthError::UnknownClient)
+                        .by(&client_id)
+                        .because("no active public client is registered"));
+                };
+                self.note_use(&tenant.id, &client_id, now).await;
+                return Ok(client);
+            }
             Method::ClientSecretBasic => {
                 return self
                     .authenticate_client_secret(tenant, clients, attempt, now)
@@ -866,6 +925,11 @@ impl ClientAuthenticator {
         now: OffsetDateTime,
     ) -> Result<Client, Refusal> {
         match client.registration.token_endpoint_auth_method {
+            TokenEndpointAuthMethod::None => {
+                Err(Refusal::new(ClientAuthError::WrongMethodForClient)
+                    .by(client_id)
+                    .because("the public client does not authenticate with a certificate"))
+            }
             TokenEndpointAuthMethod::ClientSecretBasic => {
                 Err(Refusal::new(ClientAuthError::WrongMethodForClient)
                     .by(client_id)

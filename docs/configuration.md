@@ -162,6 +162,8 @@ Every member is optional and every list is *closed*: an absent list means "this 
 
 `profile: "mcp-confidential"` selects the narrow MCP compatibility preset from ADR-0012: initial-access-token DCR, `private_key_jwt`, authorization code plus refresh token, and inline `jwks`. It does not enable public clients, make PAR optional, or advertise Client ID Metadata Documents. Redirect URI, scope and resource restrictions may be added with the ordinary members above. See `docs/integrating-an-mcp-server.md` for the complete client and resource-server flow.
 
+The tenant setting `allow_non_fapi_clients` also gates the explicit public OAuth client profile in the administrator-managed client registry. Public clients use `token_endpoint_auth_method: "none"`, authorization code with PKCE `S256`, and DPoP-bound tokens pinned to the authorization code. They may use PAR or the direct authorization endpoint. Dynamic registration remains confidential-only; CIMD is not supported.
+
 A software statement issuer is a **root of trust**: RFC 7591 §2.3 makes a statement's claims override the request's, so whoever holds that signing key can create clients in this tenant with metadata of their choosing. Both URLs must be `https`, the `iss` is compared byte-exactly, and the keys are fetched through the one outbound path. See `docs/threat-model.md`.
 
 Both quota members are enforced since `ast-cu3`:

@@ -1,4 +1,4 @@
-# ADR-0012: MCP clients remain confidential
+# ADR-0012: Public OAuth clients are an explicit tenant exception
 
 - **Status:** Accepted
 - **Date:** 2026-09-18
@@ -40,10 +40,21 @@ Two options were considered:
 
 ## Decision
 
-**Asterius keeps option 1 for v1.** It registers no public client and does not
-implement Client ID Metadata Documents. The authorization-server metadata
-member `client_id_metadata_document_supported` is absent, rather than `false`,
-because Asterius implements none of the CIMD protocol.
+**The deployment remains FAPI-first, with an explicit tenant opt-in for public
+OAuth clients.** The default profile and readiness claim remain FAPI-only. A
+tenant that enables non-FAPI clients may create a public client through the
+administrator-managed client registry. Its profile is explicit and distinct
+from confidential OIDC. It has no client secret or JWK authentication; it
+requires authorization code plus PKCE `S256`, DPoP-bound tokens, and a DPoP key
+pin on every authorization code. PAR is supported but optional. Redirect URIs
+remain exact HTTPS or native loopback URIs. FAPI tenants continue to reject
+this profile. Dynamic registration remains confidential-only in this slice.
+The non-FAPI profile and tenant opt-in are explicit in client and tenant
+administration; process readiness remains a deployment-level health signal.
+
+Client ID Metadata Documents are still not implemented. The authorization-
+server metadata member `client_id_metadata_document_supported` remains absent;
+this slice does not fetch or trust URL-shaped client identifiers.
 
 The MCP compatibility work in `ast-lh3.8` is limited to **confidential MCP
 clients** that are pre-registered or use the backwards-compatible DCR path with
@@ -53,43 +64,41 @@ tokens. Its documentation and tests must not claim compatibility with generic
 off-the-shelf MCP clients or conformance to the complete MCP authorization
 profile.
 
-Option 2 is rejected for v1 because it removes an invariant on which client
-authentication, PAR and readiness reporting rely. It is not rejected forever:
-adopting it requires a new ADR and a separate tenant mode. That mode must make
-`fapi_compliant=false` visible on readiness; it must never silently widen the
-current mode. Reconsider it when CIMD is stable as an RFC and an OIDF
-conformance profile defines the high-assurance public-client boundary Asterius
-would be claiming.
+The tenant opt-in narrows option 2 to a separate profile and registry path. It
+does not relax FAPI clients: their asymmetric authentication, PAR requirement,
+sender constraint and conformance checks remain unchanged. Any future
+tenant-scoped FAPI readiness indicator must report `fapi_compliant=false` when
+this tenant opt-in is enabled. CIMD remains a separate follow-up because it
+adds attacker-controlled metadata fetches and mutable client identity.
 
 ## Consequences
 
-**Easier.** The client model, token endpoint and authorization endpoint retain
-one security contract. No URL-shaped unregistered client can bypass the stored
-registration, no new outbound fetch is added, and the deployment-wide FAPI
-readiness claim remains meaningful.
+**Easier.** The FAPI profile retains its existing security contract. Public
+clients are stored records with an explicit non-FAPI profile, PKCE S256, DPoP
+code pinning and optional PAR; no URL-shaped identifier or outbound fetch is
+added.
 
-**Harder.** Most desktop and CLI MCP clients will not work without an adapter
-or explicit confidential-client support. The latest MCP flow prefers CIMD and
-deprecates DCR, so Asterius supports a narrowing compatibility path rather than
-the protocol's default onboarding path. This limitation must be stated beside
-every MCP integration example.
+**Harder.** Public clients do not receive self-service dynamic registration in
+this slice, and clients must implement DPoP even when they use direct
+authorization instead of PAR. The latest MCP flow prefers CIMD, so Asterius
+still does not provide the protocol's default onboarding path. This limitation
+must be stated beside every MCP integration example.
 
 **Metadata and tests.** `client_id_metadata_document_supported` remains absent
 under every capability combination. A regression test fixes that consequence
 at the metadata producer. `ast-s36.2` tracks the evolving CIMD draft;
 `ast-lh3.8` owns the confidential-client interoperability path.
 
-**Future public-client mode.** A future implementation must be tenant-scoped,
-must fail FAPI-compliant readiness, and must define how public client records,
-PAR-optional requests, refresh-token DPoP binding, redirect handling, CIMD
-fetching and conformance testing differ from the baseline. None of those paths
-is pre-created by this decision.
+**Future CIMD support.** It must remain tenant-scoped and fail FAPI-compliant
+readiness. It must define SSRF-safe document fetching, origin/key binding,
+metadata lifecycle, redirect validation and conformance testing. This decision
+does not pre-create those paths.
 
 ## Spec clauses
 
 | Clause | What it requires | How this decision satisfies it |
 |---|---|---|
-| FAPI 2.0 SP section 5.3.2.1 item 3 | Authorization servers support confidential clients only | Asterius continues to reject public clients globally |
+| FAPI 2.0 SP section 5.3.2.1 item 3 | Authorization servers support confidential clients only | Public clients are confined to an explicitly non-FAPI tenant profile; FAPI tenants continue to reject them |
 | FAPI 2.0 SP section 5.3.2.1 items 4–6 | Access tokens are sender-constrained and clients authenticate with mTLS or `private_key_jwt` | The confidential MCP subset uses the existing FAPI token and authentication paths |
 | FAPI 2.0 SP section 5.3.2.2 items 2–5 | Authorization requests use PAR and PKCE `S256` | The confidential MCP subset does not create an MCP-specific bypass |
 | MCP Authorization 2026-07-28, Overview items 1–3 | Covers public and confidential clients, recommends CIMD, and retains DCR for backwards compatibility | Asterius deliberately does not claim the full profile; it exposes only a confidential DCR/pre-registration compatibility subset |

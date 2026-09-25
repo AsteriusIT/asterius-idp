@@ -151,7 +151,7 @@ export interface ClientRow {
   readonly client_name: string;
   readonly application_type: string;
   readonly status: string;
-  readonly compliance_profile: 'fapi' | 'oidc';
+  readonly compliance_profile: 'fapi' | 'oidc' | 'public';
   readonly token_endpoint_auth_method: string;
   readonly grant_types: readonly string[];
   readonly redirect_uris: readonly string[];
@@ -952,10 +952,11 @@ function Editor({
               <Button type="button" variant="danger" disabled={busy} onClick={onRevokeSecret}>Revoke secret</Button>
             </Actions>
           </div>}
-          {draft.token_endpoint_auth_method !== 'client_secret_basic' && editing.kind === 'existing' && editing.document.jwks !== undefined && (
+          {draft.token_endpoint_auth_method !== 'client_secret_basic' && draft.token_endpoint_auth_method !== 'none' && editing.kind === 'existing' && editing.document.jwks !== undefined && (
             <JsonView value={editing.document.jwks} label="Registered inline JWK Set JSON" />
           )}
-          {draft.token_endpoint_auth_method !== 'client_secret_basic' && <><p>
+          {draft.token_endpoint_auth_method === 'none' && <p className="muted">Public clients do not authenticate with a JWK Set.</p>}
+          {draft.token_endpoint_auth_method !== 'client_secret_basic' && draft.token_endpoint_auth_method !== 'none' && <><p>
             <label htmlFor="jwks-uri">JWK Set URL</label>
             <input
               id="jwks-uri"

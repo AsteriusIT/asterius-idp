@@ -1,7 +1,7 @@
 /** One client's registration, as `GET /clients/{client_id}` renders it. */
 export interface ClientDocument {
   readonly client_id: string;
-  readonly compliance_profile: 'fapi' | 'oidc';
+  readonly compliance_profile: 'fapi' | 'oidc' | 'public';
   readonly status: string;
   readonly client_name: string;
   readonly application_type: string;
@@ -45,18 +45,20 @@ export const TLS_SUBJECT_FIELDS = [
 export type TlsSubjectField = typeof TLS_SUBJECT_FIELDS[number];
 
 /** Inventory presentation; only the effective FAPI profile earns its badge. */
-export function profilePresentation(profile: 'fapi' | 'oidc'): {
+export function profilePresentation(profile: 'fapi' | 'oidc' | 'public'): {
   readonly label: string;
   readonly fapiBadge: boolean;
 } {
   return profile === 'fapi'
     ? { label: 'FAPI protected', fapiBadge: true }
-    : { label: 'Non-FAPI exception', fapiBadge: false };
+    : profile === 'public'
+      ? { label: 'Public OAuth client', fapiBadge: false }
+      : { label: 'Non-FAPI exception', fapiBadge: false };
 }
 
 /** What the form holds while it is being edited. */
 export interface Draft {
-  readonly compliance_profile: 'fapi' | 'oidc';
+  readonly compliance_profile: 'fapi' | 'oidc' | 'public';
   readonly token_endpoint_auth_method: string;
   readonly dpop_bound_access_tokens: boolean | null;
   readonly use_mtls_endpoint_aliases: boolean | null;
@@ -161,6 +163,7 @@ export function clientAuthenticationMethods(
   draft: Draft,
   discoveredMethods: readonly string[] = ['private_key_jwt'],
 ): string[] {
+  if (draft.compliance_profile === 'public') return ['none'];
   return [
     ...(draft.compliance_profile === 'oidc' ? ['client_secret_basic'] : []),
     'private_key_jwt',
@@ -186,17 +189,22 @@ export function changeComplianceProfile(
 ): Draft {
   const tokenEndpointAuthMethod = complianceProfile === 'oidc'
     ? 'client_secret_basic'
-    : 'private_key_jwt';
+    : complianceProfile === 'public' ? 'none' : 'private_key_jwt';
   const bearerWasSelected = draft.dpop_bound_access_tokens === false
     && draft.tls_client_certificate_bound_access_tokens !== true;
   return {
     ...draft,
     compliance_profile: complianceProfile,
     token_endpoint_auth_method: tokenEndpointAuthMethod,
-    jwks: complianceProfile === 'oidc' ? '' : draft.jwks,
-    jwks_uri: complianceProfile === 'oidc' ? '' : draft.jwks_uri,
+    jwks: complianceProfile !== 'fapi' ? '' : draft.jwks,
+    jwks_uri: complianceProfile !== 'fapi' ? '' : draft.jwks_uri,
     tls_subject_value: '',
-    dpop_bound_access_tokens: complianceProfile === 'fapi' && bearerWasSelected
+    tls_client_certificate_bound_access_tokens: complianceProfile === 'public'
+      ? false
+      : draft.tls_client_certificate_bound_access_tokens,
+    dpop_bound_access_tokens: complianceProfile === 'public'
+      ? true
+      : complianceProfile === 'fapi' && bearerWasSelected
       ? true
       : draft.dpop_bound_access_tokens,
     use_mtls_endpoint_aliases: authenticationUsesMtls(tokenEndpointAuthMethod)

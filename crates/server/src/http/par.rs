@@ -153,9 +153,10 @@ pub async fn push(
         .map(|(k, v)| (k.into_owned(), v.into_owned()))
         .collect();
 
-    // FAPI 2.0 SP §5.3.2.2 item 4: a pushed request without client
-    // authentication is rejected. Authentication comes first, so that every
-    // later error is one an authenticated client is entitled to see.
+    // FAPI 2.0 SP §5.3.2.2 item 4 requires client authentication for the FAPI
+    // profile. The explicit public profile may identify itself with client_id
+    // after the tenant gate has been checked by the caller. Authentication
+    // comes first so later errors are disclosed only to an accepted client.
     let attempt = Attempt {
         assertion: find(&pairs, "client_assertion"),
         assertion_type: find(&pairs, "client_assertion_type"),
@@ -254,6 +255,15 @@ pub async fn push(
             Ok(jkt) => jkt,
             Err(refusal) => return refusal.into_response(),
         };
+    if client.registration.compliance_profile == asterius_domain::ClientComplianceProfile::Public
+        && dpop_jkt.is_none()
+    {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "public clients must bind the authorization code to a DPoP key",
+        );
+    }
 
     match store_request(&context, &client, &request, hinted_subject, dpop_jkt, now).await {
         Ok(minted) => (
@@ -308,7 +318,11 @@ pub async fn direct(
         })?
         .filter(Client::is_active)
         .ok_or_else(|| Box::new(error(StatusCode::BAD_REQUEST, "unauthorized_client", "client is unknown or disabled")))?;
-    if client.registration.compliance_profile != asterius_domain::ClientComplianceProfile::Oidc {
+    if !matches!(
+        client.registration.compliance_profile,
+        asterius_domain::ClientComplianceProfile::Oidc
+            | asterius_domain::ClientComplianceProfile::Public
+    ) {
         return Err(Box::new(error(
             StatusCode::BAD_REQUEST,
             "invalid_request",
@@ -346,6 +360,15 @@ pub async fn direct(
     }
     let dpop_jkt = crate::http::dpop::reconcile_par_key(None, request.dpop_jkt.as_deref())
         .map_err(|failure| Box::new(failure.into_response()))?;
+    if client.registration.compliance_profile == asterius_domain::ClientComplianceProfile::Public
+        && dpop_jkt.is_none()
+    {
+        return Err(Box::new(error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "public clients must bind the authorization code to a DPoP key",
+        )));
+    }
     let minted = store_request(&context, &client, &request, hinted_subject, dpop_jkt, now).await?;
     Ok((client.id.as_str().to_owned(), minted.uri().to_owned()))
 }
