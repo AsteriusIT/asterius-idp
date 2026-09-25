@@ -506,7 +506,7 @@ pub enum ClaimsRequestError {
     UnsupportedIdentityAssurance,
 }
 
-/// The supported, explicit subset of an OpenID4IDA verified-claims request.
+/// The supported, explicit subset of an OpenID Identity Assurance request.
 ///
 /// Evidence, assurance-level and value filters are refused until the release
 /// policy can evaluate them. This type records only attributes that the
