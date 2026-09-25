@@ -66,6 +66,8 @@
 //! else, and it widens the accepted *values* without touching the form rule —
 //! `aud` is still a string, never an array, so an assertion naming this server
 //! and somebody else is still refused.
+//! ADR-0016 records why this final CIBA rule remains an endpoint-specific
+//! exception while the RFC 7523 audience update is a draft.
 
 use asterius_domain::audit::{Actor, AuditEvent, Detail, EventType, Outcome};
 use asterius_domain::entities::client::GrantType;
