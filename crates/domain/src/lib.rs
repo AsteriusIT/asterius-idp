@@ -114,4 +114,7 @@ pub use rate_limit::{
 };
 pub use secret::{Secret, ct_eq};
 
-pub use groups::{Group, GroupDirectory, GroupId, GroupMetadata, GroupMetadataError, GroupName};
+pub use groups::{
+    Group, GroupDirectory, GroupId, GroupMetadata, GroupMetadataError, GroupName,
+    ScimGroupReplacement, ScimGroupState,
+};
