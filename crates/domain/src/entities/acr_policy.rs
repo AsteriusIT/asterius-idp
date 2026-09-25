@@ -171,11 +171,10 @@ impl AcrPolicy {
     /// Rejects unsupported proof methods, bare user verification and reserved names
     /// whose meaning would contradict administrator passkey requirements.
     pub fn validate_attainable(&self) -> Result<(), AcrPolicyError> {
-        use AuthenticationMethod::{ExistingSession, OneTimeCode, Passkey, UserVerified};
+        use AuthenticationMethod::{ExistingSession, Passkey, UserVerified};
         for level in &self.levels {
             let methods = level.methods();
-            if methods.contains(&OneTimeCode)
-                || methods.contains(&ExistingSession)
+            if methods.contains(&ExistingSession)
                 || (methods.contains(&UserVerified) && !methods.contains(&Passkey))
             {
                 return Err(AcrPolicyError::Malformed(
@@ -256,6 +255,17 @@ impl AcrPolicy {
     #[must_use]
     pub fn levels(&self) -> &[AcrLevel] {
         &self.levels
+    }
+
+    /// Whether this tenant has configured an ACR level that can include a
+    /// one-time code (`otp`). A configured level is the policy opt-in for
+    /// offering TOTP as a login factor; phishing-resistant reserved levels
+    /// continue to require a passkey through [`Self::validate_attainable`].
+    #[must_use]
+    pub fn supports_totp(&self) -> bool {
+        self.levels
+            .iter()
+            .any(|level| level.methods().contains(&AuthenticationMethod::OneTimeCode))
     }
 
     /// `acr_values_supported`, strongest first (OIDC Discovery §3).

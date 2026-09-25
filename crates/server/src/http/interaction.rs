@@ -194,6 +194,8 @@ pub struct InteractionContext<'a> {
     /// the flag — and no state in which the flag is on and the store is
     /// missing.
     pub verification: Option<crate::http::verify_email::Gate<'a>>,
+    /// Encrypted TOTP credentials, scoped to this tenant.
+    pub totp_credentials: &'a asterius_store_pg::PgTotpCredentials,
 }
 
 impl std::fmt::Debug for InteractionContext<'_> {
@@ -369,6 +371,7 @@ pub async fn show(
             offer: offer.as_ref(),
             signed_in: state.username.as_deref(),
             typed: None,
+            totp_challenge: state.totp_user.is_some(),
         },
     )
 }
@@ -544,6 +547,10 @@ pub async fn submit(
         .await;
     }
 
+    if state.totp_user.is_some() {
+        return verify_totp_sign_in(&context, &presented, state, id, &form, &record, now).await;
+    }
+
     match state.stage {
         // `Login` and `StepUp` take the same submission and the same form: the
         // difference between them is not what is asked of the person, it is
@@ -641,6 +648,23 @@ async fn sign_in(
                 }
             };
             state.signed_in_as(&named);
+            if context.acr.supports_totp() {
+                match context.totp_credentials.status(user, now).await {
+                    Ok(asterius_store_pg::TotpStatus::Active) => {
+                        state.require_totp(&user.to_string(), username);
+                        return totp_challenge(context, presented, state, id, now).await;
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        tracing::error!(%error, tenant = %context.tenant.id, "cannot read TOTP login state");
+                        return error_page(
+                            context,
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            InteractionError::NotAvailable,
+                        );
+                    }
+                }
+            }
             // The credential verified, so the failures counted against this
             // identifier are stale: the person proved they are who the counter
             // was about (`ast-b3u`). Only reachable from here, where something
@@ -650,7 +674,17 @@ async fn sign_in(
                 .throttle
                 .record_success(&context.tenant.id, &attempt)
                 .await;
-            authenticated(context, presented, state, id, record, user, now).await
+            authenticated(
+                context,
+                presented,
+                state,
+                id,
+                record,
+                user,
+                vec![AuthenticationMethod::Password],
+                now,
+            )
+            .await
         }
         // One message for "no such user" and "wrong password". The
         // verifier already equalises the *timing*; this equalises what
@@ -687,6 +721,147 @@ async fn sign_in(
     }
 }
 
+async fn totp_challenge(
+    context: &InteractionContext<'_>,
+    presented: &InteractionId,
+    mut state: StoredState,
+    id: &str,
+    now: OffsetDateTime,
+) -> Response {
+    let token = state.issue_csrf();
+    if let Err(error) = save(context, presented, &state, None, now).await {
+        return *error;
+    }
+    render(
+        context,
+        &Screen {
+            locale: locale_of(context, &state),
+            stage: state.stage,
+            csrf: &token,
+            id,
+            message: None,
+            offer: None,
+            signed_in: state.username.as_deref(),
+            typed: None,
+            totp_challenge: true,
+        },
+    )
+}
+
+async fn verify_totp_sign_in(
+    context: &InteractionContext<'_>,
+    presented: &InteractionId,
+    state: StoredState,
+    id: &str,
+    form: &[(String, String)],
+    record: &InteractionRecord,
+    now: OffsetDateTime,
+) -> Response {
+    let Some(user_value) = state.totp_user.as_deref() else {
+        return error_page(
+            context,
+            StatusCode::BAD_REQUEST,
+            InteractionError::NotAvailable,
+        );
+    };
+    let Some(username) = state.totp_username.as_deref() else {
+        return error_page(
+            context,
+            StatusCode::BAD_REQUEST,
+            InteractionError::NotAvailable,
+        );
+    };
+    let Ok(user) = uuid::Uuid::parse_str(user_value) else {
+        return error_page(
+            context,
+            StatusCode::BAD_REQUEST,
+            InteractionError::NotAvailable,
+        );
+    };
+    let attempt = context.throttle.attempt(Some(username));
+    let state = match gate(context, presented, state, id, &attempt, now).await {
+        Ok(state) => state,
+        Err(response) => return *response,
+    };
+    let codes: Vec<&str> = form
+        .iter()
+        .filter(|(name, _)| name == "totp_code")
+        .map(|(_, value)| value.as_str())
+        .collect();
+    let shape_is_valid = codes.len() == 1
+        && form.iter().filter(|(name, _)| name == "csrf").count() == 1
+        && !form
+            .iter()
+            .any(|(name, _)| matches!(name.as_str(), "username" | "password"));
+    let accepted = if shape_is_valid {
+        context.totp_credentials.verify(user, codes[0], now).await
+    } else {
+        Ok(false)
+    };
+    match accepted {
+        Ok(true) => {
+            context
+                .throttle
+                .record_success(&context.tenant.id, &attempt)
+                .await;
+            let mut state = state;
+            state.clear_totp();
+            authenticated(
+                context,
+                presented,
+                state,
+                id,
+                record,
+                user,
+                vec![
+                    AuthenticationMethod::Password,
+                    AuthenticationMethod::OneTimeCode,
+                ],
+                now,
+            )
+            .await
+        }
+        Ok(false) => {
+            context
+                .throttle
+                .record_failure(&context.tenant.id, &attempt, now)
+                .await;
+            record_event(
+                context,
+                AuditEvent::new(
+                    context.tenant.id.clone(),
+                    EventType::AUTH_LOGIN,
+                    Outcome::Failure,
+                    Actor::User(user.to_string()),
+                    now,
+                )
+                .subject(user.to_string())
+                .detail(
+                    Detail::new()
+                        .label("kind", "totp")
+                        .label("method", AuthenticationMethod::OneTimeCode.as_str()),
+                ),
+            )
+            .await;
+            let locale = locale_of(context, &state);
+            let message = context
+                .language
+                .catalog(locale)
+                .login_totp_failed()
+                .to_owned();
+            retry(context, presented, state, id, now, &message).await
+        }
+        Err(error) => {
+            tracing::error!(%error, tenant = %context.tenant.id, "cannot verify TOTP login code");
+            error_page(
+                context,
+                StatusCode::SERVICE_UNAVAILABLE,
+                InteractionError::NotAvailable,
+            )
+        }
+    }
+}
+
 /// Everything that follows a credential this server accepted.
 ///
 /// Split out of [`sign_in`] where the split cannot reorder a check: above the
@@ -702,6 +877,7 @@ async fn authenticated(
     id: &str,
     record: &InteractionRecord,
     user: uuid::Uuid,
+    methods: Vec<AuthenticationMethod>,
     now: OffsetDateTime,
 ) -> Response {
     // `ast-vae`: an address this tenant requires to be proved, and has not
@@ -746,7 +922,7 @@ async fn authenticated(
         state.stage,
         record.session.as_deref(),
         user,
-        vec![AuthenticationMethod::Password],
+        methods.clone(),
         &requested,
         now,
     )
@@ -780,7 +956,7 @@ async fn authenticated(
     // same line, which is why the record names the session it rotated onto
     // rather than being suppressed: "this factor was proved at this moment" is
     // the fact the trail is short of, not a duplicate of the first login.
-    record_signed_in(context, user, &established.digest, now).await;
+    record_signed_in(context, user, &established.digest, &methods, now).await;
 
     // `ast-2vk.7` decides whether a step-up is needed; until then
     // an authenticated user goes straight to whatever this interaction
@@ -847,6 +1023,7 @@ async fn authenticated(
             offer: offer.as_ref(),
             signed_in: state.username.as_deref(),
             typed: None,
+            totp_challenge: state.totp_user.is_some(),
         },
     );
     set_session_cookie(&mut response, &id_value);
@@ -1940,6 +2117,7 @@ async fn retry(
             offer: None,
             signed_in: state.username.as_deref(),
             typed: None,
+            totp_challenge: state.totp_user.is_some(),
         },
     )
 }
@@ -2093,6 +2271,7 @@ async fn create_account(
         id,
         record,
         *created.id.as_uuid(),
+        vec![AuthenticationMethod::Password],
         now,
     )
     .await
@@ -2169,6 +2348,7 @@ async fn retry_signup(
             offer: None,
             signed_in: state.username.as_deref(),
             typed: Some(typed),
+            totp_challenge: false,
         },
     )
 }
@@ -2194,9 +2374,16 @@ async fn record_signed_in(
     context: &InteractionContext<'_>,
     user: uuid::Uuid,
     session_digest: &str,
+    methods: &[AuthenticationMethod],
     now: OffsetDateTime,
 ) {
     let subject = user.to_string();
+    let mut detail = Detail::new()
+        .label("kind", "password")
+        .label("method", AuthenticationMethod::Password.as_str());
+    if methods.contains(&AuthenticationMethod::OneTimeCode) {
+        detail = detail.label("factor", AuthenticationMethod::OneTimeCode.as_str());
+    }
     record_event(
         context,
         AuditEvent::new(
@@ -2208,11 +2395,7 @@ async fn record_signed_in(
         )
         .subject(subject)
         .session(DomainSessionId::new(session_digest.to_owned()))
-        .detail(
-            Detail::new()
-                .label("kind", "password")
-                .label("method", AuthenticationMethod::Password.as_str()),
-        ),
+        .detail(detail),
     )
     .await;
 }
@@ -2296,6 +2479,7 @@ async fn no_method(
             offer: None,
             signed_in: state.username.as_deref(),
             typed: None,
+            totp_challenge: false,
         },
     )
 }
@@ -2475,6 +2659,8 @@ struct Screen<'a> {
     /// What was typed into the sign-up form last time, when this is a retry of
     /// it. Their own text, escaped by the template like anyone else's.
     typed: Option<&'a TypedSignup>,
+    /// Whether this page asks for a pending TOTP factor.
+    totp_challenge: bool,
 }
 
 /// The three sign-up fields worth handing back after a refusal.
@@ -2591,6 +2777,37 @@ struct SignInPage<'a> {
     message: Option<&'a str>,
 }
 
+struct TotpPage<'a> {
+    text: &'a Catalog,
+    step_up: bool,
+    action: &'a str,
+    csrf: &'a CsrfToken,
+    message: Option<&'a str>,
+    font_url: &'a str,
+}
+
+fn totp_challenge_page(context: &InteractionContext<'_>, page: &TotpPage<'_>) -> Response {
+    let presentation = crate::http::ThemeChrome::new(context.theme, &context.mount);
+    let document = Document::render(context.nonce, |nonce| {
+        pages::render(&pages::TotpChallengePage {
+            text: page.text,
+            tenant_name: &context.tenant.display_name,
+            step_up: page.step_up,
+            action: page.action,
+            csrf: page.csrf.expose(),
+            message: page.message,
+            nonce_attribute: nonce_attribute(nonce),
+            theme_css: &presentation.css,
+            brand: presentation.brand(page.font_url),
+        })
+    });
+    let mut response = document.into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
 /// Draws the sign-in page, which is also the step-up page.
 fn sign_in_page(context: &InteractionContext<'_>, page: &SignInPage<'_>) -> Response {
     let presentation = crate::http::ThemeChrome::new(context.theme, &context.mount);
@@ -2687,6 +2904,7 @@ fn render(context: &InteractionContext<'_>, screen: &Screen<'_>) -> Response {
         offer,
         signed_in,
         typed,
+        totp_challenge,
     } = screen;
     // Under the prefix the tenancy layer removed: this page is served at
     // `/t/{tenant}/interaction/{id}` and posts back to itself (`ast-295`).
@@ -2704,6 +2922,19 @@ fn render(context: &InteractionContext<'_>, screen: &Screen<'_>) -> Response {
     // One catalogue per rendering, and the `lang` attribute comes out of it
     // too: a page cannot say `fr` over English words.
     let text = &context.language.catalog(locale);
+    if totp_challenge {
+        return totp_challenge_page(
+            context,
+            &TotpPage {
+                text,
+                step_up: stage == Stage::StepUp,
+                action: &action,
+                csrf,
+                message,
+                font_url: &font_url,
+            },
+        );
+    }
     match stage {
         Stage::Login | Stage::StepUp => sign_in_page(
             context,

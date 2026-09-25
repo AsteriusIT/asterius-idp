@@ -288,6 +288,15 @@ pub struct StoredState {
     /// from it, and the session is what carries the identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
+    /// User whose password was proved and whose configured TOTP is pending.
+    /// This id stays server-side in the interaction row and is cleared before
+    /// a session is established.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub totp_user: Option<String>,
+    /// Verified username used to retain the same account throttle bucket
+    /// through the second-factor request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub totp_username: Option<String>,
     /// The language this interaction is being conducted in, as a BCP 47 tag.
     ///
     /// Negotiated once, when the first screen is drawn, and carried from screen
@@ -325,6 +334,8 @@ impl Default for StoredState {
             csrf_digest: None,
             decision: None,
             username: None,
+            totp_user: None,
+            totp_username: None,
             locale: None,
         }
     }
@@ -389,6 +400,18 @@ impl StoredState {
     /// filling is how one of them ends up not doing it (`ast-bo5`).
     pub fn signed_in_as(&mut self, username: &str) {
         self.username = Some(username.to_owned());
+    }
+
+    /// Marks a password-authenticated account as awaiting a TOTP proof.
+    pub fn require_totp(&mut self, user_id: &str, username: &str) {
+        self.totp_user = Some(user_id.to_owned());
+        self.totp_username = Some(username.to_owned());
+    }
+
+    /// Clears pending factor state after proof or a restart.
+    pub fn clear_totp(&mut self) {
+        self.totp_user = None;
+        self.totp_username = None;
     }
 
     /// Spends the issued token.

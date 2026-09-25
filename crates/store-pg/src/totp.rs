@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 const ENROLLMENT_LIFETIME_SECONDS: i64 = 600;
 const MAX_CONFIRMATION_ATTEMPTS: i16 = 5;
+const TOTP_STEP_SECONDS: u64 = 30;
 
 /// Whether a user has an authenticator configured. No secret material is
 /// exposed by this status type.
@@ -198,8 +199,100 @@ impl PgTotpCredentials {
             tx.commit().await.map_err(crate::to_domain_error)?;
             return Ok(false);
         }
-        sqlx::query("update totp_credentials set state = 'active', activated_at = $3, failed_attempts = 0 where tenant_id = $1 and user_id = $2")
-            .bind(self.tenant.as_str()).bind(user_id).bind(now).execute(&mut *tx).await.map_err(crate::to_domain_error)?;
+        let confirmed_step = i64::try_from(timestamp / TOTP_STEP_SECONDS)
+            .map_err(|_| DomainError::invalid("now", "TOTP step is too large"))?;
+        sqlx::query("update totp_credentials set state = 'active', activated_at = $3, failed_attempts = 0, last_used_step = $4 where tenant_id = $1 and user_id = $2")
+            .bind(self.tenant.as_str()).bind(user_id).bind(now).bind(confirmed_step)
+            .execute(&mut *tx).await.map_err(crate::to_domain_error)?;
+        tx.commit().await.map_err(crate::to_domain_error)?;
+        Ok(true)
+    }
+
+    /// Verifies an active credential and atomically consumes its matching
+    /// time step. A step may be accepted only once across all replicas.
+    ///
+    /// The one-step clock window accommodates ordinary clock drift. A code
+    /// matching only a step at or below `last_used_step` is a replay and is
+    /// refused exactly like an incorrect code.
+    pub async fn verify(
+        &self,
+        user_id: Uuid,
+        code: &str,
+        now: OffsetDateTime,
+    ) -> Result<bool, DomainError> {
+        if code.len() != 6 || !code.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Ok(false);
+        }
+        let timestamp = u64::try_from(now.unix_timestamp())
+            .map_err(|_| DomainError::invalid("now", "must be after the Unix epoch"))?;
+        let current_step = timestamp / TOTP_STEP_SECONDS;
+        let mut tx = self.pool.begin().await.map_err(crate::to_domain_error)?;
+        let row = sqlx::query(
+            "select ciphertext, nonce, kek_id, last_used_step
+               from totp_credentials
+              where tenant_id = $1 and user_id = $2 and state = 'active'
+              for update",
+        )
+        .bind(self.tenant.as_str())
+        .bind(user_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(crate::to_domain_error)?;
+        let Some(row) = row else {
+            tx.rollback().await.map_err(crate::to_domain_error)?;
+            return Ok(false);
+        };
+        let ciphertext: Vec<u8> = row.try_get("ciphertext").map_err(crate::to_domain_error)?;
+        let nonce: Vec<u8> = row.try_get("nonce").map_err(crate::to_domain_error)?;
+        let kek_id: String = row.try_get("kek_id").map_err(crate::to_domain_error)?;
+        let last_used_step: i64 = row
+            .try_get("last_used_step")
+            .map_err(crate::to_domain_error)?;
+        let wrapped = WrappedKey::from_parts(kek_id, nonce, ciphertext)
+            .map_err(|error| DomainError::Storage(Box::new(error)))?;
+        let binding_row = user_id.to_string();
+        let binding = KeyBinding::row_secret(&self.tenant, RowSecret::TotpSeed, &binding_row);
+        let plaintext = self
+            .kek
+            .unwrap(binding, &wrapped)
+            .await
+            .map_err(|error| DomainError::Storage(Box::new(error)))?;
+        let bytes: [u8; SECRET_LENGTH] = plaintext.as_slice().try_into().map_err(|_| {
+            DomainError::invalid(
+                "totp_credentials.ciphertext",
+                "stored seed has an invalid length",
+            )
+        })?;
+        let secret = TotpSecret::from_bytes(bytes);
+        let mut matched_step = None;
+        for step in [
+            current_step.checked_sub(1),
+            Some(current_step),
+            current_step.checked_add(1),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let seconds = step
+                .checked_mul(TOTP_STEP_SECONDS)
+                .ok_or_else(|| DomainError::invalid("now", "TOTP step overflowed"))?;
+            let expected = secret
+                .code_at(seconds)
+                .map_err(|error| DomainError::invalid("totp", error.to_string()))?;
+            if ct_eq(expected.as_bytes(), code.as_bytes())
+                && i128::from(step) > i128::from(last_used_step)
+            {
+                matched_step = Some(matched_step.map_or(step, |matched: u64| matched.max(step)));
+            }
+        }
+        let Some(step) = matched_step else {
+            tx.commit().await.map_err(crate::to_domain_error)?;
+            return Ok(false);
+        };
+        sqlx::query("update totp_credentials set last_used_step = $3 where tenant_id = $1 and user_id = $2 and state = 'active'")
+            .bind(self.tenant.as_str()).bind(user_id)
+            .bind(i64::try_from(step).map_err(|_| DomainError::invalid("now", "TOTP step is too large"))?)
+            .execute(&mut *tx).await.map_err(crate::to_domain_error)?;
         tx.commit().await.map_err(crate::to_domain_error)?;
         Ok(true)
     }

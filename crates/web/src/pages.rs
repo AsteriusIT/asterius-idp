@@ -70,6 +70,7 @@
 //!
 //! Every page is pinned as bytes in both locales; see `crate::snapshots`.
 
+use crate::Brand;
 use crate::csp::Nonce;
 use crate::i18n::Catalog;
 use askama::Template;
@@ -205,6 +206,31 @@ pub struct LoginPage<'a> {
     /// See [`crate::brand`]: the mark is inline SVG chosen from a closed
     /// enumeration, and the font URL carries this request's mount prefix.
     pub brand: crate::brand::Brand<'a>,
+}
+
+/// The second-factor page shown after a password has been proved.
+#[derive(Debug, Template)]
+#[template(path = "totp_challenge.html")]
+pub struct TotpChallengePage<'a> {
+    /// The words on this page.
+    pub text: &'a Catalog,
+    /// The tenant's display name.
+    pub tenant_name: &'a str,
+    /// Whether this is strengthening an existing session, which enables the
+    /// cancellation form.
+    pub step_up: bool,
+    /// The current interaction endpoint.
+    pub action: &'a str,
+    /// The synchroniser token.
+    pub csrf: &'a str,
+    /// A fixed failure message, if a prior code was refused.
+    pub message: Option<&'a str>,
+    /// The CSP nonce attribute.
+    pub nonce_attribute: NonceAttribute,
+    /// Validated tenant theme tokens.
+    pub theme_css: &'a str,
+    /// Tenant brand and local font URL.
+    pub brand: Brand<'a>,
 }
 
 /// The consent screen.

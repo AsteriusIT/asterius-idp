@@ -197,6 +197,21 @@ catalogue! {
             fr: "La connexion par clé d'accès nécessite JavaScript, car il s'agit d'une API du \
                  navigateur qu'une page doit appeler. JavaScript est désactivé ici : utilisez \
                  votre identifiant et votre mot de passe.";
+        LoginTotpTitle => login_totp_title, "login.totp-title",
+            en: "Enter your authenticator code",
+            fr: "Saisissez le code de votre application d’authentification";
+        LoginTotpExplanation => login_totp_explanation, "login.totp-explanation",
+            en: "Enter the current six-digit code from your authenticator app.",
+            fr: "Saisissez le code à six chiffres affiché dans votre application d’authentification.";
+        LoginTotpCode => login_totp_code, "login.totp-code",
+            en: "Authenticator code",
+            fr: "Code d’authentification";
+        LoginTotpSubmit => login_totp_submit, "login.totp-submit",
+            en: "Verify code",
+            fr: "Vérifier le code";
+        LoginTotpFailed => login_totp_failed, "login.totp-failed",
+            en: "That code was not accepted. Try the current code from your authenticator.",
+            fr: "Ce code n’a pas été accepté. Réessayez avec le code actuel de votre application.";
         StepUpTitle => step_up_title, "step-up.title",
             en: "Verify it is you",
             fr: "Confirmez votre identité";

@@ -330,7 +330,7 @@ fn base32(bytes: &[u8]) -> String {
             ALPHABET[((accumulator << (5 - bits)) & 31) as usize],
         ));
     }
-    while output.len() % 8 != 0 {
+    while !output.len().is_multiple_of(8) {
         output.push('=');
     }
     output
