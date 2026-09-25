@@ -15,6 +15,8 @@ pub struct ConsumedOid4vpTransaction {
     pub nonce: String,
     /// Preregistered verifier Client Identifier.
     pub client_id: String,
+    /// Client that was authenticated when this verifier request was created.
+    pub initiator_client_id: String,
     /// Sole DCQL credential query identifier.
     pub credential_id: String,
     /// Operator configuration entry to load for trust and claim policy.
@@ -46,6 +48,7 @@ impl PgOid4vpTransactions {
         state: &str,
         nonce: &str,
         client_id: &str,
+        initiator_client_id: &str,
         credential_id: &str,
         verifier_id: &str,
         now: OffsetDateTime,
@@ -53,13 +56,15 @@ impl PgOid4vpTransactions {
         let digest = sha256(state.as_bytes());
         sqlx::query(
             "insert into oid4vp_transactions
-             (tenant_id, state_digest, nonce, client_id, credential_id, verifier_id, expires_at)
-             values ($1, $2, $3, $4, $5, $6, $7)",
+             (tenant_id, state_digest, nonce, client_id, initiator_client_id,
+              credential_id, verifier_id, expires_at)
+             values ($1, $2, $3, $4, $5, $6, $7, $8)",
         )
         .bind(self.tenant.as_str())
         .bind(digest.as_slice())
         .bind(nonce)
         .bind(client_id)
+        .bind(initiator_client_id)
         .bind(credential_id)
         .bind(verifier_id)
         .bind(now + TRANSACTION_LIFETIME)
@@ -92,7 +97,7 @@ impl PgOid4vpTransactions {
             "update oid4vp_transactions set consumed_at = $3
              where tenant_id = $1 and state_digest = $2
                and consumed_at is null and expires_at > $3
-             returning nonce, client_id, credential_id, verifier_id",
+             returning nonce, client_id, initiator_client_id, credential_id, verifier_id",
         )
         .bind(self.tenant.as_str())
         .bind(digest.as_slice())
@@ -104,9 +109,89 @@ impl PgOid4vpTransactions {
             Ok(ConsumedOid4vpTransaction {
                 nonce: row.try_get("nonce").map_err(to_domain_error)?,
                 client_id: row.try_get("client_id").map_err(to_domain_error)?,
+                initiator_client_id: row
+                    .try_get("initiator_client_id")
+                    .map_err(to_domain_error)?,
                 credential_id: row.try_get("credential_id").map_err(to_domain_error)?,
                 verifier_id: row.try_get("verifier_id").map_err(to_domain_error)?,
             })
+        })
+        .transpose()
+    }
+
+    /// Stores a verified result only for a consumed transaction. A second
+    /// result cannot overwrite the first, even if another wallet races.
+    ///
+    /// # Errors
+    ///
+    /// Storage failure is returned to the caller; no result is published.
+    pub async fn record_verified(
+        &self,
+        state: &str,
+        holder: &str,
+        issuer: &str,
+        disclosed_claims: &serde_json::Value,
+        now: OffsetDateTime,
+    ) -> Result<bool, DomainError> {
+        let digest = sha256(state.as_bytes());
+        let result = sqlx::query(
+            "update oid4vp_transactions
+                set verified_claims = $3, holder = $4, credential_issuer = $5, verified_at = $6
+              where tenant_id = $1 and state_digest = $2
+                and consumed_at is not null and verified_at is null and expires_at > $6",
+        )
+        .bind(self.tenant.as_str())
+        .bind(digest.as_slice())
+        .bind(disclosed_claims)
+        .bind(holder)
+        .bind(issuer)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    /// Reads a verified result only for the initiating client and verifier.
+    /// The raw state is still required, so database exposure of its digest is
+    /// insufficient to retrieve credential data.
+    ///
+    /// # Errors
+    ///
+    /// Storage failure is returned to the caller.
+    pub async fn verified_result(
+        &self,
+        state: &str,
+        initiator_client_id: &str,
+        verifier_id: &str,
+        now: OffsetDateTime,
+    ) -> Result<Option<serde_json::Value>, DomainError> {
+        let digest = sha256(state.as_bytes());
+        let row = sqlx::query(
+            "select verified_claims, holder, credential_issuer
+               from oid4vp_transactions
+              where tenant_id = $1 and state_digest = $2 and verifier_id = $3
+                and initiator_client_id = $4 and expires_at > $5
+                and verified_at is not null",
+        )
+        .bind(self.tenant.as_str())
+        .bind(digest.as_slice())
+        .bind(verifier_id)
+        .bind(initiator_client_id)
+        .bind(now)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+        row.map(|row| {
+            let claims: serde_json::Value =
+                row.try_get("verified_claims").map_err(to_domain_error)?;
+            let holder: String = row.try_get("holder").map_err(to_domain_error)?;
+            let issuer: String = row.try_get("credential_issuer").map_err(to_domain_error)?;
+            Ok(serde_json::json!({
+                "holder": holder,
+                "credential_issuer": issuer,
+                "disclosed_claims": claims
+            }))
         })
         .transpose()
     }

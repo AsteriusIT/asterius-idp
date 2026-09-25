@@ -6,10 +6,15 @@ CREATE TABLE oid4vp_transactions (
     state_digest bytea NOT NULL,
     nonce text NOT NULL,
     client_id text NOT NULL,
+    initiator_client_id text NOT NULL,
     credential_id text NOT NULL,
     verifier_id text NOT NULL,
     expires_at timestamptz NOT NULL,
     consumed_at timestamptz,
+    verified_claims jsonb,
+    holder text,
+    credential_issuer text,
+    verified_at timestamptz,
     PRIMARY KEY (tenant_id, state_digest),
     CONSTRAINT oid4vp_state_digest_length CHECK (octet_length(state_digest) = 32)
 );
