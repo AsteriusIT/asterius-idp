@@ -110,6 +110,81 @@ pub trait SsfAdministration: Debug + Send + Sync {
         state: Option<&VerificationState>,
         now: OffsetDateTime,
     ) -> Result<bool, DomainError>;
+
+    /// Binds one canonical upstream subject identifier to a local user. The
+    /// implementation accepts only active clients explicitly registered with
+    /// `ssf.receive` capability.
+    async fn bind_receiver_subject(
+        &self,
+        tenant: &TenantId,
+        peer: &ClientId,
+        subject_key: &str,
+        user: uuid::Uuid,
+    ) -> Result<(), DomainError> {
+        let _ = (tenant, peer, subject_key, user);
+        Err(DomainError::NotFound)
+    }
+
+    /// Removes an existing upstream-to-local subject binding.
+    async fn remove_receiver_subject(
+        &self,
+        tenant: &TenantId,
+        peer: &ClientId,
+        subject_key: &str,
+        user: uuid::Uuid,
+    ) -> Result<bool, DomainError> {
+        let _ = (tenant, peer, subject_key, user);
+        Err(DomainError::NotFound)
+    }
+}
+
+/// A parsed mapping request. Subject values are accepted as RFC 9493 JSON and
+/// immediately reduced to the canonical form used for exact matching.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReceiverSubjectBinding {
+    /// Configured OAuth client whose signed events may carry this subject.
+    pub peer: ClientId,
+    /// Canonical subject identifier. Callers should not render this value in
+    /// audit logs; it may contain personal data.
+    pub subject_key: String,
+    /// Local account identity.
+    pub user: uuid::Uuid,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawReceiverSubjectBinding {
+    peer_client_id: String,
+    subject: serde_json::Value,
+    user_id: uuid::Uuid,
+}
+
+/// Validates one bounded operator mapping request.
+pub fn parse_receiver_subject_binding(
+    body: &[u8],
+) -> Result<ReceiverSubjectBinding, crate::error::AdminError> {
+    if body.is_empty() || body.len() > MAX_BODY_BYTES {
+        return Err(crate::error::AdminError::Invalid(
+            "the request body is empty or too large".to_owned(),
+        ));
+    }
+    let raw: RawReceiverSubjectBinding = serde_json::from_slice(body).map_err(|_| {
+        crate::error::AdminError::Invalid("the subject mapping document is invalid".to_owned())
+    })?;
+    let peer = raw.peer_client_id.trim();
+    if peer.is_empty() || peer.len() > 255 {
+        return Err(crate::error::AdminError::Invalid(
+            "peer_client_id is invalid".to_owned(),
+        ));
+    }
+    let subject = asterius_ssf::Subject::from_json(&raw.subject).map_err(|_| {
+        crate::error::AdminError::Invalid("subject is not a supported SSF identifier".to_owned())
+    })?;
+    Ok(ReceiverSubjectBinding {
+        peer: ClientId::new(peer),
+        subject_key: subject.key(),
+        user: raw.user_id,
+    })
 }
 
 /// One stream, as the console lists it.

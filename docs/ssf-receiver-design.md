@@ -1,12 +1,15 @@
 # Post-v1 SSF receiver design
 
-Status: design note only. Asterius v1 is an SSF transmitter, not a receiver.
-This document records the boundary to re-evaluate after v1; it does not commit
-an endpoint, configuration shape, database migration or conformance claim.
+Status: initial, bounded push receiver implementation in `ast-s36.26`. This is
+not a claim of full SSF or CAEP Interoperability Profile conformance. The
+implementation currently accepts configured OAuth client peers, two lifecycle
+event types, and operator-provisioned per-peer subject mappings; the complete
+stream-establishment, metadata-validation and delivery-profile work below
+remains future scope.
 
 ## Specification baseline
 
-The receiver must be designed against the
+The full receiver must be designed against the
 [OpenID Shared Signals Framework 1.0](https://openid.net/specs/openid-sharedsignals-framework-1_0.html)
 and the
 [CAEP Interoperability Profile 1.0](https://openid.net/specs/openid-caep-interoperability-profile-1_0.html).
@@ -40,6 +43,34 @@ compliance and other event families remain later, explicit policy mappings.
   Receiving needs the inverse operation, scoped to one configured upstream
   transmitter. It must not search every tenant or treat an email address as a
   globally authoritative account key.
+
+## Implemented push slice (`ast-s36.26`)
+
+`POST /ssf/receiver` accepts a bounded compact SET. Its unverified `iss` is
+used only to find an active tenant client that explicitly holds `ssf.receive`;
+the signature verifier uses only that client's registered JWKS through the
+existing guarded client-key cache. JWT-directed `jku` and `x5u` are rejected.
+The receiver requires `secevent+jwt`, the pinned issuer, this receiver's
+audience, `iat`, `jti`, `txn`, a valid `sub_id`, and exactly one supported
+event. It rejects top-level `sub` and `exp` per the SET profile and accepts
+tokens only within a five-minute `iat` window. The replay key is tenant,
+configured peer and `jti`; the durable inbox insert and local action share one
+database transaction.
+
+The current actions are `session-revoked` with `ssf.receive` and
+`account-disabled` with the additional `ssf.receive.account-disable` scope.
+`account-enabled` is deliberately refused because a remote event must not
+reverse a local administrative disable. Subjects never fall back to email or
+username: an administrator binds a parsed RFC 9493 subject to a local user
+through `PUT` or `DELETE /admin/ssf/receiver/subjects`, under
+`admin.ssf:write`. The canonical identifier is not included in audit detail.
+
+This slice does not yet create receiver streams from upstream metadata, accept
+poll delivery, implement the complete CAEP event vocabulary, order events by
+`event_timestamp`, or transactionally queue this server's resulting outbound
+notifications. The CAEP Interoperability Profile's RS256 requirement also
+remains unresolved against ADR-0003; this receiver accepts only EdDSA and ES256
+and makes no interoperability-profile conformance claim.
 
 ## Proposed processing boundary
 

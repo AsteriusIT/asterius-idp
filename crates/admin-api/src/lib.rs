@@ -181,6 +181,10 @@ pub const SSF_STREAMS_LIST_ID: &str = "ssf.streams.list";
 pub const SSF_STREAM_STATUS_UPDATE_ID: &str = "ssf.streams.status.update";
 /// The `operationId` of [`SSF_STREAM_VERIFY`].
 pub const SSF_STREAM_VERIFY_ID: &str = "ssf.streams.verify";
+/// The `operationId` of creating/updating a trusted SSF subject binding.
+pub const SSF_RECEIVER_SUBJECT_BIND_ID: &str = "ssf.receiver.subject.bind";
+/// The `operationId` of removing a trusted SSF subject binding.
+pub const SSF_RECEIVER_SUBJECT_REMOVE_ID: &str = "ssf.receiver.subject.remove";
 /// The `operationId` of `GET /audit/events`.
 pub const AUDIT_EVENTS_LIST_ID: &str = "audit.events.list";
 /// The `operationId` of `GET /audit/events/export`.
@@ -913,6 +917,25 @@ pub const SSF_STREAM_VERIFY: Operation = Operation::mutation(
     M::Post,
     A::new(R::Tenant, "admin.ssf:write"),
     "Queues an SSF verification event on the stream, with an optional state",
+);
+
+/// Creates or replaces a per-peer, tenant-scoped subject mapping for inbound
+/// SSF events. The subject is validated and stored in canonical form.
+pub const SSF_RECEIVER_SUBJECT_BIND: Operation = Operation::mutation(
+    SSF_RECEIVER_SUBJECT_BIND_ID,
+    "/ssf/receiver/subjects",
+    M::Put,
+    A::new(R::Tenant, "admin.ssf:write"),
+    "Binds one configured SSF peer subject to a local account",
+);
+
+/// Removes one per-peer subject mapping.
+pub const SSF_RECEIVER_SUBJECT_REMOVE: Operation = Operation::mutation(
+    SSF_RECEIVER_SUBJECT_REMOVE_ID,
+    "/ssf/receiver/subjects",
+    M::Delete,
+    A::new(R::Tenant, "admin.ssf:write"),
+    "Removes one configured SSF peer subject mapping",
 );
 
 /// This tenant's audit trail, filtered, one cursor page at a time
@@ -1662,7 +1685,7 @@ pub const SCIM_BULK: Operation = Operation::mutation(
     "SCIM Bulk is unsupported by this service",
 );
 
-static REGISTRY: [Operation; 118] = [
+static REGISTRY: [Operation; 120] = [
     SESSION_READ,
     SESSION_END,
     OVERVIEW_USERS,
@@ -1714,6 +1737,8 @@ static REGISTRY: [Operation; 118] = [
     SSF_STREAMS_LIST,
     SSF_STREAM_STATUS_UPDATE,
     SSF_STREAM_VERIFY,
+    SSF_RECEIVER_SUBJECT_BIND,
+    SSF_RECEIVER_SUBJECT_REMOVE,
     AUDIT_EVENTS_LIST,
     AUDIT_EVENTS_EXPORT,
     USERS_LIST,

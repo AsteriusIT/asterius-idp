@@ -52,6 +52,7 @@ mod scope;
 mod sessions;
 mod sql_audit;
 mod ssf_poll;
+mod ssf_receiver;
 mod ssf_streams;
 mod ssf_subjects;
 mod store;
@@ -121,6 +122,7 @@ pub use roles::PgRoleRepository;
 pub use scope::TenantScope;
 pub use sessions::PgSessionRepository;
 pub use ssf_poll::{Discarded, Enqueued, PgSsfPoll, PollBatch, QueuedSet};
+pub use ssf_receiver::{PgSsfReceiver, ReceiverAction, ReceiverOutcome};
 pub use ssf_streams::{
     DeliveryMethod, PgSsfStreams, PushTarget, SET_OUTBOX_KIND, StreamOverview, StreamStats,
     Subscription, VerificationClaim,

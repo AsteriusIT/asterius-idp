@@ -209,6 +209,13 @@ impl<'a> TenantScope<'a> {
         crate::PgSsfPoll::new(self.pool.clone(), self.tenant.clone())
     }
 
+    /// Explicit subject bindings and replay-safe lifecycle processing for
+    /// inbound SSF events.
+    #[must_use]
+    pub fn ssf_receiver(&self) -> crate::PgSsfReceiver {
+        crate::PgSsfReceiver::new(self.pool.clone(), self.tenant.clone())
+    }
+
     /// The subjects this tenant's streams carry events about (SSF 1.0 §8.1.3,
     /// `ast-0ju.4`).
     #[must_use]
