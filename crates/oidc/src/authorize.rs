@@ -790,7 +790,9 @@ pub fn validate(
             }
         })
         .transpose()?;
-    if scopes.contains("bound_key") && (!openid || dpop_jkt.is_none()) {
+    if scopes.contains("bound_key")
+        && (!openid || dpop_jkt.is_none() || !registration.token_binding.is_dpop_bound())
+    {
         return Err(AuthorizationError::Invalid("bound_key"));
     }
 
