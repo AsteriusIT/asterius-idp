@@ -1,4 +1,4 @@
-//! Self-service TOTP enrollment. Provisioning material appears only in the
+//! Self-service TOTP lifecycle. Provisioning material appears only in the
 //! no-store response that creates the pending seed (`ast-s36.15.2`).
 
 use asterius_domain::audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
@@ -26,6 +26,8 @@ pub struct TotpContext<'a> {
     pub credentials: &'a PgTotpCredentials,
     /// Account security trail.
     pub audit: &'a dyn AuditSink,
+    /// Account- and address-scoped limit for an optional code proof.
+    pub throttle: crate::http::throttle::LoginThrottle<'a>,
 }
 
 impl std::fmt::Debug for TotpContext<'_> {
@@ -37,7 +39,7 @@ impl std::fmt::Debug for TotpContext<'_> {
 /// Reads state only; a pending seed is never decrypted for a GET.
 pub async fn page(context: &TotpContext<'_>, headers: &HeaderMap, now: OffsetDateTime) -> Response {
     let Some(session) = account::admitted(&context.account, headers, now).await else {
-        return begin(&context.account, FirstPartyDestination::AccountHome, now).await;
+        return begin(&context.account, FirstPartyDestination::AccountTotp, now).await;
     };
     match context.credentials.status(session.user, now).await {
         Ok(status) => render(context, &session, status, None, None, StatusCode::OK),
@@ -56,7 +58,7 @@ pub async fn submit(
     now: OffsetDateTime,
 ) -> Response {
     let Some(session) = account::admitted(&context.account, headers, now).await else {
-        return begin(&context.account, FirstPartyDestination::AccountHome, now).await;
+        return begin(&context.account, FirstPartyDestination::AccountTotp, now).await;
     };
     let Some(form) = parse_form(body) else {
         return render(
@@ -79,12 +81,13 @@ pub async fn submit(
         );
     }
     if !fresh(&session, now) {
-        return begin(&context.account, FirstPartyDestination::AccountHome, now).await;
+        return begin(&context.account, FirstPartyDestination::AccountTotp, now).await;
     }
 
     match form.action.as_str() {
         "start" => start(context, &session, now).await,
         "confirm" => confirm(context, &session, &form.code, now).await,
+        "remove" => remove(context, &session, &form.code, now).await,
         _ => render(
             context,
             &session,
@@ -93,6 +96,139 @@ pub async fn submit(
             None,
             StatusCode::BAD_REQUEST,
         ),
+    }
+}
+
+/// Removes an active factor only after fresh authentication that satisfies the
+/// tenant's configured assurance policy. In deployments without an ACR policy,
+/// the current TOTP code itself is the required second factor. This leaves
+/// lost-device recovery to the deployment's existing approved account recovery
+/// process instead of creating a weaker bypass here.
+async fn remove(
+    context: &TotpContext<'_>,
+    session: &Session,
+    code: &str,
+    now: OffsetDateTime,
+) -> Response {
+    let status = match context.credentials.status(session.user, now).await {
+        Ok(status) => status,
+        Err(error) => {
+            tracing::error!(%error, tenant = %context.account.tenant.id, "cannot read TOTP status before removal");
+            return error_page(&context.account, StatusCode::SERVICE_UNAVAILABLE);
+        }
+    };
+    if status != TotpStatus::Active {
+        return render(
+            context,
+            session,
+            status,
+            Some("No active authenticator was removed."),
+            None,
+            StatusCode::CONFLICT,
+        );
+    }
+
+    let assurance_satisfied = !context.account.acr.levels().is_empty()
+        && context.account.acr.achieved(&session.amr).is_some();
+    let step_up_satisfied = if code.is_empty() {
+        assurance_satisfied
+    } else {
+        let account_name = session.user.to_string();
+        let attempt = context.throttle.attempt(Some(&account_name));
+        match context
+            .throttle
+            .check(&context.account.tenant.id, &attempt, now)
+            .await
+        {
+            Ok(Some(refused)) => {
+                crate::http::throttle::record_throttled(
+                    context.audit,
+                    &context.account.tenant.id,
+                    refused,
+                    now,
+                )
+                .await;
+                return render(
+                    context,
+                    session,
+                    TotpStatus::Active,
+                    Some(&refused.hint()),
+                    None,
+                    StatusCode::TOO_MANY_REQUESTS,
+                );
+            }
+            Err(error) => {
+                tracing::error!(%error, tenant = %context.account.tenant.id, "cannot check TOTP removal throttle");
+                return error_page(&context.account, StatusCode::SERVICE_UNAVAILABLE);
+            }
+            Ok(None) => {}
+        }
+        match context.credentials.verify(session.user, code, now).await {
+            Ok(true) => {
+                context
+                    .throttle
+                    .record_success(&context.account.tenant.id, &attempt)
+                    .await;
+                true
+            }
+            Ok(false) => {
+                context
+                    .throttle
+                    .record_failure(&context.account.tenant.id, &attempt, now)
+                    .await;
+                false
+            }
+            Err(error) => {
+                tracing::error!(%error, tenant = %context.account.tenant.id, "cannot verify TOTP removal step-up");
+                return error_page(&context.account, StatusCode::SERVICE_UNAVAILABLE);
+            }
+        }
+    };
+    if !step_up_satisfied {
+        record(
+            context,
+            session,
+            "removal_step_up_failed",
+            Outcome::Failure,
+            now,
+        )
+        .await;
+        return render(
+            context,
+            session,
+            TotpStatus::Active,
+            Some(
+                "Removal needs a fresh sign-in that meets your security policy, or a current authenticator code.",
+            ),
+            None,
+            StatusCode::FORBIDDEN,
+        );
+    }
+
+    match context.credentials.remove(session.user).await {
+        Ok(true) => {
+            record(context, session, "removed", Outcome::Success, now).await;
+            render(
+                context,
+                session,
+                TotpStatus::Unenrolled,
+                Some("Authenticator removed. Set it up again from this page when ready."),
+                None,
+                StatusCode::OK,
+            )
+        }
+        Ok(false) => render(
+            context,
+            session,
+            TotpStatus::Unenrolled,
+            Some("No active authenticator was removed."),
+            None,
+            StatusCode::CONFLICT,
+        ),
+        Err(error) => {
+            tracing::error!(%error, tenant = %context.account.tenant.id, "cannot remove TOTP authenticator");
+            error_page(&context.account, StatusCode::SERVICE_UNAVAILABLE)
+        }
     }
 }
 
@@ -224,7 +360,7 @@ async fn record(
     .detail(
         Detail::new()
             .label("kind", "totp")
-            .label("reason", "account_totp_enrollment")
+            .label("reason", "account_totp_lifecycle")
             .label("change", action),
     );
     if let Err(error) = context.audit.record(event).await {
@@ -247,7 +383,11 @@ fn render(
         format!("<p role=\"status\">{}</p>", escape_html(message))
     });
     let body = match status {
-        TotpStatus::Active => "<p>Authenticator is active.</p>".to_owned(),
+        TotpStatus::Active => format!(
+            "<p>Authenticator is active.</p><form method=\"post\" action=\"{}\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><label>Current six digit code, unless this session already meets your tenant's assurance policy <input name=\"code\" inputmode=\"numeric\" autocomplete=\"one-time-code\" pattern=\"[0-9]{{6}}\" maxlength=\"6\"></label><button name=\"action\" value=\"remove\">Remove authenticator</button></form><p>If you have lost access to your authenticator, use an existing approved sign-in or account recovery method. This page does not bypass your tenant's assurance policy.</p>",
+            escape_html(&action),
+            csrf
+        ),
         TotpStatus::Pending => format!(
             "<p>Enrollment is pending. The setup key is shown only in the response that starts enrollment; if you did not save it, start again.</p><form method=\"post\" action=\"{}\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><button name=\"action\" value=\"start\">Start a new setup key</button></form>",
             escape_html(&action),
@@ -305,7 +445,7 @@ fn parse_form(body: &[u8]) -> Option<Form> {
     let code = code.unwrap_or_default();
     if csrf.is_empty()
         || csrf.len() > account::MAX_CSRF_CHARS
-        || !matches!(action.as_str(), "start" | "confirm")
+        || !matches!(action.as_str(), "start" | "confirm" | "remove")
     {
         return None;
     }

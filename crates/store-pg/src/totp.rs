@@ -129,6 +129,19 @@ impl PgTotpCredentials {
         })
     }
 
+    /// Removes the tenant-bound authenticator after the caller has established
+    /// the account's required step-up assurance. Returns whether a row existed.
+    pub async fn remove(&self, user_id: Uuid) -> Result<bool, DomainError> {
+        let result =
+            sqlx::query("delete from totp_credentials where tenant_id = $1 and user_id = $2")
+                .bind(self.tenant.as_str())
+                .bind(user_id)
+                .execute(&self.pool)
+                .await
+                .map_err(crate::to_domain_error)?;
+        Ok(result.rows_affected() == 1)
+    }
+
     /// Confirms an unexpired pending credential. A malformed or incorrect
     /// code consumes one of five attempts; successful activation never
     /// returns the seed.

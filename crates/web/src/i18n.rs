@@ -550,6 +550,12 @@ catalogue! {
         AccountPasskeysExplains => account_passkeys_explains, "account.passkeys-explains",
             en: "Name a passkey, or remove one you no longer have.",
             fr: "Nommer une clé d'accès, ou retirer celle que vous n'avez plus.";
+        AccountTotpLink => account_totp_link, "account.totp-link",
+            en: "Authenticator app",
+            fr: "Application d'authentification";
+        AccountTotpExplains => account_totp_explains, "account.totp-explains",
+            en: "Set up, replace or remove your one-time-code authenticator.",
+            fr: "Configurer, remplacer ou retirer votre application d'authentification.";
         AccountPasswordLink => account_password_link, "account.password-link",
             en: "Password",
             fr: "Mot de passe";
