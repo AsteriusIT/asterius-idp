@@ -309,6 +309,27 @@ impl PgUserRepository {
         .fetch_one(&mut *tx)
         .await
         .map_err(to_domain_error)?;
+        crate::audit::append(
+            &mut *tx,
+            AuditEvent::new(
+                self.tenant.clone(),
+                EventType::USER_SCIM_PROFILE_CHANGED,
+                Outcome::Success,
+                Actor::Client(replacement.client.clone()),
+                OffsetDateTime::now_utc(),
+            )
+            .subject(replacement.user.to_string())
+            .detail(
+                Detail::new()
+                    .label("operation", replacement.operation)
+                    .flag("deprovisioned", replacement.delete)
+                    .flag(
+                        "active",
+                        !replacement.delete && replacement.status == UserStatus::Active,
+                    ),
+            ),
+        )
+        .await?;
         tx.commit().await.map_err(to_domain_error)?;
         Ok((row.into_state(&self.tenant)?, ended_sessions))
     }
@@ -437,6 +458,23 @@ impl PgUserRepository {
         .fetch_one(&mut *tx)
         .await
         .map_err(to_domain_error)?;
+        crate::audit::append(
+            &mut *tx,
+            AuditEvent::new(
+                self.tenant.clone(),
+                EventType::USER_CREATED,
+                Outcome::Success,
+                Actor::Client(client.clone()),
+                OffsetDateTime::now_utc(),
+            )
+            .subject(user.id.to_string())
+            .detail(
+                Detail::new()
+                    .label("operation", "scim.users.create")
+                    .flag("active", user.can_authenticate()),
+            ),
+        )
+        .await?;
         tx.commit().await.map_err(to_domain_error)?;
         row.into_state(&self.tenant)
     }

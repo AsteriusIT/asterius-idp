@@ -316,6 +316,7 @@ async fn route_standard(
         crate::SCIM_USERS_LIST_ID => context.scim_list_users().await,
         crate::SCIM_USER_REPLACE_ID => context.scim_replace_user(body).await,
         crate::SCIM_USER_DELETE_ID => context.scim_delete_user().await,
+        crate::SCIM_USER_PATCH_ID => context.scim_patch_user(body).await,
         crate::TENANTS_LIST_ID => context.list_tenants().await,
         crate::TENANT_READ_ID => context.read_tenant().await,
         crate::TENANT_CREATE_ID => context.create_tenant(body).await,
@@ -526,6 +527,7 @@ impl Handling<'_> {
             .map(users::accept_email)
             .transpose()?;
         let replacement = asterius_domain::ScimProfileReplacement {
+            operation: crate::SCIM_USER_REPLACE_ID,
             tenant: self.tenant.id.clone(),
             client,
             user: id,
@@ -556,23 +558,6 @@ impl Handling<'_> {
                 DomainError::NotFound => AdminError::NotFound,
                 other => AdminError::from_storage(crate::SCIM_USER_REPLACE_ID, &other),
             })?;
-        self.record_about(
-            EventType::USER_SCIM_PROFILE_CHANGED,
-            &saved.user.id,
-            Detail::new()
-                .label("operation", crate::SCIM_USER_REPLACE_ID)
-                .flag(
-                    "username_changed",
-                    held.user.username != saved.user.username,
-                )
-                .flag("email_changed", held.user.email != saved.user.email)
-                .flag("external_id_changed", held.external_id != saved.external_id)
-                .flag(
-                    "active_changed",
-                    held.user.can_authenticate() != saved.user.can_authenticate(),
-                ),
-        )
-        .await;
         scim::user_response(
             &saved,
             &format!(
@@ -609,6 +594,7 @@ impl Handling<'_> {
             .backend
             .users()
             .scim_replace_profile(asterius_domain::ScimProfileReplacement {
+                operation: crate::SCIM_USER_DELETE_ID,
                 tenant: self.tenant.id.clone(),
                 client,
                 user: id,
@@ -627,15 +613,81 @@ impl Handling<'_> {
                 DomainError::NotFound => AdminError::NotFound,
                 other => AdminError::from_storage(crate::SCIM_USER_DELETE_ID, &other),
             })?;
-        self.record_about(
-            EventType::USER_SCIM_PROFILE_CHANGED,
-            &id,
-            Detail::new()
-                .label("operation", crate::SCIM_USER_DELETE_ID)
-                .flag("deprovisioned", true),
-        )
-        .await;
         Ok(StatusCode::NO_CONTENT.into_response())
+    }
+
+    async fn scim_patch_user(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let expected_revision = scim::expected_revision(self.headers)?;
+        let id = self
+            .path
+            .rsplit('/')
+            .next()
+            .and_then(|segment| uuid::Uuid::parse_str(segment).ok())
+            .map(asterius_domain::UserId::new)
+            .ok_or(AdminError::NotFound)?;
+        let client = self.scim_client()?;
+        let held = self
+            .state
+            .backend
+            .users()
+            .scim_find(&self.tenant.id, &client, id)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::SCIM_USER_PATCH_ID, &error))?
+            .ok_or(AdminError::NotFound)?;
+        if held.revision != expected_revision {
+            return Err(AdminError::PreconditionFailed);
+        }
+        let patch: scim::PatchRequest = self.parse_body(body).await?;
+        let requested = patch.apply(&held)?;
+        if held.user.status == asterius_domain::UserStatus::Locked
+            && requested.status == asterius_domain::UserStatus::Active
+        {
+            return Err(AdminError::Conflict(
+                "SCIM cannot unlock a locked account".to_owned(),
+            ));
+        }
+        let username = users::accept_username(&requested.username)?;
+        let email = requested
+            .email
+            .as_deref()
+            .map(users::accept_email)
+            .transpose()?;
+        let external_id =
+            scim::accept_external_id(requested.external_id.as_deref())?.map(str::to_owned);
+        let saved = self
+            .state
+            .backend
+            .users()
+            .scim_replace_profile(asterius_domain::ScimProfileReplacement {
+                operation: crate::SCIM_USER_PATCH_ID,
+                tenant: self.tenant.id.clone(),
+                client,
+                user: id,
+                expected_revision,
+                username,
+                email,
+                external_id,
+                status: requested.status,
+                delete: false,
+            })
+            .await
+            .map_err(|error| match error {
+                DomainError::Conflict(message) if message == "SCIM revision changed" => {
+                    AdminError::PreconditionFailed
+                }
+                DomainError::Conflict(message) => AdminError::Conflict(message),
+                DomainError::NotFound => AdminError::NotFound,
+                other => AdminError::from_storage(crate::SCIM_USER_PATCH_ID, &other),
+            })?;
+        scim::user_response(
+            &saved,
+            &format!(
+                "{}{}/scim/v2",
+                self.tenant.issuer.as_str(),
+                crate::BASE_PATH
+            ),
+            StatusCode::OK,
+        )
     }
 
     fn scim_client(&self) -> Result<asterius_domain::ClientId, AdminError> {
@@ -783,15 +835,6 @@ impl Handling<'_> {
                 DomainError::Conflict(message) => AdminError::Conflict(message),
                 other => AdminError::from_storage(crate::SCIM_USER_CREATE_ID, &other),
             })?;
-        self.record_about(
-            EventType::USER_CREATED,
-            &stored.user.id,
-            Detail::new()
-                .label("operation", crate::SCIM_USER_CREATE_ID)
-                .flag("scim", true)
-                .flag("active", requested.active.unwrap_or(true)),
-        )
-        .await;
         scim::user_response(
             &stored,
             &format!(

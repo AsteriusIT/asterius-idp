@@ -171,6 +171,8 @@ pub struct ScimUserState {
 /// One conditional SCIM edit to the approved profile fields.
 #[derive(Debug, Clone)]
 pub struct ScimProfileReplacement {
+    /// Operation name retained in the atomic audit record.
+    pub operation: &'static str,
     /// Tenant owning the account.
     pub tenant: TenantId,
     /// Provisioning client owning the external identifier.
