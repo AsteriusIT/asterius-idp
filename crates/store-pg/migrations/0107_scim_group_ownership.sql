@@ -7,6 +7,11 @@ create table scim_group_owners (
     external_id text,
     created_at timestamptz not null default now(),
     primary key (tenant_id, group_id),
+    -- A client cannot be removed and its identifier reassigned while its
+    -- authority-bearing groups still exist. Delete those groups first.
+    foreign key (tenant_id, client_id)
+        references clients (tenant_id, client_id)
+        on delete no action deferrable initially deferred,
     foreign key (tenant_id, group_id)
         references managed_groups (tenant_id, group_id) on delete cascade,
     check (external_id is null or length(external_id) between 1 and 256)

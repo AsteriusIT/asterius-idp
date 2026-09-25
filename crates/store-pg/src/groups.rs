@@ -218,15 +218,19 @@ async fn scim_owned_locked(
 async fn scim_members(
     pool: &PgPool,
     tenant: &TenantId,
+    client: &ClientId,
     id: GroupId,
 ) -> Result<Vec<UserId>, DomainError> {
-    let rows: Vec<Uuid> = sqlx::query_scalar(
-        "select user_id from group_memberships
-         where tenant_id = $1 and group_id = $2
-         order by user_id limit $3",
+    let rows: Vec<(Uuid, bool)> = sqlx::query_as(
+        "select m.user_id, e.deleted_at is null as visible
+         from group_memberships m left join scim_user_external_ids e
+           on e.tenant_id = m.tenant_id and e.user_id = m.user_id and e.client_id = $3
+         where m.tenant_id = $1 and m.group_id = $2
+         order by m.user_id limit $4",
     )
     .bind(tenant.as_str())
     .bind(id.as_uuid())
+    .bind(client.as_str())
     .bind(i64::try_from(SCIM_MAX_MEMBERS + 1).unwrap_or(i64::MAX))
     .fetch_all(pool)
     .await
@@ -237,7 +241,12 @@ async fn scim_members(
             "SCIM group exceeds member limit",
         ));
     }
-    Ok(rows.into_iter().map(UserId::new).collect())
+    if rows.iter().any(|(_, visible)| !visible) {
+        return Err(DomainError::Conflict(
+            "SCIM group has an unavailable member".to_owned(),
+        ));
+    }
+    Ok(rows.into_iter().map(|(id, _)| UserId::new(id)).collect())
 }
 
 impl TryFrom<GroupRow> for Group {
@@ -333,7 +342,8 @@ impl GroupDirectory for PgGroups {
         .map_err(to_domain_error)?;
         sqlx::query(
             "insert into group_memberships (tenant_id, group_id, user_id, created_at)
-             select $1, $2, member, $4 from unnest($3::uuid[]) as member",
+             select $1, $2, supplied.user_id, $4
+             from unnest($3::uuid[]) as supplied(user_id)",
         )
         .bind(tenant.as_str())
         .bind(id.as_uuid())
@@ -363,10 +373,12 @@ impl GroupDirectory for PgGroups {
         )
         .await?;
         tx.commit().await.map_err(to_domain_error)?;
+        let mut members = members.to_vec();
+        members.sort_unstable();
         Ok(ScimGroupState {
             group: row.try_into()?,
             external_id: external_id.map(str::to_owned),
-            members: members.to_vec(),
+            members,
         })
     }
 
@@ -392,7 +404,8 @@ impl GroupDirectory for PgGroups {
         let Some(row) = row else { return Ok(None) };
         let mut connection = self.pool.acquire().await.map_err(to_domain_error)?;
         scim_role_free(&mut connection, tenant, id).await?;
-        let members = scim_members(&self.pool, tenant, id).await?;
+        drop(connection);
+        let members = scim_members(&self.pool, tenant, client, id).await?;
         Ok(Some(row.into_state(members)?))
     }
 
@@ -441,7 +454,8 @@ impl GroupDirectory for PgGroups {
             let id = GroupId::from_uuid(row.group_id);
             let mut connection = self.pool.acquire().await.map_err(to_domain_error)?;
             scim_role_free(&mut connection, tenant, id).await?;
-            states.push(row.into_state(scim_members(&self.pool, tenant, id).await?)?);
+            drop(connection);
+            states.push(row.into_state(scim_members(&self.pool, tenant, client, id).await?)?);
         }
         Ok((u64::try_from(total).unwrap_or(0), states))
     }
@@ -504,7 +518,8 @@ impl GroupDirectory for PgGroups {
         .map_err(to_domain_error)?;
         sqlx::query(
             "insert into group_memberships (tenant_id, group_id, user_id, created_at)
-             select $1, $2, member, $4 from unnest($3::uuid[]) as member
+             select $1, $2, supplied.user_id, $4
+             from unnest($3::uuid[]) as supplied(user_id)
              on conflict (tenant_id, group_id, user_id) do nothing",
         )
         .bind(replacement.tenant.as_str())
@@ -535,10 +550,12 @@ impl GroupDirectory for PgGroups {
         )
         .await?;
         tx.commit().await.map_err(to_domain_error)?;
+        let mut members = replacement.members;
+        members.sort_unstable();
         Ok(ScimGroupState {
             group: row.try_into()?,
             external_id: replacement.external_id,
-            members: replacement.members,
+            members,
         })
     }
 

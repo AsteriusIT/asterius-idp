@@ -33,6 +33,12 @@ pub fn is_route(id: &str) -> bool {
             | crate::SCIM_USER_REPLACE_ID
             | crate::SCIM_USER_DELETE_ID
             | crate::SCIM_USER_PATCH_ID
+            | crate::SCIM_GROUPS_LIST_ID
+            | crate::SCIM_GROUP_CREATE_ID
+            | crate::SCIM_GROUP_READ_ID
+            | crate::SCIM_GROUP_REPLACE_ID
+            | crate::SCIM_GROUP_PATCH_ID
+            | crate::SCIM_GROUP_DELETE_ID
     )
 }
 
@@ -202,7 +208,7 @@ pub struct RequestedEmail {
     pub primary: bool,
 }
 
-/// The bounded RFC 7644 PatchOp envelope accepted for approved User fields.
+/// The bounded RFC 7644 `PatchOp` envelope accepted for approved User fields.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PatchRequest {
@@ -470,18 +476,21 @@ pub fn discovery_response(id: &str, base: &str) -> Response {
             }],
             "meta": {"resourceType": "ServiceProviderConfig", "location": format!("{base}/ServiceProviderConfig")},
         }),
-        crate::SCIM_SCHEMAS_ID => list(&[user_schema()], 1, 1),
+        crate::SCIM_SCHEMAS_ID => list(&[user_schema(), crate::scim_groups::schema()], 2, 1),
         crate::SCIM_RESOURCE_TYPES_ID => list(
-            &[json!({
-                "schemas": [RESOURCE_TYPE],
-                "id": "User",
-                "name": "User",
-                "description": "Tenant account provisioning profile",
-                "endpoint": "/Users",
-                "schema": USER,
-                "meta": {"resourceType": "ResourceType"},
-            })],
-            1,
+            &[
+                json!({
+                    "schemas": [RESOURCE_TYPE],
+                    "id": "User",
+                    "name": "User",
+                    "description": "Tenant account provisioning profile",
+                    "endpoint": "/Users",
+                    "schema": USER,
+                    "meta": {"resourceType": "ResourceType"},
+                }),
+                crate::scim_groups::resource_type(),
+            ],
+            2,
             1,
         ),
         _ => return error_response(&AdminError::NotFound),

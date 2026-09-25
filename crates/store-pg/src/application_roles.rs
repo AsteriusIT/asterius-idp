@@ -34,6 +34,17 @@ use sqlx::postgres::PgPool;
 use std::collections::{BTreeMap, BTreeSet};
 use time::OffsetDateTime;
 
+fn group_role_error(error: sqlx::Error) -> DomainError {
+    match &error {
+        sqlx::Error::Database(database)
+            if database.constraint() == Some("scim_group_role_boundary") =>
+        {
+            DomainError::Conflict("SCIM-owned groups cannot hold application roles".to_owned())
+        }
+        _ => to_domain_error(error),
+    }
+}
+
 /// [`ApplicationRoleDirectory`] over `PostgreSQL`.
 ///
 /// Deployment-wide, with the tenant on every call: the same shape
@@ -276,7 +287,7 @@ impl ApplicationRoleDirectory for PgApplicationRoles {
             .bind(now)
             .execute(&self.pool)
             .await
-            .map_err(to_domain_error)?
+            .map_err(group_role_error)?
             .rows_affected(),
             RoleOwner::Client(client) => sqlx::query(
                 "insert into group_client_roles (tenant_id, group_id, client_id, name, granted_at)
@@ -290,7 +301,7 @@ impl ApplicationRoleDirectory for PgApplicationRoles {
             .bind(now)
             .execute(&self.pool)
             .await
-            .map_err(to_domain_error)?
+            .map_err(group_role_error)?
             .rows_affected(),
         };
         Ok(affected > 0)

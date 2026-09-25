@@ -42,7 +42,7 @@ use crate::operations::{Method, Operation};
 use crate::pagination::{Cursor, Page, PageRequest};
 use crate::{
     audit, authorization_details_types, clients, csrf, groups, initial_access_tokens, keys,
-    openapi, outbox, policies, resource_servers, scim, ssf, throttle, users,
+    openapi, outbox, policies, resource_servers, scim, scim_groups, ssf, throttle, users,
 };
 
 /// The client address, as this crate sees it.
@@ -317,6 +317,12 @@ async fn route_standard(
         crate::SCIM_USER_REPLACE_ID => context.scim_replace_user(body).await,
         crate::SCIM_USER_DELETE_ID => context.scim_delete_user().await,
         crate::SCIM_USER_PATCH_ID => context.scim_patch_user(body).await,
+        crate::SCIM_GROUPS_LIST_ID => context.scim_list_groups().await,
+        crate::SCIM_GROUP_CREATE_ID => context.scim_create_group(body).await,
+        crate::SCIM_GROUP_READ_ID => context.scim_read_group().await,
+        crate::SCIM_GROUP_REPLACE_ID => context.scim_replace_group(body).await,
+        crate::SCIM_GROUP_PATCH_ID => context.scim_patch_group(body).await,
+        crate::SCIM_GROUP_DELETE_ID => context.scim_delete_group().await,
         crate::TENANTS_LIST_ID => context.list_tenants().await,
         crate::TENANT_READ_ID => context.read_tenant().await,
         crate::TENANT_CREATE_ID => context.create_tenant(body).await,
@@ -688,6 +694,202 @@ impl Handling<'_> {
             ),
             StatusCode::OK,
         )
+    }
+
+    fn scim_base(&self) -> String {
+        format!(
+            "{}{}/scim/v2",
+            self.tenant.issuer.as_str(),
+            crate::BASE_PATH
+        )
+    }
+
+    fn scim_group_id(&self) -> Result<asterius_domain::GroupId, AdminError> {
+        self.path
+            .rsplit('/')
+            .next()
+            .and_then(|segment| uuid::Uuid::parse_str(segment).ok())
+            .map(asterius_domain::GroupId::from_uuid)
+            .ok_or(AdminError::NotFound)
+    }
+
+    async fn scim_read_group(&self) -> Result<Response, AdminError> {
+        let state = self
+            .state
+            .backend
+            .groups()
+            .scim_get(&self.tenant.id, &self.scim_client()?, self.scim_group_id()?)
+            .await
+            .map_err(|error| scim_group_error(crate::SCIM_GROUP_READ_ID, error))?
+            .ok_or(AdminError::NotFound)?;
+        scim_groups::group_response(&state, &self.scim_base(), StatusCode::OK)
+    }
+
+    async fn scim_create_group(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let requested: scim_groups::RequestedGroup = self.parse_body(body).await?;
+        let base = self.scim_base();
+        let members = requested.validate(&base)?;
+        let state = self
+            .state
+            .backend
+            .groups()
+            .scim_create(
+                &self.tenant.id,
+                &self.scim_client()?,
+                &requested.display_name,
+                requested.external_id.as_deref(),
+                &members,
+                self.now,
+            )
+            .await
+            .map_err(|error| scim_group_error(crate::SCIM_GROUP_CREATE_ID, error))?;
+        scim_groups::group_response(&state, &base, StatusCode::CREATED)
+    }
+
+    async fn scim_list_groups(&self) -> Result<Response, AdminError> {
+        let mut start_index = None;
+        let mut count = None;
+        let mut filter = None;
+        for (name, value) in url::form_urlencoded::parse(self.query.as_bytes()) {
+            match name.as_ref() {
+                "startIndex" if start_index.is_none() => {
+                    start_index =
+                        Some(value.parse::<u32>().map_err(|_| {
+                            AdminError::Invalid("invalid SCIM startIndex".to_owned())
+                        })?);
+                }
+                "count" if count.is_none() => {
+                    count = Some(
+                        value
+                            .parse::<u16>()
+                            .map_err(|_| AdminError::Invalid("invalid SCIM count".to_owned()))?,
+                    );
+                }
+                "filter" if filter.is_none() => {
+                    filter = Some(scim_groups::display_name_eq_filter(&value)?);
+                }
+                _ => {
+                    return Err(AdminError::Invalid(
+                        "unsupported or repeated SCIM query parameter".to_owned(),
+                    ));
+                }
+            }
+        }
+        let start_index = start_index.unwrap_or(1);
+        let count = count.unwrap_or(100);
+        if !(1..=10_001).contains(&start_index) || count > 200 {
+            return Err(AdminError::Invalid(
+                "SCIM page is outside supported bounds".to_owned(),
+            ));
+        }
+        let (total, mut states) = self
+            .state
+            .backend
+            .groups()
+            .scim_page(
+                &self.tenant.id,
+                &self.scim_client()?,
+                filter.as_deref(),
+                start_index - 1,
+                count.max(1),
+            )
+            .await
+            .map_err(|error| scim_group_error(crate::SCIM_GROUPS_LIST_ID, error))?;
+        if count == 0 {
+            states.clear();
+        }
+        scim_groups::groups_list_response(&states, total, start_index, &self.scim_base())
+    }
+
+    async fn scim_replace_group(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let expected_revision = scim::expected_revision(self.headers)?;
+        let id = self.scim_group_id()?;
+        let client = self.scim_client()?;
+        let held = self
+            .state
+            .backend
+            .groups()
+            .scim_get(&self.tenant.id, &client, id)
+            .await
+            .map_err(|error| scim_group_error(crate::SCIM_GROUP_REPLACE_ID, error))?
+            .ok_or(AdminError::NotFound)?;
+        if held.group.revision != expected_revision {
+            return Err(AdminError::PreconditionFailed);
+        }
+        let requested: scim_groups::RequestedGroup = self.parse_body(body).await?;
+        let members = requested.validate(&self.scim_base())?;
+        let state = self
+            .state
+            .backend
+            .groups()
+            .scim_replace(asterius_domain::ScimGroupReplacement {
+                tenant: self.tenant.id.clone(),
+                client,
+                group: id,
+                expected_revision,
+                display_name: requested.display_name,
+                external_id: requested.external_id,
+                members,
+                operation: crate::SCIM_GROUP_REPLACE_ID,
+                now: self.now,
+            })
+            .await
+            .map_err(|error| scim_group_error(crate::SCIM_GROUP_REPLACE_ID, error))?;
+        scim_groups::group_response(&state, &self.scim_base(), StatusCode::OK)
+    }
+
+    async fn scim_patch_group(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let expected_revision = scim::expected_revision(self.headers)?;
+        let id = self.scim_group_id()?;
+        let client = self.scim_client()?;
+        let held = self
+            .state
+            .backend
+            .groups()
+            .scim_get(&self.tenant.id, &client, id)
+            .await
+            .map_err(|error| scim_group_error(crate::SCIM_GROUP_PATCH_ID, error))?
+            .ok_or(AdminError::NotFound)?;
+        if held.group.revision != expected_revision {
+            return Err(AdminError::PreconditionFailed);
+        }
+        let request: scim::PatchRequest = self.parse_body(body).await?;
+        let patched = scim_groups::apply_patch(request, &held, &self.scim_base())?;
+        let state = self
+            .state
+            .backend
+            .groups()
+            .scim_replace(asterius_domain::ScimGroupReplacement {
+                tenant: self.tenant.id.clone(),
+                client,
+                group: id,
+                expected_revision,
+                display_name: patched.display_name,
+                external_id: patched.external_id,
+                members: patched.members,
+                operation: crate::SCIM_GROUP_PATCH_ID,
+                now: self.now,
+            })
+            .await
+            .map_err(|error| scim_group_error(crate::SCIM_GROUP_PATCH_ID, error))?;
+        scim_groups::group_response(&state, &self.scim_base(), StatusCode::OK)
+    }
+
+    async fn scim_delete_group(&self) -> Result<Response, AdminError> {
+        let expected_revision = scim::expected_revision(self.headers)?;
+        self.state
+            .backend
+            .groups()
+            .scim_delete(
+                &self.tenant.id,
+                &self.scim_client()?,
+                self.scim_group_id()?,
+                expected_revision,
+                self.now,
+            )
+            .await
+            .map_err(|error| scim_group_error(crate::SCIM_GROUP_DELETE_ID, error))?;
+        Ok(StatusCode::NO_CONTENT.into_response())
     }
 
     fn scim_client(&self) -> Result<asterius_domain::ClientId, AdminError> {
@@ -5123,6 +5325,15 @@ fn group_error(operation: &'static str, error: DomainError) -> AdminError {
         DomainError::Conflict(message) => AdminError::Conflict(message),
         DomainError::Invalid { field, reason } => AdminError::Invalid(format!("{field}: {reason}")),
         other => AdminError::from_storage(operation, &other),
+    }
+}
+
+fn scim_group_error(operation: &'static str, error: DomainError) -> AdminError {
+    match error {
+        DomainError::Conflict(message) if message == "group revision changed" => {
+            AdminError::PreconditionFailed
+        }
+        other => group_error(operation, other),
     }
 }
 
