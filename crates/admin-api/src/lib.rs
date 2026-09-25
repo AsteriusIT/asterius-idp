@@ -196,6 +196,12 @@ pub const INVITATION_REVOKE_ID: &str = "invitations.revoke";
 pub const USER_READ_ID: &str = "users.read";
 /// The `operationId` of `PUT /users/{user_id}/claims`.
 pub const USER_CLAIMS_UPDATE_ID: &str = "users.claims.update";
+/// Reads live Identity Assurance bundles for one user.
+pub const USER_IDA_LIST_ID: &str = "users.ida.list";
+/// Adds one internally verified Identity Assurance bundle.
+pub const USER_IDA_CREATE_ID: &str = "users.ida.create";
+/// Revokes one Identity Assurance bundle.
+pub const USER_IDA_REVOKE_ID: &str = "users.ida.revoke";
 /// The `operationId` of `PUT /users/{user_id}/status`.
 pub const USER_STATUS_UPDATE_ID: &str = "users.status.update";
 /// The `operationId` of `GET /users/{user_id}/credentials`.
@@ -998,6 +1004,33 @@ pub const USER_CLAIMS_UPDATE: Operation = Operation::mutation(
     "Replaces one account's claims and its verification flags",
 );
 
+/// Lists explicit verification records, separate from ordinary user claims.
+pub const USER_IDA_LIST: Operation = Operation::read(
+    USER_IDA_LIST_ID,
+    "/users/{user_id}/verified-claims",
+    S::Get,
+    A::new(R::Tenant, "admin.users:read"),
+    "Lists one account's verified identity bundles",
+);
+
+/// Adds a locally verified record. Handler requires a fresh passkey session.
+pub const USER_IDA_CREATE: Operation = Operation::mutation(
+    USER_IDA_CREATE_ID,
+    "/users/{user_id}/verified-claims",
+    M::Post,
+    A::new(R::Tenant, "admin.users:write"),
+    "Adds a locally verified identity bundle after fresh administrator assurance",
+);
+
+/// Revokes one verification record. Handler requires a fresh passkey session.
+pub const USER_IDA_REVOKE: Operation = Operation::mutation(
+    USER_IDA_REVOKE_ID,
+    "/users/{user_id}/verified-claims/{bundle_id}",
+    M::Delete,
+    A::new(R::Tenant, "admin.users:write"),
+    "Revokes one verified identity bundle after fresh administrator assurance",
+);
+
 /// Switches an account on or off.
 ///
 /// A route of its own and not a member of the claims document, because
@@ -1524,7 +1557,7 @@ pub const SCIM_USER_PATCH: Operation = Operation::mutation(
     "Conditionally patches one tenant User",
 );
 
-static REGISTRY: [Operation; 105] = [
+static REGISTRY: [Operation; 108] = [
     SESSION_READ,
     SESSION_END,
     OVERVIEW_USERS,
@@ -1584,6 +1617,9 @@ static REGISTRY: [Operation; 105] = [
     INVITATION_RESEND,
     INVITATION_REVOKE,
     USER_CLAIMS_UPDATE,
+    USER_IDA_LIST,
+    USER_IDA_CREATE,
+    USER_IDA_REVOKE,
     USER_STATUS_UPDATE,
     USER_CREDENTIALS_READ,
     USER_PASSKEY_REMOVE,

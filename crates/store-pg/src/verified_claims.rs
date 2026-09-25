@@ -90,7 +90,7 @@ impl PgVerifiedClaims {
         .await
         .map_err(to_domain_error)?;
         crate::audit::append(
-            &mut *tx,
+            &mut tx,
             AuditEvent::new(
                 self.tenant.clone(),
                 EventType::USER_CLAIMS_CHANGED,
@@ -162,7 +162,7 @@ impl PgVerifiedClaims {
         .map_err(to_domain_error)?;
         if changed.rows_affected() == 1 {
             crate::audit::append(
-                &mut *tx,
+                &mut tx,
                 AuditEvent::new(
                     self.tenant.clone(),
                     EventType::USER_CLAIMS_CHANGED,

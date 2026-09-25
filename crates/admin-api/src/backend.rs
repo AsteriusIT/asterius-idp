@@ -318,6 +318,39 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
     /// rather than a rule about what handlers render.
     fn users(&self) -> Arc<dyn asterius_domain::UserAdministration>;
 
+    /// Live, explicitly verified identity bundles for one tenant user.
+    async fn verified_claims(
+        &self,
+        _tenant: &TenantId,
+        _user: UserId,
+    ) -> Result<Vec<(uuid::Uuid, asterius_domain::VerifiedClaims)>, DomainError> {
+        Err(DomainError::NotFound)
+    }
+
+    /// Store an internally asserted bundle with audit in the same transaction.
+    async fn add_verified_claims(
+        &self,
+        _tenant: &TenantId,
+        _user: UserId,
+        _bundle: &asterius_domain::VerifiedClaims,
+        _actor: &str,
+        _now: time::OffsetDateTime,
+    ) -> Result<uuid::Uuid, DomainError> {
+        Err(DomainError::NotFound)
+    }
+
+    /// Revoke a bundle and append its audit event atomically.
+    async fn revoke_verified_claims(
+        &self,
+        _tenant: &TenantId,
+        _user: UserId,
+        _id: uuid::Uuid,
+        _actor: &str,
+        _now: time::OffsetDateTime,
+    ) -> Result<bool, DomainError> {
+        Err(DomainError::NotFound)
+    }
+
     /// The tenant-scoped managed-group catalogue and direct memberships.
     ///
     /// The port accepts a tenant on every operation and has no administrative

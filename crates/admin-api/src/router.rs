@@ -34,6 +34,13 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use time::OffsetDateTime;
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RequestedIdaBundle {
+    verified_at: String,
+    claims: serde_json::Value,
+}
+
 use crate::auth::{Credentials, Principal, authenticate};
 use crate::backend::{AdminBackend, AdminTokens};
 use crate::error::AdminError;
@@ -377,6 +384,9 @@ async fn route_standard(
         crate::INVITATION_RESEND_ID => context.resend_invitation(body).await,
         crate::INVITATION_REVOKE_ID => context.revoke_invitation().await,
         crate::USER_CLAIMS_UPDATE_ID => context.update_claims(body).await,
+        crate::USER_IDA_LIST_ID => context.list_verified_claims().await,
+        crate::USER_IDA_CREATE_ID => context.create_verified_claims(body).await,
+        crate::USER_IDA_REVOKE_ID => context.revoke_verified_claims().await,
         crate::USER_STATUS_UPDATE_ID => context.update_status(body).await,
         crate::USER_CREDENTIALS_READ_ID => context.read_credentials().await,
         crate::USER_PASSKEY_REMOVE_ID => context.remove_passkey().await,
@@ -3160,6 +3170,138 @@ impl Handling<'_> {
         .await;
 
         Ok(json_no_store(StatusCode::OK, &users::document(&saved)))
+    }
+
+    /// Identity Assurance records are separate from ordinary claim values and
+    /// can be read only by a tenant administrator with user-read authority.
+    async fn list_verified_claims(&self) -> Result<Response, AdminError> {
+        let id = self.user_in_path()?;
+        self.load_user(id, crate::USER_IDA_LIST_ID).await?;
+        let rows = self
+            .state
+            .backend
+            .verified_claims(&self.tenant.id, id)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::USER_IDA_LIST_ID, &error))?;
+        let items: Vec<_> = rows
+            .into_iter()
+            .map(|(id, bundle)| serde_json::json!({"bundle_id": id, "verified_claims": bundle.into_json()}))
+            .collect();
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({"items": items}),
+        ))
+    }
+
+    /// A locally asserted verification requires a passkey proved in the last
+    /// two minutes. The verifier and framework are fixed by this server, not
+    /// accepted from the JSON body.
+    async fn create_verified_claims(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        self.require_fresh_ida_admin().await?;
+        let id = self.user_in_path()?;
+        self.load_user(id, crate::USER_IDA_CREATE_ID).await?;
+        let request: RequestedIdaBundle = self.parse_body(body).await?;
+        let verified_at = OffsetDateTime::parse(
+            &request.verified_at,
+            &time::format_description::well_known::Rfc3339,
+        )
+        .map_err(|_| AdminError::Invalid("verified_at must be RFC 3339".to_owned()))?;
+        if verified_at > self.now {
+            return Err(AdminError::Invalid(
+                "verified_at must not be in the future".to_owned(),
+            ));
+        }
+        let bundle = asterius_domain::VerifiedClaims::from_storage(
+            "internal_admin_verification",
+            &self.tenant.issuer,
+            verified_at,
+            &request.claims,
+        )
+        .map_err(|error| AdminError::Invalid(error.to_string()))?;
+        let bundle_id = self
+            .state
+            .backend
+            .add_verified_claims(
+                &self.tenant.id,
+                id,
+                &bundle,
+                &self.principal.audit_actor(),
+                self.now,
+            )
+            .await
+            .map_err(|error| match error {
+                DomainError::NotFound => AdminError::NotFound,
+                DomainError::Invalid { .. } => {
+                    AdminError::Invalid("verified bundle limit reached".to_owned())
+                }
+                other => AdminError::from_storage(crate::USER_IDA_CREATE_ID, &other),
+            })?;
+        Ok(json_no_store(
+            StatusCode::CREATED,
+            &serde_json::json!({"bundle_id": bundle_id, "verified_claims": bundle.into_json()}),
+        ))
+    }
+
+    async fn revoke_verified_claims(&self) -> Result<Response, AdminError> {
+        self.require_fresh_ida_admin().await?;
+        let user = self.user_in_path()?;
+        self.load_user(user, crate::USER_IDA_REVOKE_ID).await?;
+        let id = self
+            .path
+            .rsplit('/')
+            .next()
+            .and_then(|raw| uuid::Uuid::parse_str(raw).ok())
+            .ok_or(AdminError::NotFound)?;
+        let revoked = self
+            .state
+            .backend
+            .revoke_verified_claims(
+                &self.tenant.id,
+                user,
+                id,
+                &self.principal.audit_actor(),
+                self.now,
+            )
+            .await
+            .map_err(|error| AdminError::from_storage(crate::USER_IDA_REVOKE_ID, &error))?;
+        if !revoked {
+            return Err(AdminError::NotFound);
+        }
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({"revoked": true}),
+        ))
+    }
+
+    async fn require_fresh_ida_admin(&self) -> Result<(), AdminError> {
+        let Principal::Console {
+            tenant, session_id, ..
+        } = self.principal
+        else {
+            return Err(AdminError::Forbidden);
+        };
+        let digest = SessionId::from_presented(session_id.clone()).digest();
+        let session = self
+            .state
+            .backend
+            .session(tenant, &digest)
+            .await
+            .map_err(|error| AdminError::from_storage("ida.admin.session", &error))?
+            .ok_or(AdminError::SessionUnusable)?;
+        if !matches!(
+            session.status(self.now),
+            asterius_domain::entities::session::SessionStatus::Active
+        ) {
+            return Err(AdminError::SessionUnusable);
+        }
+        let age = self.now - session.authenticated_at;
+        if !(time::Duration::ZERO..=time::Duration::minutes(2)).contains(&age)
+            || session.amr.last()
+                != Some(&asterius_domain::entities::session::AuthenticationMethod::Passkey)
+        {
+            return Err(AdminError::StepUpRequired);
+        }
+        Ok(())
     }
 
     /// `PUT /users/{user_id}/status` — switches an account on or off.
