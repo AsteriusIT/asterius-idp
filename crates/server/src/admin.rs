@@ -2211,6 +2211,49 @@ impl AdminBackend for Deployment {
         })
     }
 
+    async fn verified_claims(
+        &self,
+        tenant: &TenantId,
+        user: UserId,
+    ) -> Result<Vec<(uuid::Uuid, asterius_domain::VerifiedClaims)>, DomainError> {
+        self.store
+            .scope(tenant.clone())
+            .verified_claims()
+            .by_user(user)
+            .await
+            .map(|rows| rows.into_iter().map(|row| (row.id, row.bundle)).collect())
+    }
+
+    async fn add_verified_claims(
+        &self,
+        tenant: &TenantId,
+        user: UserId,
+        bundle: &asterius_domain::VerifiedClaims,
+        actor: &str,
+        now: time::OffsetDateTime,
+    ) -> Result<uuid::Uuid, DomainError> {
+        self.store
+            .scope(tenant.clone())
+            .verified_claims()
+            .insert(user, bundle, actor, now)
+            .await
+    }
+
+    async fn revoke_verified_claims(
+        &self,
+        tenant: &TenantId,
+        user: UserId,
+        id: uuid::Uuid,
+        actor: &str,
+        now: time::OffsetDateTime,
+    ) -> Result<bool, DomainError> {
+        self.store
+            .scope(tenant.clone())
+            .verified_claims()
+            .revoke(user, id, actor, now)
+            .await
+    }
+
     fn groups(&self) -> Arc<dyn asterius_domain::GroupDirectory> {
         Arc::new(asterius_store_pg::PgGroups::new(self.store.pool().clone()))
     }
