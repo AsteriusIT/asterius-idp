@@ -26,6 +26,123 @@ use std::collections::BTreeSet;
 use thiserror::Error;
 use time::OffsetDateTime;
 
+#[derive(Debug)]
+struct ReceiverSubjects<'a> {
+    users: &'a asterius_store_pg::PgUserRepository,
+    reservations: std::sync::Mutex<Vec<asterius_store_pg::ReceiverSubjectReservation>>,
+}
+
+#[async_trait::async_trait]
+impl asterius_domain::ports::SubjectResolver for ReceiverSubjects<'_> {
+    async fn subject(
+        &self,
+        user: asterius_domain::UserId,
+        sector: &asterius_domain::SectorIdentifier,
+    ) -> Result<asterius_domain::SubjectId, asterius_domain::DomainError> {
+        let subject = self.users.subject_for_notification(user, sector).await?;
+        self.reservations
+            .lock()
+            .map_err(|_| {
+                asterius_domain::DomainError::invalid(
+                    "ssf.receiver.subject",
+                    "subject reservation collector is unavailable",
+                )
+            })?
+            .push(asterius_store_pg::ReceiverSubjectReservation {
+                sector_identifier: sector.as_str().to_owned(),
+                subject: subject.as_str().to_owned(),
+            });
+        Ok(subject)
+    }
+}
+
+struct ReceiverPreparer<'a> {
+    tenant: &'a Tenant,
+    clients: &'a dyn asterius_domain::ports::ClientRepository,
+    users: &'a dyn asterius_domain::ports::SubjectResolver,
+    reservations: &'a std::sync::Mutex<Vec<asterius_store_pg::ReceiverSubjectReservation>>,
+    queues: &'a dyn crate::ssf::SsfQueues,
+    signer: &'a dyn asterius_domain::keys::Signer,
+}
+
+#[async_trait::async_trait]
+impl asterius_store_pg::ReceiverNotificationPreparer for ReceiverPreparer<'_> {
+    async fn prepare(
+        &self,
+        peer_client_id: &str,
+        user_id: uuid::Uuid,
+        sessions: &[asterius_store_pg::ReceiverSession],
+        action: asterius_store_pg::ReceiverAction,
+        account_was_active: bool,
+        now: OffsetDateTime,
+    ) -> Result<asterius_store_pg::ReceiverNotifications, asterius_domain::DomainError> {
+        let mut prepared = asterius_store_pg::ReceiverNotifications::default();
+        if action == asterius_store_pg::ReceiverAction::ObserveOnly {
+            return Ok(prepared);
+        }
+        let notifier = crate::backchannel::Notifier {
+            tenant: self.tenant,
+            clients: self.clients,
+            subjects: self.users,
+            signer: self.signer,
+            outbox: None,
+        };
+        let transmitter = crate::ssf::SsfTransmitter {
+            tenant: &self.tenant.id,
+            issuer: &self.tenant.issuer,
+            queues: self.queues,
+            clients: self.clients,
+            subjects: self.users,
+            signer: self.signer,
+        };
+        let user = asterius_domain::UserId::new(user_id);
+        let source_peer = ClientId::new(peer_client_id);
+        for session in sessions {
+            prepared.outbox.extend(
+                notifier
+                    .prepare_for_receiver(user_id, &session.public_sid, &session.participants, now)
+                    .await?,
+            );
+            let signal = transmitter
+                .prepare_for_receiver(
+                    &crate::ssf::Cause::SessionRevoked {
+                        user,
+                        sid: session.public_sid.clone(),
+                        by: crate::ssf::RevokedBy::ReceiverSignal,
+                        locale: asterius_domain::Locale::default(),
+                    },
+                    &source_peer,
+                    now,
+                )
+                .await?;
+            prepared.outbox.extend(signal.outbox);
+            prepared.poll.extend(signal.poll);
+        }
+        if action == asterius_store_pg::ReceiverAction::AccountDisabled && account_was_active {
+            let signal = transmitter
+                .prepare_for_receiver(
+                    &crate::ssf::Cause::AccountDisabled {
+                        user,
+                        reason: None,
+                        initiator: asterius_ssf::caep::InitiatingEntity::Policy,
+                    },
+                    &source_peer,
+                    now,
+                )
+                .await?;
+            prepared.outbox.extend(signal.outbox);
+            prepared.poll.extend(signal.poll);
+        }
+        prepared.subjects = std::mem::take(&mut *self.reservations.lock().map_err(|_| {
+            asterius_domain::DomainError::invalid(
+                "ssf.receiver.subject",
+                "subject reservation collector is unavailable",
+            )
+        })?);
+        Ok(prepared)
+    }
+}
+
 /// Receiver-only OAuth scope. The tenant registration policy must explicitly
 /// allow this scope before a client can hold it.
 pub const RECEIVE_SCOPE: &str = "ssf.receive";
@@ -179,9 +296,27 @@ async fn receive(
             }
         }
     };
-    match endpoints
-        .store
-        .scope(tenant.id)
+    let scope = endpoints.store.scope(tenant.id.clone());
+    let clients = scope.clients(endpoints.capabilities);
+    let users = scope.users(std::sync::Arc::clone(&endpoints.kek));
+    let subjects = ReceiverSubjects {
+        users: &users,
+        reservations: std::sync::Mutex::new(Vec::new()),
+    };
+    let queues = crate::outbox::PgSsfQueues::new(
+        endpoints.store.clone(),
+        tenant.id.clone(),
+        std::sync::Arc::clone(&endpoints.kek),
+    );
+    let preparer = ReceiverPreparer {
+        tenant: &tenant,
+        clients: &clients,
+        users: &subjects,
+        reservations: &subjects.reservations,
+        queues: &queues,
+        signer: endpoints.signer.as_ref(),
+    };
+    match scope
         .ssf_receiver()
         .process(
             event.peer.as_str(),
@@ -191,6 +326,7 @@ async fn receive(
             action,
             event.event_at,
             now,
+            &preparer,
         )
         .await
     {

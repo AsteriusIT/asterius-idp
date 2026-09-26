@@ -212,6 +212,8 @@ pub enum Cause {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum RevokedBy {
+    /// A configured upstream SSF peer requested a local lifecycle action.
+    ReceiverSignal,
     /// An administrator ended one named session (admin API, console).
     Administrator,
     /// Cascade: an administrator disabled the account, which ends its
@@ -258,6 +260,7 @@ impl RevokedBy {
     #[must_use]
     pub const fn initiating_entity(self) -> caep::InitiatingEntity {
         match self {
+            Self::ReceiverSignal => caep::InitiatingEntity::Policy,
             Self::Administrator | Self::AccountDisabled | Self::PasswordReset => {
                 caep::InitiatingEntity::Admin
             }
@@ -278,6 +281,7 @@ impl RevokedBy {
     #[must_use]
     pub const fn reason_admin(self) -> &'static str {
         match self {
+            Self::ReceiverSignal => "Revoked after a verified upstream security signal",
             Self::Administrator => "Revoked by an administrator",
             Self::AccountDisabled => "The account was disabled",
             Self::PasswordReset => "An administrator reset the password",
@@ -292,6 +296,7 @@ impl RevokedBy {
     #[must_use]
     pub const fn message(self) -> MessageKey {
         match self {
+            Self::ReceiverSignal => MessageKey::SessionRevokedByAdmin,
             Self::Administrator => MessageKey::SessionRevokedByAdmin,
             Self::AccountDisabled => MessageKey::SessionRevokedAccountDisabled,
             Self::PasswordReset => MessageKey::SessionRevokedPasswordReset,
@@ -315,6 +320,9 @@ impl RevokedBy {
         let mut details = details.initiated_by(self.initiating_entity());
         if let Ok(reason) = caep::Reason::english(self.reason_admin()) {
             details = details.reason_admin(reason);
+        }
+        if self == Self::ReceiverSignal {
+            return details;
         }
         let words = Catalog::new(locale);
         if let Ok(reason) = caep::Reason::new(locale.as_tag(), words.get(self.message())) {
@@ -454,6 +462,41 @@ impl std::fmt::Debug for SsfTransmitter<'_> {
 }
 
 impl SsfTransmitter<'_> {
+    /// Build every subscribed notice without queueing it. Receiver lifecycle
+    /// processing writes these rows in its own database transaction.
+    pub async fn prepare_for_receiver(
+        &self,
+        cause: &Cause,
+        source_peer: &ClientId,
+        now: OffsetDateTime,
+    ) -> Result<asterius_store_pg::ReceiverNotifications, DomainError> {
+        let subscriptions = self.queues.subscribed(cause.event_type()).await?;
+        let txn = Txn::generate();
+        let mut prepared = asterius_store_pg::ReceiverNotifications::default();
+        for subscription in &subscriptions {
+            // An inbound signal must not be echoed to the peer that sent it.
+            if &subscription.receiver == source_peer {
+                continue;
+            }
+            let Some(signed) = self.sign_for(cause, subscription, &txn, now).await? else {
+                continue;
+            };
+            match subscription.delivery {
+                DeliveryMethod::Poll => prepared.poll.push(asterius_store_pg::ReceiverPollSet {
+                    stream_id: subscription.stream_id.as_str().to_owned(),
+                    jti: signed.jti().as_str().to_owned(),
+                    jws: signed.jws().as_str().to_owned(),
+                }),
+                DeliveryMethod::Push => prepared.outbox.push(crate::outbox::push_event(
+                    &subscription.stream_id,
+                    &cause.user().as_uuid().to_string(),
+                    signed.jws().as_str(),
+                )),
+            }
+        }
+        Ok(prepared)
+    }
+
     /// Emits the SETs one cause produces, to every stream that subscribed.
     ///
     /// Best-effort and never fatal to the caller: a signal that could not be

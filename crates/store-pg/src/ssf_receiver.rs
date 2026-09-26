@@ -2,6 +2,7 @@
 
 use crate::error::to_domain_error;
 use asterius_domain::audit::{Actor, AuditEvent, Detail, EventType, Outcome};
+use asterius_domain::outbox::QueuedEvent;
 use asterius_domain::{ClientId, DomainError, SessionRevocation, TenantId};
 use sqlx::PgPool;
 use time::OffsetDateTime;
@@ -40,6 +41,52 @@ pub enum ReceiverOutcome {
     Duplicate,
     /// The verified event was older than the last event for this subject.
     Stale,
+}
+
+/// A session whose revocation must be announced to its participating clients.
+#[derive(Debug, Clone)]
+pub struct ReceiverSession {
+    pub public_sid: String,
+    pub participants: Vec<ClientId>,
+}
+
+/// Signed notices prepared for the transaction that accepts an inbound SET.
+#[derive(Debug, Default)]
+pub struct ReceiverNotifications {
+    pub outbox: Vec<QueuedEvent>,
+    pub poll: Vec<ReceiverPollSet>,
+    pub subjects: Vec<ReceiverSubjectReservation>,
+}
+
+/// A pairwise identifier used by a prepared notice. It is reserved before the
+/// notice commits, preserving the issuer's never-reassign guarantee.
+#[derive(Debug)]
+pub struct ReceiverSubjectReservation {
+    pub sector_identifier: String,
+    pub subject: String,
+}
+
+/// A signed SET for one polling stream.
+#[derive(Debug)]
+pub struct ReceiverPollSet {
+    pub stream_id: String,
+    pub jti: String,
+    pub jws: String,
+}
+
+/// Prepares notifications without committing them. The receiver invokes this
+/// while its user and session rows are locked; any failure aborts the SET.
+#[async_trait::async_trait]
+pub trait ReceiverNotificationPreparer: Send + Sync {
+    async fn prepare(
+        &self,
+        peer_client_id: &str,
+        user_id: Uuid,
+        sessions: &[ReceiverSession],
+        action: ReceiverAction,
+        account_was_active: bool,
+        now: OffsetDateTime,
+    ) -> Result<ReceiverNotifications, DomainError>;
 }
 
 /// The durable receiver store for one tenant.
@@ -114,6 +161,9 @@ impl PgSsfReceiver {
     /// `jti`, and applies its authorized lifecycle action. A failed identity
     /// lookup rolls back; a duplicate returns successfully without repeating
     /// the effect.
+    // The verified SET fields stay explicit so no caller can omit the replay
+    // bound, event time, or notification preparer at this security boundary.
+    #[allow(clippy::too_many_arguments)]
     pub async fn process(
         &self,
         peer_client_id: &str,
@@ -123,6 +173,7 @@ impl PgSsfReceiver {
         action: ReceiverAction,
         event_at: OffsetDateTime,
         now: OffsetDateTime,
+        notifications: &dyn ReceiverNotificationPreparer,
     ) -> Result<ReceiverOutcome, DomainError> {
         let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
         let duplicate: bool = sqlx::query_scalar(
@@ -160,12 +211,15 @@ impl PgSsfReceiver {
         };
         // Serialize signals arriving through different peer mappings for the
         // same account, not merely duplicate signals on one mapping row.
-        sqlx::query("select user_id from users where tenant_id = $1 and user_id = $2 for update")
-            .bind(self.tenant.as_str())
-            .bind(user_id)
-            .fetch_optional(&mut *transaction)
-            .await
-            .map_err(to_domain_error)?;
+        let status: Option<String> = sqlx::query_scalar(
+            "select status from users where tenant_id = $1 and user_id = $2 for update",
+        )
+        .bind(self.tenant.as_str())
+        .bind(user_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(to_domain_error)?;
+        let account_was_active = status.as_deref() == Some("active");
         let latest: Option<OffsetDateTime> = sqlx::query_scalar(
             "select max(event_timestamp) from ssf_receiver_events
              where tenant_id = $1 and user_id = $2",
@@ -207,29 +261,108 @@ impl PgSsfReceiver {
             }
             ReceiverAction::SessionRevoked => (EventType::SESSION_REVOKED, Outcome::Success),
         };
-        crate::audit::append(
-            &mut transaction,
-            AuditEvent::new(
-                self.tenant.clone(),
-                event_type,
-                if stale { Outcome::Failure } else { outcome },
-                Actor::Client(ClientId::new(peer_client_id)),
-                now,
-            )
-            .subject(user_id.to_string())
-            .detail(
-                Detail::new()
-                    .label("source", "ssf.receiver")
-                    .label("action", action.as_str())
-                    .label("result", if stale { "stale" } else { "accepted" }),
-            ),
+        let audit = AuditEvent::new(
+            self.tenant.clone(),
+            event_type,
+            if stale { Outcome::Failure } else { outcome },
+            Actor::Client(ClientId::new(peer_client_id)),
+            now,
         )
-        .await?;
+        .subject(user_id.to_string())
+        .detail(
+            Detail::new()
+                .label("source", "ssf.receiver")
+                .label("action", action.as_str())
+                .label("result", if stale { "stale" } else { "accepted" }),
+        );
 
         if stale {
+            crate::audit::append(&mut transaction, audit).await?;
             transaction.commit().await.map_err(to_domain_error)?;
             return Ok(ReceiverOutcome::Stale);
         }
+
+        // The user lock prevents new sessions (their FK needs KEY SHARE),
+        // and the session locks prevent new participants. Lock existing
+        // participant rows too so removal cannot change the fan-out between
+        // preparation and the lifecycle update. A failed preparation rolls
+        // back these locks and the inbox claim; audit follows preparation so
+        // the subject collision audit can use its own transaction safely.
+        let sessions = if action == ReceiverAction::ObserveOnly {
+            Vec::new()
+        } else {
+            let rows: Vec<(String, String)> = sqlx::query_as(
+                "select session_id, public_sid from sessions
+                 where tenant_id = $1 and user_id = $2 and revoked_at is null
+                 for update",
+            )
+            .bind(self.tenant.as_str())
+            .bind(user_id)
+            .fetch_all(&mut *transaction)
+            .await
+            .map_err(to_domain_error)?;
+            let mut sessions = Vec::with_capacity(rows.len());
+            for (session_id, public_sid) in rows {
+                let participants: Vec<String> = sqlx::query_scalar(
+                    "select client_id from session_clients
+                     where tenant_id = $1 and session_id = $2 order by client_id for update",
+                )
+                .bind(self.tenant.as_str())
+                .bind(&session_id)
+                .fetch_all(&mut *transaction)
+                .await
+                .map_err(to_domain_error)?;
+                sessions.push(ReceiverSession {
+                    public_sid,
+                    participants: participants.into_iter().map(ClientId::new).collect(),
+                });
+            }
+            sessions
+        };
+        let prepared = notifications
+            .prepare(
+                peer_client_id,
+                user_id,
+                &sessions,
+                action,
+                account_was_active,
+                now,
+            )
+            .await
+            .map_err(|error| DomainError::Storage(Box::new(error)))?;
+
+        for subject in &prepared.subjects {
+            sqlx::query(
+                "insert into subject_identifiers
+                    (tenant_id, user_id, sector_identifier, subject)
+                 values ($1, $2, $3, $4)
+                 on conflict (tenant_id, user_id, sector_identifier) do nothing",
+            )
+            .bind(self.tenant.as_str())
+            .bind(user_id)
+            .bind(&subject.sector_identifier)
+            .bind(&subject.subject)
+            .execute(&mut *transaction)
+            .await
+            .map_err(to_domain_error)?;
+            let reserved: Option<String> = sqlx::query_scalar(
+                "select subject from subject_identifiers
+                 where tenant_id = $1 and user_id = $2 and sector_identifier = $3",
+            )
+            .bind(self.tenant.as_str())
+            .bind(user_id)
+            .bind(&subject.sector_identifier)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(to_domain_error)?;
+            if reserved.as_deref() != Some(subject.subject.as_str()) {
+                return Err(DomainError::Conflict(
+                    "subject reservation changed during notification preparation".to_owned(),
+                ));
+            }
+        }
+
+        crate::audit::append(&mut transaction, audit).await?;
 
         match action {
             ReceiverAction::SessionRevoked => {
@@ -252,6 +385,24 @@ impl PgSsfReceiver {
                 revoke_sessions(&mut transaction, &self.tenant, user_id, now).await?;
             }
             ReceiverAction::ObserveOnly => {}
+        }
+        for notice in &prepared.outbox {
+            let mut entry = crate::outbox::NewOutboxEntry::new(
+                &notice.kind,
+                &notice.destination,
+                notice.payload.clone(),
+            );
+            entry.ordering_key = notice.ordering_key.as_deref();
+            crate::outbox::enqueue(&mut transaction, &self.tenant, &entry, now).await?;
+        }
+        let poll = crate::ssf_poll::PgSsfPoll::new(self.pool.clone(), self.tenant.clone());
+        for set in &prepared.poll {
+            let stream =
+                asterius_ssf::stream::StreamId::parse(&set.stream_id).ok_or_else(|| {
+                    DomainError::Conflict("invalid prepared stream identifier".to_owned())
+                })?;
+            poll.enqueue(&mut transaction, &stream, &set.jti, &set.jws, now)
+                .await?;
         }
         transaction.commit().await.map_err(to_domain_error)?;
         Ok(ReceiverOutcome::Applied)
