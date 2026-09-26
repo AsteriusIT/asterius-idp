@@ -447,6 +447,7 @@ fn account(text: &Catalog) -> String {
         approvals_href: "/account/approvals",
         grants_href: "/account/grants",
         claims_providers_href: "/account/claims-providers",
+        id_jag_href: "/account/id-jag",
         nonce_attribute: nonce(),
         theme_css: &theme(),
         brand: brand(),

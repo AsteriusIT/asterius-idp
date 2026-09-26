@@ -3,13 +3,14 @@
 //! This is a storage primitive, not a grant handler. The caller must first
 //! verify the ID-JAG with issuer-pinned keys and the request's DPoP proof.
 //! A token cannot establish its own trust or create its own subject binding.
-//! No consent writer is exposed here: an authenticated owner-approval flow
-//! must exist before any redemption can pass the consent predicate.
+//! Consent is written only for the authenticated account owner, through a
+//! tenant-scoped account page that checks fresh authentication and CSRF.
 
 use crate::error::to_domain_error;
-use asterius_domain::{DomainError, TenantId, sha256};
+use asterius_domain::audit::{Actor, AuditEvent, Detail, EventType, Outcome};
+use asterius_domain::{DomainError, SessionId, TenantId, sha256};
 use sqlx::PgPool;
-use time::OffsetDateTime;
+use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 /// One tenant's external subject bindings and authorized replay claims.
@@ -19,9 +20,271 @@ pub struct PgIdJagRedemption {
     tenant: TenantId,
 }
 
+fn validate_consent_inputs(
+    issuer: &str,
+    actor_client_id: &str,
+    client_id: &str,
+    resource: &str,
+    scopes: &[String],
+) -> Result<(), DomainError> {
+    if issuer.is_empty()
+        || issuer.len() > 2048
+        || actor_client_id.is_empty()
+        || actor_client_id.len() > 512
+        || client_id.is_empty()
+        || client_id.len() > 512
+        || resource.is_empty()
+        || resource.len() > 2048
+        || scopes.is_empty()
+        || scopes.len() > 32
+        || scopes
+            .iter()
+            .any(|scope| scope.is_empty() || scope.len() > 255)
+    {
+        return Err(DomainError::invalid(
+            "id_jag_consent",
+            "invalid authorization tuple",
+        ));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)] // Audit records the same exact authorization tuple as the row.
+async fn consent_audit(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant: &TenantId,
+    user_id: Uuid,
+    session_digest: &str,
+    issuer: &str,
+    actor_client_id: &str,
+    client_id: &str,
+    resource: &str,
+    scopes: &[String],
+    event_type: EventType,
+    now: OffsetDateTime,
+) -> Result<(), DomainError> {
+    crate::audit::append(
+        transaction,
+        AuditEvent::new(
+            tenant.clone(),
+            event_type,
+            Outcome::Success,
+            Actor::User(user_id.to_string()),
+            now,
+        )
+        .session(SessionId::new(session_digest.to_owned()))
+        .subject(user_id.to_string())
+        .detail(
+            Detail::new()
+                .label("grant_type", "id_jag")
+                .text("issuer", issuer)
+                .text("actor_client_id", actor_client_id)
+                .text("client_id", client_id)
+                .text("resource", resource)
+                .text("scopes", scopes.join(" ")),
+        ),
+    )
+    .await
+}
+
+/// An active, exact downstream authorization chosen by the account owner.
+#[derive(Debug, Clone)]
+pub struct IdJagConsent {
+    pub issuer: String,
+    pub actor_client_id: String,
+    pub client_id: String,
+    pub resource: String,
+    pub scopes: Vec<String>,
+    pub expires_at: OffsetDateTime,
+}
+
+/// Maximum life of an owner approval. Redemption still requires a fresh,
+/// verified ID-JAG and a current operator trust pin at the time of use.
+pub const MAX_CONSENT_LIFETIME: Duration = Duration::days(30);
+
 impl PgIdJagRedemption {
     pub(crate) const fn new(pool: PgPool, tenant: TenantId) -> Self {
         Self { pool, tenant }
+    }
+
+    /// Issuers with an operator-provisioned subject binding for this owner.
+    /// The owner cannot create or alter these bindings from the account page.
+    pub async fn bound_issuers(&self, user_id: Uuid) -> Result<Vec<String>, DomainError> {
+        sqlx::query_scalar(
+            "select distinct issuer from id_jag_subject_bindings
+             where tenant_id = $1 and user_id = $2 order by issuer",
+        )
+        .bind(self.tenant.as_str())
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(to_domain_error)
+    }
+
+    /// Live authorizations owned by this exact account, excluding revoked and
+    /// expired rows. No upstream subject is exposed on this page.
+    pub async fn consents_for_owner(
+        &self,
+        user_id: Uuid,
+        now: OffsetDateTime,
+    ) -> Result<Vec<IdJagConsent>, DomainError> {
+        let rows: Vec<(String, String, String, String, Vec<String>, OffsetDateTime)> =
+            sqlx::query_as(
+                "select issuer, actor_client_id, client_id, resource, scopes, expires_at
+                 from id_jag_consents
+                 where tenant_id = $1 and user_id = $2
+                   and revoked_at is null and expires_at > $3
+                 order by issuer, actor_client_id, client_id, resource",
+            )
+            .bind(self.tenant.as_str())
+            .bind(user_id)
+            .bind(now)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(to_domain_error)?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(issuer, actor_client_id, client_id, resource, scopes, expires_at)| IdJagConsent {
+                    issuer,
+                    actor_client_id,
+                    client_id,
+                    resource,
+                    scopes,
+                    expires_at,
+                },
+            )
+            .collect())
+    }
+
+    /// Grants an exact actor/client/resource/scope tuple to this account only
+    /// while a current operator subject binding and active local client exist.
+    /// The consent row and audit chain record commit together.
+    #[allow(clippy::too_many_arguments)] // The authorization tuple stays explicit at the write boundary.
+    pub async fn grant_consent(
+        &self,
+        user_id: Uuid,
+        session_digest: &str,
+        issuer: &str,
+        actor_client_id: &str,
+        client_id: &str,
+        resource: &str,
+        scopes: &[String],
+        expires_at: OffsetDateTime,
+        now: OffsetDateTime,
+    ) -> Result<bool, DomainError> {
+        validate_consent_inputs(issuer, actor_client_id, client_id, resource, scopes)?;
+        if expires_at <= now || expires_at > now + MAX_CONSENT_LIFETIME {
+            return Err(DomainError::invalid("id_jag_consent", "invalid expiry"));
+        }
+        let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
+        let written: Option<Uuid> = sqlx::query_scalar(
+            "insert into id_jag_consents
+                (tenant_id, user_id, issuer, actor_client_id, client_id, resource,
+                 scopes, granted_at, expires_at, revoked_at)
+             select $1, $2, $3, $4, $5, $6, $7, $8, $9, null
+               from users u join clients c on c.tenant_id = u.tenant_id
+                 and c.client_id = $5
+              where u.tenant_id = $1 and u.user_id = $2 and u.status = 'active'
+                and c.status = 'active'
+                and exists (
+                  select 1 from id_jag_subject_bindings b
+                   where b.tenant_id = $1 and b.user_id = $2 and b.issuer = $3
+                   for share
+                )
+              for share of u, c
+             on conflict (tenant_id, user_id, issuer, actor_client_id, client_id, resource)
+             do update set scopes = excluded.scopes,
+                           granted_at = excluded.granted_at,
+                           expires_at = excluded.expires_at,
+                           revoked_at = null
+             returning user_id",
+        )
+        .bind(self.tenant.as_str())
+        .bind(user_id)
+        .bind(issuer)
+        .bind(actor_client_id)
+        .bind(client_id)
+        .bind(resource)
+        .bind(scopes)
+        .bind(now)
+        .bind(expires_at)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(to_domain_error)?;
+        if written.is_none() {
+            transaction.rollback().await.map_err(to_domain_error)?;
+            return Ok(false);
+        }
+        consent_audit(
+            &mut transaction,
+            &self.tenant,
+            user_id,
+            session_digest,
+            issuer,
+            actor_client_id,
+            client_id,
+            resource,
+            scopes,
+            EventType::CONSENT_GRANTED,
+            now,
+        )
+        .await?;
+        transaction.commit().await.map_err(to_domain_error)?;
+        Ok(true)
+    }
+
+    /// Revokes one exact row only if it belongs to this account. A missing or
+    /// previously revoked row is one indistinguishable `false` result.
+    #[allow(clippy::too_many_arguments)] // The primary key is intentionally explicit.
+    pub async fn revoke_consent(
+        &self,
+        user_id: Uuid,
+        session_digest: &str,
+        issuer: &str,
+        actor_client_id: &str,
+        client_id: &str,
+        resource: &str,
+        now: OffsetDateTime,
+    ) -> Result<bool, DomainError> {
+        let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
+        let revoked: Option<Vec<String>> = sqlx::query_scalar(
+            "update id_jag_consents set revoked_at = $7
+             where tenant_id = $1 and user_id = $2 and issuer = $3
+               and actor_client_id = $4 and client_id = $5 and resource = $6
+               and revoked_at is null
+             returning scopes",
+        )
+        .bind(self.tenant.as_str())
+        .bind(user_id)
+        .bind(issuer)
+        .bind(actor_client_id)
+        .bind(client_id)
+        .bind(resource)
+        .bind(now)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(to_domain_error)?;
+        let Some(scopes) = revoked else {
+            transaction.rollback().await.map_err(to_domain_error)?;
+            return Ok(false);
+        };
+        consent_audit(
+            &mut transaction,
+            &self.tenant,
+            user_id,
+            session_digest,
+            issuer,
+            actor_client_id,
+            client_id,
+            resource,
+            &scopes,
+            EventType::GRANT_REVOKED,
+            now,
+        )
+        .await?;
+        transaction.commit().await.map_err(to_domain_error)?;
+        Ok(true)
     }
 
     /// Binds one trusted issuer's exact `sub` to a local user. The caller must

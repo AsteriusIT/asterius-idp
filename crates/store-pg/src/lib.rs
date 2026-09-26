@@ -91,7 +91,7 @@ pub use federation_keys::{
     FederationKeyRecord, FederationKeySnapshot, PgFederationKeys, ROTATION_PERIOD,
 };
 pub use grants::{PgGrantRepository, Revocation};
-pub use id_jag_redemption::PgIdJagRedemption;
+pub use id_jag_redemption::{IdJagConsent, MAX_CONSENT_LIFETIME, PgIdJagRedemption};
 pub use initial_access_tokens::PgInitialAccessTokens;
 pub use invitations::{
     ActivatedInvitation, Invitation, InvitationPreview, MAX_INVITATION_LIFETIME, NewInvitation,

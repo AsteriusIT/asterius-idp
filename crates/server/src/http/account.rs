@@ -401,6 +401,9 @@ pub async fn page(
     let claims_providers_href = context
         .mount
         .absolute(crate::http::account_claims_providers::PAGE_PATH);
+    let id_jag_href = context
+        .mount
+        .absolute(crate::http::account_id_jag::PAGE_PATH);
     let document = Document::render(context.nonce, |nonce| {
         pages::render(&AccountPage {
             text: context.text,
@@ -415,6 +418,7 @@ pub async fn page(
             approvals_href: &approvals_href,
             grants_href: &grants_href,
             claims_providers_href: &claims_providers_href,
+            id_jag_href: &id_jag_href,
             nonce_attribute: nonce_attribute(nonce),
             theme_css: &presentation.css,
             brand: presentation.brand(&font_url),

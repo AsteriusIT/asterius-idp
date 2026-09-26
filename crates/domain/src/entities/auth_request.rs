@@ -194,6 +194,8 @@ pub enum FirstPartyDestination {
     AccountEmail,
     /// Return to the user's Claims Provider connection page after sign-in.
     AccountClaimsProviders,
+    /// Return to the account owner's ID-JAG approval page after sign-in.
+    AccountIdJagConsent,
 }
 
 impl FirstPartyDestination {
@@ -213,6 +215,7 @@ impl FirstPartyDestination {
             Self::AccountActivity => "account_activity",
             Self::AccountEmail => "account_email",
             Self::AccountClaimsProviders => "account_claims_providers",
+            Self::AccountIdJagConsent => "account_id_jag_consent",
         }
     }
 
@@ -237,6 +240,7 @@ impl FirstPartyDestination {
             "account_activity" => Some(Self::AccountActivity),
             "account_email" => Some(Self::AccountEmail),
             "account_claims_providers" => Some(Self::AccountClaimsProviders),
+            "account_id_jag_consent" => Some(Self::AccountIdJagConsent),
             _ => None,
         }
     }

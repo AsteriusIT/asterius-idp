@@ -68,6 +68,7 @@ pub mod account_activity;
 pub mod account_claims_providers;
 pub mod account_email;
 pub mod account_grants;
+pub mod account_id_jag;
 pub mod account_passkeys;
 pub mod account_password;
 pub mod account_sessions;

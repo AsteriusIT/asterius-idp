@@ -880,6 +880,8 @@ pub struct AccountPage<'a> {
     pub grants_href: &'a str,
     /// This user's configured Claims Provider connections.
     pub claims_providers_href: &'a str,
+    /// The account owner's ID-JAG approvals.
+    pub id_jag_href: &'a str,
     /// The CSP nonce attribute.
     pub nonce_attribute: NonceAttribute,
     /// The tenant's design tokens, as the CSS custom properties
