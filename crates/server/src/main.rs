@@ -321,6 +321,9 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
             tenant_settings: Some(settings.clone()),
             signed_metadata: pdp_metadata_signer(&config, &keys),
             clients: Some(Arc::new(ClientEndpoints {
+                ssf_metadata_cache: Arc::new(
+                    asterius_server::http::ssf_receiver::UpstreamMetadataCache::new(),
+                ),
                 http_signature_peers,
                 http_signature_replay: Arc::clone(&replay) as Arc<dyn ReplayGuard>,
                 oid4vp_verifiers,
