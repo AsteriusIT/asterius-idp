@@ -434,6 +434,22 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
                     })
                     .collect(),
             ),
+            ipsie_rp_session_lifetimes: Arc::new(
+                config
+                    .tenants
+                    .iter()
+                    .map(|tenant| {
+                        (
+                            tenant.id.as_str().to_owned(),
+                            tenant
+                                .ipsie_rp_sessions
+                                .iter()
+                                .map(|entry| (entry.client_id.clone(), entry.lifetime_seconds))
+                                .collect(),
+                        )
+                    })
+                    .collect(),
+            ),
             ssf_metadata_cache: Arc::new(
                 asterius_server::http::ssf_receiver::UpstreamMetadataCache::new(),
             ),
