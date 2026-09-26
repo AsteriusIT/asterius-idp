@@ -76,7 +76,7 @@ pub use ciba_requests::{
     CibaPoll, CibaPolled, NewCibaRequest, PING_OUTBOX_KIND, PendingApproval,
     PgCibaRequestRepository, PingCredentials, PingTarget, RedeemedCiba,
 };
-pub use claims_provider_oauth::{CpPending, PgCpOAuth};
+pub use claims_provider_oauth::{CpConnection, CpConnectionSummary, CpPending, PgCpOAuth};
 pub use client_key_fetches::PgClientKeyFetches;
 pub use client_usage::PgClientUsage;
 pub use clients::PgClientRepository;

@@ -1,6 +1,4 @@
-//! User-started, one-shot Claims Provider OAuth code + PKCE connection.
-//! Access tokens are used once for signed UserInfo and discarded; renewal is
-//! not offered until encrypted long-lived credential custody is implemented.
+//! User-approved Claims Provider OAuth code + PKCE connection and recollection.
 
 use crate::claims_provider::ClaimsProviders;
 use crate::http::account::{
@@ -9,7 +7,9 @@ use crate::http::account::{
 use crate::http::redirect::SeeOther;
 use crate::outbound::{HttpsClientUrlFetcher, HttpsPoster, PostRequest};
 use asterius_domain::{FirstPartyDestination, Session, UserId, sha256_hex};
-use asterius_store_pg::{PgAggregatedClaims, PgCpOAuth, StoredClaimSource};
+use asterius_store_pg::{
+    CpConnection, CpConnectionSummary, PgAggregatedClaims, PgCpOAuth, StoredClaimSource,
+};
 use asterius_web::Document;
 use axum::body::Bytes;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -17,6 +17,7 @@ use axum::response::{IntoResponse, Response};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
+use std::collections::BTreeSet;
 use time::{Duration, OffsetDateTime};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -92,10 +93,11 @@ pub async fn submit(
         )
         .await;
     }
-    if context
-        .providers
-        .oauth_registration(context.account.tenant.id.as_str(), &issuer)
-        .is_none()
+    if action != "revoke"
+        && context
+            .providers
+            .oauth_registration(context.account.tenant.id.as_str(), &issuer)
+            .is_none()
     {
         return render_current(
             context,
@@ -108,9 +110,10 @@ pub async fn submit(
     }
     match action.as_str() {
         "connect" => connect(context, &session, &issuer, now).await,
+        "refresh" => refresh(context, &session, &issuer, now).await,
         "revoke" => {
             match context
-                .sources
+                .pending
                 .revoke(UserId::new(session.user), &issuer, now)
                 .await
             {
@@ -118,14 +121,14 @@ pub async fn submit(
                     render_current(
                         context,
                         &session,
-                        Some("Provider claims removed."),
+                        Some("Provider connection and claims removed."),
                         StatusCode::OK,
                         now,
                     )
                     .await
                 }
                 Err(error) => {
-                    tracing::error!(%error, tenant = %context.account.tenant.id, "cannot revoke Claims Provider source");
+                    tracing::error!(%error, tenant = %context.account.tenant.id, "cannot revoke Claims Provider connection");
                     error_page(&context.account, StatusCode::SERVICE_UNAVAILABLE)
                 }
             }
@@ -326,8 +329,8 @@ pub async fn callback(
         .await
     {
         Ok(verified) => verified,
-        Err(error) => {
-            tracing::warn!(%error, tenant = %context.account.tenant.id, "Claims Provider signed UserInfo rejected");
+        Err(_) => {
+            tracing::warn!(tenant = %context.account.tenant.id, "Claims Provider signed UserInfo rejected");
             return render_current(
                 context,
                 &session,
@@ -338,16 +341,50 @@ pub async fn callback(
             .await;
         }
     };
+    let access_expires_at =
+        now + Duration::seconds(token.expires_in.unwrap_or(300).min(3600) as i64);
+    if token.expires_in == Some(0)
+        || token
+            .scope
+            .as_deref()
+            .is_some_and(|scope| scope != registration.scope)
+    {
+        return error_page(&context.account, StatusCode::BAD_GATEWAY);
+    }
+    let connection = CpConnection {
+        provider_issuer: registration.issuer.clone(),
+        provider_subject: subject,
+        granted_scope: registration.scope.clone(),
+        access_token: token.access_token.clone(),
+        access_expires_at,
+        refresh_token: token.refresh_token.clone(),
+        refresh_expires_at: token
+            .refresh_token
+            .as_ref()
+            .map(|_| now + Duration::days(30)),
+        revision: 1,
+    };
+    // Persist the credential before the source. A crash here can leave an
+    // account-visible credential without deliverable claims, which the user
+    // can refresh or remove. The guarded source write serializes with revoke.
+    let user = UserId::new(session.user);
+    let revision = match context.pending.save(user, &connection, now).await {
+        Ok(revision) => revision,
+        Err(error) => {
+            tracing::error!(%error, tenant = %context.account.tenant.id, "cannot save Claims Provider connection");
+            return error_page(&context.account, StatusCode::SERVICE_UNAVAILABLE);
+        }
+    };
     match context
         .sources
-        .replace(UserId::new(session.user), &verified, now)
+        .replace_for_connection(user, &verified, revision, now)
         .await
     {
         Ok(()) => {
             render_current(
                 context,
                 &session,
-                Some("Signed provider claims connected until they expire."),
+                Some("Signed provider claims connected. You can refresh them from this page."),
                 StatusCode::OK,
                 now,
             )
@@ -355,6 +392,10 @@ pub async fn callback(
         }
         Err(error) => {
             tracing::error!(%error, tenant = %context.account.tenant.id, "cannot save Claims Provider source");
+            let _ = context
+                .pending
+                .discard_if_revision(user, &registration.issuer, revision)
+                .await;
             error_page(&context.account, StatusCode::SERVICE_UNAVAILABLE)
         }
     }
@@ -366,6 +407,8 @@ struct TokenResponse {
     token_type: String,
     id_token: String,
     refresh_token: Option<String>,
+    expires_in: Option<u64>,
+    scope: Option<String>,
 }
 
 impl Drop for TokenResponse {
@@ -419,10 +462,274 @@ async fn exchange_code(
         || token.id_token.is_empty()
         || token.id_token.len() > 8192
         || !token.token_type.eq_ignore_ascii_case("Bearer")
+        || token
+            .refresh_token
+            .as_ref()
+            .is_some_and(|value| value.is_empty() || value.len() > 4096)
+        || token.scope.as_ref().is_some_and(|scope| scope.len() > 512)
     {
         return Err(());
     }
     Ok(token)
+}
+
+#[derive(Deserialize)]
+struct RefreshResponse {
+    access_token: String,
+    token_type: String,
+    expires_in: Option<u64>,
+    refresh_token: Option<String>,
+    scope: Option<String>,
+    id_token: Option<String>,
+}
+
+impl Drop for RefreshResponse {
+    fn drop(&mut self) {
+        self.access_token.zeroize();
+        if let Some(value) = &mut self.refresh_token {
+            value.zeroize();
+        }
+        if let Some(value) = &mut self.id_token {
+            value.zeroize();
+        }
+    }
+}
+
+async fn exchange_refresh(
+    registration: &crate::claims_provider::OAuthRegistration,
+    refresh_token: &str,
+) -> Result<RefreshResponse, ()> {
+    let body = Zeroizing::new(
+        url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("grant_type", "refresh_token")
+            .append_pair("client_id", &registration.client_id)
+            .append_pair("refresh_token", refresh_token)
+            .finish(),
+    );
+    let poster = HttpsPoster::new().map_err(|_| ())?;
+    let response = poster
+        .post_with_response(
+            &registration.token_endpoint,
+            PostRequest::of("application/x-www-form-urlencoded").accepting("application/json"),
+            body.as_bytes(),
+        )
+        .await
+        .map_err(|_| ())?;
+    if response.status != 200
+        || response.truncated
+        || !response
+            .content_type
+            .as_deref()
+            .and_then(|value| value.split(';').next())
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case("application/json"))
+    {
+        return Err(());
+    }
+    let response_body = Zeroizing::new(response.body);
+    let token: RefreshResponse = serde_json::from_slice(&response_body).map_err(|_| ())?;
+    if token.access_token.is_empty()
+        || token.access_token.len() > 4096
+        || !token.token_type.eq_ignore_ascii_case("Bearer")
+        || token.expires_in == Some(0)
+        || token
+            .refresh_token
+            .as_ref()
+            .is_some_and(|value| value.is_empty() || value.len() > 4096)
+        || token
+            .scope
+            .as_ref()
+            .is_some_and(|value| value.len() > 512 || value != &registration.scope)
+        || token
+            .id_token
+            .as_ref()
+            .is_some_and(|value| value.is_empty() || value.len() > 8192)
+    {
+        return Err(());
+    }
+    Ok(token)
+}
+
+async fn refresh(
+    context: &Context<'_>,
+    session: &Session,
+    issuer: &str,
+    now: OffsetDateTime,
+) -> Response {
+    let Some(registration) = context
+        .providers
+        .oauth_registration(context.account.tenant.id.as_str(), issuer)
+    else {
+        return error_page(&context.account, StatusCode::BAD_REQUEST);
+    };
+    let user = UserId::new(session.user);
+    let mut connection = match context.pending.load(user, issuer, now).await {
+        Ok(Some(value)) => value,
+        Ok(None) => {
+            return render_current(
+                context,
+                session,
+                Some("Connection expired. Connect again."),
+                StatusCode::BAD_REQUEST,
+                now,
+            )
+            .await;
+        }
+        Err(error) => {
+            tracing::error!(%error, tenant = %context.account.tenant.id, "cannot load Claims Provider connection");
+            return error_page(&context.account, StatusCode::SERVICE_UNAVAILABLE);
+        }
+    };
+    if connection.granted_scope != registration.scope {
+        return render_current(
+            context,
+            session,
+            Some("Provider scope changed. Remove this connection and connect again."),
+            StatusCode::BAD_REQUEST,
+            now,
+        )
+        .await;
+    }
+    if connection.access_expires_at <= now + Duration::seconds(30) {
+        let Some(stored_refresh) = connection.refresh_token.as_deref() else {
+            return render_current(
+                context,
+                session,
+                Some("Connection expired. Connect again."),
+                StatusCode::BAD_REQUEST,
+                now,
+            )
+            .await;
+        };
+        if connection
+            .refresh_expires_at
+            .is_none_or(|expiry| expiry <= now)
+        {
+            return render_current(
+                context,
+                session,
+                Some("Connection expired. Connect again."),
+                StatusCode::BAD_REQUEST,
+                now,
+            )
+            .await;
+        }
+        let renewed = match exchange_refresh(&registration, stored_refresh).await {
+            Ok(value) => value,
+            Err(()) => {
+                return render_current(
+                    context,
+                    session,
+                    Some("Provider renewal failed. Connect again."),
+                    StatusCode::BAD_GATEWAY,
+                    now,
+                )
+                .await;
+            }
+        };
+        if let Some(id_token) = &renewed.id_token {
+            match context.providers.verify_refreshed_id_token(
+                context.account.tenant.id.as_str(),
+                issuer,
+                id_token,
+                &renewed.access_token,
+                now,
+            ) {
+                Ok(subject) if subject == connection.provider_subject => {}
+                _ => {
+                    return render_current(
+                        context,
+                        session,
+                        Some(
+                            "Provider identity changed. Remove this connection and connect again.",
+                        ),
+                        StatusCode::BAD_GATEWAY,
+                        now,
+                    )
+                    .await;
+                }
+            }
+        }
+        connection.access_token.zeroize();
+        connection.access_token = renewed.access_token.clone();
+        connection.access_expires_at =
+            now + Duration::seconds(renewed.expires_in.unwrap_or(300).min(3600) as i64);
+        if let Some(new_refresh) = &renewed.refresh_token {
+            if let Some(old) = &mut connection.refresh_token {
+                old.zeroize();
+            }
+            connection.refresh_token = Some(new_refresh.clone());
+            connection.refresh_expires_at = Some(now + Duration::days(30));
+        }
+        match context.pending.rotate(user, &connection, now).await {
+            Ok(true) => {
+                connection.revision += 1;
+            }
+            Ok(false) => {
+                return render_current(
+                    context,
+                    session,
+                    Some("Connection changed. Reload and try again."),
+                    StatusCode::CONFLICT,
+                    now,
+                )
+                .await;
+            }
+            Err(error) => {
+                tracing::error!(%error, tenant = %context.account.tenant.id, "cannot rotate Claims Provider credential");
+                return error_page(&context.account, StatusCode::SERVICE_UNAVAILABLE);
+            }
+        }
+    }
+    let fetcher = match HttpsClientUrlFetcher::new() {
+        Ok(fetcher) => fetcher,
+        Err(_) => return error_page(&context.account, StatusCode::SERVICE_UNAVAILABLE),
+    };
+    let verified = match context
+        .providers
+        .collect(
+            context.account.tenant,
+            issuer,
+            &connection.provider_subject,
+            &registration.allowed_claims,
+            &connection.access_token,
+            &fetcher,
+            now,
+        )
+        .await
+    {
+        Ok(value) => value,
+        Err(_) => {
+            tracing::warn!(tenant = %context.account.tenant.id, "Claims Provider recollection rejected");
+            return render_current(
+                context,
+                session,
+                Some("Provider claims could not be verified."),
+                StatusCode::BAD_GATEWAY,
+                now,
+            )
+            .await;
+        }
+    };
+    match context
+        .sources
+        .replace_for_connection(user, &verified, connection.revision, now)
+        .await
+    {
+        Ok(()) => {
+            render_current(
+                context,
+                session,
+                Some("Signed provider claims refreshed."),
+                StatusCode::OK,
+                now,
+            )
+            .await
+        }
+        Err(error) => {
+            tracing::error!(%error, tenant = %context.account.tenant.id, "cannot save refreshed Claims Provider source");
+            error_page(&context.account, StatusCode::SERVICE_UNAVAILABLE)
+        }
+    }
 }
 
 async fn render_current(
@@ -443,13 +750,25 @@ async fn render_current(
             return error_page(&context.account, StatusCode::SERVICE_UNAVAILABLE);
         }
     };
-    render(context, session, &sources, message, status)
+    let connections = match context
+        .pending
+        .by_user(UserId::new(session.user), now)
+        .await
+    {
+        Ok(connections) => connections,
+        Err(error) => {
+            tracing::error!(%error, tenant = %context.account.tenant.id, "cannot read Claims Provider connections");
+            return error_page(&context.account, StatusCode::SERVICE_UNAVAILABLE);
+        }
+    };
+    render(context, session, &sources, &connections, message, status)
 }
 
 fn render(
     context: &Context<'_>,
     session: &Session,
     sources: &[StoredClaimSource],
+    connections: &[CpConnectionSummary],
     message: Option<&str>,
     status: StatusCode,
 ) -> Response {
@@ -457,13 +776,18 @@ fn render(
     let account = context.account.mount.absolute(account::PAGE_PATH);
     let csrf = csrf_for(session, CSRF_SEPARATOR);
     let mut items = String::new();
+    let mut rendered = BTreeSet::new();
     for registration in context
         .providers
         .oauth_registrations(context.account.tenant.id.as_str())
     {
+        rendered.insert(registration.issuer.clone());
         let connected = sources
             .iter()
             .find(|source| source.provider_issuer == registration.issuer);
+        let credential = connections
+            .iter()
+            .find(|entry| entry.provider_issuer == registration.issuer);
         let details = connected.map_or_else(
             || "No signed claims stored.".to_owned(),
             |source| {
@@ -474,21 +798,39 @@ fn render(
                 )
             },
         );
-        let verb = if connected.is_some() {
-            "revoke"
+        let buttons = if credential.is_some() {
+            "<button name=\"action\" value=\"refresh\">Refresh signed claims</button> <button name=\"action\" value=\"revoke\">Remove local connection and claims</button>"
+        } else if connected.is_some() {
+            "<button name=\"action\" value=\"connect\">Reconnect provider</button> <button name=\"action\" value=\"revoke\">Remove provider claims</button>"
         } else {
-            "connect"
+            "<button name=\"action\" value=\"connect\">Connect and approve claims</button>"
         };
-        let label = if connected.is_some() {
-            "Remove provider claims"
-        } else {
-            "Connect and approve claims"
-        };
+        let credential_details = credential.map_or_else(String::new, |entry| {
+            format!(
+                "<p>Connection available until {}.</p>",
+                escape_html(&account::stamp(
+                    entry.refresh_expires_at.unwrap_or(entry.access_expires_at)
+                ))
+            )
+        });
         items.push_str(&format!(
-            "<li><h2>{}</h2><p>{}</p><p>{details}</p><form method=\"post\" action=\"{}\"><input type=\"hidden\" name=\"csrf\" value=\"{csrf}\"><input type=\"hidden\" name=\"issuer\" value=\"{}\"><button name=\"action\" value=\"{verb}\">{label}</button></form></li>",
+            "<li><h2>{}</h2><p>{}</p><p>{details}</p>{credential_details}<form method=\"post\" action=\"{}\"><input type=\"hidden\" name=\"csrf\" value=\"{csrf}\"><input type=\"hidden\" name=\"issuer\" value=\"{}\">{buttons}</form></li>",
             escape_html(&registration.issuer), escape_html(&registration.allowed_claims.into_iter().collect::<Vec<_>>().join(", ")),
             escape_html(&action), escape_html(&registration.issuer),
         ));
+    }
+    // A provider removed from operator configuration still has locally held
+    // material until expiry. Keep its removal control visible to the user.
+    for issuer in connections
+        .iter()
+        .map(|entry| &entry.provider_issuer)
+        .chain(sources.iter().map(|entry| &entry.provider_issuer))
+    {
+        if !rendered.insert(issuer.clone()) {
+            continue;
+        }
+        items.push_str(&format!("<li data-provider=\"{}\"><h2>{}</h2><p>Provider is no longer configured.</p><form method=\"post\" action=\"{}\"><input type=\"hidden\" name=\"csrf\" value=\"{csrf}\"><input type=\"hidden\" name=\"issuer\" value=\"{}\"><button name=\"action\" value=\"revoke\">Remove local connection and claims</button></form></li>",
+            escape_html(issuer), escape_html(issuer), escape_html(&action), escape_html(issuer)));
     }
     if items.is_empty() {
         items.push_str("<li>No Claims Providers are configured.</li>");
@@ -498,7 +840,7 @@ fn render(
     });
     let document = Document::render(context.account.nonce, |_nonce| {
         format!(
-            "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"referrer\" content=\"no-referrer\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Claims Providers</title></head><body><main><h1>Claims Providers</h1><p>Connect a provider to collect its signed claims for up to one hour. Each relying party still needs your separate approval before receiving them.</p>{notice}<ul>{items}</ul><p><a href=\"{}\">Back to account</a></p></main></body></html>",
+            "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"referrer\" content=\"no-referrer\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Claims Providers</title></head><body><main><h1>Claims Providers</h1><p>Connect a provider to collect signed claims. Recollect them when they expire. Each relying party needs your separate approval before receiving them. Removing a connection erases credentials here; it does not revoke them at the provider.</p>{notice}<ul>{items}</ul><p><a href=\"{}\">Back to account</a></p></main></body></html>",
             escape_html(&account)
         )
     });

@@ -193,17 +193,23 @@ pub enum RowSecret {
     ClaimsProviderUserInfo,
     /// The PKCE verifier of one pending Claims Provider authorization.
     ClaimsProviderPkce,
+    /// An OAuth access token for one user and Claims Provider issuer.
+    ClaimsProviderAccessToken,
+    /// An OAuth refresh token for one user and Claims Provider issuer.
+    ClaimsProviderRefreshToken,
 }
 
 impl RowSecret {
     /// Every secret this enum names, so a test can be exhaustive over them.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 8] = [
         Self::SsfPushAuthorization,
         Self::CibaPing,
         Self::TotpSeed,
         Self::FederationSigningKey,
         Self::ClaimsProviderUserInfo,
         Self::ClaimsProviderPkce,
+        Self::ClaimsProviderAccessToken,
+        Self::ClaimsProviderRefreshToken,
     ];
 
     /// The value that goes into the additional authenticated data.
@@ -216,6 +222,8 @@ impl RowSecret {
             Self::FederationSigningKey => "federation-signing-key",
             Self::ClaimsProviderUserInfo => "claims-provider-userinfo",
             Self::ClaimsProviderPkce => "claims-provider-pkce",
+            Self::ClaimsProviderAccessToken => "claims-provider-access-token",
+            Self::ClaimsProviderRefreshToken => "claims-provider-refresh-token",
         }
     }
 }
