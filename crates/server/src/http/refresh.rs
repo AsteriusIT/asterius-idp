@@ -92,6 +92,8 @@ const INVALID_GRANT: &str = "the refresh token cannot be redeemed";
 /// fields are facts about *this* request — the instant it arrived and the DPoP
 /// key it proved — and [`GrantHandler::handle`] receives neither.
 pub struct RefreshToken<'a> {
+    /// Client IDs whose issued access tokens must target only this OP.
+    pub ipsie_identity_only_clients: Option<&'a std::collections::BTreeSet<String>>,
     /// Current tenant assurance policy, resolved once for this issuance.
     pub acr_policy: &'a asterius_domain::AcrPolicy,
     /// Refresh tokens for this tenant.
@@ -174,6 +176,7 @@ impl<'a> RefreshToken<'a> {
         audit: &'a dyn AuditSink,
     ) -> Self {
         Self {
+            ipsie_identity_only_clients: code.ipsie_identity_only_clients,
             tokens: code.refresh_tokens,
             native_sso: code.native_sso,
             native_sso_approvals: code.native_sso_approvals,
@@ -507,6 +510,13 @@ impl RefreshToken<'_> {
             }
             issuance::TargetingError::Storage(error) => Failure::Server(error),
         })?;
+        if self
+            .ipsie_identity_only_clients
+            .is_some_and(|clients| clients.contains(client.id.as_str()))
+            && !targeting.is_identity_only_for(tenant.issuer.as_str())
+        {
+            return Err(Failure::Client(INVALID_TARGET, TARGET_REFUSED));
+        }
 
         // Read once for both tokens of this response; see the code grant. A
         // refresh reads it afresh every time on purpose (`ast-095`): a token

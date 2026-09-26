@@ -92,6 +92,8 @@ pub struct PushContext<'a> {
     pub fapi_message_signing_clients: Option<&'a std::collections::BTreeSet<String>>,
     /// Static per-tenant clients whose authorization redirect must use HTTPS.
     pub ipsie_https_only_clients: Option<&'a std::collections::BTreeSet<String>>,
+    /// Static per-tenant clients limited to identity scopes and issuer audience.
+    pub ipsie_identity_only_clients: Option<&'a std::collections::BTreeSet<String>>,
     /// This tenant's grants, for the `grant_id` of Grant Management ID1 §5.2.
     ///
     /// `Some` exactly when [`asterius_domain::Feature::GrantManagement`] is on
@@ -216,6 +218,9 @@ pub async fn push(
     };
 
     if let Some(refusal) = refuse_an_insecure_ipsie_redirect(&context, &client, &request) {
+        return refusal;
+    }
+    if let Some(refusal) = refuse_a_nonidentity_ipsie_request(&context, &client, &request) {
         return refusal;
     }
 
@@ -366,6 +371,9 @@ pub async fn direct(
         ))
     })?;
     if let Some(refusal) = refuse_an_insecure_ipsie_redirect(&context, &client, &request) {
+        return Err(Box::new(refusal));
+    }
+    if let Some(refusal) = refuse_a_nonidentity_ipsie_request(&context, &client, &request) {
         return Err(Box::new(refusal));
     }
     let hinted_subject = hinted_subject(&context, &client, &request, now).await?;
@@ -550,6 +558,34 @@ async fn hinted_subject(
         Some(subject) => Ok(Some(subject.to_owned())),
         None => Err(refused()),
     }
+}
+
+/// Refuses a request that would authorize a selected client for an external
+/// resource or for rights beyond identity claims at this OP.
+fn refuse_a_nonidentity_ipsie_request(
+    context: &PushContext<'_>,
+    client: &Client,
+    request: &authorize::AuthorizationRequest,
+) -> Option<Response> {
+    let selected = context
+        .ipsie_identity_only_clients
+        .is_some_and(|clients| clients.contains(client.id.as_str()));
+    if !selected {
+        return None;
+    }
+    let issuer = context.tenant.issuer.as_str();
+    let identity_only = client.registration.is_identity_only_for(issuer)
+        && request.scopes.contains("openid")
+        && request.resources.iter().all(|resource| resource == issuer)
+        && request.authorization_details.is_empty()
+        && request.grant_management.is_none();
+    (!identity_only).then(|| {
+        error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "this client may request only OP identity claims",
+        )
+    })
 }
 
 /// Enforces the IPSIE SL1 draft's HTTPS callback rule for selected clients.

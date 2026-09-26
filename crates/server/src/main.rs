@@ -422,6 +422,18 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
                     })
                     .collect(),
             ),
+            ipsie_identity_only_clients: Arc::new(
+                config
+                    .tenants
+                    .iter()
+                    .map(|tenant| {
+                        (
+                            tenant.id.as_str().to_owned(),
+                            tenant.ipsie_identity_only_clients.iter().cloned().collect(),
+                        )
+                    })
+                    .collect(),
+            ),
             ssf_metadata_cache: Arc::new(
                 asterius_server::http::ssf_receiver::UpstreamMetadataCache::new(),
             ),
@@ -616,6 +628,8 @@ fn operational_routes(store: &Store, config: &Config, metrics: Metrics) -> Opera
 struct AdminContext {
     ipsie_https_only_clients:
         Arc<std::collections::HashMap<String, std::collections::BTreeSet<String>>>,
+    ipsie_identity_only_clients:
+        Arc<std::collections::HashMap<String, std::collections::BTreeSet<String>>>,
     id_jag_trusts: Arc<asterius_server::id_jag_trust::IdJagTrusts>,
     ssf_upstream: Option<Arc<asterius_server::admin::SsfUpstreamRuntime>>,
     rate_limit_policy: (
@@ -676,6 +690,18 @@ impl AdminContext {
                         (
                             tenant.id.as_str().to_owned(),
                             tenant.ipsie_https_only_clients.iter().cloned().collect(),
+                        )
+                    })
+                    .collect(),
+            ),
+            ipsie_identity_only_clients: Arc::new(
+                config
+                    .tenants
+                    .iter()
+                    .map(|tenant| {
+                        (
+                            tenant.id.as_str().to_owned(),
+                            tenant.ipsie_identity_only_clients.iter().cloned().collect(),
                         )
                     })
                     .collect(),
@@ -745,6 +771,7 @@ fn admin_routes(
     ));
     asterius_admin_api::AdminApi::new(&asterius_admin_api::AdminState {
         ipsie_https_only_clients: context.ipsie_https_only_clients,
+        ipsie_identity_only_clients: context.ipsie_identity_only_clients,
         backend: Arc::new(
             asterius_server::admin::Deployment::new(asterius_server::admin::DeploymentParts {
                 store: store.clone(),

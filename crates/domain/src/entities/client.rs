@@ -1382,6 +1382,37 @@ impl RolesInIdToken {
 }
 
 impl ClientRegistration {
+    /// Only OIDC identity scopes, with optional offline renewal, for an
+    /// operator-selected identity-only client.
+    #[must_use]
+    pub fn has_identity_only_scopes(&self) -> bool {
+        self.scopes.contains("openid")
+            && self.scopes.iter().all(|scope| {
+                matches!(
+                    scope.as_str(),
+                    "openid" | "profile" | "email" | "address" | "phone" | "offline_access"
+                )
+            })
+    }
+
+    /// A bounded OP-only registration: code and optional refresh grants,
+    /// identity scopes, and exactly the tenant issuer as token audience.
+    #[must_use]
+    pub fn is_identity_only_for(&self, issuer: &str) -> bool {
+        self.has_identity_only_scopes()
+            && self.grant_types.contains(&GrantType::AuthorizationCode)
+            && self.grant_types.iter().all(|grant| {
+                matches!(
+                    grant,
+                    GrantType::AuthorizationCode | GrantType::RefreshToken
+                )
+            })
+            && self.resources.len() == 1
+            && self.resources.contains(issuer)
+            && self.authorization_details_types.is_empty()
+            && self.agent.is_none()
+    }
+
     /// Whether every authorization callback uses HTTPS.
     ///
     /// The ordinary validator permits native HTTP loopback redirects. A

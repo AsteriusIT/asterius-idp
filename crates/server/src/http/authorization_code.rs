@@ -73,6 +73,8 @@ const INVALID_GRANT: &str = "the authorization code cannot be redeemed";
 /// with it. [`crate::http::protocol`] constructs it inside the token endpoint,
 /// where both are already in hand.
 pub struct AuthorizationCode<'a> {
+    /// Client IDs whose issued access tokens must target only this OP.
+    pub ipsie_identity_only_clients: Option<&'a std::collections::BTreeSet<String>>,
     /// Current tenant assurance policy, resolved once for this issuance.
     pub acr_policy: &'a asterius_domain::AcrPolicy,
     /// Codes for this tenant.
@@ -209,7 +211,7 @@ impl AuthorizationCode<'_> {
     ) -> Result<issuance::Targeting, Failure> {
         let requested = asterius_oidc::token::requested_resources(params)
             .map_err(|_| Failure::Client(INVALID_TARGET, TARGET_REFUSED))?;
-        issuance::targeting(
+        let targeting = issuance::targeting(
             self.resource_servers,
             tenant,
             client,
@@ -228,7 +230,15 @@ impl AuthorizationCode<'_> {
                 Failure::Client(INVALID_TARGET, TARGET_REFUSED)
             }
             issuance::TargetingError::Storage(error) => Failure::Server(error),
-        })
+        })?;
+        if self
+            .ipsie_identity_only_clients
+            .is_some_and(|clients| clients.contains(client.id.as_str()))
+            && !targeting.is_identity_only_for(tenant.issuer.as_str())
+        {
+            return Err(Failure::Client(INVALID_TARGET, TARGET_REFUSED));
+        }
+        Ok(targeting)
     }
 
     /// The redemption itself, with failures as `Err` so the checks read in

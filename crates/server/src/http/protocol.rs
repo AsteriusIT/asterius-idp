@@ -125,6 +125,9 @@ pub struct ClientEndpoints {
     /// Operator-selected clients whose authorization redirect must use HTTPS.
     pub ipsie_https_only_clients:
         Arc<std::collections::HashMap<String, std::collections::BTreeSet<String>>>,
+    /// Operator-selected clients limited to OP identity audiences.
+    pub ipsie_identity_only_clients:
+        Arc<std::collections::HashMap<String, std::collections::BTreeSet<String>>>,
     /// Bounded, fail-closed discovery cache for configured SSF transmitters.
     pub ssf_metadata_cache: Arc<crate::http::ssf_receiver::UpstreamMetadataCache>,
     /// Pinned request-signature keys for configured SSF transmitters.
@@ -299,6 +302,17 @@ async fn materialize_cimd_client(
         asterius_domain::DomainError::invalid("client_metadata", "invalid CIMD document")
     })?;
     let id = asterius_domain::ClientId::new(client_id.as_str());
+    if endpoints
+        .ipsie_identity_only_clients
+        .get(tenant.id.as_str())
+        .is_some_and(|clients| clients.contains(id.as_str()))
+        && !registration.is_identity_only_for(tenant.issuer.as_str())
+    {
+        return Err(asterius_domain::DomainError::invalid(
+            "client_metadata",
+            "this client requires identity scopes and the tenant issuer as its only resource",
+        ));
+    }
     if endpoints
         .ipsie_https_only_clients
         .get(tenant.id.as_str())
@@ -1684,6 +1698,9 @@ async fn pushed_authorization_request_inner(
                 .fapi_message_signing_clients
                 .get(tenant.id.as_str()),
             ipsie_https_only_clients: endpoints.ipsie_https_only_clients.get(tenant.id.as_str()),
+            ipsie_identity_only_clients: endpoints
+                .ipsie_identity_only_clients
+                .get(tenant.id.as_str()),
             grants,
         },
         headers,
@@ -4006,6 +4023,9 @@ async fn dispatch_grants(
         certificate,
     };
     let authorization_code = AuthorizationCode {
+        ipsie_identity_only_clients: endpoints
+            .ipsie_identity_only_clients
+            .get(tenant.id.as_str()),
         acr_policy: &acr_policy,
         roles: &application_roles,
         groups: &managed_groups,
@@ -4103,6 +4123,9 @@ async fn dispatch_grants(
     let response = token::token(
         TokenContext {
             tenant,
+            ipsie_identity_only_clients: endpoints
+                .ipsie_identity_only_clients
+                .get(tenant.id.as_str()),
             clients: &clients,
             capabilities,
             grants: &[
@@ -4207,6 +4230,9 @@ async fn client_registration_inner(
         RegisterContext {
             tenant,
             ipsie_https_only_clients: endpoints.ipsie_https_only_clients.get(tenant.id.as_str()),
+            ipsie_identity_only_clients: endpoints
+                .ipsie_identity_only_clients
+                .get(tenant.id.as_str()),
             tenant_policy: &tenant_policy,
             clients: &clients,
             keys: endpoints.keys.as_ref(),
@@ -4240,6 +4266,9 @@ fn configuration_context<'a>(
         id_jag_trusts: Some(endpoints.id_jag_trusts.as_ref()),
         tenant,
         ipsie_https_only_clients: endpoints.ipsie_https_only_clients.get(tenant.id.as_str()),
+        ipsie_identity_only_clients: endpoints
+            .ipsie_identity_only_clients
+            .get(tenant.id.as_str()),
         tenant_policy,
         clients,
         configuration: clients,
@@ -4677,6 +4706,9 @@ async fn direct_authorization_pairs(
             request_objects: None,
             fapi_message_signing_clients: None,
             ipsie_https_only_clients: endpoints.ipsie_https_only_clients.get(tenant.id.as_str()),
+            ipsie_identity_only_clients: endpoints
+                .ipsie_identity_only_clients
+                .get(tenant.id.as_str()),
             grants,
         },
         pairs,

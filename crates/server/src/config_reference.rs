@@ -1118,6 +1118,12 @@ fn tenant() -> Section {
                 "empty (ordinary redirect rules)".to_owned(),
                 "For each operator-selected client, require HTTPS authorization redirect URIs, including when the registration is created or replaced through the admin API, dynamic registration, client ID metadata discovery, or the client configuration endpoint. Existing client registrations may retain HTTP values until updated, but PAR and direct authorization reject them while listed. Already stored requests or interactions from before this setting was enabled may still complete. This is one IPSIE SL1 control and does not advertise or establish full profile conformance.",
             ),
+            key(
+                "ipsie_identity_only_client",
+                "array of client ID strings",
+                "empty (ordinary audience rules)".to_owned(),
+                "For each listed client, permit only authorization-code and optional refresh grants, OIDC identity scopes (openid, profile, email, address, phone, offline_access), and the tenant issuer as its sole access-token audience. The issuer must be registered as a resource server and assigned to the client; missing setup fails closed. PAR, registration writes, and token issuance enforce this boundary. This does not claim full IPSIE SL1 conformance.",
+            ),
         ],
     }
 }

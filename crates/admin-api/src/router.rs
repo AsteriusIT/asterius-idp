@@ -104,6 +104,9 @@ pub struct AdminState {
     /// Operator-selected clients whose authorization callbacks must use HTTPS.
     pub ipsie_https_only_clients:
         Arc<std::collections::HashMap<String, std::collections::BTreeSet<String>>>,
+    /// Operator-selected clients limited to OP identity audiences.
+    pub ipsie_identity_only_clients:
+        Arc<std::collections::HashMap<String, std::collections::BTreeSet<String>>>,
 }
 
 impl std::fmt::Debug for AdminState {
@@ -555,6 +558,26 @@ impl Handling<'_> {
         {
             return Err(AdminError::Invalid(
                 "this client requires HTTPS redirect_uris".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn require_identity_only(
+        &self,
+        client_id: &asterius_domain::ClientId,
+        registration: &ClientRegistration,
+    ) -> Result<(), AdminError> {
+        if self
+            .state
+            .ipsie_identity_only_clients
+            .get(self.tenant.id.as_str())
+            .is_some_and(|clients| clients.contains(client_id.as_str()))
+            && !registration.is_identity_only_for(self.tenant.issuer.as_str())
+        {
+            return Err(AdminError::Invalid(
+                "this client requires identity scopes and the tenant issuer as its only resource"
+                    .to_owned(),
             ));
         }
         Ok(())
@@ -2140,6 +2163,7 @@ impl Handling<'_> {
             updated_at: self.now,
         };
         self.require_https_redirects(&client.id, &client.registration)?;
+        self.require_identity_only(&client.id, &client.registration)?;
 
         let secret = (client.registration.token_endpoint_auth_method
             == TokenEndpointAuthMethod::ClientSecretBasic)
@@ -2224,6 +2248,7 @@ impl Handling<'_> {
         // fake or future store cannot accidentally rely on PostgreSQL's
         // current column-level preservation.
         registration.resources = existing.registration.resources.clone();
+        self.require_identity_only(&id, &registration)?;
 
         self.check_client_is_serviceable(&registration, crate::CLIENT_UPDATE_ID)
             .await?;
@@ -2322,6 +2347,17 @@ impl Handling<'_> {
             .await?;
         let bytes = self.body_bytes(body).await?;
         let resources = clients::resource_allow_list(&bytes)?;
+        if self
+            .state
+            .ipsie_identity_only_clients
+            .get(self.tenant.id.as_str())
+            .is_some_and(|clients| clients.contains(id.as_str()))
+            && (resources.len() != 1 || !resources.contains(self.tenant.issuer.as_str()))
+        {
+            return Err(AdminError::Invalid(
+                "this client requires the tenant issuer as its only resource".to_owned(),
+            ));
+        }
 
         let stored = self
             .state
@@ -9184,6 +9220,7 @@ mod tests {
             AdminApi::new(&AdminState {
                 backend: Arc::new(self.handle.clone()),
                 ipsie_https_only_clients: Arc::default(),
+                ipsie_identity_only_clients: Arc::default(),
                 tokens: None,
                 rate_limit: RateLimit {
                     max: 10_000,
@@ -9984,6 +10021,7 @@ mod tests {
             AdminApi::new(&AdminState {
                 backend: Arc::new(world.handle.clone()),
                 ipsie_https_only_clients: Arc::default(),
+                ipsie_identity_only_clients: Arc::default(),
                 tokens: None,
                 rate_limit: RateLimit {
                     max: 1,
@@ -12636,6 +12674,7 @@ mod tests {
         let api = AdminApi::new(&AdminState {
             backend: Arc::new(world.handle.clone()),
             ipsie_https_only_clients: Arc::default(),
+            ipsie_identity_only_clients: Arc::default(),
             tokens: None,
             rate_limit: RateLimit {
                 max: 1,
@@ -12656,6 +12695,7 @@ mod tests {
             AdminApi::new(&AdminState {
                 backend: Arc::new(world.handle.clone()),
                 ipsie_https_only_clients: Arc::default(),
+                ipsie_identity_only_clients: Arc::default(),
                 tokens: None,
                 rate_limit: RateLimit {
                     max: 1,

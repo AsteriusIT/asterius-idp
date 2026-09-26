@@ -331,6 +331,8 @@ pub struct TenantConfig {
     pub fapi_message_signing_clients: Vec<String>,
     /// Client IDs whose authorization callback must use HTTPS for IPSIE SL1.
     pub ipsie_https_only_clients: Vec<String>,
+    /// Client IDs restricted to OIDC identity scopes and issuer audience.
+    pub ipsie_identity_only_clients: Vec<String>,
 }
 
 /// A tenant's inactive LDAP source and explicit, non-privileged mapping.
@@ -861,6 +863,7 @@ struct RawTenant {
     ldap_source: Option<RawLdapSource>,
     fapi_message_signing_client: Option<Vec<String>>,
     ipsie_https_only_client: Option<Vec<String>>,
+    ipsie_identity_only_client: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2228,6 +2231,8 @@ fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantCo
         );
         let ipsie_https_only_clients =
             validate_ipsie_https_only_clients(index, tenant.ipsie_https_only_client, errors);
+        let ipsie_identity_only_clients =
+            validate_ipsie_identity_only_clients(index, tenant.ipsie_identity_only_client, errors);
 
         if let (Some(id), Some(issuer)) = (id, issuer) {
             let default_resource = default_resource.unwrap_or_else(|| issuer.as_str().to_owned());
@@ -2250,6 +2255,7 @@ fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantCo
                 ldap_source,
                 fapi_message_signing_clients,
                 ipsie_https_only_clients,
+                ipsie_identity_only_clients,
             });
         }
     }
@@ -2468,6 +2474,40 @@ fn validate_ipsie_https_only_clients(
             {
                 errors.problem(
                     format!("tenant[{tenant_index}].ipsie_https_only_client[{index}]"),
+                    "must be a distinct nonempty client ID of at most 255 bytes",
+                );
+                return None;
+            }
+            Some(client_id)
+        })
+        .collect()
+}
+
+fn validate_ipsie_identity_only_clients(
+    tenant_index: usize,
+    raw: Option<Vec<String>>,
+    errors: &mut Collector,
+) -> Vec<String> {
+    let entries = raw.unwrap_or_default();
+    if entries.len() > 32 {
+        errors.problem(
+            format!("tenant[{tenant_index}].ipsie_identity_only_client"),
+            "at most 32 client IDs may use this control",
+        );
+        return Vec::new();
+    }
+    let mut seen = BTreeSet::new();
+    entries
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, client_id)| {
+            if client_id.is_empty()
+                || client_id.len() > 255
+                || client_id.chars().any(char::is_control)
+                || !seen.insert(client_id.clone())
+            {
+                errors.problem(
+                    format!("tenant[{tenant_index}].ipsie_identity_only_client[{index}]"),
                     "must be a distinct nonempty client ID of at most 255 bytes",
                 );
                 return None;
