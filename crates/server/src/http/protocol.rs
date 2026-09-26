@@ -1373,7 +1373,7 @@ fn ssf_configuration_path() -> String {
 ///
 /// SSF 1.0 §7.2.3: 200 and `application/json`. The document itself is
 /// [`asterius_ssf::transmitter_metadata`], which explains why it names the
-/// OP's `jwks_uri` and why it names no management endpoint yet.
+/// OP's `jwks_uri` and advertises management endpoints only when mounted.
 ///
 /// The feature gate is here rather than at mount time because a tenant may
 /// switch `Feature::Ssf` off under a deployment that has it on, and the
