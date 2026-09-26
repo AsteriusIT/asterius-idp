@@ -61,6 +61,12 @@ impl Parameters {
         self.0.get(name).is_some_and(|values| !values.is_empty())
     }
 
+    /// Names present in this form. A strict grant profile can reject every
+    /// field it does not define, including fields from another token grant.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.0.keys().map(String::as_str)
+    }
+
     /// Every value of a parameter that may legitimately repeat.
     ///
     /// RFC 8707 §2 defines `resource` as repeatable, which is the exception

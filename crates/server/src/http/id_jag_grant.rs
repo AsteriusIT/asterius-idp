@@ -86,14 +86,26 @@ impl IdJagGrant<'_> {
                 .get(name)
                 .map_err(|_| Failure::Client("invalid_request", PROFILE))
         };
+        const ALLOWED: [&str; 7] = [
+            "grant_type",
+            "assertion",
+            "scope",
+            "resource",
+            "client_id",
+            "client_assertion_type",
+            "client_assertion",
+        ];
+        if params.names().any(|name| !ALLOWED.contains(&name))
+            || ALLOWED.iter().any(|name| one(name).is_err())
+            || one("grant_type")? != Some("urn:ietf:params:oauth:grant-type:jwt-bearer")
+        {
+            return Err(Failure::Client("invalid_request", PROFILE));
+        }
         let assertion = one("assertion")?
             .filter(|value| !value.is_empty() && value.len() <= 8192)
             .ok_or(Failure::Client("invalid_request", PROFILE))?;
         let requested_scope = one("scope")?;
         let requested_resource = one("resource")?;
-        if params.present("audience") || params.present("requested_token_type") {
-            return Err(Failure::Client("invalid_request", PROFILE));
-        }
 
         let verified = self
             .trusts
