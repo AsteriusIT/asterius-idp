@@ -345,6 +345,10 @@ pub struct ClaimsProviderConfig {
     pub issuer: Issuer,
     pub jwks_file: PathBuf,
     pub allowed_claims: BTreeSet<String>,
+    /// Operator-pinned signed UserInfo URL for an already registered CP.
+    pub userinfo_endpoint: Option<String>,
+    /// The OP's registered client ID at this CP; signed UserInfo uses it as aud.
+    pub client_id: Option<String>,
 }
 
 /// Operator-pinned OID4VP verifier and credential trust policy.
@@ -809,6 +813,8 @@ struct RawClaimsProvider {
     issuer: String,
     jwks_file: PathBuf,
     allowed_claims: Vec<String>,
+    userinfo_endpoint: Option<String>,
+    client_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2523,13 +2529,46 @@ fn validate_claims_providers(
                 );
                 return None;
             }
+            let (userinfo_endpoint, client_id) = match (entry.userinfo_endpoint, entry.client_id) {
+                (None, None) => (None, None),
+                (Some(endpoint), Some(client_id))
+                    if valid_claims_provider_endpoint(&endpoint)
+                        && !client_id.is_empty()
+                        && client_id.len() <= 256
+                        && !client_id.chars().any(char::is_control) =>
+                {
+                    (Some(endpoint), Some(client_id))
+                }
+                _ => {
+                    errors.problem(
+                        path,
+                        "userinfo_endpoint and client_id must both be set; endpoint must be HTTPS without credentials, query or fragment",
+                    );
+                    return None;
+                }
+            };
             Some(ClaimsProviderConfig {
                 issuer,
                 jwks_file: entry.jwks_file,
                 allowed_claims,
+                userinfo_endpoint,
+                client_id,
             })
         })
         .collect()
+}
+
+fn valid_claims_provider_endpoint(raw: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(raw) else {
+        return false;
+    };
+    parsed.scheme() == "https"
+        && parsed.host_str().is_some()
+        && parsed.username().is_empty()
+        && parsed.password().is_none()
+        && parsed.query().is_none()
+        && parsed.fragment().is_none()
+        && parsed.as_str() == raw
 }
 
 /// Validates `[tenant.refresh]`.

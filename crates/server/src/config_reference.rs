@@ -1078,9 +1078,9 @@ fn tenant() -> Section {
             ),
             key(
                 "claims_provider",
-                "array of { issuer, jwks_file, allowed_claims } tables",
+                "array of { issuer, jwks_file, allowed_claims, userinfo_endpoint?, client_id? } tables",
                 "empty (aggregated delivery disabled)".to_owned(),
-                "Pins Claims Provider issuer, local public JWKS and approved attribute names for signed UserInfo aggregation. Up to four providers, each with up to sixteen attributes. OAuth user setup and collection are separately tracked.",
+                "Pins Claims Provider issuer, local public JWKS and approved attribute names for signed UserInfo aggregation. Up to four providers, each with up to sixteen attributes. To permit protected UserInfo collection after a separately established OAuth grant, set both a canonical HTTPS userinfo_endpoint and the CP-registered client_id; signed UserInfo must name that client ID as its sole audience. OAuth setup and credential lifecycle remain separately tracked.",
             ),
             key(
                 "http_signature_peer",

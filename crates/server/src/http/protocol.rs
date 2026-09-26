@@ -1721,7 +1721,7 @@ async fn userinfo_endpoint_inner(
         roles: scope.application_roles(),
         groups: asterius_store_pg::PgGroups::new(endpoints.store.pool().clone()),
         verified: scope.verified_claims(),
-        aggregated: scope.aggregated_claims(),
+        aggregated: scope.aggregated_claims(Arc::clone(&endpoints.kek)),
         claims_providers: Arc::clone(&endpoints.claims_providers),
         ida_frameworks: match settings_for_directory(endpoints.tenant_settings.as_ref(), &tenant.id)
             .await
@@ -3929,7 +3929,7 @@ async fn dispatch_grants(
     let application_roles = scope.application_roles();
     let managed_groups = asterius_store_pg::PgGroups::new(endpoints.store.pool().clone());
     let verified_claims = scope.verified_claims();
-    let aggregated_claims = scope.aggregated_claims();
+    let aggregated_claims = scope.aggregated_claims(Arc::clone(&endpoints.kek));
     // One value for every grant: what this request proved possession of. The
     // registration decides which half binds the token (RFC 9449 §6, RFC 8705
     // §3), so no grant handler chooses for itself.

@@ -7,10 +7,11 @@
 //! with a direct claim or another source.
 
 use crate::config::{ClaimsProviderConfig, TenantConfig};
+use crate::outbound::HttpsClientUrlFetcher;
 use asterius_domain::{DomainError, Tenant};
 use asterius_jose::{
     ClientKeySet,
-    claims_aggregation::{ClaimsProviderPolicy, verify_signed_userinfo},
+    claims_aggregation::{ClaimsProviderPolicy, VerifiedClaimSet, verify_signed_userinfo},
     keys_from_jwk_set,
 };
 use asterius_oidc::claims::ClaimsRequest;
@@ -34,6 +35,8 @@ struct Provider {
     issuer: String,
     keys: ClientKeySet,
     allowed_claims: BTreeSet<String>,
+    userinfo_endpoint: Option<String>,
+    client_id: Option<String>,
 }
 
 /// Trusted CPs loaded once from each tenant's operator-owned files.
@@ -63,6 +66,57 @@ impl ClaimsProviders {
         self.0
             .get(tenant_id)
             .is_some_and(|providers| !providers.is_empty())
+    }
+
+    /// Collect one signed UserInfo response with an access token obtained by
+    /// a separate user-approved OAuth exchange. The endpoint, issuer, keys,
+    /// client audience and allowed names all come from operator configuration.
+    /// The caller must establish the CP subject from the signed ID token of
+    /// that exchange before using this method.
+    ///
+    /// # Errors
+    /// Rejects unknown or unconfigured providers, excess claims, transport
+    /// failure and any signature or signed-payload mismatch.
+    pub async fn collect(
+        &self,
+        tenant: &Tenant,
+        provider_issuer: &str,
+        provider_subject: &str,
+        approved_claims: &BTreeSet<String>,
+        access_token: &str,
+        fetcher: &HttpsClientUrlFetcher,
+        now: OffsetDateTime,
+    ) -> Result<VerifiedClaimSet, DomainError> {
+        let provider = self
+            .0
+            .get(tenant.id.as_str())
+            .and_then(|providers| providers.get(provider_issuer))
+            .ok_or_else(|| DomainError::invalid("claims_provider", "provider is not configured"))?;
+        let endpoint = provider.userinfo_endpoint.as_deref().ok_or_else(|| {
+            DomainError::invalid("claims_provider", "UserInfo endpoint is not configured")
+        })?;
+        let audience = provider.client_id.as_deref().ok_or_else(|| {
+            DomainError::invalid("claims_provider", "client ID is not configured")
+        })?;
+        if approved_claims.is_empty() || !approved_claims.is_subset(&provider.allowed_claims) {
+            return Err(DomainError::invalid(
+                "claims_provider",
+                "claim approval is outside provider policy",
+            ));
+        }
+        let compact = fetcher
+            .fetch_signed_userinfo(endpoint, access_token)
+            .await
+            .map_err(|error| DomainError::Storage(Box::new(error)))?;
+        let policy = ClaimsProviderPolicy {
+            issuer: provider.issuer.clone(),
+            keys: provider.keys.clone(),
+            op_client_id: audience.to_owned(),
+            provider_subject: provider_subject.to_owned(),
+            approved_claims: approved_claims.clone(),
+        };
+        verify_signed_userinfo(&compact, &policy, now)
+            .map_err(|error| DomainError::invalid("claims_provider", error.to_string()))
     }
 
     /// Compose OIDC Core §5.6.2's aggregated response members from live rows.
@@ -124,7 +178,11 @@ impl ClaimsProviders {
             let policy = ClaimsProviderPolicy {
                 issuer: provider.issuer.clone(),
                 keys: provider.keys.clone(),
-                op_issuer: tenant.issuer.as_str().to_owned(),
+                op_client_id: provider
+                    .client_id
+                    .as_deref()
+                    .unwrap_or(tenant.issuer.as_str())
+                    .to_owned(),
                 provider_subject: row.provider_subject.clone(),
                 approved_claims: stored.clone(),
             };
@@ -187,5 +245,7 @@ fn load_provider(entry: &ClaimsProviderConfig) -> Result<Provider, String> {
         issuer: entry.issuer.as_str().to_owned(),
         keys,
         allowed_claims: entry.allowed_claims.clone(),
+        userinfo_endpoint: entry.userinfo_endpoint.clone(),
+        client_id: entry.client_id.clone(),
     })
 }

@@ -40,7 +40,7 @@ use asterius_domain::ports::{
 };
 use http_body_util::{BodyExt as _, Empty};
 use hyper::body::Bytes;
-use hyper::header::{ACCEPT, CONTENT_TYPE, HOST, USER_AGENT};
+use hyper::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HOST, HeaderValue, USER_AGENT};
 use hyper_util::rt::TokioIo;
 use rustls::pki_types::ServerName;
 use std::net::{IpAddr, SocketAddr};
@@ -272,10 +272,65 @@ impl HttpsClientUrlFetcher {
         let addresses = vetted_addresses(&target).await?;
         let stream = self.connect(&target, &addresses).await?;
         let document =
-            read_document_with_limit(&target, stream, &[], MAX_CIMD_DOCUMENT_BYTES, true).await?;
+            read_document_with_limit(&target, stream, &[], MAX_CIMD_DOCUMENT_BYTES, true, None)
+                .await?;
         Ok(FetchedClientMetadataDocument {
             body: document.body,
             max_age_seconds: bounded_max_age(document.cache_control.as_deref()),
+        })
+    }
+
+    /// Fetch one signed UserInfo JWT with an OAuth access token over the same
+    /// guarded TLS path as public document fetches. The token never enters a
+    /// URL or an error and the body is capped at the JOSE verifier's limit.
+    ///
+    /// # Errors
+    /// Refuses unsafe destinations, invalid bearer values, non-JWT answers,
+    /// redirects, failed TLS and oversized responses.
+    pub async fn fetch_signed_userinfo(
+        &self,
+        url: &str,
+        access_token: &str,
+    ) -> Result<String, FetchError> {
+        const MEDIA_TYPES: [&str; 1] = ["application/jwt"];
+        // OAuth bearer credentials cannot contain HTTP whitespace. Check
+        // before opening a socket, so even a malformed token is never sent.
+        if access_token.is_empty()
+            || access_token.len() > 4096
+            || !access_token
+                .bytes()
+                .all(|byte| (0x21..=0x7e).contains(&byte))
+        {
+            return Err(FetchError::Http {
+                host: "the Claims Provider".to_owned(),
+            });
+        }
+        let authorization =
+            HeaderValue::from_str(&format!("Bearer {access_token}")).map_err(|_| {
+                FetchError::Http {
+                    host: "the Claims Provider".to_owned(),
+                }
+            })?;
+        let outcome = tokio::time::timeout(TOTAL_TIMEOUT, async {
+            let target = ssrf::check_url(url)?;
+            let addresses = vetted_addresses(&target).await?;
+            let stream = self.connect(&target, &addresses).await?;
+            read_document_with_limit(
+                &target,
+                stream,
+                &MEDIA_TYPES,
+                asterius_jose::claims_aggregation::MAX_SIGNED_USERINFO_BYTES,
+                false,
+                Some(authorization),
+            )
+            .await
+        })
+        .await
+        .map_err(|_| FetchError::TimedOut {
+            host: ssrf::check_url(url).map_or_else(|_| "the URL".to_owned(), |target| target.host),
+        })??;
+        String::from_utf8(outcome.body).map_err(|_| FetchError::Http {
+            host: "the Claims Provider".to_owned(),
         })
     }
 
@@ -380,7 +435,7 @@ async fn read_document(
     stream: tokio_rustls::client::TlsStream<TcpStream>,
     media_types: &[&str],
 ) -> Result<Vec<u8>, FetchError> {
-    read_document_with_limit(target, stream, media_types, MAX_BODY_BYTES, false)
+    read_document_with_limit(target, stream, media_types, MAX_BODY_BYTES, false, None)
         .await
         .map(|document| document.body)
 }
@@ -396,6 +451,7 @@ async fn read_document_with_limit(
     media_types: &[&str],
     max_body_bytes: usize,
     cimd_json: bool,
+    authorization: Option<HeaderValue>,
 ) -> Result<ReadDocument, FetchError> {
     let failed = || FetchError::Http {
         host: target.host.clone(),
@@ -411,7 +467,7 @@ async fn read_document_with_limit(
         let _ = connection.await;
     });
 
-    let request = hyper::Request::builder()
+    let mut builder = hyper::Request::builder()
         .method(hyper::Method::GET)
         .uri(&target.request_target)
         .header(HOST, &target.authority)
@@ -419,9 +475,12 @@ async fn read_document_with_limit(
         .header(USER_AGENT, format!("asterius/{}", crate::VERSION))
         // One request per connection. Nothing here reuses it, and saying so
         // lets the other end close instead of holding a socket open.
-        .header(hyper::header::CONNECTION, "close")
-        .body(Empty::<Bytes>::new())
-        .map_err(|_| failed())?;
+        .header(hyper::header::CONNECTION, "close");
+    if let Some(mut value) = authorization {
+        value.set_sensitive(true);
+        builder = builder.header(AUTHORIZATION, value);
+    }
+    let request = builder.body(Empty::<Bytes>::new()).map_err(|_| failed())?;
 
     let response = sender.send_request(request).await.map_err(|_| failed())?;
     let status = response.status();
