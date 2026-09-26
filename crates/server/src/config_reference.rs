@@ -1112,6 +1112,12 @@ fn tenant() -> Section {
                 "empty (signed JAR and JARM optional)".to_owned(),
                 "Explicit tenant client IDs for the FAPI 2.0 Message Signing request and authorization-response signing slice. Each listed client must use a verified JAR at PAR with the required aud, nbf and exp window, and must request response_mode=jwt. Code and authorization-error responses are signed JARM documents delivered in the callback query. This setting does not claim full Message Signing conformance.",
             ),
+            key(
+                "ipsie_https_only_client",
+                "array of client ID strings",
+                "empty (ordinary redirect rules)".to_owned(),
+                "For each operator-selected client, reject authorization requests whose registered redirect URI is not HTTPS, including native HTTP loopback callbacks. Enforced at PAR and direct authorization; existing client registrations can retain HTTP values but cannot use them while listed. This is one IPSIE SL1 control and does not advertise or establish full profile conformance.",
+            ),
         ],
     }
 }

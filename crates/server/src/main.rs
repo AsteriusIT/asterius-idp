@@ -414,6 +414,18 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
                         })
                         .collect(),
                 ),
+                ipsie_https_only_clients: Arc::new(
+                    config
+                        .tenants
+                        .iter()
+                        .map(|tenant| {
+                            (
+                                tenant.id.as_str().to_owned(),
+                                tenant.ipsie_https_only_clients.iter().cloned().collect(),
+                            )
+                        })
+                        .collect(),
+                ),
                 ssf_metadata_cache: Arc::new(
                     asterius_server::http::ssf_receiver::UpstreamMetadataCache::new(),
                 ),
