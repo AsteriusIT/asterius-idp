@@ -504,8 +504,8 @@ pub enum ReceiverError {
     Peer,
 }
 
-/// The portion of SSF 1.0 transmitter metadata needed for push verification
-/// and later explicit stream establishment. The document is discovered from a
+/// The portion of SSF 1.0 transmitter metadata needed for delivery verification
+/// and explicit stream establishment. The document is discovered from a
 /// registered issuer, never from a SET. Endpoint URLs are metadata pins, not
 /// permission to send a request without a separate upstream OAuth credential.
 #[derive(Debug, Clone)]
@@ -513,6 +513,7 @@ pub struct UpstreamMetadata {
     pub jwks_uri: String,
     pub configuration_endpoint: String,
     pub status_endpoint: String,
+    pub supports_push: bool,
     pub supports_poll: bool,
     pub default_subjects: Option<String>,
 }
@@ -628,10 +629,15 @@ impl UpstreamMetadata {
             .get("delivery_methods_supported")
             .and_then(Value::as_array)
             .ok_or(ReceiverError::Metadata)?;
-        if !methods
+        let supports_push = methods
             .iter()
-            .any(|method| method.as_str() == Some(asterius_ssf::stream::DELIVERY_PUSH))
-        {
+            .any(|method| method.as_str() == Some(asterius_ssf::stream::DELIVERY_PUSH));
+        let supports_poll = methods
+            .iter()
+            .any(|method| method.as_str() == Some(asterius_ssf::stream::DELIVERY_POLL));
+        // Polling and push are independent SSF delivery methods. At least one
+        // must be advertised for this receiver to use the configured peer.
+        if !supports_push && !supports_poll {
             return Err(ReceiverError::Metadata);
         }
         if let Some(critical) = object.get("critical_subject_members") {
@@ -674,9 +680,8 @@ impl UpstreamMetadata {
                 .and_then(Value::as_str)
                 .ok_or(ReceiverError::Metadata)?
                 .to_owned(),
-            supports_poll: methods
-                .iter()
-                .any(|method| method.as_str() == Some(asterius_ssf::stream::DELIVERY_POLL)),
+            supports_push,
+            supports_poll,
             default_subjects: default_subjects.map(str::to_owned),
         })
     }
@@ -783,7 +788,11 @@ pub fn validated_upstream_stream(
             validate_metadata_url(endpoint)?;
             Some(endpoint.to_owned())
         }
-        asterius_ssf::stream::DELIVERY_PUSH if push_endpoint == Some(endpoint) => None,
+        asterius_ssf::stream::DELIVERY_PUSH
+            if metadata.supports_push && push_endpoint == Some(endpoint) =>
+        {
+            None
+        }
         _ => return Err(ReceiverError::Metadata),
     };
     Ok(asterius_store_pg::UpstreamStream {
@@ -932,7 +941,13 @@ async fn verify_for_configured_peer_mode(
     now: OffsetDateTime,
     mode: DeliveryMode,
 ) -> Result<VerifiedEvent, ReceiverError> {
-    let (issuer, jwks, scopes, _metadata) = configured_peer(endpoints, tenant, peer).await?;
+    let (issuer, jwks, scopes, metadata) = configured_peer(endpoints, tenant, peer).await?;
+    if !match mode {
+        DeliveryMode::Push => metadata.supports_push,
+        DeliveryMode::Poll => metadata.supports_poll,
+    } {
+        return Err(ReceiverError::Peer);
+    }
     let event = verify_inbound_set_mode(
         endpoints.authenticator.client_keys(),
         tenant,
