@@ -19,6 +19,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeSet, HashMap};
+use std::fmt::Write as _;
 use time::{Duration, OffsetDateTime};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -51,6 +52,10 @@ pub async fn page(context: &Context<'_>, headers: &HeaderMap, now: OffsetDateTim
     render_current(context, &session, None, StatusCode::OK, now).await
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "This account flow keeps its request validation and failure responses in one auditable handler."
+)]
 pub async fn submit(
     context: &Context<'_>,
     headers: &HeaderMap,
@@ -124,7 +129,7 @@ pub async fn submit(
                 .revoke(UserId::new(session.user), &issuer, now)
                 .await
             {
-                Ok(_) => {
+                Ok(()) => {
                     // Local erasure and the callback fence commit before any
                     // slow outbound revocation attempt.
                     let remote = match (registration, loaded) {
@@ -289,6 +294,10 @@ async fn connect(context: &Context<'_>, session: &Session, issuer: &str) -> Resp
 }
 
 /// The callback only accepts the browser session that began this exact state.
+#[expect(
+    clippy::too_many_lines,
+    reason = "This account flow keeps its request validation and failure responses in one auditable handler."
+)]
 pub async fn callback(
     context: &Context<'_>,
     headers: &HeaderMap,
@@ -349,51 +358,44 @@ pub async fn callback(
         )
         .await;
     }
-    let token = match exchange_code(
+    let Ok(token) = exchange_code(
         &registration,
         &callback_url(context.account.tenant.issuer.as_str()),
         &code,
         &pending.code_verifier,
     )
     .await
-    {
-        Ok(token) => token,
-        Err(()) => {
-            return render_current(
-                context,
-                &session,
-                Some("Provider token exchange failed. Start again."),
-                StatusCode::BAD_GATEWAY,
-                now,
-            )
-            .await;
-        }
+    else {
+        return render_current(
+            context,
+            &session,
+            Some("Provider token exchange failed. Start again."),
+            StatusCode::BAD_GATEWAY,
+            now,
+        )
+        .await;
     };
-    let subject = match context.providers.verify_id_token(
+    let Ok(subject) = context.providers.verify_id_token(
         context.account.tenant.id.as_str(),
         &registration.issuer,
         &token.id_token,
         &token.access_token,
         &pending.provider_nonce,
         now,
-    ) {
-        Ok(subject) => subject,
-        Err(_) => {
-            return render_current(
-                context,
-                &session,
-                Some("Provider identity proof was rejected."),
-                StatusCode::BAD_GATEWAY,
-                now,
-            )
-            .await;
-        }
+    ) else {
+        return render_current(
+            context,
+            &session,
+            Some("Provider identity proof was rejected."),
+            StatusCode::BAD_GATEWAY,
+            now,
+        )
+        .await;
     };
-    let fetcher = match HttpsClientUrlFetcher::new() {
-        Ok(fetcher) => fetcher,
-        Err(_) => return error_page(&context.account, StatusCode::SERVICE_UNAVAILABLE),
+    let Ok(fetcher) = HttpsClientUrlFetcher::new() else {
+        return error_page(&context.account, StatusCode::SERVICE_UNAVAILABLE);
     };
-    let verified = match context
+    let Ok(verified) = context
         .providers
         .collect(
             context.account.tenant,
@@ -405,22 +407,19 @@ pub async fn callback(
             now,
         )
         .await
-    {
-        Ok(verified) => verified,
-        Err(_) => {
-            tracing::warn!(tenant = %context.account.tenant.id, "Claims Provider signed UserInfo rejected");
-            return render_current(
-                context,
-                &session,
-                Some("Provider claims could not be verified."),
-                StatusCode::BAD_GATEWAY,
-                now,
-            )
-            .await;
-        }
+    else {
+        tracing::warn!(tenant = %context.account.tenant.id, "Claims Provider signed UserInfo rejected");
+        return render_current(
+            context,
+            &session,
+            Some("Provider claims could not be verified."),
+            StatusCode::BAD_GATEWAY,
+            now,
+        )
+        .await;
     };
     let access_expires_at =
-        now + Duration::seconds(token.expires_in.unwrap_or(300).min(3600) as i64);
+        now + Duration::seconds(token.expires_in.unwrap_or(300).min(3600).cast_signed());
     if token.expires_in == Some(0)
         || token
             .scope
@@ -631,6 +630,10 @@ async fn exchange_refresh(
     Ok(token)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "This account flow keeps its request validation and failure responses in one auditable handler."
+)]
 async fn refresh(
     context: &Context<'_>,
     session: &Session,
@@ -695,18 +698,15 @@ async fn refresh(
             )
             .await;
         }
-        let renewed = match exchange_refresh(&registration, stored_refresh).await {
-            Ok(value) => value,
-            Err(()) => {
-                return render_current(
-                    context,
-                    session,
-                    Some("Provider renewal failed. Connect again."),
-                    StatusCode::BAD_GATEWAY,
-                    now,
-                )
-                .await;
-            }
+        let Ok(renewed) = exchange_refresh(&registration, stored_refresh).await else {
+            return render_current(
+                context,
+                session,
+                Some("Provider renewal failed. Connect again."),
+                StatusCode::BAD_GATEWAY,
+                now,
+            )
+            .await;
         };
         if let Some(id_token) = &renewed.id_token {
             match context.providers.verify_refreshed_id_token(
@@ -734,7 +734,7 @@ async fn refresh(
         connection.access_token.zeroize();
         connection.access_token = renewed.access_token.clone();
         connection.access_expires_at =
-            now + Duration::seconds(renewed.expires_in.unwrap_or(300).min(3600) as i64);
+            now + Duration::seconds(renewed.expires_in.unwrap_or(300).min(3600).cast_signed());
         if let Some(new_refresh) = &renewed.refresh_token {
             if let Some(old) = &mut connection.refresh_token {
                 old.zeroize();
@@ -762,11 +762,10 @@ async fn refresh(
             }
         }
     }
-    let fetcher = match HttpsClientUrlFetcher::new() {
-        Ok(fetcher) => fetcher,
-        Err(_) => return error_page(&context.account, StatusCode::SERVICE_UNAVAILABLE),
+    let Ok(fetcher) = HttpsClientUrlFetcher::new() else {
+        return error_page(&context.account, StatusCode::SERVICE_UNAVAILABLE);
     };
-    let verified = match context
+    let Ok(verified) = context
         .providers
         .collect(
             context.account.tenant,
@@ -778,19 +777,16 @@ async fn refresh(
             now,
         )
         .await
-    {
-        Ok(value) => value,
-        Err(_) => {
-            tracing::warn!(tenant = %context.account.tenant.id, "Claims Provider recollection rejected");
-            return render_current(
-                context,
-                session,
-                Some("Provider claims could not be verified."),
-                StatusCode::BAD_GATEWAY,
-                now,
-            )
-            .await;
-        }
+    else {
+        tracing::warn!(tenant = %context.account.tenant.id, "Claims Provider recollection rejected");
+        return render_current(
+            context,
+            session,
+            Some("Provider claims could not be verified."),
+            StatusCode::BAD_GATEWAY,
+            now,
+        )
+        .await;
     };
     match context
         .sources
@@ -910,11 +906,13 @@ fn render(
             .map_or_else(String::new, |pairs| {
                 let mut list = String::from("<dl aria-label=\"Verified stored claims\">");
                 for (name, value) in pairs {
-                    list.push_str(&format!(
+                    write!(
+                        list,
                         "<dt>{}</dt><dd>{}</dd>",
                         escape_html(name),
                         escape_html(&value.to_string())
-                    ));
+                    )
+                    .expect("writing to String cannot fail");
                 }
                 list.push_str("</dl>");
                 list
@@ -934,11 +932,11 @@ fn render(
                 ))
             )
         });
-        items.push_str(&format!(
+        write!(items,
             "<li><h2>{}</h2><p>{}</p><p><a href=\"{}\" rel=\"noreferrer\">Connection policy</a></p><p>{details}</p>{values}{credential_details}<form method=\"post\" action=\"{}\"><input type=\"hidden\" name=\"csrf\" value=\"{csrf}\"><input type=\"hidden\" name=\"issuer\" value=\"{}\">{buttons}</form></li>",
             escape_html(&registration.issuer), escape_html(&registration.allowed_claims.into_iter().collect::<Vec<_>>().join(", ")),
             escape_html(&registration.policy_url), escape_html(&action), escape_html(&registration.issuer),
-        ));
+        ).expect("writing to String cannot fail");
     }
     // A provider removed from operator configuration still has locally held
     // material until expiry. Keep its removal control visible to the user.
@@ -950,8 +948,8 @@ fn render(
         if !rendered.insert(issuer.clone()) {
             continue;
         }
-        items.push_str(&format!("<li data-provider=\"{}\"><h2>{}</h2><p>Provider is no longer configured.</p><form method=\"post\" action=\"{}\"><input type=\"hidden\" name=\"csrf\" value=\"{csrf}\"><input type=\"hidden\" name=\"issuer\" value=\"{}\"><button name=\"action\" value=\"revoke\">Remove local connection and claims</button></form></li>",
-            escape_html(issuer), escape_html(issuer), escape_html(&action), escape_html(issuer)));
+        write!(items, "<li data-provider=\"{}\"><h2>{}</h2><p>Provider is no longer configured.</p><form method=\"post\" action=\"{}\"><input type=\"hidden\" name=\"csrf\" value=\"{csrf}\"><input type=\"hidden\" name=\"issuer\" value=\"{}\"><button name=\"action\" value=\"revoke\">Remove local connection and claims</button></form></li>",
+            escape_html(issuer), escape_html(issuer), escape_html(&action), escape_html(issuer)).expect("writing to String cannot fail");
     }
     if items.is_empty() {
         items.push_str("<li>No Claims Providers are configured.</li>");
