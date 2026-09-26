@@ -36,7 +36,10 @@ responsible for ending its own session; IdP local logout does not claim to
 terminate sessions at SPs. Operators should not configure SPs to rely on SAML
 Single Logout for this deployment.
 
-This integration has no recorded third-party SP interoperability run or SAML
+A local interoperability run with Keycloak 26.7.4 as a SAML SP completed a
+signed HTTP-Redirect AuthnRequest, Asterius first-party login, a signed
+HTTP-POST assertion accepted by Keycloak's ACS, and a brokered Keycloak
+session. This is interoperability evidence for that configuration, not a SAML
 conformance result. Operators should verify their SP's request-signing,
 metadata and assertion processing against the exact supported profile before
 enabling production traffic.
