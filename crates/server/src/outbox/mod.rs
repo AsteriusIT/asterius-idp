@@ -49,6 +49,7 @@ pub mod ciba;
 pub mod http;
 pub mod journal;
 pub mod mail;
+pub mod provider_commands;
 pub mod ssf;
 
 use asterius_domain::DomainError;
@@ -64,6 +65,7 @@ pub use ciba::{CibaPingDeliverer, PgPingRequests, PingRequests};
 pub use http::HttpDeliverer;
 pub use journal::JournalDeliverer;
 pub use mail::MailDeliverer;
+pub use provider_commands::ProviderCommandDeliverer;
 pub use ssf::{PgPushStreams, PgSsfQueues, PushStreams, SetPoster, SsfPushDeliverer, push_event};
 
 /// What a deliverer did with an event.

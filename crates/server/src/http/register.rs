@@ -1183,6 +1183,9 @@ pub(crate) fn client_information(
         object.insert("agent_owner".to_owned(), json!(agent.owner().to_string()));
     }
     echo_backchannel_logout(object, registration);
+    if let Some(endpoint) = &registration.command_endpoint {
+        object.insert("command_endpoint".to_owned(), json!(endpoint.as_str()));
+    }
     // `ast-mqt`. RFC 7591 §3.2.1 asks for "all registered metadata about this
     // client, including any fields provisioned by the authorization server
     // itself", and this is one a client sets and then has to be able to read

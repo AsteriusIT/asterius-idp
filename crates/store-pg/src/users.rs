@@ -166,12 +166,35 @@ impl PgUserRepository {
             ));
         }
         let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
+        let previous_status: Option<String> = sqlx::query_scalar(
+            "select status from users where tenant_id = $1 and user_id = $2 for update",
+        )
+        .bind(self.tenant.as_str())
+        .bind(replacement.user.as_uuid())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(to_domain_error)?;
         self.scim_write_identity(&mut tx, replacement).await?;
         let ended_sessions = if replacement.status == UserStatus::Disabled || replacement.delete {
             self.scim_revoke_credentials(&mut tx, replacement).await?
         } else {
             Vec::new()
         };
+        if replacement.delete
+            || (replacement.status == UserStatus::Disabled
+                && previous_status.as_deref() != Some(UserStatus::Disabled.as_str()))
+        {
+            self.queue_provider_commands(
+                &mut tx,
+                replacement.user,
+                if replacement.delete {
+                    "delete"
+                } else {
+                    "invalidate"
+                },
+            )
+            .await?;
+        }
         let row: ScimRow = sqlx::query_as(
             "select u.user_id, u.username, u.email, u.email_verified, u.status,
                     u.claims, u.created_at, u.updated_at, u.scim_revision,
@@ -210,6 +233,75 @@ impl PgUserRepository {
         .await?;
         tx.commit().await.map_err(to_domain_error)?;
         Ok((row.into_state(&self.tenant)?, ended_sessions))
+    }
+
+    /// Queue only clients that already received this user's OIDC subject.
+    /// The durable reservation retains the exact public or pairwise `sub`
+    /// issued to that RP even after the grant itself expires.
+    async fn queue_provider_commands(
+        &self,
+        tx: &mut sqlx::PgTransaction<'_>,
+        user: UserId,
+        command: &str,
+    ) -> Result<(), DomainError> {
+        let recipients: Vec<(String, String)> = sqlx::query_as(
+            "select p.client_id, p.subject
+             from provider_command_subjects p join clients c
+               on c.tenant_id = p.tenant_id and c.client_id = p.client_id
+             where p.tenant_id = $1 and p.user_id = $2
+               and c.command_endpoint is not null and c.status = 'active'",
+        )
+        .bind(self.tenant.as_str())
+        .bind(user.as_uuid())
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(to_domain_error)?;
+        for (client, subject) in recipients {
+            let key = format!("{client}\u{1f}{subject}");
+            crate::outbox::enqueue(
+                tx,
+                &self.tenant,
+                &crate::outbox::NewOutboxEntry::new(
+                    "provider_command.account",
+                    &client,
+                    serde_json::json!({"command": command, "subject": subject}),
+                )
+                .ordered_by(&key),
+                OffsetDateTime::now_utc(),
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Disables a console-managed account and queues RP invalidation intents
+    /// in the same transaction. Repeating a disable never queues a second set.
+    pub async fn disable_with_provider_commands(&self, user: UserId) -> Result<(), DomainError> {
+        let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
+        let previous: Option<String> = sqlx::query_scalar(
+            "select status from users where tenant_id = $1 and user_id = $2 for update",
+        )
+        .bind(self.tenant.as_str())
+        .bind(user.as_uuid())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(to_domain_error)?;
+        let Some(previous) = previous else {
+            return Err(DomainError::NotFound);
+        };
+        if previous != UserStatus::Disabled.as_str() {
+            sqlx::query(
+                "update users set status = 'disabled' where tenant_id = $1 and user_id = $2",
+            )
+            .bind(self.tenant.as_str())
+            .bind(user.as_uuid())
+            .execute(&mut *tx)
+            .await
+            .map_err(to_domain_error)?;
+            self.queue_provider_commands(&mut tx, user, "invalidate")
+                .await?;
+        }
+        tx.commit().await.map_err(to_domain_error)
     }
 
     async fn scim_write_identity(

@@ -20,7 +20,7 @@ use asterius_server::oid4vp::Oid4vpVerifiers;
 use asterius_server::outbound::HttpsClientUrlFetcher;
 use asterius_server::outbox::{
     CibaPingDeliverer, HttpDeliverer, JournalDeliverer, MailDeliverer, OutboxWorker,
-    PgPingRequests, PgPushStreams, SsfPushDeliverer,
+    PgPingRequests, PgPushStreams, ProviderCommandDeliverer, SsfPushDeliverer,
 };
 use asterius_server::retention::RetentionSweep;
 use asterius_server::rotation::RotationSweep;
@@ -929,7 +929,7 @@ fn outbox_worker(
                     Arc::new(PgPushStreams::new(
                         store.clone(),
                         Arc::clone(kek),
-                        ssf.signer,
+                        Arc::clone(&ssf.signer),
                         ssf.tenants,
                     )),
                     Arc::clone(&poster) as Arc<dyn asterius_server::outbox::SetPoster>,
@@ -941,6 +941,14 @@ fn outbox_worker(
                 // credentials off the request at delivery time.
                 .with(Arc::new(CibaPingDeliverer::new(
                     Arc::new(PgPingRequests::new(store.clone(), Arc::clone(kek))),
+                    Arc::clone(&poster) as Arc<dyn asterius_server::outbox::SetPoster>,
+                    Arc::clone(&audit),
+                    Arc::clone(&clock),
+                )))
+                .with(Arc::new(ProviderCommandDeliverer::new(
+                    store.clone(),
+                    Arc::clone(kek),
+                    ssf.signer,
                     poster,
                     audit,
                     clock,
