@@ -137,7 +137,7 @@ pub struct ClientEndpoints {
     pub http_signature_peers: Arc<crate::http_signatures::PeerKeys>,
     /// Shared atomic replay guard for signed request nonces.
     pub http_signature_replay: Arc<dyn asterius_domain::ReplayGuard>,
-    /// Operator-pinned OpenID4VP verifier policies, absent unless configured.
+    /// Operator-pinned `OpenID4VP` verifier policies, absent unless configured.
     pub oid4vp_verifiers: Arc<crate::oid4vp::Oid4vpVerifiers>,
     /// Operator-pinned Claims Provider trust profiles.
     pub claims_providers: Arc<crate::claims_provider::ClaimsProviders>,
@@ -355,7 +355,7 @@ async fn materialize_cimd_client(
     // client registration or another tenant's copy of the same URL.
     if let Some(cache_age) = fetched_cache_age {
         let max_age = cache_age.unwrap_or(60).min(300);
-        let expires_at = now + time::Duration::seconds(max_age.min(i64::MAX as u64) as i64);
+        let expires_at = now + time::Duration::seconds(max_age.cast_signed());
         clients
             .store_document(&client_id, &body, expires_at)
             .await?;
@@ -363,7 +363,7 @@ async fn materialize_cimd_client(
     Ok(true)
 }
 
-fn cimd_error_response(error: DomainError) -> Response {
+fn cimd_error_response(error: &DomainError) -> Response {
     tracing::warn!(%error, "CIMD client resolution failed");
     let (status, code) = if matches!(error, DomainError::Storage(_)) {
         (StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable")
@@ -427,6 +427,10 @@ impl std::fmt::Debug for ProtocolState {
 /// tenant switched off is absent from its metadata *and* answers 404, which is
 /// what `ast-edc` closes and what the parity test in `tests/discovery.rs`
 /// asserts for every gated endpoint.
+#[expect(
+    clippy::too_many_lines,
+    reason = "The router declaration keeps the route table in one place."
+)]
 pub fn routes(state: ProtocolState) -> Router {
     let capabilities = state.capabilities;
     let guard = FeatureGuard {
@@ -1602,6 +1606,10 @@ async fn pushed_authorization_request(
 }
 
 /// The push itself, once the limiter has admitted it.
+#[expect(
+    clippy::too_many_lines,
+    reason = "The PAR handler keeps validation and error mapping in one place."
+)]
 async fn pushed_authorization_request_inner(
     endpoints: &ClientEndpoints,
     tenant: &Arc<Tenant>,
@@ -1670,7 +1678,7 @@ async fn pushed_authorization_request_inner(
             && client_id.starts_with("https://")
             && let Err(error) = materialize_cimd_client(endpoints, tenant, &scope, &client_id).await
         {
-            return cimd_error_response(error);
+            return cimd_error_response(&error);
         }
     }
 
@@ -1995,6 +2003,10 @@ fn credential_slow_down() -> Response {
         .into_response()
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Axum extracts each HTTP request component as an individual handler argument."
+)]
 async fn credential_issue(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
@@ -2047,16 +2059,13 @@ async fn credential_issue(
         )
             .into_response();
     }
-    let body = match axum::body::to_bytes(body, 16 * 1024).await {
-        Ok(body) => body,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                [(header::CACHE_CONTROL, "no-store")],
-                Json(json!({"error":"invalid_credential_request"})),
-            )
-                .into_response();
-        }
+    let Ok(body) = axum::body::to_bytes(body, 16 * 1024).await else {
+        return (
+            StatusCode::BAD_REQUEST,
+            [(header::CACHE_CONTROL, "no-store")],
+            Json(json!({"error":"invalid_credential_request"})),
+        )
+            .into_response();
     };
     let scope = endpoints.store.scope(tenant.id.clone());
     let grants = scope.grants();
@@ -4020,8 +4029,7 @@ async fn dispatch_grants(
         endpoints
             .native_sso_approvals
             .get(tenant.id.as_str())
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
+            .map_or(&[][..], Vec::as_slice)
     } else {
         &[]
     };
@@ -4113,8 +4121,7 @@ async fn dispatch_grants(
         endpoints
             .id_jag_approvals
             .get(tenant.id.as_str())
-            .map(Vec::as_slice)
-            .unwrap_or(&[]),
+            .map_or(&[][..], Vec::as_slice),
         native_sso_approvals,
     );
     let refresh_token = RefreshToken::sharing(&authorization_code, endpoints.audit.as_ref());
@@ -4535,6 +4542,10 @@ fn mount_of(mount: Option<Extension<MountPrefix>>) -> MountPrefix {
 /// rather than in the handler because "usable" is a question for the session
 /// repository and the clock. A cookie naming a session that is expired, idle or
 /// revoked is the same as no cookie at all (`ast-gxh.8`).
+#[expect(
+    clippy::too_many_lines,
+    reason = "The authorization handler keeps request checks and response mapping together."
+)]
 async fn run_authorize(
     endpoints: &ClientEndpoints,
     tenant: &Tenant,
@@ -4574,7 +4585,7 @@ async fn run_authorize(
             .await
         {
             Ok(Some(client)) if client.registration.compliance_profile.is_public() => {
-                return cimd_error_response(DomainError::invalid(
+                return cimd_error_response(&DomainError::invalid(
                     "client_id",
                     "public clients are disabled for this tenant",
                 ));
@@ -4697,7 +4708,7 @@ async fn direct_authorization_pairs(
         .filter(|client_id| client_id.starts_with("https://"))
         && let Err(error) = materialize_cimd_client(endpoints, tenant, scope, client_id).await
     {
-        return Err(Box::new(cimd_error_response(error)));
+        return Err(Box::new(cimd_error_response(&error)));
     }
     let capabilities = settings.effective_capabilities(endpoints.capabilities);
     let grant_management = grant_management_policy(endpoints, tenant, capabilities)
@@ -7083,9 +7094,8 @@ async fn account_id_jag_page(
     mount: Option<Extension<MountPrefix>>,
     headers: axum::http::HeaderMap,
 ) -> Response {
-    let parts = match account_parts(&endpoints, &tenant).await {
-        Ok(parts) => parts,
-        Err(_) => return unavailable(),
+    let Ok(parts) = account_parts(&endpoints, &tenant).await else {
+        return unavailable();
     };
     let language = page_language(&endpoints, &tenant, &headers).await;
     let text = language.for_request(&asterius_domain::locale::UiLocales::default());
@@ -7105,9 +7115,8 @@ async fn account_id_jag_submit(
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    let parts = match account_parts(&endpoints, &tenant).await {
-        Ok(parts) => parts,
-        Err(_) => return unavailable(),
+    let Ok(parts) = account_parts(&endpoints, &tenant).await else {
+        return unavailable();
     };
     let language = page_language(&endpoints, &tenant, &headers).await;
     let text = language.for_request(&asterius_domain::locale::UiLocales::default());
@@ -7127,9 +7136,8 @@ async fn account_claims_providers_page(
     mount: Option<Extension<MountPrefix>>,
     headers: axum::http::HeaderMap,
 ) -> Response {
-    let parts = match account_parts(&endpoints, &tenant).await {
-        Ok(parts) => parts,
-        Err(_) => return unavailable(),
+    let Ok(parts) = account_parts(&endpoints, &tenant).await else {
+        return unavailable();
     };
     let language = page_language(&endpoints, &tenant, &headers).await;
     let text = language.for_request(&asterius_domain::locale::UiLocales::default());
@@ -7159,9 +7167,8 @@ async fn account_claims_providers_submit(
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    let parts = match account_parts(&endpoints, &tenant).await {
-        Ok(parts) => parts,
-        Err(_) => return unavailable(),
+    let Ok(parts) = account_parts(&endpoints, &tenant).await else {
+        return unavailable();
     };
     let language = page_language(&endpoints, &tenant, &headers).await;
     let text = language.for_request(&asterius_domain::locale::UiLocales::default());
@@ -7192,9 +7199,8 @@ async fn account_claims_providers_callback(
     headers: axum::http::HeaderMap,
     axum::extract::RawQuery(query): axum::extract::RawQuery,
 ) -> Response {
-    let parts = match account_parts(&endpoints, &tenant).await {
-        Ok(parts) => parts,
-        Err(_) => return unavailable(),
+    let Ok(parts) = account_parts(&endpoints, &tenant).await else {
+        return unavailable();
     };
     let language = page_language(&endpoints, &tenant, &headers).await;
     let text = language.for_request(&asterius_domain::locale::UiLocales::default());

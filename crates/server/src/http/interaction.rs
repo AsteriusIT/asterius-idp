@@ -401,6 +401,10 @@ struct ConsentOffer {
 /// than a consent screen naming nobody — and for an interaction that has no
 /// client at all (ADR-0009), which has nothing to offer and never reaches
 /// [`Stage::Consent`] to be asked.
+#[expect(
+    clippy::too_many_lines,
+    reason = "This interaction step keeps validation and state transition responses together."
+)]
 async fn describe(
     context: &InteractionContext<'_>,
     record: &InteractionRecord,
@@ -641,6 +645,10 @@ pub async fn submit(
 /// Its own function because `submit` is the dispatch and this is the only arm
 /// with any depth — and because the clippy line limit is a reasonable proxy for
 /// "this is doing more than one thing".
+#[expect(
+    clippy::too_many_lines,
+    reason = "This interaction step keeps validation and state transition responses together."
+)]
 async fn sign_in(
     context: &InteractionContext<'_>,
     presented: &InteractionId,
@@ -811,6 +819,10 @@ async fn totp_challenge(
     )
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "This interaction step keeps validation and state transition responses together."
+)]
 async fn verify_totp_sign_in(
     context: &InteractionContext<'_>,
     presented: &InteractionId,
@@ -943,6 +955,10 @@ struct SuccessfulAuthentication<'a> {
     now: OffsetDateTime,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "This interaction step keeps validation and state transition responses together."
+)]
 async fn authenticated(
     context: &InteractionContext<'_>,
     presented: &InteractionId,
@@ -1628,6 +1644,10 @@ async fn decide(
 /// and RFC 6749 §4.1.2.1 says errors go there. A user who has decided should
 /// end up back at the application either way; an error page would strand them
 /// with a client still waiting.
+#[expect(
+    clippy::too_many_lines,
+    reason = "This interaction step keeps validation and state transition responses together."
+)]
 async fn complete(
     context: &InteractionContext<'_>,
     presented: &InteractionId,
@@ -1718,9 +1738,8 @@ async fn complete(
     // which is what it was when it was pushed.
     let mode = match string("response_mode") {
         None => ResponseMode::Query,
-        Some(raw) => match ResponseMode::parse(&raw) {
-            Ok(mode) => mode,
-            Err(_) => {
+        Some(raw) => {
+            let Ok(mode) = ResponseMode::parse(&raw) else {
                 // Unreachable for requests validated by this server. Refuse an
                 // invalid stored mode rather than downgrade a signed response.
                 tracing::error!(
@@ -1732,8 +1751,9 @@ async fn complete(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     InteractionError::NotAvailable,
                 );
-            }
-        },
+            };
+            mode
+        }
     };
 
     match mode {
@@ -1834,6 +1854,10 @@ async fn signed_delivery(
 /// redirect with instead. Nothing here renders anything — the caller owns the
 /// response, so there is one place where `iss` is attached and one place where
 /// the 303 is built.
+#[expect(
+    clippy::too_many_lines,
+    reason = "This interaction step keeps validation and state transition responses together."
+)]
 async fn mint(
     context: &InteractionContext<'_>,
     scopes: &std::collections::BTreeSet<String>,
@@ -2253,6 +2277,10 @@ fn asks_for_sign_in(query: &str) -> bool {
 /// Prompt Create §3 does not require it, and a flow that refused to continue
 /// until a mailbox was read would strand the client's authorization on
 /// something no browser can finish. `email_verified` stays `false`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "This interaction step keeps validation and state transition responses together."
+)]
 async fn create_account(
     context: &InteractionContext<'_>,
     presented: &InteractionId,
