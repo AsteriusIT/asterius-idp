@@ -23,19 +23,17 @@
 //! `POST` away. The guard is the same guard; it is simply less forgiving of a
 //! gap.
 //!
-//! # No redirects, and a response body only where a specification defines one
+//! # No redirects, and response bodies are bounded
 //!
 //! A 3xx is a failure, for the reason [`super::jwks`] gives: following one
 //! means a new origin that has not been through the guard.
 //!
-//! The response body of a *successful* delivery is drained and discarded:
-//! none of the three protocols above define anything a receiver may say back
-//! that changes what the transmitter does with a SET it has accepted. A
-//! *refusal* is different, and only since RFC 8935 §2.3, which defines a JSON
-//! object with an `err` code the transmitter acts on — `invalid_key` says the
-//! receiver could not use this server's signing key. So the first
-//! [`MAX_RESPONSE_BYTES`] of a refusal are kept and handed to the caller,
-//! still as bytes.
+//! A delivery caller may discard a successful response, while management and
+//! polling callers parse a bounded success body. A *refusal* is different:
+//! RFC 8935 §2.3 defines a JSON object with an `err` code the transmitter
+//! acts on — `invalid_key` says the receiver could not use this server's
+//! signing key. The first [`MAX_RESPONSE_BYTES`] of a refusal are kept and
+//! handed to the caller, still as bytes.
 //!
 //! They stay bytes on purpose. They are a string an outsider chose, at a URL
 //! another party configured, and the only thing entitled to turn them into
@@ -62,13 +60,18 @@ use hyper_util::rt::TokioIo;
 /// dead letter with a reason rather than a long upload.
 pub const MAX_REQUEST_BYTES: usize = 128 * 1024;
 
-/// The most bytes read back before the connection is dropped.
+/// The default response limit, and the limit on every refusal body.
 ///
 /// It bounds two things: how long a receiver can hold the connection by
 /// answering slowly and forever, and how much of a refusal is handed to the
 /// caller that parses it (RFC 8935 §2.3). Public because that second bound is
 /// part of what a caller is promised.
 pub const MAX_RESPONSE_BYTES: usize = 8 * 1024;
+
+/// A single SSF SET may itself fill the 8 KiB receiver limit. RFC 8936 adds
+/// a JSON `sets` map, its JTI key, and `moreAvailable` around that SET.
+/// Poll success responses get room for that envelope, but remain bounded.
+const MAX_POLL_RESPONSE_BYTES: usize = 12 * 1024;
 
 /// A bounded successful HTTP answer for protocols whose response has meaning.
 ///
@@ -77,7 +80,8 @@ pub const MAX_RESPONSE_BYTES: usize = 8 * 1024;
 pub struct PostResponse {
     /// HTTP status returned by the receiver.
     pub status: u16,
-    /// At most [`MAX_RESPONSE_BYTES`] from the response body.
+    /// At most [`MAX_RESPONSE_BYTES`], or `MAX_POLL_RESPONSE_BYTES` for a
+    /// successful SSF poll response, from the response body.
     pub body: Vec<u8>,
     /// Content type, when present and a valid HTTP header string.
     pub content_type: Option<String>,
@@ -328,6 +332,33 @@ impl HttpsPoster {
         request: PostRequest<'_>,
         body: &[u8],
     ) -> Result<PostResponse, PostError> {
+        self.post_with_response_bound(url, request, body, MAX_RESPONSE_BYTES)
+            .await
+    }
+
+    /// Read one bounded RFC 8936 poll response, including the JSON envelope
+    /// around a receiver-sized SET. Refusal bodies retain the usual 8 KiB cap.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PostError`] for unsafe destinations or failed delivery.
+    pub async fn post_with_poll_response(
+        &self,
+        url: &str,
+        request: PostRequest<'_>,
+        body: &[u8],
+    ) -> Result<PostResponse, PostError> {
+        self.post_with_response_bound(url, request, body, MAX_POLL_RESPONSE_BYTES)
+            .await
+    }
+
+    async fn post_with_response_bound(
+        &self,
+        url: &str,
+        request: PostRequest<'_>,
+        body: &[u8],
+        response_bound: usize,
+    ) -> Result<PostResponse, PostError> {
         if body.len() > MAX_REQUEST_BYTES {
             return Err(PostError::TooLarge {
                 size: body.len(),
@@ -337,7 +368,7 @@ impl HttpsPoster {
 
         match tokio::time::timeout(
             TOTAL_TIMEOUT,
-            self.send(url, request, body, hyper::Method::POST),
+            self.send(url, request, body, hyper::Method::POST, response_bound),
         )
         .await
         {
@@ -361,7 +392,7 @@ impl HttpsPoster {
             .authorized_by(Some(authorization));
         match tokio::time::timeout(
             TOTAL_TIMEOUT,
-            self.send(url, request, &[], hyper::Method::GET),
+            self.send(url, request, &[], hyper::Method::GET, MAX_RESPONSE_BYTES),
         )
         .await
         {
@@ -379,11 +410,12 @@ impl HttpsPoster {
         request: PostRequest<'_>,
         body: &[u8],
         method: hyper::Method,
+        response_bound: usize,
     ) -> Result<PostResponse, PostError> {
         let target = ssrf::check_url(url).map_err(FetchError::from)?;
         let addresses = vetted_addresses(&target).await?;
         let stream = self.connections.connect(&target, &addresses).await?;
-        exchange(&target, request, body, method, stream).await
+        exchange(&target, request, body, method, stream, response_bound).await
     }
 }
 
@@ -394,6 +426,7 @@ async fn exchange(
     body: &[u8],
     method: hyper::Method,
     stream: tokio_rustls::client::TlsStream<tokio::net::TcpStream>,
+    response_bound: usize,
 ) -> Result<PostResponse, PostError> {
     let failed = || {
         PostError::Reach(FetchError::Http {
@@ -445,6 +478,12 @@ async fn exchange(
 
     let response = sender.send_request(request).await.map_err(|_| failed())?;
     let status = response.status();
+    // A refused delivery is only diagnostic, so never retain a larger body.
+    let response_bound = if status.is_success() {
+        response_bound
+    } else {
+        MAX_RESPONSE_BYTES
+    };
     let content_type = response
         .headers()
         .get(CONTENT_TYPE)
@@ -458,10 +497,8 @@ async fn exchange(
         .filter(|value| value.len() <= 128)
         .map(str::to_owned);
 
-    // Read to a bound rather than to the end, and kept only to hand to the
-    // caller when the answer was a refusal: RFC 8935 §2.3 is the one body in
-    // this direction a specification defines. A receiver that answers and then
-    // never finishes would otherwise keep the connection until the timeout.
+    // Read to a bound rather than to the end. A receiver that answers and
+    // then never finishes would otherwise keep the connection until timeout.
     let mut kept: Vec<u8> = Vec::new();
     let mut incoming = response.into_body();
     let mut truncated = false;
@@ -474,7 +511,7 @@ async fn exchange(
             }
         };
         if let Some(chunk) = frame.data_ref() {
-            let room = MAX_RESPONSE_BYTES - kept.len();
+            let room = response_bound - kept.len();
             if chunk.len() > room {
                 kept.extend_from_slice(&chunk[..room]);
                 truncated = true;
