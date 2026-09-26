@@ -602,21 +602,23 @@ impl asterius_admin_api::saml::IdpKeyAdministration for DeploymentSamlIdpKey {
     async fn inspect(
         &self,
         tenant: &TenantId,
-    ) -> Result<Option<asterius_admin_api::saml::IdpKeySummary>, DomainError> {
+    ) -> Result<Vec<asterius_admin_api::saml::IdpKeySummary>, DomainError> {
         use base64::Engine as _;
         Ok(self
             .store
             .scope(tenant.clone())
             .saml_idp_keys(Arc::clone(&self.kek))
-            .summary()
+            .list()
             .await?
+            .into_iter()
             .map(|summary| asterius_admin_api::saml::IdpKeySummary {
-                state: "provisioned",
+                state: summary.state,
                 certificate_sha256: summary.certificate_sha256,
                 certificate_der_base64: base64::engine::general_purpose::STANDARD
                     .encode(summary.certificate_der),
                 created_at: summary.created_at,
-            }))
+            })
+            .collect())
     }
 
     async fn provision(
@@ -629,6 +631,46 @@ impl asterius_admin_api::saml::IdpKeyAdministration for DeploymentSamlIdpKey {
             .scope(tenant.clone())
             .saml_idp_keys(Arc::clone(&self.kek))
             .provision(&key.certificate_der, &key.private_key_pkcs8)
+            .await
+    }
+
+    async fn activate(
+        &self,
+        tenant: &TenantId,
+        certificate_sha256: &str,
+    ) -> Result<bool, DomainError> {
+        let repository = self
+            .store
+            .scope(tenant.clone())
+            .saml_idp_keys(Arc::clone(&self.kek));
+        let staged = repository
+            .published()
+            .await?
+            .into_iter()
+            .find(|key| key.state == "pending" && key.certificate_sha256 == certificate_sha256);
+        let Some(staged) = staged else {
+            return Ok(false);
+        };
+        let (remaining, certificate) = x509_parser::parse_x509_certificate(&staged.certificate_der)
+            .map_err(|_| DomainError::invalid("saml.idp_key", "invalid staged certificate"))?;
+        if !remaining.is_empty() || !certificate.validity().is_valid() {
+            return Err(DomainError::invalid(
+                "saml.idp_key",
+                "staged certificate has expired",
+            ));
+        }
+        repository.activate(certificate_sha256).await
+    }
+
+    async fn retire(
+        &self,
+        tenant: &TenantId,
+        certificate_sha256: &str,
+    ) -> Result<bool, DomainError> {
+        self.store
+            .scope(tenant.clone())
+            .saml_idp_keys(Arc::clone(&self.kek))
+            .retire(certificate_sha256)
             .await
     }
 }

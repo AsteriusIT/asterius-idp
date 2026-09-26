@@ -419,6 +419,8 @@ async fn route_standard(
         crate::SAML_SP_REMOVE_ID => context.remove_saml_sp(body).await,
         crate::SAML_IDP_KEY_READ_ID => context.read_saml_idp_key().await,
         crate::SAML_IDP_KEY_PROVISION_ID => context.provision_saml_idp_key(body).await,
+        crate::SAML_IDP_KEY_ACTIVATE_ID => context.activate_saml_idp_key(body).await,
+        crate::SAML_IDP_KEY_RETIRE_ID => context.retire_saml_idp_key(body).await,
         crate::AUDIT_EVENTS_LIST_ID => context.list_audit_events().await,
         crate::AUDIT_EVENTS_EXPORT_ID => context.export_audit_events(),
         crate::USERS_LIST_ID => context.list_users().await,
@@ -3378,15 +3380,17 @@ impl Handling<'_> {
             .backend
             .saml_idp_key()
             .ok_or(AdminError::NotFound)?;
-        let summary = administration
+        let keys = administration
             .inspect(&self.tenant.id)
             .await
-            .map_err(|error| AdminError::from_storage(crate::SAML_IDP_KEY_READ_ID, &error))?
-            .ok_or(AdminError::NotFound)?;
-        Ok(json_no_store(StatusCode::OK, &serde_json::json!(summary)))
+            .map_err(|error| AdminError::from_storage(crate::SAML_IDP_KEY_READ_ID, &error))?;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({"keys": keys}),
+        ))
     }
 
-    /// Import only when no SAML IdP key already exists for this tenant.
+    /// Import the first key active or stage one successor.
     async fn provision_saml_idp_key(&self, body: axum::body::Body) -> Result<Response, AdminError> {
         let mut bytes = axum::body::to_bytes(body, saml::MAX_IDP_KEY_BODY_BYTES)
             .await
@@ -3411,7 +3415,7 @@ impl Handling<'_> {
             })?;
         if !inserted {
             return Err(AdminError::Conflict(
-                "this tenant already has a SAML IdP key".to_owned(),
+                "this certificate is already provisioned or a successor is pending".to_owned(),
             ));
         }
         self.record(
@@ -3419,14 +3423,83 @@ impl Handling<'_> {
             Detail::new().label("operation", crate::SAML_IDP_KEY_PROVISION_ID),
         )
         .await;
-        let summary = administration
+        let keys = administration
             .inspect(&self.tenant.id)
             .await
-            .map_err(|error| AdminError::from_storage(crate::SAML_IDP_KEY_READ_ID, &error))?
-            .ok_or(AdminError::NotFound)?;
+            .map_err(|error| AdminError::from_storage(crate::SAML_IDP_KEY_READ_ID, &error))?;
         Ok(json_no_store(
             StatusCode::CREATED,
-            &serde_json::json!(summary),
+            &serde_json::json!({"keys": keys}),
+        ))
+    }
+
+    /// Activation keeps the former signing certificate in `retiring`.
+    async fn activate_saml_idp_key(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let bytes = axum::body::to_bytes(body, saml::MAX_IDP_KEY_ACTION_BYTES)
+            .await
+            .map_err(|_| AdminError::Invalid("the request body is too large".to_owned()))?;
+        let fingerprint = saml::parse_key_action(&bytes)?;
+        let administration = self
+            .state
+            .backend
+            .saml_idp_key()
+            .ok_or(AdminError::NotFound)?;
+        let activated = administration
+            .activate(&self.tenant.id, &fingerprint)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::SAML_IDP_KEY_ACTIVATE_ID, &error))?;
+        if !activated {
+            return Err(AdminError::Conflict(
+                "the certificate is not pending".to_owned(),
+            ));
+        }
+        self.record(
+            EventType::SAML_IDP_KEY_ACTIVATED,
+            Detail::new()
+                .label("operation", crate::SAML_IDP_KEY_ACTIVATE_ID)
+                .credential("certificate_sha256", &fingerprint),
+        )
+        .await;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({
+                "certificate_sha256": fingerprint, "state": "active"
+            }),
+        ))
+    }
+
+    /// Only a former active key can be retired, by a separate operator step.
+    async fn retire_saml_idp_key(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let bytes = axum::body::to_bytes(body, saml::MAX_IDP_KEY_ACTION_BYTES)
+            .await
+            .map_err(|_| AdminError::Invalid("the request body is too large".to_owned()))?;
+        let fingerprint = saml::parse_retirement_action(&bytes)?;
+        let administration = self
+            .state
+            .backend
+            .saml_idp_key()
+            .ok_or(AdminError::NotFound)?;
+        let retired = administration
+            .retire(&self.tenant.id, &fingerprint)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::SAML_IDP_KEY_RETIRE_ID, &error))?;
+        if !retired {
+            return Err(AdminError::Conflict(
+                "the certificate is not retiring".to_owned(),
+            ));
+        }
+        self.record(
+            EventType::SAML_IDP_KEY_RETIRED,
+            Detail::new()
+                .label("operation", crate::SAML_IDP_KEY_RETIRE_ID)
+                .credential("certificate_sha256", &fingerprint),
+        )
+        .await;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({
+                "certificate_sha256": fingerprint, "state": "retired"
+            }),
         ))
     }
 

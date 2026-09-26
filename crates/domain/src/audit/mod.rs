@@ -576,12 +576,16 @@ impl EventType {
     pub const SAML_SP_REMOVED: Self = Self("saml.sp_removed");
     /// An administrator imported a tenant SAML IdP signing key/certificate.
     pub const SAML_IDP_KEY_PROVISIONED: Self = Self("saml.idp_key_provisioned");
+    /// A staged tenant SAML certificate became the signing key.
+    pub const SAML_IDP_KEY_ACTIVATED: Self = Self("saml.idp_key_activated");
+    /// An operator removed a former signing certificate from publication.
+    pub const SAML_IDP_KEY_RETIRED: Self = Self("saml.idp_key_retired");
     /// An OP sent, or failed to send, an account lifecycle command to an RP.
     pub const PROVIDER_COMMAND_DELIVERED: Self = Self("provider_command.delivered");
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 89] = [
+    pub const ALL: [Self; 91] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -667,6 +671,8 @@ impl EventType {
         Self::SAML_SP_PROVISIONED,
         Self::SAML_SP_REMOVED,
         Self::SAML_IDP_KEY_PROVISIONED,
+        Self::SAML_IDP_KEY_ACTIVATED,
+        Self::SAML_IDP_KEY_RETIRED,
         Self::PROVIDER_COMMAND_DELIVERED,
         Self::SSF_VERIFICATION_REQUESTED,
         Self::OUTBOX_RETRIED,

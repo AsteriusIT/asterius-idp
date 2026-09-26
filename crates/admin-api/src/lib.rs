@@ -198,6 +198,8 @@ pub const SAML_SP_PROVISION_ID: &str = "saml.sp.provision";
 pub const SAML_SP_REMOVE_ID: &str = "saml.sp.remove";
 pub const SAML_IDP_KEY_READ_ID: &str = "saml.idp_key.read";
 pub const SAML_IDP_KEY_PROVISION_ID: &str = "saml.idp_key.provision";
+pub const SAML_IDP_KEY_ACTIVATE_ID: &str = "saml.idp_key.activate";
+pub const SAML_IDP_KEY_RETIRE_ID: &str = "saml.idp_key.retire";
 /// The `operationId` of `GET /audit/events`.
 pub const AUDIT_EVENTS_LIST_ID: &str = "audit.events.list";
 /// The `operationId` of `GET /audit/events/export`.
@@ -1052,6 +1054,24 @@ pub const SAML_IDP_KEY_PROVISION: Operation = Operation::mutation(
     "Provisions tenant SAML IdP signing key",
 );
 
+/// Activates a staged certificate while retaining the former active one.
+pub const SAML_IDP_KEY_ACTIVATE: Operation = Operation::mutation(
+    SAML_IDP_KEY_ACTIVATE_ID,
+    "/saml/idp-key/activation",
+    M::Post,
+    A::new(R::Tenant, "admin.saml:write"),
+    "Activates a staged tenant SAML IdP certificate",
+);
+
+/// Explicitly retires a former active certificate after SP rollover.
+pub const SAML_IDP_KEY_RETIRE: Operation = Operation::mutation(
+    SAML_IDP_KEY_RETIRE_ID,
+    "/saml/idp-key/retirement",
+    M::Post,
+    A::new(R::Tenant, "admin.saml:write"),
+    "Retires a former tenant SAML IdP certificate",
+);
+
 /// This tenant's audit trail, filtered, one cursor page at a time
 /// (`ast-lh3.9`).
 ///
@@ -1799,7 +1819,7 @@ pub const SCIM_BULK: Operation = Operation::mutation(
     "SCIM Bulk is unsupported by this service",
 );
 
-static REGISTRY: [Operation; 131] = [
+static REGISTRY: [Operation; 133] = [
     SESSION_READ,
     SESSION_END,
     OVERVIEW_USERS,
@@ -1864,6 +1884,8 @@ static REGISTRY: [Operation; 131] = [
     SAML_SP_REMOVE,
     SAML_IDP_KEY_READ,
     SAML_IDP_KEY_PROVISION,
+    SAML_IDP_KEY_ACTIVATE,
+    SAML_IDP_KEY_RETIRE,
     AUDIT_EVENTS_LIST,
     AUDIT_EVENTS_EXPORT,
     USERS_LIST,
