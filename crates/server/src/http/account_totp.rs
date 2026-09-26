@@ -104,6 +104,8 @@ pub async fn submit(
 /// the current TOTP code itself is the required second factor. This leaves
 /// lost-device recovery to the deployment's existing approved account recovery
 /// process instead of creating a weaker bypass here.
+// Keep this protocol transition together so validation and issuance order stays auditable.
+#[allow(clippy::too_many_lines)]
 async fn remove(
     context: &TotpContext<'_>,
     session: &Session,

@@ -326,6 +326,8 @@ pub async fn push(
 /// Validates and stores a front-channel authorization request for an
 /// explicitly non-FAPI client, returning the internal reference used by the
 /// existing interaction pipeline.
+// Keep this protocol transition together so validation and issuance order stays auditable.
+#[allow(clippy::too_many_lines)]
 pub async fn direct(
     context: PushContext<'_>,
     pairs: &[(String, String)],
@@ -979,7 +981,7 @@ fn serialise(
         "response_mode": request.response_mode.as_str(),
         // The exact registered algorithm was checked while the authenticated
         // client was on the PAR connection. It stays bound to this request.
-        "authorization_signed_response_alg": client.registration.authorization_signed_response_alg.map(|alg| alg.as_str()),
+        "authorization_signed_response_alg": client.registration.authorization_signed_response_alg.map(asterius_domain::SigningAlgorithm::as_str),
         "scopes": request.scopes,
         "code_challenge": request.code_challenge.as_str(),
         "state": request.state,

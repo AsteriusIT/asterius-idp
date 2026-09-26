@@ -365,6 +365,8 @@ pub async fn remember_participant(
 ///
 /// [`DomainError::Invalid`] when the grant names no user, the user is gone, or
 /// the stored `claims` request no longer parses; a storage error otherwise.
+// The explicit inputs preserve each issuer dependency at the call boundary.
+#[allow(clippy::too_many_arguments)]
 pub async fn released_claims(
     tenant: &Tenant,
     users: &PgUserRepository,
@@ -394,19 +396,19 @@ pub async fn released_claims(
         asterius_oidc::claims::resolve_checked(&user, &grant.scopes, &requested, &locales)
             .map_err(|error| DomainError::invalid("claims", error.to_string()))?;
     let mut claims = resolved.id_token;
-    if let Some(ida) = requested.ida_id_token() {
-        if !ida_frameworks.is_empty() {
-            let bundles = verified
-                .by_user(id)
-                .await?
-                .into_iter()
-                .map(|record| record.bundle)
-                .collect::<Vec<_>>();
-            if let Some(projected) =
-                asterius_oidc::claims::project_verified_claims(ida, &bundles, ida_frameworks)
-            {
-                claims.insert("verified_claims".to_owned(), projected);
-            }
+    if let Some(ida) = requested.ida_id_token()
+        && !ida_frameworks.is_empty()
+    {
+        let bundles = verified
+            .by_user(id)
+            .await?
+            .into_iter()
+            .map(|record| record.bundle)
+            .collect::<Vec<_>>();
+        if let Some(projected) =
+            asterius_oidc::claims::project_verified_claims(ida, &bundles, ida_frameworks)
+        {
+            claims.insert("verified_claims".to_owned(), projected);
         }
     }
     let rows = aggregated.by_user(id, now).await?;
