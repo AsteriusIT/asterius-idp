@@ -17,6 +17,8 @@ use url::Url;
 pub struct SamlSp {
     pub entity_id: String,
     pub acs_url: String,
+    /// Explicit operator exception; false is the database default.
+    pub allow_unsigned_requests: bool,
     pub created_at: OffsetDateTime,
 }
 
@@ -34,16 +36,22 @@ impl PgSamlTrust {
 
     /// Inserts one exact trust entry. A duplicate entity ID returns false;
     /// changing an ACS requires an explicit removal and a separate insert.
-    pub async fn provision(&self, entity_id: &str, acs_url: &str) -> Result<bool, DomainError> {
+    pub async fn provision(
+        &self,
+        entity_id: &str,
+        acs_url: &str,
+        allow_unsigned_requests: bool,
+    ) -> Result<bool, DomainError> {
         validate(entity_id, acs_url)?;
         let result = sqlx::query(
-            "insert into saml_sp_trusts (tenant_id, entity_id, acs_url)
-             values ($1, $2, $3)
+            "insert into saml_sp_trusts (tenant_id, entity_id, acs_url, allow_unsigned_requests)
+             values ($1, $2, $3, $4)
              on conflict (tenant_id, entity_id) do nothing",
         )
         .bind(self.tenant.as_str())
         .bind(entity_id)
         .bind(acs_url)
+        .bind(allow_unsigned_requests)
         .execute(&self.pool)
         .await
         .map_err(to_domain_error)?;
@@ -52,8 +60,8 @@ impl PgSamlTrust {
 
     /// Lists only this tenant's exact SP trust entries.
     pub async fn list(&self) -> Result<Vec<SamlSp>, DomainError> {
-        let rows: Vec<(String, String, OffsetDateTime)> = sqlx::query_as(
-            "select entity_id, acs_url, created_at
+        let rows: Vec<(String, String, bool, OffsetDateTime)> = sqlx::query_as(
+            "select entity_id, acs_url, allow_unsigned_requests, created_at
                from saml_sp_trusts where tenant_id = $1 order by entity_id",
         )
         .bind(self.tenant.as_str())
@@ -62,18 +70,21 @@ impl PgSamlTrust {
         .map_err(to_domain_error)?;
         Ok(rows
             .into_iter()
-            .map(|(entity_id, acs_url, created_at)| SamlSp {
-                entity_id,
-                acs_url,
-                created_at,
-            })
+            .map(
+                |(entity_id, acs_url, allow_unsigned_requests, created_at)| SamlSp {
+                    entity_id,
+                    acs_url,
+                    allow_unsigned_requests,
+                    created_at,
+                },
+            )
             .collect())
     }
 
     /// Resolves only an exact entity ID in this tenant.
     pub async fn find(&self, entity_id: &str) -> Result<Option<SamlSp>, DomainError> {
-        let row: Option<(String, String, OffsetDateTime)> = sqlx::query_as(
-            "select entity_id, acs_url, created_at
+        let row: Option<(String, String, bool, OffsetDateTime)> = sqlx::query_as(
+            "select entity_id, acs_url, allow_unsigned_requests, created_at
                from saml_sp_trusts where tenant_id = $1 and entity_id = $2",
         )
         .bind(self.tenant.as_str())
@@ -81,11 +92,14 @@ impl PgSamlTrust {
         .fetch_optional(&self.pool)
         .await
         .map_err(to_domain_error)?;
-        Ok(row.map(|(entity_id, acs_url, created_at)| SamlSp {
-            entity_id,
-            acs_url,
-            created_at,
-        }))
+        Ok(row.map(
+            |(entity_id, acs_url, allow_unsigned_requests, created_at)| SamlSp {
+                entity_id,
+                acs_url,
+                allow_unsigned_requests,
+                created_at,
+            },
+        ))
     }
 
     /// Removes one exact SP trust. Replay tombstones survive this operation.
@@ -103,10 +117,14 @@ impl PgSamlTrust {
     /// Reserves an AuthnRequest ID once for an existing SP. The primary key
     /// makes concurrent attempts across replicas atomic. A missing SP and a
     /// replay both return false; a caller must not issue on either outcome.
+    /// The ACS and unsigned policy are checked again in the insertion
+    /// statement, so a trust change between a read and this reservation
+    /// cannot silently substitute another recipient.
     /// Tombstones survive SP replacement and currently have no TTL cleanup.
-    pub async fn reserve_request(
+    pub async fn reserve_unsigned_request(
         &self,
         entity_id: &str,
+        expected_acs: &str,
         request_id: &str,
     ) -> Result<bool, DomainError> {
         if entity_id.is_empty()
@@ -129,11 +147,13 @@ impl PgSamlTrust {
              select tenant_id, entity_id, $3, now() + interval '10 minutes'
                from saml_sp_trusts
               where tenant_id = $1 and entity_id = $2
+                and acs_url = $4 and allow_unsigned_requests = true
               on conflict (tenant_id, sp_entity_id, request_id_hash) do nothing",
         )
         .bind(self.tenant.as_str())
         .bind(entity_id)
         .bind(id_hash.as_slice())
+        .bind(expected_acs)
         .execute(&self.pool)
         .await
         .map_err(to_domain_error)?;
