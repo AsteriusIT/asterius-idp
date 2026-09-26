@@ -24,3 +24,7 @@ Copy [`0000-template.md`](0000-template.md) to start one.
 | [0013](0013-openid-federation-remains-out-of-v1.md) | OpenID Federation remains out of v1 without narrowing the client model | Accepted |
 | [0014](0014-explicitly-gated-standard-oidc-clients.md) | Standard OIDC clients are explicit tenant and application opt-ins | Accepted |
 | [0015](0015-certify-the-fapi-profile-only.md) | Certify the FAPI profile only; do not add a conformance mode | Accepted |
+| [0016](0016-ciba-assertion-audience.md) | Keep the CIBA assertion audience profile scoped to CIBA | Accepted |
+| [0017](0017-id-jag-draft-profile.md) | Explicit enterprise approval for ID-JAG issuance | Provisional |
+| [0018](0018-oid4vp-verifier-profile.md) | Narrow OID4VP verifier profile | Provisional |
+| [0019](0019-caep-interop-algorithm-boundary.md) | Keep CAEP Draft 01 outside the supported SSF receiver profile | Accepted |
