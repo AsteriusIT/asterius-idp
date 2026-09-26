@@ -1109,8 +1109,8 @@ fn tenant() -> Section {
             key(
                 "fapi_message_signing_client",
                 "array of client ID strings",
-                "empty (signed JAR at PAR optional)".to_owned(),
-                "Explicit tenant client IDs for the FAPI 2.0 Message Signing signed-authorization-request profile. Each listed client must use a verified JAR at PAR with the required aud, nbf and exp window. This setting does not enable JARM enforcement or claim full Message Signing conformance.",
+                "empty (signed JAR and JARM optional)".to_owned(),
+                "Explicit tenant client IDs for the FAPI 2.0 Message Signing request and authorization-response signing slice. Each listed client must use a verified JAR at PAR with the required aud, nbf and exp window, and must request response_mode=jwt. Code and authorization-error responses are signed JARM documents delivered in the callback query. This setting does not claim full Message Signing conformance.",
             ),
         ],
     }

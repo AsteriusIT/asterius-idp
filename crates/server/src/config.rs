@@ -327,7 +327,7 @@ pub struct TenantConfig {
     /// Optional operator-pinned LDAPS source. No synchronization runs merely
     /// because this configuration exists.
     pub ldap_source: Option<LdapSourceConfig>,
-    /// Client IDs for which PAR requires the FAPI Message Signing JAR profile.
+    /// Client IDs for which PAR requires signed JAR and `response_mode=jwt`.
     pub fapi_message_signing_clients: Vec<String>,
 }
 

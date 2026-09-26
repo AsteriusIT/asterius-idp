@@ -72,7 +72,9 @@ pub fn build(
     match mode {
         ResponseMode::Query => query(response, redirect_uri),
         ResponseMode::FormPost => form_post(tenant, nonce, mount, response, redirect_uri),
-        ResponseMode::QueryJwt | ResponseMode::FormPostJwt => Err(Undeliverable::Unusable),
+        ResponseMode::QueryJwt | ResponseMode::Jwt | ResponseMode::FormPostJwt => {
+            Err(Undeliverable::Unusable)
+        }
     }
 }
 
@@ -92,7 +94,7 @@ pub fn build_jarm(
 ) -> Result<Response, Undeliverable> {
     let fields = [("response", jwt.as_str().to_owned())];
     match mode {
-        ResponseMode::QueryJwt => query_fields(redirect_uri, &fields),
+        ResponseMode::QueryJwt | ResponseMode::Jwt => query_fields(redirect_uri, &fields),
         ResponseMode::FormPostJwt => {
             form_post_fields(tenant, nonce, mount, response, redirect_uri, &fields)
         }
