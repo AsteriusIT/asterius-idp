@@ -796,6 +796,12 @@ pub const POLICY: &[Retention] = &[
         ),
     },
     Retention {
+        table: "ssf_receiver_subject_order",
+        rule: Rule::Kept(
+            "one ordering mark per tenant/peer/subject mapping, removed by the mapping foreign key cascade rather than by the replay tombstone sweep",
+        ),
+    },
+    Retention {
         table: "ssf_receiver_events",
         rule: Rule::Sweep {
             statement: "delete from ssf_receiver_events where ctid = any (array(
