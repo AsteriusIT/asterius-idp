@@ -389,6 +389,8 @@ pub struct RegisterContext<'a> {
     /// The tenant the request arrived at. Its issuer is what
     /// `registration_client_uri` is built from.
     pub tenant: &'a Tenant,
+    /// Client IDs selected for HTTPS-only authorization redirects.
+    pub ipsie_https_only_clients: Option<&'a std::collections::BTreeSet<String>>,
     /// Where the new client is written.
     pub clients: &'a dyn ClientRegistry,
     /// The tenant's keys, consulted for one question only: whether the
@@ -518,7 +520,7 @@ async fn registered(
         }
     };
 
-    // The three checks the validated document does not answer on its own.
+    // Checks the validated document cannot answer on its own.
     if let Some(refusal) = unacceptable(context, now, &registration).await {
         return refusal;
     }
@@ -535,9 +537,29 @@ async fn registered(
         .resources
         .insert(context.tenant.default_resource.clone());
 
-    // Minted after validation, so a rejected document consumes no identifier
-    // and no entropy.
+    // Minted after document validation. A selected-ID HTTPS policy must run
+    // after minting, because the client identifier cannot be caller-chosen.
     let client_id = ClientId::mint();
+    if context
+        .ipsie_https_only_clients
+        .is_some_and(|clients| clients.contains(client_id.as_str()))
+        && !registration.has_only_https_redirect_uris()
+    {
+        record(
+            context,
+            now,
+            Outcome::Failure,
+            Some(client_id),
+            Some("invalid_redirect_uri"),
+            None,
+        )
+        .await;
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_redirect_uri",
+            "this client requires HTTPS redirect_uris",
+        );
+    }
     let token = OpaqueToken::generate_bits::<REGISTRATION_TOKEN_BITS>();
 
     let client = Client {

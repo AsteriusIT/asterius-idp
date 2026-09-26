@@ -1382,6 +1382,18 @@ impl RolesInIdToken {
 }
 
 impl ClientRegistration {
+    /// Whether every authorization callback uses HTTPS.
+    ///
+    /// The ordinary validator permits native HTTP loopback redirects. A
+    /// profile that forbids them applies this predicate after validation,
+    /// once the server knows which client is being registered or updated.
+    #[must_use]
+    pub fn has_only_https_redirect_uris(&self) -> bool {
+        self.redirect_uris
+            .iter()
+            .all(|uri| Url::parse(uri.as_str()).is_ok_and(|parsed| parsed.scheme() == "https"))
+    }
+
     /// The metadata members whose algorithm *this server* signs with, paired
     /// with what this registration put in them.
     ///

@@ -479,6 +479,8 @@ pub struct ConfigurationContext<'a> {
     /// The tenant the request arrived at. Its issuer is what
     /// `registration_client_uri` is rebuilt from.
     pub tenant: &'a Tenant,
+    /// Client IDs selected for HTTPS-only authorization redirects.
+    pub ipsie_https_only_clients: Option<&'a std::collections::BTreeSet<String>>,
     /// Reads a client's registration, for the document a read returns.
     ///
     /// The narrow read port, held separately from [`Self::configuration`]
@@ -796,7 +798,29 @@ pub async fn update(
         }
     };
 
-    // The three checks the validator cannot make on the document alone: one
+    if context
+        .ipsie_https_only_clients
+        .is_some_and(|clients| clients.contains(client_id.as_str()))
+        && !registration.has_only_https_redirect_uris()
+    {
+        record(
+            context,
+            now,
+            EventType::CLIENT_UPDATED,
+            Outcome::Failure,
+            &client_id,
+            Some("invalid_redirect_uri"),
+            None,
+        )
+        .await;
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_redirect_uri",
+            "this client requires HTTPS redirect_uris",
+        );
+    }
+
+    // The remaining checks the validator cannot make on the document alone: one
     // about the agent profile the row carries, one about this tenant's keys,
     // one about a host that has to be asked.
     if let Some(refusal) = unacceptable(context, &client_id, now, &managed, &registration).await {

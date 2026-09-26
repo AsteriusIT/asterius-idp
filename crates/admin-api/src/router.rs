@@ -101,6 +101,9 @@ pub struct AdminState {
     /// deployment with no admin account, where a session resolves in its own
     /// tenant and nowhere else.
     pub reserved_tenant: Option<TenantId>,
+    /// Operator-selected clients whose authorization callbacks must use HTTPS.
+    pub ipsie_https_only_clients:
+        Arc<std::collections::HashMap<String, std::collections::BTreeSet<String>>>,
 }
 
 impl std::fmt::Debug for AdminState {
@@ -538,6 +541,25 @@ struct Handling<'a> {
 }
 
 impl Handling<'_> {
+    fn require_https_redirects(
+        &self,
+        client_id: &asterius_domain::ClientId,
+        registration: &ClientRegistration,
+    ) -> Result<(), AdminError> {
+        if self
+            .state
+            .ipsie_https_only_clients
+            .get(self.tenant.id.as_str())
+            .is_some_and(|clients| clients.contains(client_id.as_str()))
+            && !registration.has_only_https_redirect_uris()
+        {
+            return Err(AdminError::Invalid(
+                "this client requires HTTPS redirect_uris".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
     async fn scim_replace_user(&self, body: axum::body::Body) -> Result<Response, AdminError> {
         let expected_revision = scim::expected_revision(self.headers)?;
         let id = self
@@ -2117,6 +2139,7 @@ impl Handling<'_> {
             created_at: self.now,
             updated_at: self.now,
         };
+        self.require_https_redirects(&client.id, &client.registration)?;
 
         let secret = (client.registration.token_endpoint_auth_method
             == TokenEndpointAuthMethod::ClientSecretBasic)
@@ -2182,6 +2205,7 @@ impl Handling<'_> {
             profile,
         )
         .map_err(|failure| clients::refusal(&failure))?;
+        self.require_https_redirects(&id, &registration)?;
         if registration
             .grant_types
             .contains(&asterius_domain::entities::client::GrantType::JwtBearer)
@@ -9159,6 +9183,7 @@ mod tests {
         fn api(&self) -> AdminApi {
             AdminApi::new(&AdminState {
                 backend: Arc::new(self.handle.clone()),
+                ipsie_https_only_clients: Arc::default(),
                 tokens: None,
                 rate_limit: RateLimit {
                     max: 10_000,
@@ -9958,6 +9983,7 @@ mod tests {
             )));
             AdminApi::new(&AdminState {
                 backend: Arc::new(world.handle.clone()),
+                ipsie_https_only_clients: Arc::default(),
                 tokens: None,
                 rate_limit: RateLimit {
                     max: 1,
@@ -12609,6 +12635,7 @@ mod tests {
         let world = World::new();
         let api = AdminApi::new(&AdminState {
             backend: Arc::new(world.handle.clone()),
+            ipsie_https_only_clients: Arc::default(),
             tokens: None,
             rate_limit: RateLimit {
                 max: 1,
@@ -12628,6 +12655,7 @@ mod tests {
             )));
             AdminApi::new(&AdminState {
                 backend: Arc::new(world.handle.clone()),
+                ipsie_https_only_clients: Arc::default(),
                 tokens: None,
                 rate_limit: RateLimit {
                     max: 1,
