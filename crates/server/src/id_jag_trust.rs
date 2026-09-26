@@ -33,6 +33,15 @@ struct Trust {
 pub struct IdJagTrusts(HashMap<String, HashMap<(String, String), Trust>>);
 
 impl IdJagTrusts {
+    /// Whether an operator configured this upstream issuer for at least one
+    /// downstream client in the routed tenant.
+    #[must_use]
+    pub fn supports_issuer(&self, tenant_id: &str, issuer: &str) -> bool {
+        self.0
+            .get(tenant_id)
+            .is_some_and(|trusted| trusted.keys().any(|(configured, _)| configured == issuer))
+    }
+
     /// Loads each operator-owned JWKS file with a strict size bound.
     ///
     /// # Errors

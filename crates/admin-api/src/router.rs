@@ -389,6 +389,8 @@ async fn route_standard(
         crate::SSF_STREAM_VERIFY_ID => context.verify_stream(body).await,
         crate::SSF_RECEIVER_SUBJECT_BIND_ID => context.bind_receiver_subject(body).await,
         crate::SSF_RECEIVER_SUBJECT_REMOVE_ID => context.remove_receiver_subject(body).await,
+        crate::ID_JAG_SUBJECT_BIND_ID => context.bind_id_jag_subject(body).await,
+        crate::ID_JAG_SUBJECT_REMOVE_ID => context.remove_id_jag_subject(body).await,
         crate::AUDIT_EVENTS_LIST_ID => context.list_audit_events().await,
         crate::AUDIT_EVENTS_EXPORT_ID => context.export_audit_events(),
         crate::USERS_LIST_ID => context.list_users().await,
@@ -3009,6 +3011,74 @@ impl Handling<'_> {
                 "user_id": binding.user,
                 "removed": true,
             }),
+        ))
+    }
+
+    /// `PUT /id-jag/subjects` — identity mapping by an authorized operator.
+    /// The upstream subject is deliberately absent from audit detail.
+    async fn bind_id_jag_subject(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let bytes = axum::body::to_bytes(body, crate::id_jag::MAX_BODY_BYTES)
+            .await
+            .map_err(|_| AdminError::Invalid("the request body is too large".to_owned()))?;
+        let binding = crate::id_jag::parse_binding(&bytes)?;
+        let bindings = self
+            .state
+            .backend
+            .id_jag_bindings()
+            .ok_or(AdminError::NotFound)?;
+        bindings
+            .bind(&self.tenant.id, &binding)
+            .await
+            .map_err(|error| match error {
+                DomainError::NotFound => AdminError::NotFound,
+                DomainError::Invalid { .. } => AdminError::Invalid(
+                    "the issuer or local account is not eligible for this mapping".to_owned(),
+                ),
+                other => AdminError::from_storage(crate::ID_JAG_SUBJECT_BIND_ID, &other),
+            })?;
+        self.record(
+            EventType::ID_JAG_SUBJECT_BOUND,
+            Detail::new()
+                .label("operation", crate::ID_JAG_SUBJECT_BIND_ID)
+                .credential("issuer", binding.issuer.as_str())
+                .credential("user_id", binding.user.to_string()),
+        )
+        .await;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({"issuer": binding.issuer.as_str(), "user_id": binding.user, "bound": true}),
+        ))
+    }
+
+    /// `DELETE /id-jag/subjects` — remove one exact mapping.
+    async fn remove_id_jag_subject(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let bytes = axum::body::to_bytes(body, crate::id_jag::MAX_BODY_BYTES)
+            .await
+            .map_err(|_| AdminError::Invalid("the request body is too large".to_owned()))?;
+        let binding = crate::id_jag::parse_binding(&bytes)?;
+        let bindings = self
+            .state
+            .backend
+            .id_jag_bindings()
+            .ok_or(AdminError::NotFound)?;
+        let removed = bindings
+            .remove(&self.tenant.id, &binding)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::ID_JAG_SUBJECT_REMOVE_ID, &error))?;
+        if !removed {
+            return Err(AdminError::NotFound);
+        }
+        self.record(
+            EventType::ID_JAG_SUBJECT_UNBOUND,
+            Detail::new()
+                .label("operation", crate::ID_JAG_SUBJECT_REMOVE_ID)
+                .credential("issuer", binding.issuer.as_str())
+                .credential("user_id", binding.user.to_string()),
+        )
+        .await;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({"issuer": binding.issuer.as_str(), "user_id": binding.user, "removed": true}),
         ))
     }
 

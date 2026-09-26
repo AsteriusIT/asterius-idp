@@ -46,7 +46,8 @@ impl PgIdJagRedemption {
         let bound = sqlx::query_scalar::<_, Uuid>(
             "insert into id_jag_subject_bindings
                 (tenant_id, issuer, upstream_subject, user_id)
-             values ($1, $2, $3, $4)
+             select $1, $2, $3, $4 from users
+              where tenant_id = $1 and user_id = $4 and status = 'active'
              on conflict (tenant_id, issuer, upstream_subject)
              do update set user_id = id_jag_subject_bindings.user_id
                where id_jag_subject_bindings.user_id = excluded.user_id
