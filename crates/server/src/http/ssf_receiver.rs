@@ -101,17 +101,17 @@ async fn receive(
     else {
         return response(StatusCode::BAD_REQUEST);
     };
-    if let Some(pinned) = endpoints
+    let pinned = endpoints
         .http_signature_peers
-        .find(tenant.id.as_str(), event.peer.as_str())
-    {
+        .find(tenant.id.as_str(), event.peer.as_str());
+    if let Some(pinned) = pinned {
         // The SET signature has established the peer before its HTTP key is
         // selected. A configured peer cannot fall back to unsigned delivery.
         let Some(fields) = signed_fields(&headers) else {
-            return response(StatusCode::UNAUTHORIZED);
+            return peer_response(StatusCode::UNAUTHORIZED, Some(pinned));
         };
         if uri.query().is_some() || uri.path() != RECEIVER_PATH {
-            return response(StatusCode::UNAUTHORIZED);
+            return peer_response(StatusCode::UNAUTHORIZED, Some(pinned));
         }
         let target_uri = format!("{}{}", tenant.issuer.as_str().trim_end_matches('/'), uri);
         let Ok(verified) = verify_request(
@@ -125,7 +125,7 @@ async fn receive(
             &pinned.key,
             now,
         ) else {
-            return response(StatusCode::UNAUTHORIZED);
+            return peer_response(StatusCode::UNAUTHORIZED, Some(pinned));
         };
         let subject = format!("{}:{}", event.peer.as_str(), verified.keyid);
         match endpoints
@@ -140,8 +140,10 @@ async fn receive(
             .await
         {
             Ok(ReplayCheck::FirstUse) => {}
-            Ok(ReplayCheck::Replay) => return response(StatusCode::UNAUTHORIZED),
-            Err(_) => return response(StatusCode::SERVICE_UNAVAILABLE),
+            Ok(ReplayCheck::Replay) => {
+                return peer_response(StatusCode::UNAUTHORIZED, Some(pinned));
+            }
+            Err(_) => return peer_response(StatusCode::SERVICE_UNAVAILABLE, Some(pinned)),
         }
     }
     let action = match event.event_type {
@@ -164,7 +166,7 @@ async fn receive(
                 )
             );
             if !valid_credential_type {
-                return response(StatusCode::BAD_REQUEST);
+                return peer_response(StatusCode::BAD_REQUEST, pinned);
             }
             match event.event.get("change_type").and_then(Value::as_str) {
                 // A remote credential revocation/removal cannot identify or
@@ -173,7 +175,7 @@ async fn receive(
                     asterius_store_pg::ReceiverAction::CredentialCompromised
                 }
                 Some("create" | "update") => asterius_store_pg::ReceiverAction::ObserveOnly,
-                _ => return response(StatusCode::BAD_REQUEST),
+                _ => return peer_response(StatusCode::BAD_REQUEST, pinned),
             }
         }
     };
@@ -194,9 +196,13 @@ async fn receive(
     {
         Ok(asterius_store_pg::ReceiverOutcome::Applied)
         | Ok(asterius_store_pg::ReceiverOutcome::Stale)
-        | Ok(asterius_store_pg::ReceiverOutcome::Duplicate) => response(StatusCode::ACCEPTED),
-        Err(asterius_domain::DomainError::Invalid { .. }) => response(StatusCode::BAD_REQUEST),
-        Err(_) => response(StatusCode::INTERNAL_SERVER_ERROR),
+        | Ok(asterius_store_pg::ReceiverOutcome::Duplicate) => {
+            peer_response(StatusCode::ACCEPTED, pinned)
+        }
+        Err(asterius_domain::DomainError::Invalid { .. }) => {
+            peer_response(StatusCode::BAD_REQUEST, pinned)
+        }
+        Err(_) => peer_response(StatusCode::INTERNAL_SERVER_ERROR, pinned),
     }
 }
 
@@ -219,6 +225,32 @@ fn response(status: StatusCode) -> Response {
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     response
+}
+
+/// Once the SET identifies an active configured peer, every application result
+/// follows its response policy. Never return an unsigned success on failure.
+fn peer_response(status: StatusCode, peer: Option<&crate::http_signatures::PeerKey>) -> Response {
+    let Some(signer) = peer.and_then(|peer| peer.response_signer.as_ref()) else {
+        return response(status);
+    };
+    let Ok(fields) = signer.sign(status.as_u16(), b"") else {
+        tracing::error!("required HTTP response signing failed");
+        return response(StatusCode::SERVICE_UNAVAILABLE);
+    };
+    let Ok(digest) = HeaderValue::from_str(&fields.content_digest) else {
+        return response(StatusCode::SERVICE_UNAVAILABLE);
+    };
+    let Ok(input) = HeaderValue::from_str(&fields.signature_input) else {
+        return response(StatusCode::SERVICE_UNAVAILABLE);
+    };
+    let Ok(signature) = HeaderValue::from_str(&fields.signature) else {
+        return response(StatusCode::SERVICE_UNAVAILABLE);
+    };
+    let mut result = response(status);
+    result.headers_mut().insert("content-digest", digest);
+    result.headers_mut().insert("signature-input", input);
+    result.headers_mut().insert("signature", signature);
+    result
 }
 
 /// CAEP/RISC events for which this server has a defined local action.

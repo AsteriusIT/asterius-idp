@@ -1084,9 +1084,9 @@ fn tenant() -> Section {
             ),
             key(
                 "http_signature_peer",
-                "array of { client_id, keyid, public_key_file } tables",
+                "array of { client_id, keyid, public_key_file, response_signing_keyid?, response_private_key_file? } tables",
                 "empty (HTTP signatures optional)".to_owned(),
-                "For each listed SSF transmitter, require a canonical RFC 9421 Ed25519 signature over POST, the tenant issuer's /ssf/receiver URL, and the RFC 9530 SHA-256 body digest. public_key_file contains the base64-encoded raw 32-byte Ed25519 public key. Signatures expire within five minutes and their nonces are consumed atomically across replicas. A listed peer cannot fall back to unsigned delivery.",
+                "For each listed SSF transmitter, require a canonical RFC 9421 Ed25519 signature over POST, the tenant issuer's /ssf/receiver URL, and the RFC 9530 SHA-256 body digest. public_key_file contains the base64-encoded raw 32-byte Ed25519 public key. Signatures expire within five minutes and their nonces are consumed atomically across replicas. A listed peer cannot fall back to unsigned delivery. To require signed responses to that peer, set both response_signing_keyid and response_private_key_file; the latter is a local Ed25519 PKCS#8 DER key. The receiver signs status and the exact empty response body digest with a two-minute expiry. Missing or invalid response keys fail startup; signing failure refuses the response.",
             ),
         ],
     }
