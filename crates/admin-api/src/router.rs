@@ -3342,6 +3342,17 @@ impl Handling<'_> {
             .settings(&self.tenant.id)
             .await
             .map_err(|error| AdminError::from_storage(operation, &error))?;
+        let mut effective = settings.effective_capabilities(self.state.backend.capabilities());
+        effective.id_jag &= effective.token_exchange;
+        if registration
+            .grant_types
+            .contains(&asterius_domain::entities::client::GrantType::JwtBearer)
+            && !effective.id_jag
+        {
+            return Err(AdminError::Invalid(
+                "JWT bearer ID-JAG is disabled for this tenant".to_owned(),
+            ));
+        }
         if registration.subject_type == asterius_domain::SubjectType::Ephemeral
             && !settings.allows_ephemeral_subjects()
         {
