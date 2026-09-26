@@ -500,6 +500,9 @@ fn escape_attr(value: &str) -> String {
             '&' => out.push_str("&amp;"),
             '<' => out.push_str("&lt;"),
             '"' => out.push_str("&quot;"),
+            '\r' => out.push_str("&#xD;"),
+            '\n' => out.push_str("&#xA;"),
+            '\t' => out.push_str("&#x9;"),
             _ => out.push(ch),
         }
     }
@@ -513,6 +516,7 @@ fn escape_text(value: &str) -> String {
             '&' => out.push_str("&amp;"),
             '<' => out.push_str("&lt;"),
             '>' => out.push_str("&gt;"),
+            '\r' => out.push_str("&#xD;"),
             _ => out.push(ch),
         }
     }
