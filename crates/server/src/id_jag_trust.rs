@@ -69,7 +69,10 @@ impl IdJagTrusts {
         client_id: &str,
         dpop_jkt: &str,
     ) -> Option<IdJagPolicy> {
-        let trust = self.0.get(tenant_id)?.get(&(issuer.to_owned(), client_id.to_owned()))?;
+        let trust = self
+            .0
+            .get(tenant_id)?
+            .get(&(issuer.to_owned(), client_id.to_owned()))?;
         Some(IdJagPolicy {
             issuer: trust.config.issuer.as_str().to_owned(),
             audience: trust.audience.clone(),

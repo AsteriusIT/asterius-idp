@@ -605,6 +605,18 @@ pub const POLICY: &[Retention] = &[
         },
     },
     Retention {
+        table: "id_jag_replays",
+        rule: Rule::Sweep {
+            // ID-JAG verification rejects at exp with no expiry leeway.
+            // Retain the issuer-scoped tombstone while the JWT can pass.
+            statement: "delete from id_jag_replays where ctid = any (array(
+                            select ctid from id_jag_replays
+                             where tenant_id = $1 and expires_at <= $2
+                             limit $3))",
+            grace: Duration::ZERO,
+        },
+    },
+    Retention {
         table: "oid4vci_nonces",
         rule: Rule::Sweep {
             // An expired c_nonce cannot authorize a new wallet key proof.
