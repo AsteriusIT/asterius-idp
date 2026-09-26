@@ -48,7 +48,8 @@ use crate::outbound::ssrf::{self, Target};
 use http_body_util::{BodyExt as _, Full};
 use hyper::body::Bytes;
 use hyper::header::{
-    ACCEPT, AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, HOST, HeaderValue, USER_AGENT,
+    ACCEPT, AUTHORIZATION, CACHE_CONTROL, CONTENT_LANGUAGE, CONTENT_TYPE, HOST, HeaderValue,
+    USER_AGENT,
 };
 use hyper_util::rt::TokioIo;
 
@@ -164,6 +165,8 @@ pub struct PostRequest<'a> {
     pub content_type: &'a str,
     /// What the transmitter will read back, if the protocol defines an answer.
     pub accept: Option<&'a str>,
+    /// Language of an RFC 8936 `setErrs` description, when one is sent.
+    pub content_language: Option<&'a str>,
     /// The `Authorization` header value the receiver registered, if any.
     ///
     /// SSF 1.0 §6.1.1: "the transmitter MUST send this value in every
@@ -180,6 +183,7 @@ impl std::fmt::Debug for PostRequest<'_> {
         f.debug_struct("PostRequest")
             .field("content_type", &self.content_type)
             .field("accept", &self.accept)
+            .field("content_language", &self.content_language)
             .field("authorization", &self.authorization.map(|_| "<redacted>"))
             .finish()
     }
@@ -192,6 +196,7 @@ impl<'a> PostRequest<'a> {
         Self {
             content_type,
             accept: None,
+            content_language: None,
             authorization: None,
         }
     }
@@ -200,6 +205,13 @@ impl<'a> PostRequest<'a> {
     #[must_use]
     pub const fn accepting(mut self, accept: &'a str) -> Self {
         self.accept = Some(accept);
+        self
+    }
+
+    /// Label the language of a request's human-readable error descriptions.
+    #[must_use]
+    pub const fn with_content_language(mut self, language: &'a str) -> Self {
+        self.content_language = Some(language);
         self
     }
 
@@ -456,6 +468,9 @@ async fn exchange(
     }
     if let Some(accept) = request.accept {
         builder = builder.header(ACCEPT, accept);
+    }
+    if let Some(language) = request.content_language {
+        builder = builder.header(CONTENT_LANGUAGE, language);
     }
     if let Some(authorization) = request.authorization {
         // Built rather than pushed through the builder's error, so that a

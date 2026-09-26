@@ -114,10 +114,43 @@ pub async fn poll_once(
         &set,
         now,
     )
-    .await
-    .map_err(|_| SetupError::Event)?;
-    if event.peer != peer || event.jti != jti {
+    .await;
+    let event = match event {
+        Ok(event) => event,
+        Err(error) => {
+            let (code, description) = invalid_set_error(error).ok_or(SetupError::Event)?;
+            report_invalid_set(poster, poll_url, &authorization, &jti, code, description).await?;
+            if !repository
+                .mark_polled(peer.as_str(), &established.stream_id, now)
+                .await
+                .map_err(|_| SetupError::Storage)?
+            {
+                return Err(SetupError::Peer);
+            }
+            return Ok(false);
+        }
+    };
+    if event.peer != peer {
         return Err(SetupError::Event);
+    }
+    if event.jti != jti {
+        report_invalid_set(
+            poster,
+            poll_url,
+            &authorization,
+            &jti,
+            "invalid_request",
+            "The SET identifier does not match the poll response",
+        )
+        .await?;
+        if !repository
+            .mark_polled(peer.as_str(), &established.stream_id, now)
+            .await
+            .map_err(|_| SetupError::Storage)?
+        {
+            return Err(SetupError::Peer);
+        }
+        return Ok(false);
     }
     let event_uri = match event.event_type {
         ssf_receiver::LifecycleEventType::SessionRevoked => caep::SESSION_REVOKED,
@@ -129,7 +162,23 @@ pub async fn poll_once(
         .iter()
         .any(|uri| uri == event_uri)
     {
-        return Err(SetupError::Event);
+        report_invalid_set(
+            poster,
+            poll_url,
+            &authorization,
+            &jti,
+            "access_denied",
+            "The SET event type is not authorized for this stream",
+        )
+        .await?;
+        if !repository
+            .mark_polled(peer.as_str(), &established.stream_id, now)
+            .await
+            .map_err(|_| SetupError::Storage)?
+        {
+            return Err(SetupError::Peer);
+        }
+        return Ok(false);
     }
     ssf_receiver::apply_verified_event(endpoints, tenant, &event, now)
         .await
@@ -163,6 +212,64 @@ pub async fn poll_once(
     Ok(true)
 }
 
+/// Only deterministic SET validation failures are reported. A missing key,
+/// unavailable metadata, or changed peer registration can recover on retry.
+fn invalid_set_error(error: ssf_receiver::ReceiverError) -> Option<(&'static str, &'static str)> {
+    match error {
+        ssf_receiver::ReceiverError::Token => Some((
+            "authentication_failed",
+            "The SET could not be authenticated",
+        )),
+        ssf_receiver::ReceiverError::Profile
+        | ssf_receiver::ReceiverError::Subject
+        | ssf_receiver::ReceiverError::UnsupportedEvent => {
+            Some(("invalid_request", "The SET profile is invalid"))
+        }
+        ssf_receiver::ReceiverError::Keys
+        | ssf_receiver::ReceiverError::Metadata
+        | ssf_receiver::ReceiverError::Peer => None,
+    }
+}
+
+/// RFC 8936 §2.4.2 acknowledge-only request with `setErrs`, never `ack`.
+/// The key came from one bounded poll response, and descriptions are constants
+/// so no token content, claim, or upstream text is reflected back.
+async fn report_invalid_set(
+    poster: &HttpsPoster,
+    poll_url: &str,
+    authorization: &str,
+    jti: &str,
+    code: &'static str,
+    description: &'static str,
+) -> Result<(), SetupError> {
+    let mut errors = serde_json::Map::new();
+    errors.insert(
+        jti.to_owned(),
+        json!({"err": code, "description": description}),
+    );
+    let request = serde_json::to_vec(&json!({
+        "maxEvents": 0,
+        "returnImmediately": true,
+        "setErrs": errors
+    }))
+    .map_err(|_| SetupError::Response)?;
+    let response = poster
+        .post_with_response(
+            poll_url,
+            PostRequest::of("application/json")
+                .accepting("application/json")
+                .with_content_language("en-US")
+                .authorized_by(Some(authorization)),
+            &request,
+        )
+        .await
+        .map_err(|_| SetupError::Transport)?;
+    if parse_polled_set(&response)?.is_some() {
+        return Err(SetupError::Response);
+    }
+    Ok(())
+}
+
 fn parse_polled_set(response: &PostResponse) -> Result<Option<(String, String)>, SetupError> {
     if response.status != 200
         || response.truncated
@@ -187,7 +294,12 @@ fn parse_polled_set(response: &PostResponse) -> Result<Option<(String, String)>,
         return Ok(None);
     };
     let token = token.as_str().ok_or(SetupError::Response)?;
-    if jti.is_empty() || token.is_empty() || token.len() > ssf_receiver::MAX_TOKEN_BYTES {
+    if jti.is_empty()
+        || jti.len() > 255
+        || jti.chars().any(char::is_control)
+        || token.is_empty()
+        || token.len() > ssf_receiver::MAX_TOKEN_BYTES
+    {
         return Err(SetupError::Response);
     }
     Ok(Some((jti.clone(), token.to_owned())))
