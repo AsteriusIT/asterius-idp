@@ -249,6 +249,13 @@ pub const POLICY: &[Retention] = &[
         ),
     },
     Retention {
+        table: "provider_command_subjects",
+        rule: Rule::Kept(
+            "the RP may retain an account after its grant expires; the exact
+             OIDC subject remains owed to that RP until the user or client is removed",
+        ),
+    },
+    Retention {
         table: "retired_subject_identifiers",
         rule: Rule::Kept(
             "a tombstone with an expiry is a `sub` that comes back: the row is \

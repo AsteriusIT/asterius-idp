@@ -1229,6 +1229,7 @@ mod tests {
             backchannel_user_code_parameter: false,
             agent: None,
             backchannel_logout_uri: None,
+            command_endpoint: None,
             backchannel_logout_session_required: false,
             roles_in_id_token: crate::RolesInIdToken::Omitted,
             managed_groups_claim: crate::ManagedGroupsClaim::Omitted,

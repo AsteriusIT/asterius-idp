@@ -191,6 +191,7 @@ pub fn document(client: &Client) -> Value {
         // be one it silently cleared on the next save.
         "roles_in_id_token": registration.roles_in_id_token.is_issued(),
         "managed_groups_claim": registration.managed_groups_claim.is_issued(),
+        "command_endpoint": registration.command_endpoint.as_ref().map(RedirectUri::as_str),
         // Not settable from a registration document; shown because an
         // operator debugging an `invalid_target` needs to see it and because
         // the dedicated admin policy operation returns this same document.

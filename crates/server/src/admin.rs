@@ -1585,7 +1585,11 @@ impl asterius_domain::UserAdministration for DeploymentUsers {
         held.updated_at = now;
         // First: an account marked disabled cannot start a new session while
         // the old ones are being ended.
-        users.upsert(&held).await?;
+        if status == asterius_domain::UserStatus::Disabled {
+            users.disable_with_provider_commands(id).await?;
+        } else {
+            users.upsert(&held).await?;
+        }
 
         if status != asterius_domain::UserStatus::Disabled {
             // RISC `account-enabled`: nothing was terminated, but a receiver

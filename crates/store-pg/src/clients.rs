@@ -188,6 +188,24 @@ impl TenantScoped for PgClientRepository {
 }
 
 impl PgClientRepository {
+    /// Reads the live command endpoint without exposing a stale outbox URL.
+    /// Disabled or deleted clients have no delivery target.
+    pub async fn command_endpoint_for_delivery(
+        &self,
+        client: &ClientId,
+    ) -> Result<Option<String>, DomainError> {
+        sqlx::query_scalar(
+            "select command_endpoint from clients
+             where tenant_id = $1 and client_id = $2 and status = 'active'",
+        )
+        .bind(self.tenant.as_str())
+        .bind(client.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(to_domain_error)
+        .map(Option::flatten)
+    }
+
     /// Binds a pool to one tenant.
     ///
     /// `capabilities` is what a stored row is re-validated against: a client
@@ -224,7 +242,7 @@ impl PgClientRepository {
                     backchannel_user_code_parameter,
                     is_agent, agent_owner_user_id, agent_policy,
                     backchannel_logout_uri, backchannel_logout_session_required,
-                    roles_in_id_token, managed_groups_claim,
+                    roles_in_id_token, managed_groups_claim, command_endpoint,
                     status, created_at, updated_at
              from clients
              where tenant_id = $1 and client_id = $2",
@@ -280,7 +298,7 @@ impl PgClientRepository {
                     backchannel_user_code_parameter,
                     is_agent, agent_owner_user_id, agent_policy,
                     backchannel_logout_uri, backchannel_logout_session_required,
-                    roles_in_id_token, managed_groups_claim,
+                    roles_in_id_token, managed_groups_claim, command_endpoint,
                     status, created_at, updated_at
              from clients
              where tenant_id = $1
@@ -361,10 +379,10 @@ impl PgClientRepository {
                                   is_agent, agent_owner_user_id, agent_policy,
                                   backchannel_logout_uri, backchannel_logout_session_required,
                                   roles_in_id_token, managed_groups_claim, client_secret_hash,
-                                  introspection_signed_response_alg)
+                                  introspection_signed_response_alg, command_endpoint)
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
                      $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31,
-                     $32, $33, $34, $35, $36, $37, $38, $39)
+                     $32, $33, $34, $35, $36, $37, $38, $39, $40)
              on conflict (tenant_id, client_id) do update
              set client_name = excluded.client_name,
                  compliance_profile = excluded.compliance_profile,
@@ -405,7 +423,8 @@ impl PgClientRepository {
                  backchannel_logout_session_required =
                      excluded.backchannel_logout_session_required,
                  roles_in_id_token = excluded.roles_in_id_token,
-                 managed_groups_claim = excluded.managed_groups_claim",
+                 managed_groups_claim = excluded.managed_groups_claim,
+                 command_endpoint = excluded.command_endpoint",
             self.tenant.as_str(),
             client.id.as_str(),
             registration.client_name,
@@ -449,6 +468,10 @@ impl PgClientRepository {
             registration.managed_groups_claim.is_issued(),
             client_secret_digest.map(|digest| &digest[..]),
             algorithm_column(registration.introspection_signed_response_alg),
+            registration
+                .command_endpoint
+                .as_ref()
+                .map(asterius_domain::RedirectUri::as_str),
         )
         .execute(&self.pool)
         .await
@@ -573,10 +596,10 @@ impl PgClientRepository {
                                   is_agent, agent_owner_user_id, agent_policy,
                                   backchannel_logout_uri, backchannel_logout_session_required,
                                   roles_in_id_token, managed_groups_claim,
-                                  introspection_signed_response_alg)
+                                  introspection_signed_response_alg, command_endpoint)
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
                      $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31,
-                     $32, $33, $34, $35, $36, $37, $38)
+                     $32, $33, $34, $35, $36, $37, $38, $39)
              returning client_id, client_name, compliance_profile, token_endpoint_auth_method, redirect_uris,
                        post_logout_redirect_uris, grant_types, response_types, scopes, resources, jwks, jwks_uri,
                        id_token_signed_response_alg, application_type, subject_type,
@@ -590,7 +613,7 @@ impl PgClientRepository {
                        backchannel_user_code_parameter,
                        is_agent, agent_owner_user_id, agent_policy,
                        backchannel_logout_uri, backchannel_logout_session_required,
-                       roles_in_id_token, managed_groups_claim,
+                       roles_in_id_token, managed_groups_claim, command_endpoint,
                        status, created_at, updated_at",
             tenant.as_str(),
             client.id.as_str(),
@@ -632,6 +655,7 @@ impl PgClientRepository {
             registration.roles_in_id_token.is_issued(),
             registration.managed_groups_claim.is_issued(),
             algorithm_column(registration.introspection_signed_response_alg),
+            registration.command_endpoint.as_ref().map(asterius_domain::RedirectUri::as_str),
         )
         .fetch_one(&mut *connection)
         .await
@@ -831,7 +855,8 @@ impl PgClientRepository {
                  roles_in_id_token = $30,
                  managed_groups_claim = $31,
                  compliance_profile = $32,
-                 client_secret_hash = case when $33 then $34 else client_secret_hash end
+                 client_secret_hash = case when $33 then $34 else client_secret_hash end,
+                 command_endpoint = $36
              where tenant_id = $1 and client_id = $2
              returning client_id, client_name, compliance_profile, token_endpoint_auth_method, redirect_uris,
                        post_logout_redirect_uris, grant_types, response_types, scopes, resources, jwks, jwks_uri,
@@ -846,7 +871,7 @@ impl PgClientRepository {
                        backchannel_user_code_parameter,
                        is_agent, agent_owner_user_id, agent_policy,
                        backchannel_logout_uri, backchannel_logout_session_required,
-                       roles_in_id_token, managed_groups_claim,
+                       roles_in_id_token, managed_groups_claim, command_endpoint,
                        status, created_at, updated_at",
             self.tenant.as_str(),
             client.id.as_str(),
@@ -888,6 +913,7 @@ impl PgClientRepository {
                 ClientSecretUpdate::Keep | ClientSecretUpdate::Revoke => None,
             },
             algorithm_column(registration.introspection_signed_response_alg),
+            registration.command_endpoint.as_ref().map(asterius_domain::RedirectUri::as_str),
         )
         .fetch_optional(&self.pool)
         .await
@@ -1393,6 +1419,7 @@ struct Row {
     backchannel_logout_session_required: bool,
     roles_in_id_token: bool,
     managed_groups_claim: bool,
+    command_endpoint: Option<String>,
     is_agent: bool,
     agent_owner_user_id: Option<uuid::Uuid>,
     agent_policy: serde_json::Value,
@@ -1460,6 +1487,7 @@ impl Row {
             backchannel_logout_session_required: Some(self.backchannel_logout_session_required),
             roles_in_id_token: Some(self.roles_in_id_token),
             managed_groups_claim: Some(self.managed_groups_claim),
+            command_endpoint: self.command_endpoint,
             ..ClientMetadata::default()
         };
         // RFC 8705 §2.1.2's subject, put back under the one member of the five
