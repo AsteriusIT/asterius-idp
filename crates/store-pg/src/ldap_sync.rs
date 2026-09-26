@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use asterius_domain::audit::{Actor, AuditEvent, Detail, EventType, Outcome};
-use asterius_domain::{DomainError, GroupMetadata, TenantId};
+use asterius_domain::{DomainError, GroupMetadata, SessionRevocation, TenantId};
 use sqlx::{PgPool, Row};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -37,6 +37,39 @@ pub struct LdapSnapshot {
     pub groups: Vec<LdapGroup>,
 }
 
+/// The default records absence without changing access. An operator must
+/// select the bounded action policy on every run that may change access.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LdapAbsencePolicy {
+    MarkOnly,
+    DeactivateAndPrune {
+        grace_days: u16,
+        max_users: u16,
+        max_groups: u16,
+    },
+}
+
+impl LdapAbsencePolicy {
+    fn validate(self) -> Result<(), DomainError> {
+        if let Self::DeactivateAndPrune {
+            grace_days,
+            max_users,
+            max_groups,
+        } = self
+            && (!(7..=365).contains(&grace_days)
+                || max_users > 10
+                || max_groups > 10
+                || max_users == 0 && max_groups == 0)
+        {
+            return Err(DomainError::invalid(
+                "ldap.absence_policy",
+                "grace must be 7–365 days; each cap at most 10; one cap must be nonzero",
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct LdapSyncOutcome {
     pub users_created: usize,
@@ -44,6 +77,10 @@ pub struct LdapSyncOutcome {
     pub groups_created: usize,
     pub groups_updated: usize,
     pub memberships_changed: usize,
+    pub users_marked_missing: usize,
+    pub groups_marked_missing: usize,
+    pub users_disabled: usize,
+    pub groups_deleted: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -65,7 +102,9 @@ impl PgLdapSync {
         tenant: &TenantId,
         source_key: &str,
         snapshot: &LdapSnapshot,
+        absence_policy: LdapAbsencePolicy,
     ) -> Result<LdapSyncOutcome, DomainError> {
+        absence_policy.validate()?;
         if source_key.len() != 64 || !source_key.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err(DomainError::invalid(
                 "source_key",
@@ -73,6 +112,25 @@ impl PgLdapSync {
             ));
         }
         validate(snapshot)?;
+        if let LdapAbsencePolicy::DeactivateAndPrune {
+            max_users,
+            max_groups,
+            ..
+        } = absence_policy
+        {
+            if max_users > 0 && snapshot.users.is_empty() {
+                return Err(DomainError::invalid(
+                    "ldap.absence_policy",
+                    "cannot disable users from an empty directory user snapshot",
+                ));
+            }
+            if max_groups > 0 && snapshot.groups.is_empty() {
+                return Err(DomainError::invalid(
+                    "ldap.absence_policy",
+                    "cannot prune groups from an empty directory group snapshot",
+                ));
+            }
+        }
         let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
         // A per-tenant run lock also serializes concurrent command invocations.
         sqlx::query("select pg_advisory_xact_lock(hashtext($1), 198541)")
@@ -86,6 +144,10 @@ impl PgLdapSync {
             groups_created: 0,
             groups_updated: 0,
             memberships_changed: 0,
+            users_marked_missing: 0,
+            groups_marked_missing: 0,
+            users_disabled: 0,
+            groups_deleted: 0,
         };
         let mut by_dn = BTreeMap::new();
         for user in &snapshot.users {
@@ -147,6 +209,17 @@ impl PgLdapSync {
                 outcome.users_created += 1;
                 id
             };
+            sqlx::query(
+                "update ldap_user_owners set missing_since = null
+                 where tenant_id = $1 and source_key = $2 and user_id = $3
+                   and missing_since is not null",
+            )
+            .bind(tenant.as_str())
+            .bind(source_key)
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(to_domain_error)?;
             by_dn.insert(user.dn.to_ascii_lowercase(), user_id);
         }
 
@@ -208,6 +281,17 @@ impl PgLdapSync {
                 outcome.groups_created += 1;
                 id
             };
+            sqlx::query(
+                "update ldap_group_owners set missing_since = null
+                 where tenant_id = $1 and source_key = $2 and group_id = $3
+                   and missing_since is not null",
+            )
+            .bind(tenant.as_str())
+            .bind(source_key)
+            .bind(group_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(to_domain_error)?;
             let desired = group
                 .member_dns
                 .iter()
@@ -272,6 +356,218 @@ impl PgLdapSync {
                 .map_err(to_domain_error)?;
             }
         }
+        // Every search finished successfully before this transaction began.
+        // Present owners were cleared above; only this source's remaining
+        // owners may become tombstones. A retry leaves the original clock.
+        let present_users = snapshot
+            .users
+            .iter()
+            .map(|user| user.external_id.as_str())
+            .collect::<Vec<_>>();
+        outcome.users_marked_missing = sqlx::query(
+            "update ldap_user_owners set missing_since = now()
+             where tenant_id = $1 and source_key = $2 and missing_since is null
+               and not (external_id = any($3::text[]))",
+        )
+        .bind(tenant.as_str())
+        .bind(source_key)
+        .bind(&present_users)
+        .execute(&mut *tx)
+        .await
+        .map_err(to_domain_error)?
+        .rows_affected() as usize;
+        let present_groups = snapshot
+            .groups
+            .iter()
+            .map(|group| group.dn.as_str())
+            .collect::<Vec<_>>();
+        outcome.groups_marked_missing = sqlx::query(
+            "update ldap_group_owners set missing_since = now()
+             where tenant_id = $1 and source_key = $2 and missing_since is null
+               and not (external_id = any($3::text[]))",
+        )
+        .bind(tenant.as_str())
+        .bind(source_key)
+        .bind(&present_groups)
+        .execute(&mut *tx)
+        .await
+        .map_err(to_domain_error)?
+        .rows_affected() as usize;
+
+        if let LdapAbsencePolicy::DeactivateAndPrune {
+            grace_days,
+            max_users,
+            max_groups,
+        } = absence_policy
+        {
+            let grace_days = i32::from(grace_days);
+            if max_users != 0 {
+                // Never disable a tenant or deployment administrator. Rows
+                // are locked before the role guard and status write.
+                let candidates: Vec<Uuid> = sqlx::query_scalar(
+                    "select u.user_id from users u
+                     join ldap_user_owners o on o.tenant_id = u.tenant_id and o.user_id = u.user_id
+                     where o.tenant_id = $1 and o.source_key = $2
+                       and o.missing_since <= now() - ($3::int * interval '1 day')
+                       and u.status = 'active'
+                       and not exists (select 1 from user_roles r
+                                       where r.tenant_id = u.tenant_id and r.user_id = u.user_id)
+                     order by u.user_id limit $4 for update of u",
+                )
+                .bind(tenant.as_str())
+                .bind(source_key)
+                .bind(grace_days)
+                .bind(i64::from(max_users) + 1)
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(to_domain_error)?;
+                if candidates.len() > usize::from(max_users) {
+                    return Err(DomainError::Conflict(
+                        "LDAP absent-user cap exceeded; no changes committed".to_owned(),
+                    ));
+                }
+                for id in candidates {
+                    let changed = sqlx::query(
+                        "update users set status = 'disabled'
+                         where tenant_id = $1 and user_id = $2 and status = 'active'
+                           and not exists (select 1 from user_roles r
+                                           where r.tenant_id = $1 and r.user_id = $2)",
+                    )
+                    .bind(tenant.as_str())
+                    .bind(id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(to_domain_error)?
+                    .rows_affected();
+                    if changed == 0 {
+                        continue;
+                    }
+                    sqlx::query(
+                        "update ldap_user_owners set disabled_by_ldap_at = now()
+                         where tenant_id = $1 and source_key = $2 and user_id = $3",
+                    )
+                    .bind(tenant.as_str())
+                    .bind(source_key)
+                    .bind(id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(to_domain_error)?;
+                    sqlx::query(
+                        "update sessions set revoked_at = coalesce(revoked_at, now()),
+                             revocation_reason = coalesce(revocation_reason, $3)
+                         where tenant_id = $1 and user_id = $2 and revoked_at is null",
+                    )
+                    .bind(tenant.as_str())
+                    .bind(id)
+                    .bind(SessionRevocation::Administrative.as_str())
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(to_domain_error)?;
+                    outcome.users_disabled += 1;
+                    crate::audit::append(
+                        &mut tx,
+                        AuditEvent::new(
+                            tenant.clone(),
+                            EventType::ADMIN_CHANGED,
+                            Outcome::Success,
+                            Actor::System,
+                            OffsetDateTime::now_utc(),
+                        )
+                        .subject(id.to_string())
+                        .detail(
+                            Detail::new()
+                                .label("operation", "ldap.user.absence.disable")
+                                .text("source_key_prefix", &source_key[..12]),
+                        ),
+                    )
+                    .await?;
+                }
+            }
+            if max_groups != 0 {
+                // Group rows lock before checking membership. Existing local
+                // or SCIM-owned members, or any role grant, block deletion.
+                let candidates: Vec<Uuid> = sqlx::query_scalar(
+                    "select g.group_id from managed_groups g
+                     join ldap_group_owners o on o.tenant_id = g.tenant_id and o.group_id = g.group_id
+                     where o.tenant_id = $1 and o.source_key = $2
+                       and o.missing_since <= now() - ($3::int * interval '1 day')
+                       and not exists (select 1 from group_tenant_roles r
+                                       where r.tenant_id = g.tenant_id and r.group_id = g.group_id)
+                       and not exists (select 1 from group_client_roles r
+                                       where r.tenant_id = g.tenant_id and r.group_id = g.group_id)
+                       and not exists (
+                           select 1 from group_memberships m
+                           left join ldap_user_owners u
+                             on u.tenant_id = m.tenant_id and u.user_id = m.user_id
+                                and u.source_key = $2
+                           where m.tenant_id = g.tenant_id and m.group_id = g.group_id
+                             and u.user_id is null)
+                     order by g.group_id limit $4 for update of g",
+                )
+                .bind(tenant.as_str())
+                .bind(source_key)
+                .bind(grace_days)
+                .bind(i64::from(max_groups) + 1)
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(to_domain_error)?;
+                if candidates.len() > usize::from(max_groups) {
+                    return Err(DomainError::Conflict(
+                        "LDAP absent-group cap exceeded; no changes committed".to_owned(),
+                    ));
+                }
+                for id in candidates {
+                    let changed = sqlx::query(
+                        "delete from managed_groups g where g.tenant_id = $1 and g.group_id = $2
+                         and exists (select 1 from ldap_group_owners o
+                                     where o.tenant_id = g.tenant_id and o.group_id = g.group_id
+                                       and o.source_key = $3)
+                         and not exists (select 1 from group_tenant_roles r
+                                         where r.tenant_id = g.tenant_id and r.group_id = g.group_id)
+                         and not exists (select 1 from group_client_roles r
+                                         where r.tenant_id = g.tenant_id and r.group_id = g.group_id)
+                         and not exists (
+                             select 1 from group_memberships m
+                             left join ldap_user_owners u
+                               on u.tenant_id = m.tenant_id and u.user_id = m.user_id
+                                  and u.source_key = $3
+                             where m.tenant_id = g.tenant_id and m.group_id = g.group_id
+                               and u.user_id is null)",
+                    )
+                    .bind(tenant.as_str())
+                    .bind(id)
+                    .bind(source_key)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(to_domain_error)?
+                    .rows_affected();
+                    outcome.groups_deleted += usize::from(changed != 0);
+                    if changed != 0 {
+                        crate::audit::append(
+                            &mut tx,
+                            AuditEvent::new(
+                                tenant.clone(),
+                                EventType::ADMIN_CHANGED,
+                                Outcome::Success,
+                                Actor::System,
+                                OffsetDateTime::now_utc(),
+                            )
+                            .subject(id.to_string())
+                            .detail(
+                                Detail::new()
+                                    .label("operation", "ldap.group.absence.delete")
+                                    .text("source_key_prefix", &source_key[..12]),
+                            ),
+                        )
+                        .await?;
+                    }
+                }
+            }
+        }
+        let policy_name = match absence_policy {
+            LdapAbsencePolicy::MarkOnly => "mark_only",
+            LdapAbsencePolicy::DeactivateAndPrune { .. } => "deactivate_and_prune",
+        };
         crate::audit::append(
             &mut tx,
             AuditEvent::new(
@@ -284,12 +580,20 @@ impl PgLdapSync {
             .detail(
                 Detail::new()
                     .label("operation", "ldap.sync")
+                    .text("absence_policy", policy_name)
                     .text("source_key_prefix", &source_key[..12])
                     .number("users_created", outcome.users_created as i64)
                     .number("users_updated", outcome.users_updated as i64)
                     .number("groups_created", outcome.groups_created as i64)
                     .number("groups_updated", outcome.groups_updated as i64)
-                    .number("memberships_changed", outcome.memberships_changed as i64),
+                    .number("memberships_changed", outcome.memberships_changed as i64)
+                    .number("users_marked_missing", outcome.users_marked_missing as i64)
+                    .number(
+                        "groups_marked_missing",
+                        outcome.groups_marked_missing as i64,
+                    )
+                    .number("users_disabled", outcome.users_disabled as i64)
+                    .number("groups_deleted", outcome.groups_deleted as i64),
             ),
         )
         .await?;

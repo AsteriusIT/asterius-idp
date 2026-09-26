@@ -100,6 +100,21 @@ async fn read_inner(source: &LdapSourceConfig) -> Result<LdapSnapshot, String> {
         .await?;
         for entry in entries {
             let display_name = one(&entry, name_attr)?;
+            // Active Directory may return `member;range=0-1499` instead of
+            // `member` for large groups. Treating that as an empty group
+            // would revoke memberships on a complete-looking read.
+            let ranged_prefix = format!("{member_attr};range=").to_ascii_lowercase();
+            if entry
+                .attrs
+                .keys()
+                .any(|name| name.to_ascii_lowercase().starts_with(&ranged_prefix))
+                || entry.bin_attrs.keys().any(|name| {
+                    name.eq_ignore_ascii_case(member_attr)
+                        || name.to_ascii_lowercase().starts_with(&ranged_prefix)
+                })
+            {
+                return Err("LDAP ranged group members are not supported".to_owned());
+            }
             let member_dns = values(&entry, member_attr).unwrap_or_default();
             if member_dns.len() > MAX_MEMBERS {
                 return Err("LDAP group has too many members".to_owned());
