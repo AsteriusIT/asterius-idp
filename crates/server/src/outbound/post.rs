@@ -432,10 +432,17 @@ async fn exchange(
     let mut kept: Vec<u8> = Vec::new();
     let mut incoming = response.into_body();
     let mut truncated = false;
-    while let Some(Ok(frame)) = incoming.frame().await {
+    while let Some(next) = incoming.frame().await {
+        let frame = match next {
+            Ok(frame) => frame,
+            Err(_) => {
+                pump.abort();
+                return Err(failed());
+            }
+        };
         if let Some(chunk) = frame.data_ref() {
             let room = MAX_RESPONSE_BYTES - kept.len();
-            if chunk.len() >= room {
+            if chunk.len() > room {
                 kept.extend_from_slice(&chunk[..room]);
                 truncated = true;
                 break;
