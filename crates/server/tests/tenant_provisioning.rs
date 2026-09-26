@@ -192,6 +192,8 @@ async fn a_tenant_created_off_the_boot_path_registers_every_advertised_algorithm
 
         let response = register(
             RegisterContext {
+                ipsie_https_only_clients: None,
+                ipsie_identity_only_clients: None,
                 initial_access_tokens: None,
                 tenant_policy: &asterius_domain::RegistrationPolicy::default(),
                 tenant: &fixture.tenant,

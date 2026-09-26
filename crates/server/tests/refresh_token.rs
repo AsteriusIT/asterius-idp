@@ -297,6 +297,8 @@ impl Fixture {
         let claims_providers = asterius_server::claims_provider::ClaimsProviders::default();
         let ida_frameworks = std::collections::BTreeSet::new();
         let handler = RefreshToken {
+            ipsie_identity_only_clients: None,
+            ipsie_rp_session_lifetimes: None,
             native_sso: &asterius_store_pg::PgNativeSso::new(
                 self.store.pool().clone(),
                 self.tenant.id.clone(),
@@ -504,6 +506,8 @@ impl Fixture {
         let claims_providers = asterius_server::claims_provider::ClaimsProviders::default();
         let ida_frameworks = std::collections::BTreeSet::new();
         let handler = AuthorizationCode {
+            ipsie_identity_only_clients: None,
+            ipsie_rp_session_lifetimes: None,
             native_sso: &asterius_store_pg::PgNativeSso::new(
                 self.store.pool().clone(),
                 self.tenant.id.clone(),
@@ -577,6 +581,8 @@ impl Fixture {
         let claims_providers = asterius_server::claims_provider::ClaimsProviders::default();
         let ida_frameworks = std::collections::BTreeSet::new();
         let handler = RefreshToken {
+            ipsie_identity_only_clients: None,
+            ipsie_rp_session_lifetimes: None,
             native_sso: &asterius_store_pg::PgNativeSso::new(
                 self.store.pool().clone(),
                 self.tenant.id.clone(),
@@ -642,6 +648,7 @@ impl Fixture {
         let authenticated = client.clone();
         let response = token(
             TokenContext {
+                ipsie_identity_only_clients: None,
                 certificate: None,
                 tenant: &self.tenant,
                 clients: &clients,
