@@ -2,6 +2,8 @@
 //!
 //! These operations do not expose browser SSO. Exact entity IDs and ACS URLs
 //! are stored for a later SSO implementation; no submitted XML is trusted.
+//! `allow_unsigned_requests` must be supplied explicitly. It defaults to
+//! false in storage, and signed-request verification is not yet available.
 
 use asterius_domain::{DomainError, TenantId};
 use serde::{Deserialize, Serialize};
@@ -16,6 +18,7 @@ pub const MAX_BODY_BYTES: usize = 4 * 1024;
 struct RawSp {
     entity_id: String,
     acs_url: String,
+    allow_unsigned_requests: bool,
 }
 
 /// Validated, exact SP trust values from an administrator.
@@ -23,6 +26,8 @@ struct RawSp {
 pub struct NewSp {
     pub entity_id: String,
     pub acs_url: String,
+    /// Explicit exception to the default refusal of unsigned requests.
+    pub allow_unsigned_requests: bool,
 }
 
 /// One SP visible to this tenant's administrator.
@@ -30,6 +35,8 @@ pub struct NewSp {
 pub struct SpSummary {
     pub entity_id: String,
     pub acs_url: String,
+    /// Whether the unsigned-only internal validator may use this row.
+    pub allow_unsigned_requests: bool,
     pub created_at: OffsetDateTime,
 }
 
@@ -67,6 +74,7 @@ pub fn parse_sp(body: &[u8]) -> Result<NewSp, crate::error::AdminError> {
     Ok(NewSp {
         entity_id: raw.entity_id,
         acs_url: raw.acs_url,
+        allow_unsigned_requests: raw.allow_unsigned_requests,
     })
 }
 

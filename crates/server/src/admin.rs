@@ -556,6 +556,7 @@ impl asterius_admin_api::saml::SpAdministration for DeploymentSamlSpTrust {
             .map(|entry| asterius_admin_api::saml::SpSummary {
                 entity_id: entry.entity_id,
                 acs_url: entry.acs_url,
+                allow_unsigned_requests: entry.allow_unsigned_requests,
                 created_at: entry.created_at,
             })
             .collect())
@@ -569,7 +570,7 @@ impl asterius_admin_api::saml::SpAdministration for DeploymentSamlSpTrust {
         self.store
             .scope(tenant.clone())
             .saml_trust()
-            .provision(&sp.entity_id, &sp.acs_url)
+            .provision(&sp.entity_id, &sp.acs_url, sp.allow_unsigned_requests)
             .await
     }
 

@@ -3159,7 +3159,9 @@ impl Handling<'_> {
         Ok(json_no_store(
             StatusCode::CREATED,
             &serde_json::json!({
-                "entity_id": sp.entity_id, "acs_url": sp.acs_url
+            "entity_id": sp.entity_id,
+            "acs_url": sp.acs_url,
+            "allow_unsigned_requests": sp.allow_unsigned_requests
             }),
         ))
     }
