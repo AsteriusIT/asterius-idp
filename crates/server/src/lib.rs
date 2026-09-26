@@ -15,6 +15,7 @@ pub mod federation;
 pub mod http;
 pub mod http_signatures;
 pub mod id_jag_trust;
+pub mod ldap_sync;
 pub mod mtls;
 pub mod observability;
 pub mod oid4vp;
