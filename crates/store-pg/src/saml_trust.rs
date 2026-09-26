@@ -19,6 +19,8 @@ pub struct SamlSp {
     pub acs_url: String,
     /// Explicit operator exception; false is the database default.
     pub allow_unsigned_requests: bool,
+    /// Operator-pinned RSA public key DER for HTTP-Redirect signatures.
+    pub redirect_signing_public_key_der: Option<Vec<u8>>,
     pub created_at: OffsetDateTime,
 }
 
@@ -41,17 +43,20 @@ impl PgSamlTrust {
         entity_id: &str,
         acs_url: &str,
         allow_unsigned_requests: bool,
+        redirect_signing_public_key_der: Option<&[u8]>,
     ) -> Result<bool, DomainError> {
         validate(entity_id, acs_url)?;
         let result = sqlx::query(
-            "insert into saml_sp_trusts (tenant_id, entity_id, acs_url, allow_unsigned_requests)
-             values ($1, $2, $3, $4)
+            "insert into saml_sp_trusts
+                 (tenant_id, entity_id, acs_url, allow_unsigned_requests, redirect_signing_public_key_der)
+             values ($1, $2, $3, $4, $5)
              on conflict (tenant_id, entity_id) do nothing",
         )
         .bind(self.tenant.as_str())
         .bind(entity_id)
         .bind(acs_url)
         .bind(allow_unsigned_requests)
+        .bind(redirect_signing_public_key_der)
         .execute(&self.pool)
         .await
         .map_err(to_domain_error)?;
@@ -60,8 +65,9 @@ impl PgSamlTrust {
 
     /// Lists only this tenant's exact SP trust entries.
     pub async fn list(&self) -> Result<Vec<SamlSp>, DomainError> {
-        let rows: Vec<(String, String, bool, OffsetDateTime)> = sqlx::query_as(
-            "select entity_id, acs_url, allow_unsigned_requests, created_at
+        let rows: Vec<(String, String, bool, Option<Vec<u8>>, OffsetDateTime)> = sqlx::query_as(
+            "select entity_id, acs_url, allow_unsigned_requests,
+                    redirect_signing_public_key_der, created_at
                from saml_sp_trusts where tenant_id = $1 order by entity_id",
         )
         .bind(self.tenant.as_str())
@@ -71,10 +77,17 @@ impl PgSamlTrust {
         Ok(rows
             .into_iter()
             .map(
-                |(entity_id, acs_url, allow_unsigned_requests, created_at)| SamlSp {
+                |(
                     entity_id,
                     acs_url,
                     allow_unsigned_requests,
+                    redirect_signing_public_key_der,
+                    created_at,
+                )| SamlSp {
+                    entity_id,
+                    acs_url,
+                    allow_unsigned_requests,
+                    redirect_signing_public_key_der,
                     created_at,
                 },
             )
@@ -83,8 +96,9 @@ impl PgSamlTrust {
 
     /// Resolves only an exact entity ID in this tenant.
     pub async fn find(&self, entity_id: &str) -> Result<Option<SamlSp>, DomainError> {
-        let row: Option<(String, String, bool, OffsetDateTime)> = sqlx::query_as(
-            "select entity_id, acs_url, allow_unsigned_requests, created_at
+        let row: Option<(String, String, bool, Option<Vec<u8>>, OffsetDateTime)> = sqlx::query_as(
+            "select entity_id, acs_url, allow_unsigned_requests,
+                    redirect_signing_public_key_der, created_at
                from saml_sp_trusts where tenant_id = $1 and entity_id = $2",
         )
         .bind(self.tenant.as_str())
@@ -93,10 +107,17 @@ impl PgSamlTrust {
         .await
         .map_err(to_domain_error)?;
         Ok(row.map(
-            |(entity_id, acs_url, allow_unsigned_requests, created_at)| SamlSp {
+            |(
                 entity_id,
                 acs_url,
                 allow_unsigned_requests,
+                redirect_signing_public_key_der,
+                created_at,
+            )| SamlSp {
+                entity_id,
+                acs_url,
+                allow_unsigned_requests,
+                redirect_signing_public_key_der,
                 created_at,
             },
         ))
@@ -127,19 +148,7 @@ impl PgSamlTrust {
         expected_acs: &str,
         request_id: &str,
     ) -> Result<bool, DomainError> {
-        if entity_id.is_empty()
-            || entity_id.len() > 1024
-            || request_id.len() > 128
-            || !request_id.starts_with('_')
-            || !request_id
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
-        {
-            return Err(DomainError::invalid(
-                "saml.request_id",
-                "invalid request identifier",
-            ));
-        }
+        validate_request_id(entity_id, request_id)?;
         let id_hash: [u8; 32] = Sha256::digest(request_id.as_bytes()).into();
         let result = sqlx::query(
             "insert into saml_authn_request_replays
@@ -159,6 +168,55 @@ impl PgSamlTrust {
         .map_err(to_domain_error)?;
         Ok(result.rows_affected() == 1)
     }
+
+    /// Reserves a verified HTTP-Redirect request only while its exact ACS and
+    /// public key remain pinned. The signature is checked by the server before
+    /// this call; this adapter never accepts caller XML or a dynamic key URL.
+    pub async fn reserve_signed_request(
+        &self,
+        entity_id: &str,
+        expected_acs: &str,
+        expected_key_der: &[u8],
+        request_id: &str,
+    ) -> Result<bool, DomainError> {
+        validate_request_id(entity_id, request_id)?;
+        let id_hash: [u8; 32] = Sha256::digest(request_id.as_bytes()).into();
+        let result = sqlx::query(
+            "insert into saml_authn_request_replays
+                 (tenant_id, sp_entity_id, request_id_hash, expires_at)
+             select tenant_id, entity_id, $3, now() + interval '10 minutes'
+               from saml_sp_trusts
+              where tenant_id = $1 and entity_id = $2
+                and acs_url = $4 and redirect_signing_public_key_der = $5
+              on conflict (tenant_id, sp_entity_id, request_id_hash) do nothing",
+        )
+        .bind(self.tenant.as_str())
+        .bind(entity_id)
+        .bind(id_hash.as_slice())
+        .bind(expected_acs)
+        .bind(expected_key_der)
+        .execute(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+        Ok(result.rows_affected() == 1)
+    }
+}
+
+fn validate_request_id(entity_id: &str, request_id: &str) -> Result<(), DomainError> {
+    if entity_id.is_empty()
+        || entity_id.len() > 1024
+        || request_id.len() > 128
+        || !request_id.starts_with('_')
+        || !request_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+    {
+        return Err(DomainError::invalid(
+            "saml.request_id",
+            "invalid request identifier",
+        ));
+    }
+    Ok(())
 }
 
 fn validate(entity_id: &str, acs_url: &str) -> Result<(), DomainError> {

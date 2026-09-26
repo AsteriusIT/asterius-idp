@@ -3,9 +3,11 @@
 //! These operations do not expose browser SSO. Exact entity IDs and ACS URLs
 //! are stored for a later SSO implementation; no submitted XML is trusted.
 //! `allow_unsigned_requests` must be supplied explicitly. It defaults to
-//! false in storage, and signed-request verification is not yet available.
+//! false in storage. HTTP-Redirect signatures require a separate pinned key;
+//! XML Signature verification remains unavailable.
 
 use asterius_domain::{DomainError, TenantId};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use url::Url;
@@ -19,6 +21,7 @@ struct RawSp {
     entity_id: String,
     acs_url: String,
     allow_unsigned_requests: bool,
+    redirect_signing_public_key_der_base64: Option<String>,
 }
 
 /// Validated, exact SP trust values from an administrator.
@@ -28,6 +31,8 @@ pub struct NewSp {
     pub acs_url: String,
     /// Explicit exception to the default refusal of unsigned requests.
     pub allow_unsigned_requests: bool,
+    /// Operator-pinned RSA public key DER, never fetched from request XML.
+    pub redirect_signing_public_key_der: Option<Vec<u8>>,
 }
 
 /// One SP visible to this tenant's administrator.
@@ -37,6 +42,8 @@ pub struct SpSummary {
     pub acs_url: String,
     /// Whether the unsigned-only internal validator may use this row.
     pub allow_unsigned_requests: bool,
+    /// SHA-256 fingerprint of the pinned key, without exposing raw bytes.
+    pub redirect_signing_key_sha256: Option<String>,
     pub created_at: OffsetDateTime,
 }
 
@@ -71,10 +78,29 @@ pub fn parse_sp(body: &[u8]) -> Result<NewSp, crate::error::AdminError> {
             "invalid SAML SP trust".to_owned(),
         ));
     }
+    let key = raw
+        .redirect_signing_public_key_der_base64
+        .as_deref()
+        .map(|encoded| {
+            STANDARD.decode(encoded).map_err(|_| {
+                crate::error::AdminError::Invalid("invalid SAML signing key".to_owned())
+            })
+        })
+        .transpose()?;
+    if key
+        .as_ref()
+        .is_some_and(|key| !(256..=4096).contains(&key.len()))
+        || (!raw.allow_unsigned_requests && key.is_none())
+    {
+        return Err(crate::error::AdminError::Invalid(
+            "invalid SAML signing key".to_owned(),
+        ));
+    }
     Ok(NewSp {
         entity_id: raw.entity_id,
         acs_url: raw.acs_url,
         allow_unsigned_requests: raw.allow_unsigned_requests,
+        redirect_signing_public_key_der: key,
     })
 }
 

@@ -43,6 +43,7 @@ use axum::extract::Request;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
+use sha2::Digest as _;
 use std::sync::Arc;
 
 use crate::tenancy::TenantDirectory;
@@ -557,6 +558,10 @@ impl asterius_admin_api::saml::SpAdministration for DeploymentSamlSpTrust {
                 entity_id: entry.entity_id,
                 acs_url: entry.acs_url,
                 allow_unsigned_requests: entry.allow_unsigned_requests,
+                redirect_signing_key_sha256: entry
+                    .redirect_signing_public_key_der
+                    .as_deref()
+                    .map(|key| hex::encode(sha2::Sha256::digest(key))),
                 created_at: entry.created_at,
             })
             .collect())
@@ -567,10 +572,25 @@ impl asterius_admin_api::saml::SpAdministration for DeploymentSamlSpTrust {
         tenant: &TenantId,
         sp: &asterius_admin_api::saml::NewSp,
     ) -> Result<bool, DomainError> {
+        if let Some(key) = &sp.redirect_signing_public_key_der {
+            let parsed = aws_lc_rs::rsa::PublicKey::from_der(key)
+                .map_err(|_| DomainError::invalid("saml.sp", "invalid redirect signing key"))?;
+            if !(256..=1024).contains(&parsed.modulus_len()) {
+                return Err(DomainError::invalid(
+                    "saml.sp",
+                    "invalid redirect signing key",
+                ));
+            }
+        }
         self.store
             .scope(tenant.clone())
             .saml_trust()
-            .provision(&sp.entity_id, &sp.acs_url, sp.allow_unsigned_requests)
+            .provision(
+                &sp.entity_id,
+                &sp.acs_url,
+                sp.allow_unsigned_requests,
+                sp.redirect_signing_public_key_der.as_deref(),
+            )
             .await
     }
 
