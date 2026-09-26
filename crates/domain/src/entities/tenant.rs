@@ -90,10 +90,9 @@ impl TenantStatus {
 /// The defaults are FAPI 2.0 SP's position rather than a compromise:
 /// [`Rotation::None`], because §5.3.2.1 item 9 says an authorization server
 /// "shall not use refresh token rotation except in extraordinary
-/// circumstances"; and `bind_to_dpop_key` off, because RFC 9449 §5 says a
-/// refresh token issued to a *confidential* client is not bound to the DPoP
-/// key — and every client here is confidential
-/// ([`super::client::TokenEndpointAuthMethod`] has no `none`).
+/// circumstances"; and `bind_to_dpop_key` off for confidential clients,
+/// because RFC 9449 §5 does not require pinning their refresh tokens to one
+/// DPoP key. Public clients are always pinned in the refresh handler.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RefreshPolicy {
     /// How long a refresh token may live at all, counted from issuance.
@@ -117,16 +116,11 @@ pub struct RefreshPolicy {
     /// Whether a refresh token may only be presented with the DPoP key it was
     /// issued to.
     ///
-    /// **Off by default, and that is the specification's answer rather than a
-    /// relaxation.** RFC 9449 §5 binds a refresh token to the proof key when
-    /// it is issued to a *public* client, and says in the same paragraph that
-    /// tokens "issued to confidential clients are not bound to the DPoP proof
-    /// public key because they are already sender-constrained with a different
-    /// existing mechanism" — the client authentication FAPI 2.0 SP §5.3.2.1
-    /// item 3 requires. This server registers no public client at all
-    /// ([`super::client::TokenEndpointAuthMethod`] has no `none`), so the
-    /// binding is never the one the RFC mandates, and a client is entitled to
-    /// present a *new* DPoP key when it refreshes.
+    /// **Off by default for confidential clients.** RFC 9449 §5 binds a
+    /// refresh token to the proof key when it is issued to a *public* client;
+    /// the refresh handler enforces that regardless of this setting.
+    /// Confidential clients already authenticate, and may present a new DPoP
+    /// key on refresh unless this optional hardening is enabled.
     ///
     /// Turning it on is a local hardening with a cost that has to be stated: a
     /// refresh token copied out of a client's store is then useless without
@@ -388,10 +382,8 @@ mod tests {
         assert!(!rotates, "FAPI 2.0 forbids rotation by default");
     }
 
-    /// The other half of the default, and RFC 9449 §5 rather than a
-    /// convenience: every client here authenticates, so its refresh token is
-    /// already sender-constrained and pinning the DPoP key on top of that is a
-    /// choice a tenant makes, not the specification's position.
+    /// The default gives confidential clients DPoP key rotation. Public
+    /// clients are pinned by the refresh handler regardless of this flag.
     #[test]
     fn the_default_policy_does_not_pin_the_dpop_key() {
         assert!(!RefreshPolicy::default().bind_to_dpop_key);
