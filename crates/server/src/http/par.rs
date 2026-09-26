@@ -187,6 +187,17 @@ pub async fn push(
             );
         }
     };
+    if context
+        .fapi_message_signing_clients
+        .is_some_and(|clients| clients.contains(client.id.as_str()))
+        && client.registration.compliance_profile != asterius_domain::ClientComplianceProfile::Fapi
+    {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "unauthorized_client",
+            "FAPI Message Signing requires a FAPI client profile",
+        );
+    }
 
     // The request itself. Everything the client asked for is checked here,
     // once, while it is still a request and not yet a flow.
@@ -216,6 +227,9 @@ pub async fn push(
             );
         }
     };
+    if let Some(refusal) = refuse_jarm_without_registered_algorithm(&client, &request) {
+        return refusal;
+    }
 
     if let Some(refusal) = refuse_an_insecure_ipsie_redirect(&context, &client, &request) {
         return refusal;
@@ -345,6 +359,16 @@ pub async fn direct(
         })?
         .filter(Client::is_active)
         .ok_or_else(|| Box::new(error(StatusCode::BAD_REQUEST, "unauthorized_client", "client is unknown or disabled")))?;
+    if context
+        .fapi_message_signing_clients
+        .is_some_and(|clients| clients.contains(client.id.as_str()))
+    {
+        return Err(Box::new(error(
+            StatusCode::BAD_REQUEST,
+            "unauthorized_client",
+            "FAPI Message Signing clients must use authenticated PAR",
+        )));
+    }
     if !matches!(
         client.registration.compliance_profile,
         asterius_domain::ClientComplianceProfile::Oidc
@@ -370,6 +394,9 @@ pub async fn direct(
             &failure.to_string(),
         ))
     })?;
+    if let Some(refusal) = refuse_jarm_without_registered_algorithm(&client, &request) {
+        return Err(Box::new(refusal));
+    }
     if let Some(refusal) = refuse_an_insecure_ipsie_redirect(&context, &client, &request) {
         return Err(Box::new(refusal));
     }
@@ -404,6 +431,29 @@ pub async fn direct(
     }
     let minted = store_request(&context, &client, &request, hinted_subject, dpop_jkt, now).await?;
     Ok((client.id.as_str().to_owned(), minted.uri().to_owned()))
+}
+
+fn refuse_jarm_without_registered_algorithm(
+    client: &Client,
+    request: &authorize::AuthorizationRequest,
+) -> Option<Response> {
+    if matches!(
+        request.response_mode,
+        authorize::ResponseMode::QueryJwt
+            | authorize::ResponseMode::Jwt
+            | authorize::ResponseMode::FormPostJwt
+    ) && client
+        .registration
+        .authorization_signed_response_alg
+        .is_none()
+    {
+        return Some(error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "signed authorization responses require authorization_signed_response_alg",
+        ));
+    }
+    None
 }
 
 /// The parameters to validate: the request object's, if there is one.
@@ -483,7 +533,12 @@ async fn store_request(
         tenant: context.tenant.id.clone(),
         request_uri_digest: minted.digest().to_owned(),
         client: client.id.clone(),
-        parameters: serialise(request, hinted_subject.as_deref(), dpop_jkt.as_deref()),
+        parameters: serialise(
+            request,
+            client,
+            hinted_subject.as_deref(),
+            dpop_jkt.as_deref(),
+        ),
         pushed_at: now,
         expires_at,
     };
@@ -911,6 +966,7 @@ fn is_form_encoded(headers: &HeaderMap) -> bool {
 /// secret half — never reaches this server until redemption.
 fn serialise(
     request: &authorize::AuthorizationRequest,
+    client: &Client,
     hinted_subject: Option<&str>,
     dpop_jkt: Option<&str>,
 ) -> serde_json::Value {
@@ -921,6 +977,9 @@ fn serialise(
         // handler that re-parsed `response_mode` from somewhere else would be
         // a second validator of the same parameter.
         "response_mode": request.response_mode.as_str(),
+        // The exact registered algorithm was checked while the authenticated
+        // client was on the PAR connection. It stays bound to this request.
+        "authorization_signed_response_alg": client.registration.authorization_signed_response_alg.map(|alg| alg.as_str()),
         "scopes": request.scopes,
         "code_challenge": request.code_challenge.as_str(),
         "state": request.state,

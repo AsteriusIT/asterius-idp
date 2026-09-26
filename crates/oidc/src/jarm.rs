@@ -7,7 +7,7 @@
 //! as the sole `response` parameter.
 
 use crate::code::AuthorizationResponse;
-use asterius_domain::{ClientId, CompactJws, DomainError, Signer, TenantId};
+use asterius_domain::{ClientId, CompactJws, DomainError, Signer, SigningAlgorithm, TenantId};
 use serde_json::{Map, Value};
 use thiserror::Error;
 use time::{Duration, OffsetDateTime};
@@ -73,12 +73,13 @@ pub async fn sign(
     tenant: &TenantId,
     response: &AuthorizationResponse,
     client: &ClientId,
+    algorithm: SigningAlgorithm,
     now: OffsetDateTime,
     lifetime: Duration,
 ) -> Result<CompactJws, JarmError> {
     let document = claims(response, client, now, lifetime)?;
     signer
-        .sign(tenant, None, JARM_TYP, &document)
+        .sign(tenant, Some(algorithm), JARM_TYP, &document)
         .await
         .map_err(JarmError::from)
 }
