@@ -78,13 +78,24 @@ of the ten standard CAEP credential types, `create` and `update` are observe-onl
 rejected, and no inbound event writes local credential records. These verified
 actions and audit-chain records share a transaction with the durable inbox.
 
-This slice does not yet create receiver streams from upstream metadata, accept
-poll delivery, implement the complete CAEP event vocabulary, or transactionally
-queue this server's resulting outbound logout/SSF notifications. The missing
-outbound queue integration means the full atomic lifecycle guarantee is not
-met. The CAEP Interoperability Profile's RS256 requirement also remains
-unresolved against ADR-0003; this receiver accepts only EdDSA and ES256 and
-makes no interoperability-profile conformance claim.
+Configured peers now have bounded metadata discovery with exact issuer and
+registered JWKS URI checks. The metadata cache retains the validated
+configuration/status endpoints and delivery methods. A tenant-scoped table can
+record the exact upstream stream identity and its pinned endpoints, and a
+response validator refuses a stream with a changed issuer, audience, event
+set, or delivery method. It also requires `default_subjects: NONE`, so a new
+stream cannot silently subscribe to every subject.
+
+No outbound OAuth credential is configured for upstream stream management.
+Consequently this receiver does not yet call the upstream configuration
+endpoint or record a stream automatically: neither the inbound `ssf.receive`
+scope nor a peer's registered signing key authorizes this server as an upstream
+OAuth client. Poll delivery, acknowledgements, explicit subject enrollment,
+and the complete CAEP event vocabulary remain incomplete. Local lifecycle,
+audit, and resulting outbound notifications now commit atomically. The CAEP
+Interoperability Profile's RS256 requirement remains unresolved against
+ADR-0003; this receiver accepts only EdDSA and ES256 and makes no profile
+conformance claim.
 
 ## Proposed processing boundary
 

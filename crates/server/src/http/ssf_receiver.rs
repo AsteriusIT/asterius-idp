@@ -461,11 +461,17 @@ pub enum ReceiverError {
     Peer,
 }
 
-/// The portion of SSF 1.0 transmitter metadata needed to accept push SETs.
-/// The document is discovered from a registered issuer, never from a SET.
+/// The portion of SSF 1.0 transmitter metadata needed for push verification
+/// and later explicit stream establishment. The document is discovered from a
+/// registered issuer, never from a SET. Endpoint URLs are metadata pins, not
+/// permission to send a request without a separate upstream OAuth credential.
 #[derive(Debug, Clone)]
-struct UpstreamMetadata {
-    jwks_uri: String,
+pub struct UpstreamMetadata {
+    pub jwks_uri: String,
+    pub configuration_endpoint: String,
+    pub status_endpoint: String,
+    pub supports_poll: bool,
+    pub default_subjects: Option<String>,
 }
 
 const METADATA_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
@@ -501,7 +507,7 @@ impl UpstreamMetadataCache {
         tenant: &Tenant,
         issuer: &Issuer,
         pinned_jwks_uri: &str,
-    ) -> Result<(), ReceiverError> {
+    ) -> Result<UpstreamMetadata, ReceiverError> {
         let key = (
             tenant.id.as_str().to_owned(),
             issuer.as_str().to_owned(),
@@ -527,7 +533,7 @@ impl UpstreamMetadataCache {
         if let Some(entry) = cached.as_ref()
             && entry.expires_at > now
         {
-            return entry.result.as_ref().map(|_| ()).map_err(|error| *error);
+            return entry.result.clone();
         }
         let result = discover_configured_peer(endpoints, issuer)
             .await
@@ -547,7 +553,7 @@ impl UpstreamMetadataCache {
             expires_at: now + ttl,
             result: result.clone(),
         });
-        result.map(|_| ())
+        result
     }
 }
 
@@ -561,6 +567,13 @@ impl UpstreamMetadata {
         // We implement the final 1.0 wire contract. A missing version means
         // the first implementer's draft, not the final specification.
         if object.get("spec_version").and_then(Value::as_str) != Some("1_0") {
+            return Err(ReceiverError::Metadata);
+        }
+        let default_subjects = object
+            .get("default_subjects")
+            .map(|value| value.as_str().ok_or(ReceiverError::Metadata))
+            .transpose()?;
+        if default_subjects.is_some_and(|value| !matches!(value, "ALL" | "NONE")) {
             return Err(ReceiverError::Metadata);
         }
         let jwks_uri = object
@@ -608,11 +621,146 @@ impl UpstreamMetadata {
         }
         Ok(Self {
             jwks_uri: jwks_uri.to_owned(),
+            configuration_endpoint: object
+                .get("configuration_endpoint")
+                .and_then(Value::as_str)
+                .ok_or(ReceiverError::Metadata)?
+                .to_owned(),
+            status_endpoint: object
+                .get("status_endpoint")
+                .and_then(Value::as_str)
+                .ok_or(ReceiverError::Metadata)?
+                .to_owned(),
+            supports_poll: methods
+                .iter()
+                .any(|method| method.as_str() == Some(asterius_ssf::stream::DELIVERY_POLL)),
+            default_subjects: default_subjects.map(str::to_owned),
         })
     }
 }
 
+/// Parses a transmitter's successful management response before a stream is
+/// persisted. The response is never a source of trust: it must echo the exact
+/// configured issuer, chosen audience, requested event set and delivery mode.
+/// A poll URL is accepted only as an HTTPS URL; the outbound transport must
+/// still apply its DNS/IP SSRF guard when it is eventually used.
+pub fn validated_upstream_stream(
+    metadata: &UpstreamMetadata,
+    issuer: &Issuer,
+    audience: &str,
+    requested_events: &[String],
+    delivery_method: &str,
+    push_endpoint: Option<&str>,
+    status: u16,
+    content_type: Option<&str>,
+    document: &[u8],
+    now: OffsetDateTime,
+) -> Result<asterius_store_pg::UpstreamStream, ReceiverError> {
+    if status != 201
+        || !content_type.is_some_and(|value| value.split(';').next().is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("application/json")))
+        || document.is_empty()
+        || document.len() > 8 * 1024
+        // A valid transmitter may default to ALL, but this receiver will not
+        // establish a stream that silently includes every subject.
+        || metadata.default_subjects.as_deref() != Some("NONE")
+        || requested_events.is_empty()
+        || requested_events.len() > 16
+        || requested_events.iter().collect::<BTreeSet<_>>().len() != requested_events.len()
+        || requested_events.iter().any(|uri| {
+            !matches!(
+                uri.as_str(),
+                asterius_ssf::caep::SESSION_REVOKED
+                    | asterius_ssf::caep::CREDENTIAL_CHANGE
+                    | asterius_ssf::caep::ACCOUNT_DISABLED
+            )
+        })
+    {
+        return Err(ReceiverError::Metadata);
+    }
+    let value: Value = serde_json::from_slice(document).map_err(|_| ReceiverError::Metadata)?;
+    let object = value.as_object().ok_or(ReceiverError::Metadata)?;
+    if object.get("iss").and_then(Value::as_str) != Some(issuer.as_str()) {
+        return Err(ReceiverError::Metadata);
+    }
+    let aud = object.get("aud").ok_or(ReceiverError::Metadata)?;
+    let audience_matches = aud.as_str() == Some(audience)
+        || aud
+            .as_array()
+            .is_some_and(|values| values.len() == 1 && values[0].as_str() == Some(audience));
+    if !audience_matches {
+        return Err(ReceiverError::Metadata);
+    }
+    let stream_id = object
+        .get("stream_id")
+        .and_then(Value::as_str)
+        .ok_or(ReceiverError::Metadata)?;
+    if stream_id.is_empty()
+        || stream_id.len() > 255
+        || !stream_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~'))
+    {
+        return Err(ReceiverError::Metadata);
+    }
+    let expected_events: BTreeSet<&str> = requested_events.iter().map(String::as_str).collect();
+    for field in ["events_requested", "events_delivered"] {
+        let events = object
+            .get(field)
+            .and_then(Value::as_array)
+            .ok_or(ReceiverError::Metadata)?;
+        let actual_events: BTreeSet<&str> = events
+            .iter()
+            .map(|event| event.as_str().ok_or(ReceiverError::Metadata))
+            .collect::<Result<_, _>>()?;
+        // Equality to the complete requested set is a local profile: SSF
+        // permits the transmitter to deliver a subset, but silently losing a
+        // requested security signal would mislead this receiver's operator.
+        if events.len() != expected_events.len() || actual_events != expected_events {
+            return Err(ReceiverError::Metadata);
+        }
+    }
+    let delivery = object
+        .get("delivery")
+        .and_then(Value::as_object)
+        .ok_or(ReceiverError::Metadata)?;
+    if delivery.get("method").and_then(Value::as_str) != Some(delivery_method) {
+        return Err(ReceiverError::Metadata);
+    }
+    let endpoint = delivery
+        .get("endpoint_url")
+        .and_then(Value::as_str)
+        .ok_or(ReceiverError::Metadata)?;
+    let poll_endpoint = match delivery_method {
+        asterius_ssf::stream::DELIVERY_POLL
+            if metadata.supports_poll && push_endpoint.is_none() =>
+        {
+            validate_metadata_url(endpoint)?;
+            Some(endpoint.to_owned())
+        }
+        asterius_ssf::stream::DELIVERY_PUSH if push_endpoint == Some(endpoint) => None,
+        _ => return Err(ReceiverError::Metadata),
+    };
+    Ok(asterius_store_pg::UpstreamStream {
+        peer_client_id: issuer.as_str().to_owned(),
+        issuer: issuer.as_str().to_owned(),
+        jwks_uri: metadata.jwks_uri.clone(),
+        configuration_endpoint: metadata.configuration_endpoint.clone(),
+        status_endpoint: metadata.status_endpoint.clone(),
+        stream_id: stream_id.to_owned(),
+        delivery_method: delivery_method.to_owned(),
+        poll_endpoint,
+        audience: audience.to_owned(),
+        events_requested: requested_events.to_vec(),
+        created_at: now,
+        updated_at: now,
+        last_polled_at: None,
+    })
+}
+
 fn validate_metadata_url(raw: &str) -> Result<(), ReceiverError> {
+    if raw.is_empty() || raw.len() > 2048 {
+        return Err(ReceiverError::Metadata);
+    }
     let url = url::Url::parse(raw).map_err(|_| ReceiverError::Metadata)?;
     if url.scheme() != "https"
         || url.host_str().is_none()
@@ -653,7 +801,7 @@ pub async fn configured_peer(
     endpoints: &crate::http::protocol::ClientEndpoints,
     tenant: &Tenant,
     peer: &ClientId,
-) -> Result<(Issuer, JwksSource, BTreeSet<String>), ReceiverError> {
+) -> Result<(Issuer, JwksSource, BTreeSet<String>, UpstreamMetadata), ReceiverError> {
     let repository = endpoints
         .store
         .scope(tenant.id.clone())
@@ -678,11 +826,11 @@ pub async fn configured_peer(
         // CAEP profile's metadata JWKS requirement.
         return Err(ReceiverError::Peer);
     };
-    endpoints
+    let metadata = endpoints
         .ssf_metadata_cache
         .validate(endpoints, tenant, &issuer, pinned_jwks_uri)
         .await?;
-    Ok((issuer, jwks, client.registration.scopes))
+    Ok((issuer, jwks, client.registration.scopes, metadata))
 }
 
 /// Verifies a SET for the named tenant-local peer, after checking its explicit
@@ -695,7 +843,7 @@ pub async fn verify_for_configured_peer(
     token: &str,
     now: OffsetDateTime,
 ) -> Result<VerifiedEvent, ReceiverError> {
-    let (issuer, jwks, scopes) = configured_peer(endpoints, tenant, peer).await?;
+    let (issuer, jwks, scopes, _metadata) = configured_peer(endpoints, tenant, peer).await?;
     let event = verify_inbound_set(
         endpoints.authenticator.client_keys(),
         tenant,
