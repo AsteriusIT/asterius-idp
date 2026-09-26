@@ -539,6 +539,49 @@ struct DeploymentIdJagBindings {
     trusts: Arc<crate::id_jag_trust::IdJagTrusts>,
 }
 
+#[derive(Debug, Clone)]
+struct DeploymentSamlSpTrust {
+    store: Store,
+}
+
+#[async_trait::async_trait]
+impl asterius_admin_api::saml::SpAdministration for DeploymentSamlSpTrust {
+    async fn list(
+        &self,
+        tenant: &TenantId,
+    ) -> Result<Vec<asterius_admin_api::saml::SpSummary>, DomainError> {
+        let entries = self.store.scope(tenant.clone()).saml_trust().list().await?;
+        Ok(entries
+            .into_iter()
+            .map(|entry| asterius_admin_api::saml::SpSummary {
+                entity_id: entry.entity_id,
+                acs_url: entry.acs_url,
+                created_at: entry.created_at,
+            })
+            .collect())
+    }
+
+    async fn provision(
+        &self,
+        tenant: &TenantId,
+        sp: &asterius_admin_api::saml::NewSp,
+    ) -> Result<bool, DomainError> {
+        self.store
+            .scope(tenant.clone())
+            .saml_trust()
+            .provision(&sp.entity_id, &sp.acs_url)
+            .await
+    }
+
+    async fn remove(&self, tenant: &TenantId, entity_id: &str) -> Result<bool, DomainError> {
+        self.store
+            .scope(tenant.clone())
+            .saml_trust()
+            .remove(entity_id)
+            .await
+    }
+}
+
 #[async_trait::async_trait]
 impl asterius_admin_api::id_jag::IdJagBindings for DeploymentIdJagBindings {
     async fn bind(
@@ -2448,6 +2491,12 @@ impl AdminBackend for Deployment {
         Some(Arc::new(DeploymentIdJagBindings {
             store: self.store.clone(),
             trusts: Arc::clone(&self.id_jag_trusts),
+        }))
+    }
+
+    fn saml_sp_trust(&self) -> Option<Arc<dyn asterius_admin_api::saml::SpAdministration>> {
+        Some(Arc::new(DeploymentSamlSpTrust {
+            store: self.store.clone(),
         }))
     }
 

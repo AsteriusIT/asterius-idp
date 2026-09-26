@@ -64,6 +64,7 @@ pub mod rbac;
 pub mod resource_servers;
 pub mod roles;
 pub mod router;
+pub mod saml;
 pub mod scim;
 mod scim_groups;
 pub mod ssf;
@@ -188,6 +189,9 @@ pub const SSF_RECEIVER_SUBJECT_BIND_ID: &str = "ssf.receiver.subject.bind";
 pub const SSF_RECEIVER_SUBJECT_REMOVE_ID: &str = "ssf.receiver.subject.remove";
 pub const ID_JAG_SUBJECT_BIND_ID: &str = "id_jag.subject.bind";
 pub const ID_JAG_SUBJECT_REMOVE_ID: &str = "id_jag.subject.remove";
+pub const SAML_SP_LIST_ID: &str = "saml.sp.list";
+pub const SAML_SP_PROVISION_ID: &str = "saml.sp.provision";
+pub const SAML_SP_REMOVE_ID: &str = "saml.sp.remove";
 /// The `operationId` of `GET /audit/events`.
 pub const AUDIT_EVENTS_LIST_ID: &str = "audit.events.list";
 /// The `operationId` of `GET /audit/events/export`.
@@ -960,6 +964,33 @@ pub const ID_JAG_SUBJECT_REMOVE: Operation = Operation::mutation(
     "Removes one configured ID-JAG subject mapping",
 );
 
+/// Lists exactly this tenant's trusted SAML service providers.
+pub const SAML_SP_LIST: Operation = Operation::read(
+    SAML_SP_LIST_ID,
+    "/saml/sp-trusts",
+    S::Get,
+    A::new(R::Tenant, "admin.saml:read"),
+    "Lists tenant SAML SP trust",
+);
+
+/// Provisions an exact SP entity ID and HTTPS ACS.
+pub const SAML_SP_PROVISION: Operation = Operation::mutation(
+    SAML_SP_PROVISION_ID,
+    "/saml/sp-trusts",
+    M::Put,
+    A::new(R::Tenant, "admin.saml:write"),
+    "Provisions tenant SAML SP trust",
+);
+
+/// Removes an exact SP; replay tombstones remain.
+pub const SAML_SP_REMOVE: Operation = Operation::mutation(
+    SAML_SP_REMOVE_ID,
+    "/saml/sp-trusts",
+    M::Delete,
+    A::new(R::Tenant, "admin.saml:write"),
+    "Removes tenant SAML SP trust",
+);
+
 /// This tenant's audit trail, filtered, one cursor page at a time
 /// (`ast-lh3.9`).
 ///
@@ -1707,7 +1738,7 @@ pub const SCIM_BULK: Operation = Operation::mutation(
     "SCIM Bulk is unsupported by this service",
 );
 
-static REGISTRY: [Operation; 122] = [
+static REGISTRY: [Operation; 125] = [
     SESSION_READ,
     SESSION_END,
     OVERVIEW_USERS,
@@ -1763,6 +1794,9 @@ static REGISTRY: [Operation; 122] = [
     SSF_RECEIVER_SUBJECT_REMOVE,
     ID_JAG_SUBJECT_BIND,
     ID_JAG_SUBJECT_REMOVE,
+    SAML_SP_LIST,
+    SAML_SP_PROVISION,
+    SAML_SP_REMOVE,
     AUDIT_EVENTS_LIST,
     AUDIT_EVENTS_EXPORT,
     USERS_LIST,

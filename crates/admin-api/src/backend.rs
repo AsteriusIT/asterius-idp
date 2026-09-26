@@ -448,6 +448,11 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
         None
     }
 
+    /// Explicit tenant SAML SP trust. No browser SSO route uses this port yet.
+    fn saml_sp_trust(&self) -> Option<Arc<dyn crate::saml::SpAdministration>> {
+        None
+    }
+
     /// The tenants' authorization policies, for the PDP's admin screens
     /// (`ast-pj0.4`).
     ///
