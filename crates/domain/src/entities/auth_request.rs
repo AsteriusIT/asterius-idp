@@ -192,6 +192,8 @@ pub enum FirstPartyDestination {
     AccountActivity,
     /// Return to the email change form after a fresh authentication.
     AccountEmail,
+    /// Return to the user's Claims Provider connection page after sign-in.
+    AccountClaimsProviders,
 }
 
 impl FirstPartyDestination {
@@ -210,6 +212,7 @@ impl FirstPartyDestination {
             Self::AccountSessions => "account_sessions",
             Self::AccountActivity => "account_activity",
             Self::AccountEmail => "account_email",
+            Self::AccountClaimsProviders => "account_claims_providers",
         }
     }
 
@@ -233,6 +236,7 @@ impl FirstPartyDestination {
             "account_sessions" => Some(Self::AccountSessions),
             "account_activity" => Some(Self::AccountActivity),
             "account_email" => Some(Self::AccountEmail),
+            "account_claims_providers" => Some(Self::AccountClaimsProviders),
             _ => None,
         }
     }

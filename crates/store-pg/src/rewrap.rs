@@ -98,6 +98,8 @@ pub struct Rewrap {
     pub federation_keys: u64,
     /// Signed Claims Provider UserInfo rows re-sealed under the new KEK.
     pub claims_provider_sources: u64,
+    /// Pending CP PKCE verifiers re-sealed under the new KEK.
+    pub claims_provider_pkce: u64,
     /// Rows still sealed under the old KEK when the transaction committed.
     ///
     /// Normally zero. It is not zero when a replica still running on the old
@@ -125,6 +127,7 @@ impl Rewrap {
             && self.ciba_ping_envelopes == 0
             && self.federation_keys == 0
             && self.claims_provider_sources == 0
+            && self.claims_provider_pkce == 0
     }
 
     /// Whether the tenant is now wholly on the new KEK.
@@ -212,6 +215,8 @@ impl PgKekRewrap {
                 to,
             )
             .await?,
+            claims_provider_pkce: Self::claims_provider_pkce(&mut transaction, tenant, from, to)
+                .await?,
             left_behind: Self::count_under(&mut transaction, tenant, from.id()).await?,
             stranded: Self::count_stranded(&mut transaction, tenant, from, to).await?,
         };
@@ -651,6 +656,59 @@ impl PgKekRewrap {
         Ok(moved)
     }
 
+    async fn claims_provider_pkce(
+        transaction: &mut Transaction<'_>,
+        tenant: &TenantId,
+        from: &dyn Kek,
+        to: &dyn Kek,
+    ) -> Result<u64, DomainError> {
+        let rows = sqlx::query(
+            "select state_hash, verifier_ciphertext, verifier_nonce, verifier_kek_id
+             from claims_provider_oauth_pending
+             where tenant_id = $1 and verifier_kek_id = $2 for update",
+        )
+        .bind(tenant.as_str())
+        .bind(from.id())
+        .fetch_all(&mut **transaction)
+        .await
+        .map_err(to_domain_error)?;
+        let mut moved = 0;
+        for row in rows {
+            let state_hash: String =
+                sqlx::Row::try_get(&row, "state_hash").map_err(to_domain_error)?;
+            let wrapped = WrappedKey::from_parts(
+                sqlx::Row::try_get::<String, _>(&row, "verifier_kek_id")
+                    .map_err(to_domain_error)?,
+                sqlx::Row::try_get(&row, "verifier_nonce").map_err(to_domain_error)?,
+                sqlx::Row::try_get(&row, "verifier_ciphertext").map_err(to_domain_error)?,
+            )
+            .map_err(storage_error)?;
+            let binding =
+                KeyBinding::row_secret(tenant, RowSecret::ClaimsProviderPkce, &state_hash);
+            let plaintext = from
+                .unwrap(binding, &wrapped)
+                .await
+                .map_err(storage_error)?;
+            let resealed = to.wrap(binding, &plaintext).await.map_err(storage_error)?;
+            moved += sqlx::query(
+                "update claims_provider_oauth_pending
+                 set verifier_ciphertext = $1, verifier_nonce = $2, verifier_kek_id = $3
+                 where tenant_id = $4 and state_hash = $5 and verifier_kek_id = $6",
+            )
+            .bind(resealed.ciphertext())
+            .bind(resealed.nonce())
+            .bind(resealed.kek_id())
+            .bind(tenant.as_str())
+            .bind(&state_hash)
+            .bind(from.id())
+            .execute(&mut **transaction)
+            .await
+            .map_err(to_domain_error)?
+            .rows_affected();
+        }
+        Ok(moved)
+    }
+
     async fn count_under(
         transaction: &mut Transaction<'_>,
         tenant: &TenantId,
@@ -708,12 +766,16 @@ impl PgKekRewrap {
         .fetch_one(&mut **transaction)
         .await
         .map_err(to_domain_error)?;
+        let cp_pending: i64 = sqlx::query_scalar(
+            "select count(*) from claims_provider_oauth_pending where tenant_id = $1 and verifier_kek_id = $2",
+        ).bind(tenant.as_str()).bind(kek_id).fetch_one(&mut **transaction).await.map_err(to_domain_error)?;
         Ok(keys.unsigned_abs()
             + salts.unsigned_abs()
             + credentials.unsigned_abs()
             + envelopes.unsigned_abs()
             + federation.unsigned_abs()
-            + claims_sources.unsigned_abs())
+            + claims_sources.unsigned_abs()
+            + cp_pending.unsigned_abs())
     }
 
     /// How many of the tenant's sealed rows name neither key.
@@ -782,12 +844,23 @@ impl PgKekRewrap {
         .fetch_one(&mut **transaction)
         .await
         .map_err(to_domain_error)?;
+        let cp_pending: i64 = sqlx::query_scalar(
+            "select count(*) from claims_provider_oauth_pending
+             where tenant_id = $1 and verifier_kek_id <> $2 and verifier_kek_id <> $3",
+        )
+        .bind(tenant.as_str())
+        .bind(from.id())
+        .bind(to.id())
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(to_domain_error)?;
         Ok(keys.unsigned_abs()
             + salts.unsigned_abs()
             + credentials.unsigned_abs()
             + envelopes.unsigned_abs()
             + federation.unsigned_abs()
-            + claims_sources.unsigned_abs())
+            + claims_sources.unsigned_abs()
+            + cp_pending.unsigned_abs())
     }
 }
 
@@ -863,6 +936,7 @@ mod tests {
             ciba_ping_envelopes: 0,
             federation_keys: 0,
             claims_provider_sources: 0,
+            claims_provider_pkce: 0,
             left_behind: 1,
             stranded: 0,
         };

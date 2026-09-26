@@ -14,6 +14,7 @@ mod audit;
 mod auth_requests;
 mod authorization_details_types;
 mod ciba_requests;
+mod claims_provider_oauth;
 mod client_key_fetches;
 mod client_usage;
 mod clients;
@@ -74,6 +75,7 @@ pub use ciba_requests::{
     CibaPoll, CibaPolled, NewCibaRequest, PING_OUTBOX_KIND, PendingApproval,
     PgCibaRequestRepository, PingCredentials, PingTarget, RedeemedCiba,
 };
+pub use claims_provider_oauth::{CpPending, PgCpOAuth};
 pub use client_key_fetches::PgClientKeyFetches;
 pub use client_usage::PgClientUsage;
 pub use clients::PgClientRepository;
