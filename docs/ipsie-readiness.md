@@ -29,7 +29,7 @@ requirements are excluded unless they constrain something this OP offers.
 | ID-token `aud` is one string | `crates/oidc/src/tokens/id_token.rs` emits the registered client ID as a single JSON string. |
 | ID-token `auth_time` | The builder always emits the actual authentication time. Session and grant snapshot logic in `crates/server/src/http/issuance.rs` preserves it across refresh. |
 | ID-token `acr` and `amr` | Both are omitted when no supported authentication context or method is known; `acr` is also revalidated against current policy. An SL1 profile must require a meaningful configured ACR and IANA-registered AMR mapping. Never fill these with invented values. Open gap. |
-| ID-token integer `session_expiry` | Not server-emitted. Browser session expiry is not automatically an RP session expiry, and offline refresh can outlive a browser session. A historical user claim with this name can exist, so introducing a server-owned reservation requires a data migration before changing `ClaimName::SERVER_ISSUED`; issuer logic must never trust the user claim as an RP-session deadline. Open gap. |
+| ID-token integer `session_expiry` | Not server-emitted. Migration 0128 archives historical user claims under this name (including language-tagged variants) before `ClaimName::SERVER_ISSUED` reserves it; the old value is never used as an RP deadline. Browser session expiry is not automatically an RP session expiry, and offline refresh can outlive a browser session. A distinct RP session policy and issuer path are still open gaps. |
 
 ## SL1 §3.2.1: authorization-code obligations
 
