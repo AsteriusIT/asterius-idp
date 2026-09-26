@@ -135,6 +135,15 @@ pub struct UntrustedAuthnRequest {
     pub binding: Option<String>,
 }
 
+struct RootFields {
+    namespaces: HashMap<String, String>,
+    id: Option<String>,
+    issued_at: Option<OffsetDateTime>,
+    destination: Option<String>,
+    acs: Option<String>,
+    binding: Option<String>,
+}
+
 /// Reads only the expected `AuthnRequest` envelope, with strict byte/depth
 /// limits and no DTD, entity, PI, CDATA or XML Signature processing.
 pub fn parse_authn_request(xml: &[u8]) -> Result<UntrustedAuthnRequest, UntrustedSaml> {
@@ -167,40 +176,13 @@ pub fn parse_authn_request(xml: &[u8]) -> Result<UntrustedAuthnRequest, Untruste
                         return Err(UntrustedSaml);
                     }
                     root_seen = true;
-                    root_namespaces = namespaces(&e, &HashMap::new())?;
-                    if namespace_of(&name, &root_namespaces) != Some(PROTOCOL_NS) {
-                        return Err(UntrustedSaml);
-                    }
-                    only_attributes(
-                        &e,
-                        &[
-                            "ID",
-                            "Version",
-                            "IssueInstant",
-                            "Destination",
-                            "AssertionConsumerServiceURL",
-                            "ProtocolBinding",
-                            "ForceAuthn",
-                        ],
-                    )?;
-                    if attribute(&e, "Version")?.as_deref() != Some("2.0") {
-                        return Err(UntrustedSaml);
-                    }
-                    // Keycloak emits the explicit false value even when it
-                    // does not request reauthentication. A true value still
-                    // needs a separate session policy and is refused.
-                    if attribute(&e, "ForceAuthn")?
-                        .as_deref()
-                        .is_some_and(|value| value != "false")
-                    {
-                        return Err(UntrustedSaml);
-                    }
-                    issued_at = attribute(&e, "IssueInstant")?
-                        .and_then(|value| OffsetDateTime::parse(&value, &Rfc3339).ok());
-                    id = attribute(&e, "ID")?;
-                    destination = attribute(&e, "Destination")?;
-                    acs = attribute(&e, "AssertionConsumerServiceURL")?;
-                    binding = attribute(&e, "ProtocolBinding")?;
+                    let fields = parse_root_fields(&e, &name)?;
+                    root_namespaces = fields.namespaces;
+                    id = fields.id;
+                    issued_at = fields.issued_at;
+                    destination = fields.destination;
+                    acs = fields.acs;
+                    binding = fields.binding;
                 } else if depth == 2 {
                     if local_name(&name) != "Issuer" || issuer_seen {
                         return Err(UntrustedSaml);
@@ -245,8 +227,8 @@ pub fn parse_authn_request(xml: &[u8]) -> Result<UntrustedAuthnRequest, Untruste
             | Event::DocType(_)
             | Event::PI(_)
             | Event::CData(_)
-            | Event::GeneralRef(_) => return Err(UntrustedSaml),
-            Event::Comment(_) => return Err(UntrustedSaml),
+            | Event::GeneralRef(_)
+            | Event::Comment(_) => return Err(UntrustedSaml),
         }
     }
     if !root_seen || depth != 0 || !issuer_seen || issuer.is_empty() || issuer.len() > 1024 {
@@ -264,6 +246,47 @@ pub fn parse_authn_request(xml: &[u8]) -> Result<UntrustedAuthnRequest, Untruste
         destination,
         acs,
         binding,
+    })
+}
+
+fn parse_root_fields(
+    e: &quick_xml::events::BytesStart<'_>,
+    name: &str,
+) -> Result<RootFields, UntrustedSaml> {
+    let namespaces = namespaces(e, &HashMap::new())?;
+    if namespace_of(name, &namespaces) != Some(PROTOCOL_NS) {
+        return Err(UntrustedSaml);
+    }
+    only_attributes(
+        e,
+        &[
+            "ID",
+            "Version",
+            "IssueInstant",
+            "Destination",
+            "AssertionConsumerServiceURL",
+            "ProtocolBinding",
+            "ForceAuthn",
+        ],
+    )?;
+    if attribute(e, "Version")?.as_deref() != Some("2.0") {
+        return Err(UntrustedSaml);
+    }
+    // Keycloak emits false explicitly. True would require a separate session policy.
+    if attribute(e, "ForceAuthn")?
+        .as_deref()
+        .is_some_and(|value| value != "false")
+    {
+        return Err(UntrustedSaml);
+    }
+    Ok(RootFields {
+        namespaces,
+        id: attribute(e, "ID")?,
+        issued_at: attribute(e, "IssueInstant")?
+            .and_then(|value| OffsetDateTime::parse(&value, &Rfc3339).ok()),
+        destination: attribute(e, "Destination")?,
+        acs: attribute(e, "AssertionConsumerServiceURL")?,
+        binding: attribute(e, "ProtocolBinding")?,
     })
 }
 

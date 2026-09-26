@@ -5,7 +5,7 @@
 //! `Reference URI="#request-ID"`, enveloped then Exclusive C14N 1.0
 //! transforms, SHA-256 digest and RSA-SHA256 signature. The only signed
 //! object is the document root from which that one Signature node is removed.
-//! No arbitrary ID lookup, XPath, external URI, DTD, `KeyInfo`, extra reference
+//! No arbitrary ID lookup, `XPath`, external URI, DTD, `KeyInfo`, extra reference
 //! or second signature can influence what is accepted. Unsupported documents
 //! fail closed. C14N comes from xml-sec's pure XML-only feature; cryptography
 //! remains in aws-lc-rs (ADR-0004).
