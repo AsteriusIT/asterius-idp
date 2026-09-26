@@ -995,6 +995,61 @@ pub async fn sign_id_token(
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn id_token_encryption_failure_never_returns_the_signed_plaintext() {
+        let now = time::OffsetDateTime::UNIX_EPOCH + time::Duration::days(20_000);
+        let tenant = ssf_tenant();
+        let mut client = targeting_client(&[]);
+        client.registration.encrypt_id_token = true;
+        // An in-memory client can become invalid after registration. Issuance
+        // must still refuse it, even after successfully signing the inner JWT.
+        client.registration.jwks = asterius_domain::JwksSource::Inline(json!({
+            "keys": [{"kty": "RSA", "kid": "rp-enc", "use": "enc",
+                      "alg": "RSA-OAEP-256", "n": "bad", "e": "AQAB"}]
+        }));
+        let mut grant = asterius_domain::Grant::new(tenant.id.clone(), client.id.clone(), now);
+        grant.subject = Some(asterius_domain::SubjectId::new("subject"));
+        let claimed = grant.claim(now).expect("live grant");
+        let session = SessionFacts {
+            authentication: Authentication {
+                authenticated_at: now,
+                acr: None,
+                amr: Vec::new(),
+            },
+            sid: None,
+        };
+        let policy = asterius_domain::AcrPolicy::default();
+        let keys = asterius_jose::LocalKeyStore::new();
+        keys.generate(&tenant.id, client.registration.id_token_signed_response_alg)
+            .expect("issuer signing key");
+        let result = sign_id_token(
+            &keys,
+            &tenant,
+            &client,
+            IdTokenParts {
+                require_ipsie_assurance: false,
+                rp_session_lifetime_seconds: None,
+                acr_policy: &policy,
+                claimed: &claimed,
+                session: &session,
+                access_token: "signed-access-token",
+                nonce: None,
+                key_bound_jwk: None,
+                device_secret_hash: None,
+                released: ReleasedToIdToken::default(),
+            },
+            now,
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(DomainError::Invalid {
+                field: "id_token",
+                ..
+            })
+        ));
+    }
+
     #[test]
     fn assurance_policy_removes_stale_acr_and_withholds_id_token_methods() {
         let facts = Authentication {

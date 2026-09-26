@@ -170,3 +170,77 @@ impl Recipient {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::key::SigningKey;
+    use asterius_domain::{Kid, SigningAlgorithm};
+    use aws_lc_rs::aead::{LessSafeKey, Nonce, UnboundKey};
+    use rsa::pkcs8::DecodePrivateKey;
+
+    #[test]
+    fn issued_nested_jwe_decrypts_to_a_verifiable_jwt_and_authenticates_its_header() {
+        let rp_key = SigningKey::generate(SigningAlgorithm::Ps256).expect("RP RSA key");
+        let mut jwk = rp_key.public_jwk().expect("public JWK");
+        jwk["kid"] = json!("rp-encryption");
+        jwk["use"] = json!("enc");
+        jwk["alg"] = json!("RSA-OAEP-256");
+        let recipient = Recipient::from_jwks(
+            &serde_json::to_vec(&json!({"keys": [jwk]})).expect("JWK Set"),
+            None,
+        )
+        .expect("eligible recipient");
+
+        let issuer_key = SigningKey::generate(SigningAlgorithm::EdDsa).expect("issuer key");
+        let claims = json!({"iss": "https://as.example", "sub": "alice", "aud": "rp"});
+        let signed = crate::jws::sign(&issuer_key, &Kid::new("issuer-signing"), "JWT", &claims)
+            .expect("signed assertion");
+        let compact = recipient
+            .encrypt_signed_jwt(signed.as_str())
+            .expect("nested JWE");
+        let parts: Vec<&str> = compact.split('.').collect();
+        assert_eq!(parts.len(), 5);
+        let header: Value = serde_json::from_slice(&B64.decode(parts[0]).expect("header"))
+            .expect("protected header JSON");
+        assert_eq!(header["alg"], "RSA-OAEP-256");
+        assert_eq!(header["enc"], "A256GCM");
+        assert_eq!(header["cty"], "JWT");
+        assert_eq!(header["kid"], "rp-encryption");
+
+        let private = rsa::RsaPrivateKey::from_pkcs8_der(rp_key.pkcs8()).expect("RP private key");
+        let wrapped = B64.decode(parts[1]).expect("wrapped CEK");
+        let cek = private
+            .decrypt(rsa::Oaep::new::<sha2::Sha256>(), &wrapped)
+            .expect("unwrap CEK");
+        let aes = LessSafeKey::new(UnboundKey::new(&AES_256_GCM, &cek).expect("AES key"));
+        let nonce_bytes = B64.decode(parts[2]).expect("nonce");
+        let nonce = Nonce::try_assume_unique_for_key(&nonce_bytes).expect("nonce size");
+        let mut ciphertext = B64.decode(parts[3]).expect("ciphertext");
+        ciphertext.extend(B64.decode(parts[4]).expect("tag"));
+        let plain = aes
+            .open_in_place(nonce, Aad::from(parts[0].as_bytes()), &mut ciphertext)
+            .expect("authenticated plaintext");
+        assert_eq!(plain, signed.as_str().as_bytes());
+        let verified = crate::jws::parse(std::str::from_utf8(plain).expect("UTF-8 JWT"))
+            .expect("inner JWT")
+            .verify(&issuer_key.verifying_key().expect("issuer public key"))
+            .expect("inner signature");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&verified).expect("claims"),
+            claims
+        );
+
+        // The first compact segment is authenticated even when it remains valid JSON.
+        let mut tampered_header = header;
+        tampered_header["kid"] = json!("other-key");
+        let tampered_aad = B64.encode(serde_json::to_vec(&tampered_header).expect("header"));
+        let nonce = Nonce::try_assume_unique_for_key(&nonce_bytes).expect("nonce size");
+        let mut ciphertext = B64.decode(parts[3]).expect("ciphertext");
+        ciphertext.extend(B64.decode(parts[4]).expect("tag"));
+        assert!(
+            aes.open_in_place(nonce, Aad::from(tampered_aad.as_bytes()), &mut ciphertext)
+                .is_err()
+        );
+    }
+}

@@ -7525,9 +7525,82 @@ mod passwords {
 /// through the schema's cascades.
 mod client_configuration {
     use super::*;
+    use asterius_domain::SigningAlgorithm;
     use asterius_domain::entities::tenant_settings::MAX_ACCESS_TOKEN_LIFETIME;
     use asterius_domain::{ClientConfiguration, DomainError, ManagedClient, sha256};
+    use asterius_jose::SigningKey;
     use asterius_store_pg::PgGrantRepository;
+
+    fn encrypted_registration() -> serde_json::Value {
+        let mut document = registration_document();
+        let key = SigningKey::generate(SigningAlgorithm::Ps256).expect("RP key");
+        let mut public = key.public_jwk().expect("public JWK");
+        public["kid"] = json!("rp-enc");
+        public["use"] = json!("enc");
+        public["alg"] = json!("RSA-OAEP-256");
+        document["jwks"]["keys"] = json!([public]);
+        document["id_token_encrypted_response_alg"] = json!("RSA-OAEP-256");
+        document["id_token_encrypted_response_enc"] = json!("A256GCM");
+        document["userinfo_signed_response_alg"] = json!("ES256");
+        document["userinfo_encrypted_response_alg"] = json!("RSA-OAEP-256");
+        document["userinfo_encrypted_response_enc"] = json!("A256GCM");
+        document
+    }
+
+    db_test! {
+        /// Registration, lookup, listing, and replacement must agree with the
+        /// committed encryption columns; an update cannot leave stale flags.
+        async fn encryption_registration_round_trips_through_client_sql(db) {
+            seed_tenant(&db.pool, "demo").await;
+            let repo = repo(&db.pool, "demo");
+            let document = encrypted_registration();
+            let registered = client("demo", "c.encrypted", &document);
+            let digest = sha256(b"registration-token");
+            repo.register(
+                &registered,
+                &digest,
+                &registration_record("demo", "c.encrypted"),
+            )
+            .await
+            .expect("register encrypted client");
+
+            let found = repo.find(&registered.id).await.expect("find").expect("client");
+            assert!(found.registration.encrypt_id_token);
+            assert!(found.registration.encrypt_userinfo);
+            let listed = repo.list().await.expect("list");
+            assert_eq!(listed.len(), 1);
+            assert!(listed[0].registration.encrypt_id_token);
+            assert!(listed[0].registration.encrypt_userinfo);
+            let flags: (bool, bool) = sqlx::query_as(
+                "select encrypt_id_token, encrypt_userinfo from clients where tenant_id = 'demo' and client_id = 'c.encrypted'",
+            )
+            .fetch_one(&db.pool)
+            .await
+            .expect("persisted flags");
+            assert_eq!(flags, (true, true));
+
+            let mut plain_document = document;
+            for field in [
+                "id_token_encrypted_response_alg",
+                "id_token_encrypted_response_enc",
+                "userinfo_encrypted_response_alg",
+                "userinfo_encrypted_response_enc",
+            ] {
+                plain_document.as_object_mut().expect("object").remove(field);
+            }
+            let plain = client("demo", "c.encrypted", &plain_document);
+            let replaced = repo.replace(&plain).await.expect("replace");
+            assert!(!replaced.registration.encrypt_id_token);
+            assert!(!replaced.registration.encrypt_userinfo);
+            let flags: (bool, bool) = sqlx::query_as(
+                "select encrypt_id_token, encrypt_userinfo from clients where tenant_id = 'demo' and client_id = 'c.encrypted'",
+            )
+            .fetch_one(&db.pool)
+            .await
+            .expect("updated flags");
+            assert_eq!(flags, (false, false));
+        }
+    }
 
     /// Registers a client with a known registration access token and returns
     /// the digest that was stored, so a test can assert against the value the
