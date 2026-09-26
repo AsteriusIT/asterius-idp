@@ -1,4 +1,4 @@
-//! Tenant-scoped SAML SP trust and durable AuthnRequest ID reservations.
+//! Tenant-scoped SAML SP trust and durable `AuthnRequest` ID reservations.
 //!
 //! Provisioning alone grants no browser SSO: the routed handler validates
 //! destination, time, signature policy and replay before using these records.
@@ -12,7 +12,7 @@ use time::OffsetDateTime;
 use url::Url;
 
 /// One explicitly provisioned SP. Metadata and assertion recipients must
-/// always use this exact ACS URL, never an AuthnRequest supplied endpoint.
+/// always use this exact ACS URL, never an `AuthnRequest` supplied endpoint.
 #[derive(Debug, Clone)]
 pub struct SamlSp {
     pub entity_id: String,
@@ -23,6 +23,8 @@ pub struct SamlSp {
     pub redirect_signing_public_key_der: Option<Vec<u8>>,
     pub created_at: OffsetDateTime,
 }
+
+type SamlSpRow = (String, String, bool, Option<Vec<u8>>, OffsetDateTime);
 
 /// PostgreSQL handle with the routed tenant fixed before any query.
 #[derive(Debug, Clone)]
@@ -65,7 +67,7 @@ impl PgSamlTrust {
 
     /// Lists only this tenant's exact SP trust entries.
     pub async fn list(&self) -> Result<Vec<SamlSp>, DomainError> {
-        let rows: Vec<(String, String, bool, Option<Vec<u8>>, OffsetDateTime)> = sqlx::query_as(
+        let rows: Vec<SamlSpRow> = sqlx::query_as(
             "select entity_id, acs_url, allow_unsigned_requests,
                     redirect_signing_public_key_der, created_at
                from saml_sp_trusts where tenant_id = $1 order by entity_id",
@@ -96,7 +98,7 @@ impl PgSamlTrust {
 
     /// Resolves only an exact entity ID in this tenant.
     pub async fn find(&self, entity_id: &str) -> Result<Option<SamlSp>, DomainError> {
-        let row: Option<(String, String, bool, Option<Vec<u8>>, OffsetDateTime)> = sqlx::query_as(
+        let row: Option<SamlSpRow> = sqlx::query_as(
             "select entity_id, acs_url, allow_unsigned_requests,
                     redirect_signing_public_key_der, created_at
                from saml_sp_trusts where tenant_id = $1 and entity_id = $2",
@@ -135,7 +137,7 @@ impl PgSamlTrust {
         Ok(result.rows_affected() == 1)
     }
 
-    /// Reserves an AuthnRequest ID once for an existing SP. The primary key
+    /// Reserves an `AuthnRequest` ID once for an existing SP. The primary key
     /// makes concurrent attempts across replicas atomic. A missing SP and a
     /// replay both return false; a caller must not issue on either outcome.
     /// The ACS and unsigned policy are checked again in the insertion

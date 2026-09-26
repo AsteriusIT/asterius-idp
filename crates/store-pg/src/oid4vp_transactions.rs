@@ -1,4 +1,4 @@
-//! Durable, single-use OpenID4VP verifier transactions.
+//! Durable, single-use `OpenID4VP` verifier transactions.
 
 use crate::error::to_domain_error;
 use asterius_domain::{DomainError, TenantId, sha256};

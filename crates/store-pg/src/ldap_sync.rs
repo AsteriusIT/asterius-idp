@@ -97,6 +97,8 @@ impl PgLdapSync {
     /// Apply a fully read, validated snapshot in one tenant transaction.
     /// Existing local/SCIM users and groups remain outside this source's
     /// authority. An incomplete remote read must never reach this method.
+    // All ownership, membership, absence, and audit changes share one transaction.
+    #[allow(clippy::too_many_lines)]
     pub async fn apply(
         &self,
         tenant: &TenantId,
@@ -375,7 +377,9 @@ impl PgLdapSync {
         .execute(&mut *tx)
         .await
         .map_err(to_domain_error)?
-        .rows_affected() as usize;
+        .rows_affected()
+        .try_into()
+        .map_err(|_| DomainError::Conflict("LDAP user count exceeds platform limits".to_owned()))?;
         let present_groups = snapshot
             .groups
             .iter()
@@ -392,7 +396,11 @@ impl PgLdapSync {
         .execute(&mut *tx)
         .await
         .map_err(to_domain_error)?
-        .rows_affected() as usize;
+        .rows_affected()
+        .try_into()
+        .map_err(|_| {
+            DomainError::Conflict("LDAP group count exceeds platform limits".to_owned())
+        })?;
 
         if let LdapAbsencePolicy::DeactivateAndPrune {
             grace_days,
@@ -582,24 +590,34 @@ impl PgLdapSync {
                     .label("operation", "ldap.sync")
                     .text("absence_policy", policy_name)
                     .text("source_key_prefix", &source_key[..12])
-                    .number("users_created", outcome.users_created as i64)
-                    .number("users_updated", outcome.users_updated as i64)
-                    .number("groups_created", outcome.groups_created as i64)
-                    .number("groups_updated", outcome.groups_updated as i64)
-                    .number("memberships_changed", outcome.memberships_changed as i64)
-                    .number("users_marked_missing", outcome.users_marked_missing as i64)
+                    .number("users_created", audit_count(outcome.users_created))
+                    .number("users_updated", audit_count(outcome.users_updated))
+                    .number("groups_created", audit_count(outcome.groups_created))
+                    .number("groups_updated", audit_count(outcome.groups_updated))
+                    .number(
+                        "memberships_changed",
+                        audit_count(outcome.memberships_changed),
+                    )
+                    .number(
+                        "users_marked_missing",
+                        audit_count(outcome.users_marked_missing),
+                    )
                     .number(
                         "groups_marked_missing",
-                        outcome.groups_marked_missing as i64,
+                        audit_count(outcome.groups_marked_missing),
                     )
-                    .number("users_disabled", outcome.users_disabled as i64)
-                    .number("groups_deleted", outcome.groups_deleted as i64),
+                    .number("users_disabled", audit_count(outcome.users_disabled))
+                    .number("groups_deleted", audit_count(outcome.groups_deleted)),
             ),
         )
         .await?;
         tx.commit().await.map_err(to_domain_error)?;
         Ok(outcome)
     }
+}
+
+fn audit_count(count: usize) -> i64 {
+    i64::try_from(count).unwrap_or(i64::MAX)
 }
 
 fn validate(snapshot: &LdapSnapshot) -> Result<(), DomainError> {

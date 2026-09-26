@@ -493,7 +493,11 @@ impl PgIdJagRedemption {
             || event.tenant != self.tenant
             || event.grant.as_ref() != Some(&grant.id)
             || event.client.as_ref() != Some(&grant.client)
-            || event.subject.as_deref() != grant.subject.as_ref().map(|s| s.as_str())
+            || event.subject.as_deref()
+                != grant
+                    .subject
+                    .as_ref()
+                    .map(asterius_domain::SubjectId::as_str)
         {
             return Err(DomainError::invalid("id_jag", "grant or audit mismatch"));
         }
