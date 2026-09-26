@@ -86,7 +86,7 @@ pub async fn poll_once(
     let request = serde_json::to_vec(&json!({"maxEvents": 1, "returnImmediately": true}))
         .map_err(|_| SetupError::Response)?;
     let response = poster
-        .post_with_response(
+        .post_with_poll_response(
             poll_url,
             PostRequest::of("application/json")
                 .accepting("application/json")
