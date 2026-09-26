@@ -901,6 +901,11 @@ impl asterius_admin_api::ssf::SsfAdministration for DeploymentSsf {
                 .map_err(|_| Error::Unavailable)?;
             let state = if pending.is_some() {
                 "pending_review"
+            } else if established
+                .as_ref()
+                .is_some_and(|stream| stream.deletion_started_at.is_some())
+            {
+                "deletion_pending"
             } else if established.is_some() {
                 "established"
             } else {
@@ -990,6 +995,32 @@ impl asterius_admin_api::ssf::SsfAdministration for DeploymentSsf {
             .map_err(|_| Error::Unavailable)?
             .ok_or(Error::Peer)?;
         crate::ssf_upstream::verify_recorded_stream(
+            &runtime.endpoints,
+            &tenant_entity,
+            config,
+            &runtime.poster,
+            now,
+        )
+        .await
+        .map_err(upstream_setup_error)
+    }
+
+    async fn upstream_delete(
+        &self,
+        tenant: &TenantId,
+        peer: &ClientId,
+        now: time::OffsetDateTime,
+    ) -> Result<(), asterius_admin_api::ssf::UpstreamOperationError> {
+        use asterius_admin_api::ssf::UpstreamOperationError as Error;
+        let runtime = self.upstream.as_ref().ok_or(Error::Unavailable)?;
+        let config = runtime.peer(tenant, peer).ok_or(Error::Peer)?;
+        let tenant_entity = self
+            .tenants
+            .find_by_id(tenant)
+            .await
+            .map_err(|_| Error::Unavailable)?
+            .ok_or(Error::Peer)?;
+        crate::ssf_upstream::delete_recorded_stream(
             &runtime.endpoints,
             &tenant_entity,
             config,

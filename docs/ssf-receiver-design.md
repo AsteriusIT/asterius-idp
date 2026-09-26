@@ -106,7 +106,13 @@ configured peers, pending review, setup and an explicit one-shot poll. Polling
 validates at most one bounded SET, applies it before ACK, and reports
 classifiable invalid SETs with RFC 8936 `setErrs`. Queued SETs have a local
 seven-day age limit; push keeps five minutes. There is no automatic poll worker
-or outbound subject-enrollment call.
+or outbound subject-enrollment call. Explicit upstream deletion writes a
+durable pending marker before the guarded DELETE with the exact stream ID.
+An interrupted call reads the authenticated remote stream list on retry; only
+an empty list permits local removal. While deletion is pending, new polls are
+refused and peer summaries expose `deletion_pending`. The admin operation is
+`POST /ssf/upstream/delete` with the configured `peer_client_id` and
+`admin.ssf:write` authority.
 Pending intents and established stream identities survive local client
 deletion, so re-registering the same issuer cannot erase the evidence of a
 remote stream that may still exist.
@@ -305,8 +311,7 @@ claiming CAEP Interoperability Profile conformance.
   EdDSA and ES256 only. `ast-s36.26.4.8` owns the explicit policy decision.
 - Draft 01 §2.4.4 assumes implicit inclusion of all subjects. Operators may
   explicitly allow upstream `default_subjects: ALL`; `NONE` still needs
-  external enrollment. Outbound stream deletion and subject enrollment are
-  absent. The static bearer
+  external enrollment. Outbound subject enrollment remains absent. The static bearer
   file is re-read per operator request, but access-token acquisition and
   automatic refresh are absent. `ast-s36.26.4.9` owns these lifecycle gaps and
   interoperability evidence.

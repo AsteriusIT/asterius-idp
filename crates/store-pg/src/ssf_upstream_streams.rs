@@ -24,6 +24,9 @@ pub struct UpstreamStream {
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
     pub last_polled_at: Option<OffsetDateTime>,
+    /// A durable remote DELETE intent; polling stops until readback proves
+    /// the exact stream was removed and this row can be deleted.
+    pub deletion_started_at: Option<OffsetDateTime>,
 }
 
 /// Durable outbound create intent. Its immutable fields are the trust and
@@ -278,10 +281,12 @@ impl PgSsfUpstreamStreams {
             OffsetDateTime,
             OffsetDateTime,
             Option<OffsetDateTime>,
+            Option<OffsetDateTime>,
         )> = sqlx::query_as(
             "select peer_client_id, issuer, jwks_uri, configuration_endpoint,
                     status_endpoint, stream_id, delivery_method, poll_endpoint,
-                    audience, events_requested, created_at, updated_at, last_polled_at
+                    audience, events_requested, created_at, updated_at, last_polled_at,
+                    deletion_started_at
                from ssf_receiver_upstream_streams
               where tenant_id = $1 and peer_client_id = $2",
         )
@@ -304,7 +309,52 @@ impl PgSsfUpstreamStreams {
             created_at: row.10,
             updated_at: row.11,
             last_polled_at: row.12,
+            deletion_started_at: row.13,
         }))
+    }
+
+    /// Persist a one-way delete intent before making an outbound request.
+    /// Repeated calls retain the original marker for crash reconciliation.
+    pub async fn begin_delete(
+        &self,
+        peer_client_id: &str,
+        stream_id: &str,
+        now: OffsetDateTime,
+    ) -> Result<bool, DomainError> {
+        let result = sqlx::query(
+            "update ssf_receiver_upstream_streams
+                set deletion_started_at = coalesce(deletion_started_at, $4)
+              where tenant_id = $1 and peer_client_id = $2 and stream_id = $3",
+        )
+        .bind(self.tenant.as_str())
+        .bind(peer_client_id)
+        .bind(stream_id)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    /// Remove only the stream whose pending remote deletion was read back as
+    /// absent. Another stream or a non-deleting row cannot be removed here.
+    pub async fn finish_delete(
+        &self,
+        peer_client_id: &str,
+        stream_id: &str,
+    ) -> Result<bool, DomainError> {
+        let result = sqlx::query(
+            "delete from ssf_receiver_upstream_streams
+              where tenant_id = $1 and peer_client_id = $2 and stream_id = $3
+                and deletion_started_at is not null",
+        )
+        .bind(self.tenant.as_str())
+        .bind(peer_client_id)
+        .bind(stream_id)
+        .execute(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+        Ok(result.rows_affected() == 1)
     }
 
     /// Advances the health timestamp only for the exact stream still stored.
@@ -322,7 +372,8 @@ impl PgSsfUpstreamStreams {
             "update ssf_receiver_upstream_streams
                 set last_polled_at = $4, updated_at = $4
               where tenant_id = $1 and peer_client_id = $2 and stream_id = $3
-                and delivery_method = 'urn:ietf:rfc:8936'",
+                and delivery_method = 'urn:ietf:rfc:8936'
+                and deletion_started_at is null",
         )
         .bind(self.tenant.as_str())
         .bind(peer_client_id)

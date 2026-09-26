@@ -163,6 +163,17 @@ pub trait SsfAdministration: Debug + Send + Sync {
         Err(UpstreamOperationError::Unavailable)
     }
 
+    /// Deletes the exact recorded remote stream after durable intent and
+    /// authenticated readback. An interrupted delete remains pending review.
+    async fn upstream_delete(
+        &self,
+        _tenant: &TenantId,
+        _peer: &ClientId,
+        _now: OffsetDateTime,
+    ) -> Result<(), UpstreamOperationError> {
+        Err(UpstreamOperationError::Unavailable)
+    }
+
     /// Every stream of the tenant, oldest first.
     ///
     /// # Errors

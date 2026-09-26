@@ -821,6 +821,7 @@ pub fn validated_upstream_stream(
         created_at: now,
         updated_at: now,
         last_polled_at: None,
+        deletion_started_at: None,
     })
 }
 

@@ -187,6 +187,7 @@ pub const SSF_UPSTREAM_PEERS_LIST_ID: &str = "ssf.upstream.peers.list";
 pub const SSF_UPSTREAM_SETUP_ID: &str = "ssf.upstream.setup";
 pub const SSF_UPSTREAM_POLL_ID: &str = "ssf.upstream.poll";
 pub const SSF_UPSTREAM_VERIFY_ID: &str = "ssf.upstream.verify";
+pub const SSF_UPSTREAM_DELETE_ID: &str = "ssf.upstream.delete";
 /// The `operationId` of creating/updating a trusted SSF subject binding.
 pub const SSF_RECEIVER_SUBJECT_BIND_ID: &str = "ssf.receiver.subject.bind";
 /// The `operationId` of removing a trusted SSF subject binding.
@@ -969,6 +970,15 @@ pub const SSF_UPSTREAM_VERIFY: Operation = Operation::mutation(
     M::Post,
     A::new(R::Tenant, "admin.ssf:write"),
     "Verifies a recorded upstream SSF stream",
+);
+
+/// Removes the exact recorded remote stream through a durable deletion intent.
+pub const SSF_UPSTREAM_DELETE: Operation = Operation::mutation(
+    SSF_UPSTREAM_DELETE_ID,
+    "/ssf/upstream/delete",
+    M::Post,
+    A::new(R::Tenant, "admin.ssf:write"),
+    "Deletes a recorded upstream SSF stream",
 );
 
 /// Creates or replaces a per-peer, tenant-scoped subject mapping for inbound
@@ -1819,7 +1829,7 @@ pub const SCIM_BULK: Operation = Operation::mutation(
     "SCIM Bulk is unsupported by this service",
 );
 
-static REGISTRY: [Operation; 133] = [
+static REGISTRY: [Operation; 134] = [
     SESSION_READ,
     SESSION_END,
     OVERVIEW_USERS,
@@ -1875,6 +1885,7 @@ static REGISTRY: [Operation; 133] = [
     SSF_UPSTREAM_SETUP,
     SSF_UPSTREAM_POLL,
     SSF_UPSTREAM_VERIFY,
+    SSF_UPSTREAM_DELETE,
     SSF_RECEIVER_SUBJECT_BIND,
     SSF_RECEIVER_SUBJECT_REMOVE,
     ID_JAG_SUBJECT_BIND,

@@ -124,6 +124,107 @@ pub async fn verify_recorded_stream(
     validate_status(&status, &recorded.stream_id)
 }
 
+/// Delete one recorded remote poll stream. A durable marker precedes the
+/// outbound DELETE: if the reply is lost, the next call reads the authenticated
+/// stream list and finishes locally only when the exact stream is absent.
+pub async fn delete_recorded_stream(
+    endpoints: &ClientEndpoints,
+    tenant: &Tenant,
+    config: &SsfUpstreamPeerConfig,
+    poster: &HttpsPoster,
+    now: OffsetDateTime,
+) -> Result<(), SetupError> {
+    let peer = ClientId::new(config.issuer.as_str());
+    let (issuer, _jwks, _scopes, metadata) =
+        ssf_receiver::configured_peer(endpoints, tenant, &peer)
+            .await
+            .map_err(|_| SetupError::Peer)?;
+    // Cleanup remains possible if the operator revoked ALL-subject consent
+    // after creating the stream. Remote deletion only needs the pinned
+    // identity and authenticated configuration endpoint.
+    if issuer != config.issuer || !metadata.supports_poll {
+        return Err(SetupError::Peer);
+    }
+    same_origin_management_endpoint(&metadata.configuration_endpoint, &issuer)?;
+    let repository = endpoints
+        .store
+        .scope(tenant.id.clone())
+        .ssf_upstream_streams();
+    if repository
+        .pending_setup(peer.as_str())
+        .await
+        .map_err(|_| SetupError::Storage)?
+        .is_some()
+    {
+        return Err(SetupError::PendingReview);
+    }
+    let recorded = repository
+        .find(peer.as_str())
+        .await
+        .map_err(|_| SetupError::Storage)?
+        .ok_or(SetupError::Peer)?;
+    if recorded.issuer != issuer.as_str()
+        || recorded.jwks_uri != metadata.jwks_uri
+        || recorded.configuration_endpoint != metadata.configuration_endpoint
+        || recorded.status_endpoint != metadata.status_endpoint
+        || recorded.audience != format!("{}{}", tenant.issuer.as_str(), ssf_receiver::RECEIVER_PATH)
+        || recorded.delivery_method != stream::DELIVERY_POLL
+    {
+        return Err(SetupError::PendingReview);
+    }
+    let token = read_bearer_file(&config.bearer_token_file)?;
+    let authorization = Zeroizing::new(format!("Bearer {}", token.as_str()));
+    if !repository
+        .begin_delete(peer.as_str(), &recorded.stream_id, now)
+        .await
+        .map_err(|_| SetupError::Storage)?
+    {
+        return Err(SetupError::PendingReview);
+    }
+    let listed = list_streams(poster, &metadata.configuration_endpoint, &authorization).await?;
+    if !listed.is_empty() {
+        let remote = reconcile_listed(
+            &listed,
+            &metadata,
+            true,
+            &issuer,
+            &recorded.audience,
+            &recorded.events_requested,
+            now,
+        )?
+        .ok_or(SetupError::PendingReview)?;
+        if remote.stream_id != recorded.stream_id || remote.poll_endpoint != recorded.poll_endpoint
+        {
+            return Err(SetupError::PendingReview);
+        }
+        let url = status_url(&metadata.configuration_endpoint, &recorded.stream_id)?;
+        let response = poster
+            .delete_with_response(&url, &authorization)
+            .await
+            .map_err(|_| SetupError::Transport)?;
+        if response.status != 204 || response.truncated || !response.body.is_empty() {
+            return Err(SetupError::Response);
+        }
+        // A 204 proves that DELETE was accepted; authenticated readback proves
+        // that a retry will not create a second remote stream accidentally.
+        if !list_streams(poster, &metadata.configuration_endpoint, &authorization)
+            .await?
+            .is_empty()
+        {
+            return Err(SetupError::PendingReview);
+        }
+    }
+    if repository
+        .finish_delete(peer.as_str(), &recorded.stream_id)
+        .await
+        .map_err(|_| SetupError::Storage)?
+    {
+        Ok(())
+    } else {
+        Err(SetupError::PendingReview)
+    }
+}
+
 /// Poll at most one SET from an established upstream stream, apply it through
 /// the push receiver's atomic replay/lifecycle path, then acknowledge its
 /// `jti` in a separate RFC 8936 request. A failure before acknowledgement
@@ -156,6 +257,9 @@ pub async fn poll_once(
         .await
         .map_err(|_| SetupError::Storage)?
         .ok_or(SetupError::Peer)?;
+    if established.deletion_started_at.is_some() {
+        return Err(SetupError::PendingReview);
+    }
     if established.issuer != issuer.as_str()
         || established.jwks_uri != metadata.jwks_uri
         || established.configuration_endpoint != metadata.configuration_endpoint

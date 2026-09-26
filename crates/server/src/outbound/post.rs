@@ -415,6 +415,28 @@ impl HttpsPoster {
         }
     }
 
+    /// Deletes a pinned management resource through the same guarded HTTPS
+    /// path. The caller supplies the authenticated, fully scoped URL and
+    /// checks the returned status before changing local state.
+    pub async fn delete_with_response(
+        &self,
+        url: &str,
+        authorization: &str,
+    ) -> Result<PostResponse, PostError> {
+        let request = PostRequest::of("").authorized_by(Some(authorization));
+        match tokio::time::timeout(
+            TOTAL_TIMEOUT,
+            self.send(url, request, &[], hyper::Method::DELETE, MAX_RESPONSE_BYTES),
+        )
+        .await
+        {
+            Ok(outcome) => outcome,
+            Err(_) => Err(PostError::Reach(FetchError::TimedOut {
+                host: ssrf::check_url(url).map_or_else(|_| "the URL".to_owned(), |t| t.host),
+            })),
+        }
+    }
+
     /// The exchange, minus the timeout that wraps it.
     async fn send(
         &self,
