@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent, JSX } from 'react';
 import { ApiError, mutate, read, type Session } from './api';
 import { toast } from './components/ui/toast';
-import { Badge, Button, LoadFailure, Message, Panel, Screen, Skeleton, Timestamp } from './ui';
+import { Badge, Button, ConfirmDialog, LoadFailure, Message, Panel, Screen, Skeleton, Timestamp } from './ui';
 
 interface IdpKeySummary {
   readonly state: 'pending' | 'active' | 'retiring' | 'retired';
@@ -21,6 +21,11 @@ type Load =
   | { readonly kind: 'empty' }
   | { readonly kind: 'ready'; readonly inventory: Inventory }
   | { readonly kind: 'failed'; readonly message: string };
+
+type KeyAction = {
+  readonly kind: 'activate' | 'retire';
+  readonly certificate_sha256: string;
+};
 
 const KEY_PATH = 'saml/idp-key';
 const MIN_DER_BYTES = 256;
@@ -43,6 +48,7 @@ export function SamlIdpKey({ session }: Readonly<{ session: Session }>): JSX.Ele
   const [load, setLoad] = useState<Load>({ kind: 'loading' });
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ tone: 'success' | 'error'; text: string } | null>(null);
+  const [confirming, setConfirming] = useState<KeyAction | null>(null);
   const certificateInput = useRef<HTMLInputElement>(null);
   const privateKeyInput = useRef<HTMLInputElement>(null);
   const canWrite = session.scopes.includes('admin.saml:write');
@@ -108,26 +114,59 @@ export function SamlIdpKey({ session }: Readonly<{ session: Session }>): JSX.Ele
     }
   };
 
+  const performAction = async (action: KeyAction): Promise<void> => {
+    setConfirming(null);
+    setBusy(true);
+    setMessage(null);
+    const activation = action.kind === 'activate';
+    try {
+      await mutate(`${KEY_PATH}/${activation ? 'activation' : 'retirement'}`, 'POST', session,
+        activation
+          ? { certificate_sha256: action.certificate_sha256 }
+          : { certificate_sha256: action.certificate_sha256, rollover_confirmed: true });
+      refresh();
+      const text = activation
+        ? 'The successor is now active. The previous certificate remains published until retirement.'
+        : 'The former certificate was retired and its private key material was erased.';
+      setMessage({ tone: 'success', text });
+      toast.success(activation ? 'SAML key activated' : 'SAML key retired', text);
+    } catch (error: unknown) {
+      const text = error instanceof Error ? error.message : 'The SAML key change was refused.';
+      setMessage({ tone: 'error', text });
+      toast.error('SAML key unchanged', text);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <Screen title="SAML identity provider" description={`Signing material for ${session.workspace}.`}>
-      <Message tone="info">SAML browser SSO is not enabled yet. Importing a key does not enable sign-in.</Message>
+      <Message tone="info">SAML browser SSO requires an active key and an explicitly trusted SP. {hasActive && <><a href="../saml/metadata">Open signed IdP metadata</a>. </>}SAML Single Logout is not offered.</Message>
       {message !== null && <Message tone={message.tone}>{message.text}</Message>}
       <Panel title="IdP signing certificates" description="Public certificate state for this tenant. Private keys are never returned by the API.">
         {load.kind === 'loading' && <Skeleton rows={3} label="Reading SAML IdP key." />}
         {load.kind === 'failed' && <LoadFailure message={load.message} onRetry={refresh} />}
         {load.kind === 'empty' && <p className="muted">No SAML IdP key is provisioned for this tenant.</p>}
         {load.kind === 'ready' && load.inventory.keys.map((key) => (
-          <dl className="stats" key={key.certificate_sha256}>
-            <div><dt>State</dt><dd><Badge tone={key.state === 'active' ? 'ok' : key.state === 'retired' ? 'neutral' : 'warn'}>{key.state}</Badge></dd></div>
-            <div><dt>Certificate SHA-256</dt><dd><code className="break-all">{key.certificate_sha256}</code></dd></div>
-            <div><dt>Created</dt><dd><Timestamp value={key.created_at} /></dd></div>
-          </dl>
+          <div key={key.certificate_sha256} className="flex flex-col gap-3 border-b border-border py-3 last:border-b-0">
+            <dl className="stats">
+              <div><dt>State</dt><dd><Badge tone={key.state === 'active' ? 'ok' : key.state === 'retired' ? 'neutral' : 'warn'}>{key.state}</Badge></dd></div>
+              <div><dt>Certificate SHA-256</dt><dd><code className="break-all">{key.certificate_sha256}</code></dd></div>
+              <div><dt>Created</dt><dd><Timestamp value={key.created_at} /></dd></div>
+            </dl>
+            {canWrite && key.state === 'pending' && (
+              <Button disabled={busy} onClick={() => setConfirming({ kind: 'activate', certificate_sha256: key.certificate_sha256 })}>Activate successor</Button>
+            )}
+            {canWrite && key.state === 'retiring' && (
+              <Button variant="danger" disabled={busy} onClick={() => setConfirming({ kind: 'retire', certificate_sha256: key.certificate_sha256 })}>Retire former certificate</Button>
+            )}
+          </div>
         ))}
       </Panel>
       {canImport && (
         <Panel
           title={hasActive ? 'Stage successor signing key' : 'Import initial signing key'}
-          description="Import a matching X.509 certificate and unencrypted private PKCS#8 key, both as DER files. Successor activation and retirement use separate admin operations."
+          description="Import a matching X.509 certificate and unencrypted private PKCS#8 key, both as DER files. Stage, activate and retire are separate operator steps."
         >
           <form className="flex flex-col gap-3" onSubmit={(event) => { void provision(event); }}>
             <label className="flex flex-col gap-1" htmlFor="saml-idp-certificate">
@@ -142,6 +181,18 @@ export function SamlIdpKey({ session }: Readonly<{ session: Session }>): JSX.Ele
             <Button type="submit" disabled={busy}>{busy ? 'Importing…' : hasActive ? 'Stage successor' : 'Import IdP key'}</Button>
           </form>
         </Panel>
+      )}
+      {confirming !== null && (
+        <ConfirmDialog
+          title={confirming.kind === 'activate' ? 'Activate this SAML signing certificate?' : 'Confirm SP rollover is complete?'}
+          body={confirming.kind === 'activate'
+            ? <>The pending certificate <code className="break-all">{confirming.certificate_sha256}</code> will sign new assertions. The former active certificate remains in metadata during the rollover window.</>
+            : <>Retire certificate <code className="break-all">{confirming.certificate_sha256}</code> only after every SP has obtained the replacement certificate. Retirement stops publishing it and erases its private material. At least ten minutes must have passed since activation.</>}
+          confirmLabel={confirming.kind === 'activate' ? 'Activate certificate' : 'SP rollover complete — retire'}
+          busy={busy}
+          onCancel={() => setConfirming(null)}
+          onConfirm={() => { void performAction(confirming); }}
+        />
       )}
     </Screen>
   );
