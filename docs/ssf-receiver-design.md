@@ -285,8 +285,9 @@ claiming CAEP Interoperability Profile conformance.
   routes. Empty `critical_subject_members` is omitted as required by
   [SSF 1.0 Final §7.2.3](https://openid.net/specs/openid-sharedsignals-framework-1_0-final.html).
 - Receiver setup validates pinned issuer and JWKS, then creates and checks one
-  poll stream through guarded HTTPS. The validator currently requires upstream
-  push support and several metadata fields that SSF Final does not universally
+  poll stream through guarded HTTPS. A configured poll-only peer need not
+  advertise push; push delivery from that peer is refused. The validator still
+  requires several metadata fields that SSF Final does not universally
   require, so it supports a narrower peer profile. No cross-implementation
   setup or delivery result has been recorded.
 - [CAEP Interoperability Profile Draft 01 §2.6](https://openid.net/specs/openid-caep-interoperability-profile-1_0.html)
