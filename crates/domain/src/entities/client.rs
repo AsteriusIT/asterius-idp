@@ -4404,7 +4404,7 @@ mod tests {
         unsigned_userinfo["userinfo_encrypted_response_enc"] = json!("A256GCM");
         assert_eq!(
             rejection(&unsigned_userinfo).field(),
-            "userinfo_signed_response_alg",
+            "userinfo_encrypted_response_alg",
             "encrypted UserInfo must wrap a signed JWT",
         );
     }
