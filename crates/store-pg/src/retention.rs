@@ -779,7 +779,7 @@ pub const POLICY: &[Retention] = &[
                             select ctid from initial_access_tokens
                              where tenant_id = $1
                                and expires_at is not null
-                               and replay_until <= $2
+                               and expires_at <= $2
                              limit $3))",
             // An expired initial access token admits nobody (`ast-cu3`), so
             // the row is only a digest and a spent counter. It is swept and
