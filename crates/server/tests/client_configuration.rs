@@ -483,6 +483,7 @@ impl Fixture {
 
     fn context(&self) -> ConfigurationContext<'_> {
         ConfigurationContext {
+            id_jag_trusts: None,
             tenant_policy: &self.policy,
             tenant: &self.tenant,
             clients: &self.clients,
@@ -721,6 +722,7 @@ async fn a_revocation_is_not_visible_in_the_refusal() {
     let audit = FakeAudit::default();
     let keys = FakeKeys(SigningAlgorithm::ALL.to_vec());
     let context = ConfigurationContext {
+        id_jag_trusts: None,
         tenant_policy: &asterius_domain::RegistrationPolicy::default(),
         tenant: &tenant,
         clients: &sunk,
@@ -1583,6 +1585,7 @@ async fn a_store_that_cannot_be_reached_is_not_a_refusal() {
     let tenant = tenant();
     let keys = FakeKeys(SigningAlgorithm::ALL.to_vec());
     let context = ConfigurationContext {
+        id_jag_trusts: None,
         tenant_policy: &asterius_domain::RegistrationPolicy::default(),
         tenant: &tenant,
         clients: &clients,
@@ -1726,6 +1729,7 @@ fn the_postgres_repository_satisfies_both_ports_this_endpoint_holds() {
         let audit = FakeAudit::default();
         let keys = FakeKeys(SigningAlgorithm::ALL.to_vec());
         let _context = ConfigurationContext {
+            id_jag_trusts: None,
             tenant_policy: &asterius_domain::RegistrationPolicy::default(),
             tenant,
             clients: repository,

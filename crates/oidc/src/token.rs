@@ -236,6 +236,7 @@ mod tests {
             ciba: true,
             device_flow: true,
             token_exchange: true,
+            id_jag: false,
             ssf: true,
             dynamic_client_registration: true,
             self_registration: true,

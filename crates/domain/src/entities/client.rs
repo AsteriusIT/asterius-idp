@@ -3007,6 +3007,7 @@ mod tests {
             ciba: true,
             device_flow: true,
             token_exchange: true,
+            id_jag: false,
             ssf: true,
             authzen: true,
             authzen_search: true,
