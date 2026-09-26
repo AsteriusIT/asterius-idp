@@ -56,6 +56,19 @@ use crate::{
     openapi, outbox, policies, resource_servers, saml, scim, scim_groups, ssf, throttle, users,
 };
 
+fn upstream_operation_error(error: ssf::UpstreamOperationError) -> AdminError {
+    match error {
+        ssf::UpstreamOperationError::Peer => AdminError::NotFound,
+        ssf::UpstreamOperationError::PendingReview => AdminError::Conflict(
+            "upstream setup is pending operator review; another stream was not created".to_owned(),
+        ),
+        ssf::UpstreamOperationError::AlreadyConfigured => {
+            AdminError::Conflict("upstream stream is already established".to_owned())
+        }
+        ssf::UpstreamOperationError::Unavailable => AdminError::Unavailable,
+    }
+}
+
 /// The client address, as this crate sees it.
 ///
 /// A type of this crate's own rather than `asterius_server`'s `ClientAddr`,
@@ -387,6 +400,9 @@ async fn route_standard(
         crate::SSF_STREAMS_LIST_ID => context.list_streams().await,
         crate::SSF_STREAM_STATUS_UPDATE_ID => context.update_stream_status(body).await,
         crate::SSF_STREAM_VERIFY_ID => context.verify_stream(body).await,
+        crate::SSF_UPSTREAM_PEERS_LIST_ID => context.list_upstream_peers().await,
+        crate::SSF_UPSTREAM_SETUP_ID => context.setup_upstream_peer(body).await,
+        crate::SSF_UPSTREAM_POLL_ID => context.poll_upstream_peer(body).await,
         crate::SSF_RECEIVER_SUBJECT_BIND_ID => context.bind_receiver_subject(body).await,
         crate::SSF_RECEIVER_SUBJECT_REMOVE_ID => context.remove_receiver_subject(body).await,
         crate::ID_JAG_SUBJECT_BIND_ID => context.bind_id_jag_subject(body).await,
@@ -2896,6 +2912,73 @@ impl Handling<'_> {
         Ok(json_no_store(
             StatusCode::OK,
             &serde_json::json!({ "items": items }),
+        ))
+    }
+
+    /// A token-free, tenant-scoped view of registered upstream transmitters.
+    async fn list_upstream_peers(&self) -> Result<Response, AdminError> {
+        let items = self
+            .state
+            .backend
+            .ssf()
+            .upstream_peers(&self.tenant.id)
+            .await
+            .map_err(upstream_operation_error)?;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({ "items": items }),
+        ))
+    }
+
+    /// Creates or reconciles one remote poll stream behind a durable intent.
+    async fn setup_upstream_peer(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let bytes = axum::body::to_bytes(body, ssf::MAX_BODY_BYTES)
+            .await
+            .map_err(|_| AdminError::Invalid("the request body is too large".to_owned()))?;
+        let peer = ssf::parse_upstream_peer(&bytes)?;
+        self.state
+            .backend
+            .ssf()
+            .upstream_setup(&self.tenant.id, &peer, self.now)
+            .await
+            .map_err(upstream_operation_error)?;
+        self.record(
+            EventType::ADMIN_CHANGED,
+            Detail::new()
+                .label("operation", crate::SSF_UPSTREAM_SETUP_ID)
+                .credential("peer_client_id", peer.as_str()),
+        )
+        .await;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({ "peer_client_id": peer.as_str(), "state": "established" }),
+        ))
+    }
+
+    /// Applies at most one upstream event, then acknowledges it remotely.
+    async fn poll_upstream_peer(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let bytes = axum::body::to_bytes(body, ssf::MAX_BODY_BYTES)
+            .await
+            .map_err(|_| AdminError::Invalid("the request body is too large".to_owned()))?;
+        let peer = ssf::parse_upstream_peer(&bytes)?;
+        let applied = self
+            .state
+            .backend
+            .ssf()
+            .upstream_poll_once(&self.tenant.id, &peer, self.now)
+            .await
+            .map_err(upstream_operation_error)?;
+        self.record(
+            EventType::ADMIN_CHANGED,
+            Detail::new()
+                .label("operation", crate::SSF_UPSTREAM_POLL_ID)
+                .credential("peer_client_id", peer.as_str())
+                .flag("event_applied", applied),
+        )
+        .await;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({ "peer_client_id": peer.as_str(), "event_applied": applied }),
         ))
     }
 

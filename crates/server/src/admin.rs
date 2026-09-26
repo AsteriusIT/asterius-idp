@@ -44,6 +44,7 @@ use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
 use sha2::Digest as _;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::tenancy::TenantDirectory;
@@ -308,6 +309,48 @@ impl AutomationTokenStatus for PgAutomationTokenStatus {
     }
 }
 
+/// Explicit receiver-managed SSF operations share the protocol endpoints'
+/// metadata cache and verifier. The peer table contains only startup-pinned
+/// registrations, never caller-supplied management URLs or bearer values.
+#[derive(Clone)]
+pub struct SsfUpstreamRuntime {
+    endpoints: Arc<crate::http::protocol::ClientEndpoints>,
+    peers: Arc<HashMap<String, Vec<crate::config::SsfUpstreamPeerConfig>>>,
+    poster: crate::outbound::HttpsPoster,
+}
+
+impl std::fmt::Debug for SsfUpstreamRuntime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SsfUpstreamRuntime").finish_non_exhaustive()
+    }
+}
+
+impl SsfUpstreamRuntime {
+    #[must_use]
+    pub fn new(
+        endpoints: Arc<crate::http::protocol::ClientEndpoints>,
+        peers: HashMap<String, Vec<crate::config::SsfUpstreamPeerConfig>>,
+        poster: crate::outbound::HttpsPoster,
+    ) -> Self {
+        Self {
+            endpoints,
+            peers: Arc::new(peers),
+            poster,
+        }
+    }
+
+    fn peer(
+        &self,
+        tenant: &TenantId,
+        peer: &ClientId,
+    ) -> Option<&crate::config::SsfUpstreamPeerConfig> {
+        self.peers
+            .get(tenant.as_str())?
+            .iter()
+            .find(|config| config.issuer.as_str() == peer.as_str())
+    }
+}
+
 /// This deployment, as the admin API sees it.
 #[derive(Clone)]
 pub struct Deployment {
@@ -332,6 +375,7 @@ pub struct Deployment {
     argon2: asterius_domain::Argon2Parameters,
     issuance: Option<Arc<crate::http::agent_issuance::IssuanceGuard>>,
     id_jag_trusts: Arc<crate::id_jag_trust::IdJagTrusts>,
+    ssf_upstream: Option<Arc<SsfUpstreamRuntime>>,
 }
 
 impl std::fmt::Debug for Deployment {
@@ -395,6 +439,7 @@ impl Deployment {
             argon2: parts.argon2,
             issuance: parts.issuance,
             id_jag_trusts: parts.id_jag_trusts,
+            ssf_upstream: parts.ssf_upstream,
         }
     }
 }
@@ -405,6 +450,7 @@ pub struct DeploymentParts {
     pub store: Store,
     /// Startup-validated upstream issuer/actor pins for ID-JAG mappings.
     pub id_jag_trusts: Arc<crate::id_jag_trust::IdJagTrusts>,
+    pub ssf_upstream: Option<Arc<SsfUpstreamRuntime>>,
     /// The process's `dyn TenantRepository`, which is `ProvisionedTenants`.
     pub tenants: Arc<dyn TenantRepository>,
     /// The process's `TenantKeyStore`, holding this deployment's KEK.
@@ -651,6 +697,7 @@ struct DeploymentSsf {
     keys: Arc<dyn asterius_domain::keys::Signer>,
     kek: Arc<dyn asterius_jose::Kek>,
     capabilities: Capabilities,
+    upstream: Option<Arc<SsfUpstreamRuntime>>,
 }
 
 impl std::fmt::Debug for DeploymentSsf {
@@ -726,8 +773,123 @@ impl DeploymentSsf {
     }
 }
 
+fn upstream_setup_error(
+    error: crate::ssf_upstream::SetupError,
+) -> asterius_admin_api::ssf::UpstreamOperationError {
+    use asterius_admin_api::ssf::UpstreamOperationError as Error;
+    tracing::warn!(reason = %error, "explicit upstream SSF operation refused");
+    match error {
+        crate::ssf_upstream::SetupError::Peer => Error::Peer,
+        crate::ssf_upstream::SetupError::PendingReview => Error::PendingReview,
+        crate::ssf_upstream::SetupError::AlreadyConfigured => Error::AlreadyConfigured,
+        _ => Error::Unavailable,
+    }
+}
+
 #[async_trait::async_trait]
 impl asterius_admin_api::ssf::SsfAdministration for DeploymentSsf {
+    async fn upstream_peers(
+        &self,
+        tenant: &TenantId,
+    ) -> Result<
+        Vec<asterius_admin_api::ssf::UpstreamPeerSummary>,
+        asterius_admin_api::ssf::UpstreamOperationError,
+    > {
+        use asterius_admin_api::ssf::{UpstreamOperationError as Error, UpstreamPeerSummary};
+        use time::format_description::well_known::Rfc3339;
+
+        let runtime = self.upstream.as_ref().ok_or(Error::Unavailable)?;
+        let mut items = Vec::new();
+        for config in runtime.peers.get(tenant.as_str()).into_iter().flatten() {
+            let peer = config.issuer.as_str();
+            let repository = runtime
+                .endpoints
+                .store
+                .scope(tenant.clone())
+                .ssf_upstream_streams();
+            let pending = repository
+                .pending_setup(peer)
+                .await
+                .map_err(|_| Error::Unavailable)?;
+            let established = repository
+                .find(peer)
+                .await
+                .map_err(|_| Error::Unavailable)?;
+            let state = if pending.is_some() {
+                "pending_review"
+            } else if established.is_some() {
+                "established"
+            } else {
+                "not_started"
+            };
+            items.push(UpstreamPeerSummary {
+                peer_client_id: peer.to_owned(),
+                state,
+                pending_since: pending
+                    .as_ref()
+                    .and_then(|intent| intent.started_at.format(&Rfc3339).ok()),
+                last_polled_at: established
+                    .as_ref()
+                    .and_then(|stream| stream.last_polled_at)
+                    .and_then(|time| time.format(&Rfc3339).ok()),
+            });
+        }
+        Ok(items)
+    }
+
+    async fn upstream_setup(
+        &self,
+        tenant: &TenantId,
+        peer: &ClientId,
+        now: time::OffsetDateTime,
+    ) -> Result<(), asterius_admin_api::ssf::UpstreamOperationError> {
+        use asterius_admin_api::ssf::UpstreamOperationError as Error;
+        let runtime = self.upstream.as_ref().ok_or(Error::Unavailable)?;
+        let config = runtime.peer(tenant, peer).ok_or(Error::Peer)?;
+        let tenant_entity = self
+            .tenants
+            .find_by_id(tenant)
+            .await
+            .map_err(|_| Error::Unavailable)?
+            .ok_or(Error::Peer)?;
+        crate::ssf_upstream::create_poll_stream(
+            &runtime.endpoints,
+            &tenant_entity,
+            config,
+            &runtime.poster,
+            now,
+        )
+        .await
+        .map(|_| ())
+        .map_err(upstream_setup_error)
+    }
+
+    async fn upstream_poll_once(
+        &self,
+        tenant: &TenantId,
+        peer: &ClientId,
+        now: time::OffsetDateTime,
+    ) -> Result<bool, asterius_admin_api::ssf::UpstreamOperationError> {
+        use asterius_admin_api::ssf::UpstreamOperationError as Error;
+        let runtime = self.upstream.as_ref().ok_or(Error::Unavailable)?;
+        let config = runtime.peer(tenant, peer).ok_or(Error::Peer)?;
+        let tenant_entity = self
+            .tenants
+            .find_by_id(tenant)
+            .await
+            .map_err(|_| Error::Unavailable)?
+            .ok_or(Error::Peer)?;
+        crate::ssf_upstream::poll_once(
+            &runtime.endpoints,
+            &tenant_entity,
+            config,
+            &runtime.poster,
+            now,
+        )
+        .await
+        .map_err(upstream_setup_error)
+    }
+
     async fn streams(
         &self,
         tenant: &TenantId,
@@ -2509,6 +2671,7 @@ impl AdminBackend for Deployment {
             keys: Arc::clone(&self.signer),
             kek: Arc::clone(&self.kek),
             capabilities: self.capabilities,
+            upstream: self.ssf_upstream.clone(),
         })
     }
 
