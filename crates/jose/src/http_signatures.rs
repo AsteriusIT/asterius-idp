@@ -97,8 +97,7 @@ pub fn sign_request(
         body,
         keyid,
         nonce,
-        created,
-        expires,
+        (created, expires),
         key,
     )
 }
@@ -127,8 +126,7 @@ pub fn sign_response(
         body,
         keyid,
         nonce,
-        created,
-        expires,
+        (created, expires),
         key,
     )
 }
@@ -198,10 +196,10 @@ fn sign(
     body: &[u8],
     keyid: &str,
     nonce: &str,
-    created: OffsetDateTime,
-    expires: OffsetDateTime,
+    validity: (OffsetDateTime, OffsetDateTime),
     key: &SigningKey,
 ) -> Result<SignedFields, HttpSignatureError> {
+    let (created, expires) = validity;
     if key.algorithm() != SigningAlgorithm::EdDsa {
         return Err(HttpSignatureError::Key);
     }
@@ -394,12 +392,19 @@ fn signature_base(
         if value.contains('\r') || value.contains('\n') {
             return Err(HttpSignatureError::Format);
         }
-        base.push_str(&format!("\"{name}\": {value}\n"));
+        base.push('"');
+        base.push_str(name);
+        base.push_str("\": ");
+        base.push_str(value);
+        base.push('\n');
     }
-    base.push_str(&format!("\"content-digest\": {content_digest}\n"));
+    base.push_str("\"content-digest\": ");
+    base.push_str(content_digest);
+    base.push('\n');
     let params = signature_input
         .strip_prefix("sig1=")
         .ok_or(HttpSignatureError::Format)?;
-    base.push_str(&format!("\"@signature-params\": {params}"));
+    base.push_str("\"@signature-params\": ");
+    base.push_str(params);
     Ok(base)
 }

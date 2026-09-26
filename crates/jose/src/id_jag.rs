@@ -90,17 +90,7 @@ pub fn validate(
     policy: &IdJagPolicy,
     now: OffsetDateTime,
 ) -> Result<ValidatedIdJag, IdJagError> {
-    if policy.issuer.is_empty()
-        || policy.audience.is_empty()
-        || policy.client_id.is_empty()
-        || policy.actor_client_id.is_empty()
-        || policy.dpop_jkt.is_empty()
-        || policy.resources.is_empty()
-        || policy.scopes.is_empty()
-        || policy.issuer_keys.is_empty()
-    {
-        return Err(IdJagError::IncompletePolicy);
-    }
+    validate_policy(policy)?;
     let jwt_policy = Policy::new(
         TypRule::Exactly("oauth-id-jag+jwt"),
         SigningAlgorithm::ALL.to_vec(),
@@ -200,6 +190,21 @@ pub fn validate(
         scopes,
         expires_at,
     })
+}
+
+fn validate_policy(policy: &IdJagPolicy) -> Result<(), IdJagError> {
+    if policy.issuer.is_empty()
+        || policy.audience.is_empty()
+        || policy.client_id.is_empty()
+        || policy.actor_client_id.is_empty()
+        || policy.dpop_jkt.is_empty()
+        || policy.resources.is_empty()
+        || policy.scopes.is_empty()
+        || policy.issuer_keys.is_empty()
+    {
+        return Err(IdJagError::IncompletePolicy);
+    }
+    Ok(())
 }
 
 fn nonempty_string<'a>(claims: &'a Value, name: &'static str) -> Result<&'a str, IdJagError> {

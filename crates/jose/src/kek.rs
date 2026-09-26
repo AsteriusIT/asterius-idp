@@ -189,7 +189,7 @@ pub enum RowSecret {
     TotpSeed,
     /// Private key for one Federation Entity Statement signing key.
     FederationSigningKey,
-    /// RSA private key for a tenant's SAML IdP certificate fingerprint.
+    /// RSA private key for a tenant's SAML `IdP` certificate fingerprint.
     SamlIdpSigningKey,
     /// A Claims Provider signed UserInfo JWT for one user and issuer.
     ClaimsProviderUserInfo,

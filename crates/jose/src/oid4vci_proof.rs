@@ -1,4 +1,4 @@
-//! The supported OpenID4VCI 1.0 JWT wallet key proof profile.
+//! The supported `OpenID4VCI` 1.0 JWT wallet key proof profile.
 //!
 //! A verified proof is still not an authorization to issue. Its nonce must be
 //! consumed atomically by the issuer for the same tenant and access token.
@@ -8,7 +8,7 @@ use asterius_domain::{Issuer, Kid, SigningAlgorithm};
 use serde_json::Value;
 use time::OffsetDateTime;
 
-/// Explicit JOSE type required by OpenID4VCI 1.0 Appendix F.1.
+/// Explicit JOSE type required by `OpenID4VCI` 1.0 Appendix F.1.
 pub const TYPE: &str = "openid4vci-proof+jwt";
 /// The single wallet proof algorithm currently accepted.
 pub const ALGORITHM: SigningAlgorithm = SigningAlgorithm::Es256;
