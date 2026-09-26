@@ -160,6 +160,27 @@ pub const MAX_TOKEN_BYTES: usize = 8 * 1024;
 /// a configured freshness window bounds delivery and replay retention instead.
 pub const MAX_SET_AGE: time::Duration = time::Duration::minutes(5);
 
+/// Local maximum age for poll-delivered SETs. RFC 8936 permits queued and
+/// redelivered SETs but does not specify an age limit. Seven days lets an
+/// operator recover a delayed stream while bounding historical actions and
+/// the associated replay tombstones. Push delivery keeps [`MAX_SET_AGE`].
+pub const MAX_POLLED_SET_AGE: time::Duration = time::Duration::days(7);
+
+#[derive(Clone, Copy)]
+enum DeliveryMode {
+    Push,
+    Poll,
+}
+
+impl DeliveryMode {
+    const fn max_age(self) -> time::Duration {
+        match self {
+            Self::Push => MAX_SET_AGE,
+            Self::Poll => MAX_POLLED_SET_AGE,
+        }
+    }
+}
+
 /// The inbound SET route, mounted only when the tenant's SSF feature is
 /// enabled. The body limit is enforced by Axum before the token is allocated.
 pub fn routes(endpoints: std::sync::Arc<crate::http::protocol::ClientEndpoints>) -> Router {
@@ -460,6 +481,9 @@ pub enum ReceiverError {
     /// Signature, claim, or token type validation failed.
     #[error("the security event token could not be verified")]
     Token,
+    /// A signed SET exceeds this receiver's local delivery age policy.
+    #[error("the security event token exceeds the local delivery age limit")]
+    TooOld,
     /// A required SET profile member is absent or malformed.
     #[error("the security event token has an invalid SET profile")]
     Profile,
@@ -865,8 +889,51 @@ pub async fn verify_for_configured_peer(
     token: &str,
     now: OffsetDateTime,
 ) -> Result<VerifiedEvent, ReceiverError> {
+    verify_for_configured_peer_mode(
+        endpoints,
+        tenant,
+        peer,
+        audience,
+        token,
+        now,
+        DeliveryMode::Push,
+    )
+    .await
+}
+
+/// Verifies a queued RFC 8936 SET using the bounded poll-only age policy.
+/// The push route continues to use the five-minute limit.
+pub async fn verify_polled_for_configured_peer(
+    endpoints: &crate::http::protocol::ClientEndpoints,
+    tenant: &Tenant,
+    peer: &ClientId,
+    audience: &str,
+    token: &str,
+    now: OffsetDateTime,
+) -> Result<VerifiedEvent, ReceiverError> {
+    verify_for_configured_peer_mode(
+        endpoints,
+        tenant,
+        peer,
+        audience,
+        token,
+        now,
+        DeliveryMode::Poll,
+    )
+    .await
+}
+
+async fn verify_for_configured_peer_mode(
+    endpoints: &crate::http::protocol::ClientEndpoints,
+    tenant: &Tenant,
+    peer: &ClientId,
+    audience: &str,
+    token: &str,
+    now: OffsetDateTime,
+    mode: DeliveryMode,
+) -> Result<VerifiedEvent, ReceiverError> {
     let (issuer, jwks, scopes, _metadata) = configured_peer(endpoints, tenant, peer).await?;
-    let event = verify_inbound_set(
+    let event = verify_inbound_set_mode(
         endpoints.authenticator.client_keys(),
         tenant,
         peer,
@@ -875,6 +942,7 @@ pub async fn verify_for_configured_peer(
         audience,
         token,
         now,
+        mode,
     )
     .await?;
     let required_scope = match event.event_type {
@@ -904,6 +972,32 @@ pub async fn verify_inbound_set(
     token: &str,
     now: OffsetDateTime,
 ) -> Result<VerifiedEvent, ReceiverError> {
+    verify_inbound_set_mode(
+        cache,
+        tenant,
+        client,
+        issuer,
+        jwks,
+        audience,
+        token,
+        now,
+        DeliveryMode::Push,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)] // The extra mode keeps push and poll policy explicit at this boundary.
+async fn verify_inbound_set_mode(
+    cache: &ClientKeyCache,
+    tenant: &Tenant,
+    client: &ClientId,
+    issuer: &Issuer,
+    jwks: &JwksSource,
+    audience: &str,
+    token: &str,
+    now: OffsetDateTime,
+    mode: DeliveryMode,
+) -> Result<VerifiedEvent, ReceiverError> {
     let header = asterius_jose::jws::parse(token).map_err(|_| ReceiverError::Token)?;
     let raw_header: Value =
         serde_json::from_slice(header.raw_header()).map_err(|_| ReceiverError::Token)?;
@@ -927,13 +1021,14 @@ pub async fn verify_inbound_set(
     .without_expiry();
     let verified =
         verify::verify(token, &policy, &key_set, now).map_err(|_| ReceiverError::Token)?;
-    parse_verified_event(client, verified, now)
+    parse_verified_event(client, verified, now, mode)
 }
 
 fn parse_verified_event(
     peer: &ClientId,
     verified: Verified,
     now: OffsetDateTime,
+    mode: DeliveryMode,
 ) -> Result<VerifiedEvent, ReceiverError> {
     let claims = &verified.claims;
     let jti = claims
@@ -950,12 +1045,21 @@ fn parse_verified_event(
         .and_then(Value::as_i64)
         .and_then(|seconds| time::OffsetDateTime::from_unix_timestamp(seconds).ok())
         .ok_or(ReceiverError::Profile)?;
-    let replay_until = issued_at
-        .checked_add(MAX_SET_AGE)
+    let accepted_until = issued_at
+        .checked_add(mode.max_age())
         .ok_or(ReceiverError::Profile)?;
-    if replay_until < now {
-        return Err(ReceiverError::Token);
+    if accepted_until <= now {
+        return Err(ReceiverError::TooOld);
     }
+    // Poll tombstones survive for a full poll window after receipt. This
+    // remains safe even when a queued SET arrives just before its age limit.
+    let replay_until = match mode {
+        DeliveryMode::Push => accepted_until,
+        DeliveryMode::Poll => now
+            .checked_add(MAX_POLLED_SET_AGE)
+            .ok_or(ReceiverError::Profile)?
+            .max(accepted_until),
+    };
     if claims
         .get("txn")
         .and_then(Value::as_str)
