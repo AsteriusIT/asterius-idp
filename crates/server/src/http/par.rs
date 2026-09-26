@@ -90,6 +90,8 @@ pub struct PushContext<'a> {
     pub request_objects: Option<&'a asterius_jose::client_keys::ClientKeyCache>,
     /// Static per-tenant allow-list of clients requiring FAPI signed JAR.
     pub fapi_message_signing_clients: Option<&'a std::collections::BTreeSet<String>>,
+    /// Static per-tenant clients whose authorization redirect must use HTTPS.
+    pub ipsie_https_only_clients: Option<&'a std::collections::BTreeSet<String>>,
     /// This tenant's grants, for the `grant_id` of Grant Management ID1 §5.2.
     ///
     /// `Some` exactly when [`asterius_domain::Feature::GrantManagement`] is on
@@ -212,6 +214,10 @@ pub async fn push(
             );
         }
     };
+
+    if let Some(refusal) = refuse_an_insecure_ipsie_redirect(&context, &client, &request) {
+        return refusal;
+    }
 
     // FAPI 2.0 Message Signing Final §5.4.2 names the literal `jwt` mode.
     // Enforce it while the authenticated client can still receive a PAR error.
@@ -359,6 +365,9 @@ pub async fn direct(
             &failure.to_string(),
         ))
     })?;
+    if let Some(refusal) = refuse_an_insecure_ipsie_redirect(&context, &client, &request) {
+        return Err(Box::new(refusal));
+    }
     let hinted_subject = hinted_subject(&context, &client, &request, now).await?;
     if let Some(refusal) = refuse_an_unservable_form_post(&request) {
         return Err(Box::new(refusal));
@@ -541,6 +550,33 @@ async fn hinted_subject(
         Some(subject) => Ok(Some(subject.to_owned())),
         None => Err(refused()),
     }
+}
+
+/// Enforces the IPSIE SL1 draft's HTTPS callback rule for selected clients.
+///
+/// The ordinary registration validator deliberately permits native HTTP
+/// loopback URIs. A selected client may still have such a URI in its persisted
+/// registration, but cannot start a new authorization using it. This check
+/// follows validation so the URI has already been matched to the client.
+fn refuse_an_insecure_ipsie_redirect(
+    context: &PushContext<'_>,
+    client: &Client,
+    request: &authorize::AuthorizationRequest,
+) -> Option<Response> {
+    let selected = context
+        .ipsie_https_only_clients
+        .is_some_and(|clients| clients.contains(client.id.as_str()));
+    if !selected {
+        return None;
+    }
+    let secure = url::Url::parse(&request.redirect_uri).is_ok_and(|uri| uri.scheme() == "https");
+    (!secure).then(|| {
+        error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "this client requires an HTTPS redirect_uri",
+        )
+    })
 }
 
 /// Refuses `response_mode=form_post` for a callback no policy can name.

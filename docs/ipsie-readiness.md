@@ -36,7 +36,7 @@ requirements are excluded unless they constrain something this OP offers.
 | Draft obligation | Current OP path and result |
 |---|---|
 | `response_type=code`, PKCE S256, one-use codes | Implemented by `crates/oidc/src/authorize.rs` and code redemption. |
-| Exact registered redirect URI | Implemented for ordinary HTTPS URIs. RFC 8252 native loopback redirects allow a varying port; SL1 separately forbids *all* HTTP redirects. An SL1 client profile must reject loopback HTTP registrations without changing general native-client support. Open gap. |
+| Exact registered redirect URI; no HTTP callback | Ordinary HTTPS URIs use exact registration matching. An operator can list client IDs in the tenant's `ipsie_https_only_client` setting: PAR and direct authorization then reject every non-HTTPS callback, including native HTTP loopback, while ordinary clients retain native support. Configuration load validates list shape and duplicates. Existing registrations may still contain HTTP URIs, but selected clients cannot use them for new authorizations. Registration and update do not yet reject storing those URIs; a request or interaction already stored before this setting is enabled can still complete. Other profile controls are still open. |
 | Authorization response `iss` | Emitted by the authorization response path (RFC 9207). |
 | No credential-bearing 307 redirect; prefer 303 | Browser redirect helper in `crates/server/src/http/redirect.rs` uses 303. |
 | `nonce` values through 64 characters | `crates/oidc/src/authorize.rs` accepts up to 256 bytes and the ID-token builder echoes the value. |
@@ -80,8 +80,8 @@ than a user claim or an unexamined browser-session timestamp.
 
 ## Before claiming SL1 support
 
-Pin an approved revision, define a tenant/client profile boundary, enforce
-HTTPS-only redirects and identity-only token audiences for those clients, make
+Pin an approved revision, define a complete tenant/client profile boundary,
+enforce identity-only token audiences for those clients, make
 registration policy non-bypassable, issue truthful mandatory ID-token claims,
 implement back-channel JWE, collect TLS/operator evidence, and run the
 relevant OpenID interoperability and conformance plans. Until those gaps are

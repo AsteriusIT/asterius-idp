@@ -122,6 +122,9 @@ pub struct ClientEndpoints {
     /// Operator-selected clients that must use signed FAPI JAR at PAR.
     pub fapi_message_signing_clients:
         Arc<std::collections::HashMap<String, std::collections::BTreeSet<String>>>,
+    /// Operator-selected clients whose authorization redirect must use HTTPS.
+    pub ipsie_https_only_clients:
+        Arc<std::collections::HashMap<String, std::collections::BTreeSet<String>>>,
     /// Bounded, fail-closed discovery cache for configured SSF transmitters.
     pub ssf_metadata_cache: Arc<crate::http::ssf_receiver::UpstreamMetadataCache>,
     /// Pinned request-signature keys for configured SSF transmitters.
@@ -1669,6 +1672,7 @@ async fn pushed_authorization_request_inner(
             fapi_message_signing_clients: endpoints
                 .fapi_message_signing_clients
                 .get(tenant.id.as_str()),
+            ipsie_https_only_clients: endpoints.ipsie_https_only_clients.get(tenant.id.as_str()),
             grants,
         },
         headers,
@@ -4659,6 +4663,7 @@ async fn direct_authorization_pairs(
             certificate: None,
             request_objects: None,
             fapi_message_signing_clients: None,
+            ipsie_https_only_clients: endpoints.ipsie_https_only_clients.get(tenant.id.as_str()),
             grants,
         },
         pairs,
