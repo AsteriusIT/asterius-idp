@@ -1084,9 +1084,9 @@ fn tenant() -> Section {
             ),
             key(
                 "claims_provider",
-                "array of { issuer, jwks_file, allowed_claims, userinfo_endpoint?, client_id? } tables",
+                "array of { issuer, jwks_file, allowed_claims, userinfo_endpoint?, client_id?, authorization_endpoint?, token_endpoint?, scope? } tables",
                 "empty (aggregated delivery disabled)".to_owned(),
-                "Pins Claims Provider issuer, local public JWKS and approved attribute names for signed UserInfo aggregation. Up to four providers, each with up to sixteen attributes. To permit protected UserInfo collection after a separately established OAuth grant, set both a canonical HTTPS userinfo_endpoint and the CP-registered client_id; signed UserInfo must name that client ID as its sole audience. OAuth setup and credential lifecycle remain separately tracked.",
+                "Pins Claims Provider issuer, local public JWKS and approved attribute names for signed UserInfo aggregation. Up to four providers, each with up to sixteen attributes. The public-client OAuth setup profile additionally needs canonical HTTPS authorization_endpoint, token_endpoint and userinfo_endpoint, a CP-registered client_id and a scope containing openid. Register this OP at the CP for authorization code with PKCE S256 and a signed UserInfo response, with redirect URI at this tenant issuer plus /account/claims-providers/callback. The access token is used only in the callback, then discarded; renewal and long-lived credential custody are not offered. Signed UserInfo must name client_id as its sole audience.",
             ),
             key(
                 "http_signature_peer",

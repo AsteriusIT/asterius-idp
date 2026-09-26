@@ -351,6 +351,10 @@ pub struct ClaimsProviderConfig {
     pub userinfo_endpoint: Option<String>,
     /// The OP's registered client ID at this CP; signed UserInfo uses it as aud.
     pub client_id: Option<String>,
+    /// Pre-registered public OIDC client endpoints for authorization code + PKCE.
+    pub authorization_endpoint: Option<String>,
+    pub token_endpoint: Option<String>,
+    pub scope: Option<String>,
 }
 
 /// Operator-pinned OID4VP verifier and credential trust policy.
@@ -829,6 +833,9 @@ struct RawClaimsProvider {
     allowed_claims: Vec<String>,
     userinfo_endpoint: Option<String>,
     client_id: Option<String>,
+    authorization_endpoint: Option<String>,
+    token_endpoint: Option<String>,
+    scope: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2646,15 +2653,47 @@ fn validate_claims_providers(
                     return None;
                 }
             };
+            let (authorization_endpoint, token_endpoint, scope) =
+                match (entry.authorization_endpoint, entry.token_endpoint, entry.scope) {
+                    (None, None, None) => (None, None, None),
+                    (Some(authorization), Some(token), Some(scope))
+                        if userinfo_endpoint.is_some()
+                            && valid_claims_provider_endpoint(&authorization)
+                            && valid_claims_provider_endpoint(&token)
+                            && valid_claims_provider_scope(&scope) =>
+                    {
+                        (Some(authorization), Some(token), Some(scope))
+                    }
+                    _ => {
+                        errors.problem(path, "authorization_endpoint, token_endpoint and scope must all be set for a public Claims Provider OAuth client");
+                        return None;
+                    }
+                };
             Some(ClaimsProviderConfig {
                 issuer,
                 jwks_file: entry.jwks_file,
                 allowed_claims,
                 userinfo_endpoint,
                 client_id,
+                authorization_endpoint,
+                token_endpoint,
+                scope,
             })
         })
         .collect()
+}
+
+fn valid_claims_provider_scope(scope: &str) -> bool {
+    scope.len() <= 512
+        && scope
+            .split_ascii_whitespace()
+            .any(|value| value == "openid")
+        && scope.split_ascii_whitespace().all(|value| {
+            !value.is_empty()
+                && value
+                    .bytes()
+                    .all(|byte| (0x21..=0x7e).contains(&byte) && byte != b'"' && byte != b'\\')
+        })
 }
 
 fn valid_claims_provider_endpoint(raw: &str) -> bool {

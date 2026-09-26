@@ -106,6 +106,7 @@ pub const fn location_of(destination: FirstPartyDestination) -> &'static str {
         FirstPartyDestination::AccountSessions => "../account/sessions",
         FirstPartyDestination::AccountActivity => "../account/activity",
         FirstPartyDestination::AccountEmail => "../account/email",
+        FirstPartyDestination::AccountClaimsProviders => "../account/claims-providers",
     }
 }
 

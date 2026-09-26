@@ -10,9 +10,9 @@ use crate::config::{ClaimsProviderConfig, TenantConfig};
 use crate::outbound::HttpsClientUrlFetcher;
 use asterius_domain::{DomainError, Tenant};
 use asterius_jose::{
-    ClientKeySet,
+    ClientKeySet, Policy, TypRule,
     claims_aggregation::{ClaimsProviderPolicy, VerifiedClaimSet, verify_signed_userinfo},
-    keys_from_jwk_set,
+    keys_from_jwk_set, verify,
 };
 use asterius_oidc::claims::ClaimsRequest;
 use asterius_store_pg::StoredClaimSource;
@@ -37,6 +37,20 @@ struct Provider {
     allowed_claims: BTreeSet<String>,
     userinfo_endpoint: Option<String>,
     client_id: Option<String>,
+    authorization_endpoint: Option<String>,
+    token_endpoint: Option<String>,
+    scope: Option<String>,
+}
+
+/// Operator-pinned public-client registration for one Claims Provider.
+#[derive(Debug, Clone)]
+pub struct OAuthRegistration {
+    pub issuer: String,
+    pub client_id: String,
+    pub authorization_endpoint: String,
+    pub token_endpoint: String,
+    pub scope: String,
+    pub allowed_claims: BTreeSet<String>,
 }
 
 /// Trusted CPs loaded once from each tenant's operator-owned files.
@@ -44,6 +58,98 @@ struct Provider {
 pub struct ClaimsProviders(HashMap<String, HashMap<String, Provider>>);
 
 impl ClaimsProviders {
+    /// Verify the CP authentication response before binding its subject to a
+    /// local user. The callback nonce is from a single-use pending transaction.
+    pub fn verify_id_token(
+        &self,
+        tenant_id: &str,
+        issuer: &str,
+        compact: &str,
+        access_token: &str,
+        expected_nonce: &str,
+        now: OffsetDateTime,
+    ) -> Result<String, DomainError> {
+        let provider = self
+            .0
+            .get(tenant_id)
+            .and_then(|entries| entries.get(issuer))
+            .ok_or_else(|| DomainError::invalid("claims_provider", "provider is not configured"))?;
+        let client_id = provider.client_id.as_deref().ok_or_else(|| {
+            DomainError::invalid("claims_provider", "client ID is not configured")
+        })?;
+        let mut policy = Policy::new(
+            TypRule::OptionalOneOf(&["JWT"]),
+            asterius_domain::SigningAlgorithm::ALL.to_vec(),
+        )
+        .issued_by(issuer)
+        .for_audience(client_id);
+        policy.max_bytes = 8 * 1024;
+        let verified = verify(compact, &policy, &provider.keys, now)
+            .map_err(|error| DomainError::invalid("claims_provider.id_token", error.to_string()))?;
+        let claims = verified.claims.as_object().ok_or_else(|| {
+            DomainError::invalid("claims_provider.id_token", "claims are not an object")
+        })?;
+        if claims.get("nonce").and_then(Value::as_str) != Some(expected_nonce)
+            || claims.get("aud").and_then(Value::as_str) != Some(client_id)
+            || claims
+                .get("azp")
+                .is_some_and(|value| value.as_str() != Some(client_id))
+        {
+            return Err(DomainError::invalid(
+                "claims_provider.id_token",
+                "nonce, audience or token binding is invalid",
+            ));
+        }
+        if claims.get("at_hash").is_some_and(|value| {
+            value.as_str()
+                != Some(
+                    asterius_oidc::tokens::token_hash(verified.algorithm, access_token).as_str(),
+                )
+        }) {
+            return Err(DomainError::invalid(
+                "claims_provider.id_token",
+                "access token hash does not match",
+            ));
+        }
+        let issued_at = claims.get("iat").and_then(Value::as_i64).ok_or_else(|| {
+            DomainError::invalid("claims_provider.id_token", "issued-at time is missing")
+        })?;
+        if issued_at > now.unix_timestamp() + 10 || issued_at < now.unix_timestamp() - 600 {
+            return Err(DomainError::invalid(
+                "claims_provider.id_token",
+                "issued-at time is outside setup window",
+            ));
+        }
+        let subject = claims.get("sub").and_then(Value::as_str).ok_or_else(|| {
+            DomainError::invalid("claims_provider.id_token", "subject is missing")
+        })?;
+        if subject.is_empty() || subject.len() > 256 {
+            return Err(DomainError::invalid(
+                "claims_provider.id_token",
+                "subject is invalid",
+            ));
+        }
+        Ok(subject.to_owned())
+    }
+    /// List only CPs with a complete public-client PKCE profile.
+    #[must_use]
+    pub fn oauth_registrations(&self, tenant_id: &str) -> Vec<OAuthRegistration> {
+        let mut registrations: Vec<OAuthRegistration> = self
+            .0
+            .get(tenant_id)
+            .into_iter()
+            .flat_map(HashMap::values)
+            .filter_map(|provider| provider.registration())
+            .collect();
+        registrations.sort_by(|left, right| left.issuer.cmp(&right.issuer));
+        registrations
+    }
+
+    /// Resolve one configured CP by its exact issuer.
+    #[must_use]
+    pub fn oauth_registration(&self, tenant_id: &str, issuer: &str) -> Option<OAuthRegistration> {
+        self.0.get(tenant_id)?.get(issuer)?.registration()
+    }
     /// Loads pinned JWKS; a missing, malformed or keyless file stops startup.
     ///
     /// # Errors
@@ -210,6 +316,19 @@ impl ClaimsProviders {
     }
 }
 
+impl Provider {
+    fn registration(&self) -> Option<OAuthRegistration> {
+        Some(OAuthRegistration {
+            issuer: self.issuer.clone(),
+            client_id: self.client_id.clone()?,
+            authorization_endpoint: self.authorization_endpoint.clone()?,
+            token_endpoint: self.token_endpoint.clone()?,
+            scope: self.scope.clone()?,
+            allowed_claims: self.allowed_claims.clone(),
+        })
+    }
+}
+
 fn load_provider(entry: &ClaimsProviderConfig) -> Result<Provider, String> {
     const MAX_JWKS_BYTES: u64 = 65_536;
     let path: &Path = &entry.jwks_file;
@@ -247,5 +366,8 @@ fn load_provider(entry: &ClaimsProviderConfig) -> Result<Provider, String> {
         allowed_claims: entry.allowed_claims.clone(),
         userinfo_endpoint: entry.userinfo_endpoint.clone(),
         client_id: entry.client_id.clone(),
+        authorization_endpoint: entry.authorization_endpoint.clone(),
+        token_endpoint: entry.token_endpoint.clone(),
+        scope: entry.scope.clone(),
     })
 }

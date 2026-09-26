@@ -45,8 +45,8 @@ use crate::http::token::{self, TokenContext};
 use crate::http::userinfo;
 use crate::http::verify_email;
 use crate::http::{
-    account_activity, account_email, account_passkeys, account_password, account_sessions,
-    account_totp,
+    account_activity, account_claims_providers, account_email, account_passkeys, account_password,
+    account_sessions, account_totp,
 };
 use crate::tenancy::MountPrefix;
 use crate::tenant_settings::SettingsDirectory;
@@ -944,6 +944,16 @@ fn account_pages(endpoints: Arc<ClientEndpoints>) -> Router {
             get(account_totp_page)
                 .post(account_totp_submit)
                 .with_state(Arc::clone(&endpoints)),
+        )
+        .route(
+            account_claims_providers::PAGE_PATH,
+            get(account_claims_providers_page)
+                .post(account_claims_providers_submit)
+                .with_state(Arc::clone(&endpoints)),
+        )
+        .route(
+            account_claims_providers::CALLBACK_PATH,
+            get(account_claims_providers_callback).with_state(Arc::clone(&endpoints)),
         )
         .route(
             account_passkeys::SIGN_IN_PATH,
@@ -6910,6 +6920,109 @@ async fn account_passkeys_sign_in(
     let text = language.for_request(&asterius_domain::locale::UiLocales::default());
     account_passkeys::sign_in(
         &passkeys_account_context(&endpoints, &tenant, &parts, &text, &nonce, mount),
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// `GET /account/totp` — lifecycle status without opening a stored seed.
+async fn account_claims_providers_page(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let parts = match account_parts(&endpoints, &tenant).await {
+        Ok(parts) => parts,
+        Err(_) => return unavailable(),
+    };
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    let pending = asterius_store_pg::PgCpOAuth::new(
+        endpoints.store.pool().clone(),
+        tenant.id.clone(),
+        Arc::clone(&endpoints.kek),
+    );
+    let sources = endpoints
+        .store
+        .scope(tenant.id.clone())
+        .aggregated_claims(Arc::clone(&endpoints.kek));
+    let context = account_claims_providers::Context {
+        account: account_context(&tenant, &parts, &text, &nonce, mount),
+        providers: endpoints.claims_providers.as_ref(),
+        pending: &pending,
+        sources: &sources,
+    };
+    account_claims_providers::page(&context, &headers, time::OffsetDateTime::now_utc()).await
+}
+
+async fn account_claims_providers_submit(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let parts = match account_parts(&endpoints, &tenant).await {
+        Ok(parts) => parts,
+        Err(_) => return unavailable(),
+    };
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    let pending = asterius_store_pg::PgCpOAuth::new(
+        endpoints.store.pool().clone(),
+        tenant.id.clone(),
+        Arc::clone(&endpoints.kek),
+    );
+    let sources = endpoints
+        .store
+        .scope(tenant.id.clone())
+        .aggregated_claims(Arc::clone(&endpoints.kek));
+    let context = account_claims_providers::Context {
+        account: account_context(&tenant, &parts, &text, &nonce, mount),
+        providers: endpoints.claims_providers.as_ref(),
+        pending: &pending,
+        sources: &sources,
+    };
+    account_claims_providers::submit(&context, &headers, &body, time::OffsetDateTime::now_utc())
+        .await
+}
+
+async fn account_claims_providers_callback(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
+) -> Response {
+    let parts = match account_parts(&endpoints, &tenant).await {
+        Ok(parts) => parts,
+        Err(_) => return unavailable(),
+    };
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    let pending = asterius_store_pg::PgCpOAuth::new(
+        endpoints.store.pool().clone(),
+        tenant.id.clone(),
+        Arc::clone(&endpoints.kek),
+    );
+    let sources = endpoints
+        .store
+        .scope(tenant.id.clone())
+        .aggregated_claims(Arc::clone(&endpoints.kek));
+    let context = account_claims_providers::Context {
+        account: account_context(&tenant, &parts, &text, &nonce, mount),
+        providers: endpoints.claims_providers.as_ref(),
+        pending: &pending,
+        sources: &sources,
+    };
+    account_claims_providers::callback(
+        &context,
+        &headers,
+        query.as_deref(),
         time::OffsetDateTime::now_utc(),
     )
     .await
