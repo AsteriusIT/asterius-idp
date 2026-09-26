@@ -7,8 +7,19 @@
 //! transaction must exist before a JWT-bearer grant handler is registered.
 
 use crate::config::TenantConfig;
-use asterius_jose::{ClientKeySet, id_jag::IdJagPolicy, parse_jwk_set};
+use asterius_jose::{
+    ClientKeySet,
+    id_jag::{self, IdJagPolicy, ValidatedIdJag},
+    parse_jwk_set,
+};
+use serde_json::Value;
 use std::{collections::HashMap, fs};
+use time::OffsetDateTime;
+
+/// One generic refusal for unknown issuers and invalid assertions alike.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("ID-JAG assertion cannot be redeemed")]
+pub struct UntrustedIdJag;
 
 #[derive(Debug, Clone)]
 struct Trust {
@@ -61,8 +72,7 @@ impl IdJagTrusts {
 
     /// Builds a preflight policy from a configured issuer/client pair and a
     /// DPoP key already proved at this request's token endpoint.
-    #[must_use]
-    pub fn policy(
+    fn policy(
         &self,
         tenant_id: &str,
         issuer: &str,
@@ -83,5 +93,45 @@ impl IdJagTrusts {
             scopes: trust.config.scopes.clone(),
             issuer_keys: trust.keys.clone(),
         })
+    }
+
+    /// Verifies an ID-JAG using only the authenticated client's operator-pinned
+    /// issuer keys and actor. An unverified `iss` selects a candidate pin; it
+    /// cannot authorize the token or introduce a key source. The request's
+    /// DPoP key must already have been proved by the token endpoint.
+    ///
+    /// # Errors
+    /// Returns the same refusal for an unknown pin and every invalid token.
+    pub fn verify(
+        &self,
+        tenant_id: &str,
+        client_id: &str,
+        dpop_jkt: &str,
+        token: &str,
+        now: OffsetDateTime,
+    ) -> Result<ValidatedIdJag, UntrustedIdJag> {
+        if token.is_empty() || token.len() > 8192 || dpop_jkt.is_empty() {
+            return Err(UntrustedIdJag);
+        }
+        let parsed = asterius_jose::jws::parse(token).map_err(|_| UntrustedIdJag)?;
+        let header: Value =
+            serde_json::from_slice(parsed.raw_header()).map_err(|_| UntrustedIdJag)?;
+        if header.as_object().is_some_and(|fields| {
+            ["jku", "x5u", "jwk", "x5c"]
+                .iter()
+                .any(|name| fields.contains_key(*name))
+        }) {
+            return Err(UntrustedIdJag);
+        }
+        let claims: Value =
+            serde_json::from_slice(parsed.unverified_payload()).map_err(|_| UntrustedIdJag)?;
+        let issuer = claims
+            .get("iss")
+            .and_then(Value::as_str)
+            .ok_or(UntrustedIdJag)?;
+        let policy = self
+            .policy(tenant_id, issuer, client_id, dpop_jkt)
+            .ok_or(UntrustedIdJag)?;
+        id_jag::validate(token, &policy, now).map_err(|_| UntrustedIdJag)
     }
 }

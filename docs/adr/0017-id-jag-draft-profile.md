@@ -50,6 +50,14 @@ validation policy with the routed tenant's issuer as audience and the request's
 proven DPoP thumbprint. No token endpoint handler reads this policy yet, so
 adding a trust entry alone cannot redeem an ID-JAG.
 
+The token endpoint's prepared preflight accepts only a bounded compact JWT.
+It treats unverified `iss` solely as a lookup key for the authenticated
+downstream client's configured issuer; it rejects header-supplied `jku`, `x5u`,
+`jwk` and `x5c`, and validates the signature, actor, audience, resource,
+scopes, lifetime and proven DPoP thumbprint against the pinned policy. Unknown
+issuers and invalid assertions return one generic refusal. The grant remains
+unregistered until the owner consent and atomic issuance path is complete.
+
 The storage boundary has three separate tenant-scoped records: an
 operator-provisioned exact `(issuer, sub) → local user` binding, an owner
 consent for that user and exact issuer/actor/client/resource/scope set, and a
