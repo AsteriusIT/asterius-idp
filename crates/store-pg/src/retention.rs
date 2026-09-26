@@ -504,6 +504,37 @@ pub const POLICY: &[Retention] = &[
         },
     },
     Retention {
+        table: "saml_pending_logins",
+        rule: Rule::Sweep {
+            // The parent interaction also cascades on expiry. Sweep this row
+            // directly so a failed parent pass cannot retain a browser login
+            // correlator or a validated SP request beyond its ten minutes.
+            statement: "delete from saml_pending_logins where ctid = any (array(
+                            select ctid from saml_pending_logins
+                             where tenant_id = $1 and expires_at <= $2
+                             limit $3))",
+            grace: Duration::ZERO,
+        },
+    },
+    Retention {
+        table: "saml_sp_trusts",
+        rule: Rule::Kept(
+            "an SP's ACS and signing key are operator-approved configuration; a timer must not silently withdraw them",
+        ),
+    },
+    Retention {
+        table: "saml_authn_request_replays",
+        rule: Rule::Kept(
+            "SAML AuthnRequest ID tombstones survive SP replacement so a retired trust row cannot make an old request usable again",
+        ),
+    },
+    Retention {
+        table: "saml_idp_signing_keys",
+        rule: Rule::Kept(
+            "active and overlap signing keys are operator-managed, while retired public certificates remain for audit history",
+        ),
+    },
+    Retention {
         table: "grants",
         rule: Rule::Sweep {
             // Client-only grants, and nothing else.

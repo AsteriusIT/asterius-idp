@@ -39,6 +39,12 @@ impl<'a> TenantScope<'a> {
         crate::PgSamlTrust::new(self.pool.clone(), self.tenant.clone())
     }
 
+    /// One-use SP-initiated login continuations bound to a browser session.
+    #[must_use]
+    pub fn saml_pending(&self) -> crate::PgSamlPending {
+        crate::PgSamlPending::new(self.pool.clone(), self.tenant.clone())
+    }
+
     /// Dedicated KEK-wrapped SAML IdP signing material for this tenant.
     #[must_use]
     pub fn saml_idp_keys(&self, kek: Arc<dyn Kek>) -> crate::PgSamlIdpKeys {

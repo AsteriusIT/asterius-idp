@@ -196,6 +196,9 @@ pub enum FirstPartyDestination {
     AccountClaimsProviders,
     /// Return to the account owner's ID-JAG approval page after sign-in.
     AccountIdJagConsent,
+    /// Resume one replay-reserved SAML AuthnRequest after first-party sign-in.
+    /// The request and ACS are held in a separate tenant-scoped one-use row.
+    SamlSso,
 }
 
 impl FirstPartyDestination {
@@ -216,6 +219,7 @@ impl FirstPartyDestination {
             Self::AccountEmail => "account_email",
             Self::AccountClaimsProviders => "account_claims_providers",
             Self::AccountIdJagConsent => "account_id_jag_consent",
+            Self::SamlSso => "saml_sso",
         }
     }
 
@@ -241,6 +245,7 @@ impl FirstPartyDestination {
             "account_email" => Some(Self::AccountEmail),
             "account_claims_providers" => Some(Self::AccountClaimsProviders),
             "account_id_jag_consent" => Some(Self::AccountIdJagConsent),
+            "saml_sso" => Some(Self::SamlSso),
             _ => None,
         }
     }
