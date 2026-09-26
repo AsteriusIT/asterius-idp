@@ -115,6 +115,7 @@ export const DESTINATIONS: readonly Destination[] = [
   { route: 'tenants', label: 'Tenants', reach: 'deployment', scope: 'admin.tenants:read', bead: 'ast-l5bl', group: 'Deployment' },
   { route: 'keys', label: 'Signing keys', reach: 'tenant', scope: 'admin.keys:read', bead: 'ast-f7m.7', group: 'Trust' },
   { route: 'federation', label: 'Federation keys', reach: 'tenant', scope: 'admin.keys:read', bead: 'ast-s36.14.4', group: 'Trust' },
+  { route: 'saml', label: 'SAML IdP key', reach: 'tenant', scope: 'admin.saml:read', bead: 'ast-s36.28.7', group: 'Trust' },
   // The screen opens by listing the streams (`admin.ssf:read`); the
   // dead-letter table beneath them is shown when the caller also holds
   // `admin.outbox:read`, and the buttons when it holds the write scopes.
