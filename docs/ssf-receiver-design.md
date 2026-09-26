@@ -92,10 +92,17 @@ is read only for an explicit management call and is sent only to same-origin
 configuration and status endpoints retained from verified metadata, through
 the guarded HTTPS transport. The create service checks a 201 JSON stream
 configuration, then a 200 JSON status response for the exact stream ID before
-recording the stream. This remains unexposed: a remote creation can succeed
-just before local persistence fails, and automated retry could create an
-orphan or duplicate stream. The operator must reconcile that condition before
-an operational route can be enabled. The token file has no automatic refresh;
+recording the stream. A durable, tenant-scoped setup intent commits before the
+remote POST. A retry reads the authenticated configuration list and adopts
+only a single stream whose issuer, audience, event set and poll delivery match
+the intent; it never sends a second POST. Ambiguous or empty retry lists leave
+the intent pending for operator review. Stream persistence and intent removal
+commit in one local transaction. This remains unexposed until an admin flow
+can surface pending review and the receiver can enroll subjects and poll.
+Pending intents and established stream identities survive local client
+deletion, so re-registering the same issuer cannot erase the evidence of a
+remote stream that may still exist.
+The token file has no automatic refresh;
 operators must rotate it before expiry. Neither inbound `ssf.receive` scope nor
 a peer's registered signing key authorizes outbound management. Poll delivery,
 acknowledgements, explicit subject enrollment,
