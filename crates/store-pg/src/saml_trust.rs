@@ -208,7 +208,10 @@ fn validate_request_id(entity_id: &str, request_id: &str) -> Result<(), DomainEr
     if entity_id.is_empty()
         || entity_id.len() > 1024
         || request_id.len() > 128
-        || !request_id.starts_with('_')
+        || !request_id
+            .bytes()
+            .next()
+            .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
         || !request_id
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))

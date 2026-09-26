@@ -9,7 +9,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use crate::saml::UntrustedSaml;
 
 /// Base64 expands a 64 KiB XML document to at most 87,384 bytes. The form
-/// limit also leaves room for percent escapes, RelayState and field names.
+/// limit also leaves room for percent escapes, `RelayState` and field names.
 pub const MAX_POST_BODY_BYTES: usize = 128 * 1024;
 pub const MAX_POST_XML_BYTES: usize = 64 * 1024;
 const MAX_RELAY_STATE_BYTES: usize = 80;
@@ -24,9 +24,9 @@ pub struct UntrustedPostForm {
 /// Decodes only `SAMLRequest` and optional `RelayState` from one
 /// `application/x-www-form-urlencoded` POST. Duplicate and unexpected
 /// controls are refused, including `Signature` or `SigAlg` controls from
-/// the separate SimpleSign binding, which this endpoint does not implement.
+/// the separate `SimpleSign` binding, which this endpoint does not implement.
 ///
-/// The SAMLRequest base64 may be line-wrapped as OASIS §3.5.4 permits.
+/// The `SAMLRequest` base64 may be line-wrapped as OASIS §3.5.4 permits.
 /// Whitespace other than ASCII SP, HTAB, CR and LF is refused.
 pub fn parse_post_form(
     content_type: &str,
@@ -57,7 +57,7 @@ pub fn parse_post_form(
 
     let mut encoded = saml_request.ok_or(UntrustedSaml)?;
     encoded.retain(|byte| !matches!(byte, b' ' | b'\t' | b'\r' | b'\n'));
-    if encoded.is_empty() || encoded.len() > ((MAX_POST_XML_BYTES + 2) / 3) * 4 {
+    if encoded.is_empty() || encoded.len() > MAX_POST_XML_BYTES.div_ceil(3) * 4 {
         return Err(UntrustedSaml);
     }
     let xml = STANDARD.decode(encoded).map_err(|_| UntrustedSaml)?;
@@ -124,7 +124,7 @@ fn form_decode(value: &[u8]) -> Result<Vec<u8>, UntrustedSaml> {
                 let low = (value[index + 2] as char)
                     .to_digit(16)
                     .ok_or(UntrustedSaml)?;
-                out.push(((high << 4) | low) as u8);
+                out.push(u8::try_from((high << 4) | low).map_err(|_| UntrustedSaml)?);
                 index += 3;
             }
             b'+' => {

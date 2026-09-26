@@ -12,8 +12,10 @@ signed requests, its pinned RSA public key. The default policy refuses
 unsigned requests. A signed Redirect request is checked against the original
 URL-encoded signature input; a signed POST request needs a root-bound XML
 Signature. The bounded unsigned POST profile works only when the SP has been
-explicitly allowed. Unknown request controls, including `ForceAuthn`,
-`IsPassive`, `RequestedAuthnContext` and `NameIDPolicy`, are refused. The IdP
+explicitly allowed. `ForceAuthn="false"` and one empty `NameIDPolicy` with
+`AllowCreate="true"` and the persistent format are accepted. The issued
+assertion declares that same persistent NameID format. `ForceAuthn="true"`,
+`IsPassive`, `RequestedAuthnContext` and other NameID policies are refused. The IdP
 does not fetch SP metadata or accept an ACS or key from an AuthnRequest.
 
 An already authenticated browser receives the assertion directly. Otherwise

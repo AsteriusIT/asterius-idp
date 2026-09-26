@@ -137,7 +137,7 @@ fn percent_decode(value: &str) -> Result<Vec<u8>, UntrustedSaml> {
             }
             let high = (bytes[i + 1] as char).to_digit(16).ok_or(UntrustedSaml)?;
             let low = (bytes[i + 2] as char).to_digit(16).ok_or(UntrustedSaml)?;
-            out.push(((high << 4) | low) as u8);
+            out.push(u8::try_from((high << 4) | low).map_err(|_| UntrustedSaml)?);
             i += 3;
         } else {
             out.push(bytes[i]);

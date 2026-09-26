@@ -1,6 +1,6 @@
 //! SAML 2.0 primitives, deliberately separate from the HTTP SSO flow.
 //!
-//! The unsigned parser accepts only a small AuthnRequest envelope and creates
+//! The unsigned parser accepts only a small `AuthnRequest` envelope and creates
 //! an untrusted value. A tenant's explicitly provisioned SP record must then
 //! match its issuer and ACS exactly. XML Signature is handled by the separate
 //! bounded signed-POST verifier; this unsigned parser always rejects it.
@@ -16,6 +16,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use quick_xml::{Reader, events::Event};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
 use url::Url;
 
@@ -24,6 +25,7 @@ const PROTOCOL_NS: &str = "urn:oasis:names:tc:SAML:2.0:protocol";
 const ASSERTION_NS: &str = "urn:oasis:names:tc:SAML:2.0:assertion";
 const XMLDSIG_NS: &str = "http://www.w3.org/2000/09/xmldsig#";
 const HTTP_POST: &str = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST";
+const PERSISTENT_NAME_ID: &str = "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent";
 const RSA_SHA256: &str = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256";
 const SHA256: &str = "http://www.w3.org/2001/04/xmlenc#sha256";
 const EXC_C14N: &str = "http://www.w3.org/2001/10/xml-exc-c14n#";
@@ -133,7 +135,16 @@ pub struct UntrustedAuthnRequest {
     pub binding: Option<String>,
 }
 
-/// Reads only the expected AuthnRequest envelope, with strict byte/depth
+struct RootFields {
+    namespaces: HashMap<String, String>,
+    id: Option<String>,
+    issued_at: Option<OffsetDateTime>,
+    destination: Option<String>,
+    acs: Option<String>,
+    binding: Option<String>,
+}
+
+/// Reads only the expected `AuthnRequest` envelope, with strict byte/depth
 /// limits and no DTD, entity, PI, CDATA or XML Signature processing.
 pub fn parse_authn_request(xml: &[u8]) -> Result<UntrustedAuthnRequest, UntrustedSaml> {
     if xml.is_empty() || xml.len() > MAX_XML {
@@ -144,6 +155,7 @@ pub fn parse_authn_request(xml: &[u8]) -> Result<UntrustedAuthnRequest, Untruste
     let mut depth = 0usize;
     let mut root_seen = false;
     let mut issuer_seen = false;
+    let mut name_id_policy_seen = false;
     let mut issuer = String::new();
     let mut id = None;
     let mut issued_at = None;
@@ -164,30 +176,13 @@ pub fn parse_authn_request(xml: &[u8]) -> Result<UntrustedAuthnRequest, Untruste
                         return Err(UntrustedSaml);
                     }
                     root_seen = true;
-                    root_namespaces = namespaces(&e, &HashMap::new())?;
-                    if namespace_of(&name, &root_namespaces) != Some(PROTOCOL_NS) {
-                        return Err(UntrustedSaml);
-                    }
-                    only_attributes(
-                        &e,
-                        &[
-                            "ID",
-                            "Version",
-                            "IssueInstant",
-                            "Destination",
-                            "AssertionConsumerServiceURL",
-                            "ProtocolBinding",
-                        ],
-                    )?;
-                    if attribute(&e, "Version")?.as_deref() != Some("2.0") {
-                        return Err(UntrustedSaml);
-                    }
-                    issued_at = attribute(&e, "IssueInstant")?
-                        .and_then(|value| OffsetDateTime::parse(&value, &Rfc3339).ok());
-                    id = attribute(&e, "ID")?;
-                    destination = attribute(&e, "Destination")?;
-                    acs = attribute(&e, "AssertionConsumerServiceURL")?;
-                    binding = attribute(&e, "ProtocolBinding")?;
+                    let fields = parse_root_fields(&e, &name)?;
+                    root_namespaces = fields.namespaces;
+                    id = fields.id;
+                    issued_at = fields.issued_at;
+                    destination = fields.destination;
+                    acs = fields.acs;
+                    binding = fields.binding;
                 } else if depth == 2 {
                     if local_name(&name) != "Issuer" || issuer_seen {
                         return Err(UntrustedSaml);
@@ -218,13 +213,22 @@ pub fn parse_authn_request(xml: &[u8]) -> Result<UntrustedAuthnRequest, Untruste
                 depth -= 1;
             }
             Event::Eof => break,
-            Event::Decl(_) => return Err(UntrustedSaml),
-            Event::Empty(_)
+            Event::Empty(e) => {
+                validate_name_id_policy(
+                    &e,
+                    &root_namespaces,
+                    depth,
+                    issuer_seen,
+                    name_id_policy_seen,
+                )?;
+                name_id_policy_seen = true;
+            }
+            Event::Decl(_)
             | Event::DocType(_)
             | Event::PI(_)
             | Event::CData(_)
-            | Event::GeneralRef(_) => return Err(UntrustedSaml),
-            Event::Comment(_) => return Err(UntrustedSaml),
+            | Event::GeneralRef(_)
+            | Event::Comment(_) => return Err(UntrustedSaml),
         }
     }
     if !root_seen || depth != 0 || !issuer_seen || issuer.is_empty() || issuer.len() > 1024 {
@@ -243,6 +247,73 @@ pub fn parse_authn_request(xml: &[u8]) -> Result<UntrustedAuthnRequest, Untruste
         acs,
         binding,
     })
+}
+
+fn parse_root_fields(
+    e: &quick_xml::events::BytesStart<'_>,
+    name: &str,
+) -> Result<RootFields, UntrustedSaml> {
+    let namespaces = namespaces(e, &HashMap::new())?;
+    if namespace_of(name, &namespaces) != Some(PROTOCOL_NS) {
+        return Err(UntrustedSaml);
+    }
+    only_attributes(
+        e,
+        &[
+            "ID",
+            "Version",
+            "IssueInstant",
+            "Destination",
+            "AssertionConsumerServiceURL",
+            "ProtocolBinding",
+            "ForceAuthn",
+        ],
+    )?;
+    if attribute(e, "Version")?.as_deref() != Some("2.0") {
+        return Err(UntrustedSaml);
+    }
+    // Keycloak emits false explicitly. True would require a separate session policy.
+    if attribute(e, "ForceAuthn")?
+        .as_deref()
+        .is_some_and(|value| value != "false")
+    {
+        return Err(UntrustedSaml);
+    }
+    Ok(RootFields {
+        namespaces,
+        id: attribute(e, "ID")?,
+        issued_at: attribute(e, "IssueInstant")?
+            .and_then(|value| OffsetDateTime::parse(&value, &Rfc3339).ok()),
+        destination: attribute(e, "Destination")?,
+        acs: attribute(e, "AssertionConsumerServiceURL")?,
+        binding: attribute(e, "ProtocolBinding")?,
+    })
+}
+
+fn validate_name_id_policy(
+    e: &quick_xml::events::BytesStart<'_>,
+    root_namespaces: &HashMap<String, String>,
+    depth: usize,
+    issuer_seen: bool,
+    policy_seen: bool,
+) -> Result<(), UntrustedSaml> {
+    let name = e.name();
+    let name = name.as_ref();
+    if depth != 1
+        || !issuer_seen
+        || policy_seen
+        || local_name(name) != "NameIDPolicy"
+        || namespace_of(name, &namespaces(e, root_namespaces)?) != Some(PROTOCOL_NS)
+    {
+        return Err(UntrustedSaml);
+    }
+    only_attributes(e, &["AllowCreate", "Format"])?;
+    if attribute(e, "AllowCreate")?.as_deref() != Some("true")
+        || attribute(e, "Format")?.as_deref() != Some(PERSISTENT_NAME_ID)
+    {
+        return Err(UntrustedSaml);
+    }
+    Ok(())
 }
 
 fn local_name(name: &str) -> &str {
@@ -310,13 +381,16 @@ fn attribute(
 
 fn valid_xml_id(value: &str) -> bool {
     value.len() <= 128
-        && value.starts_with('_')
+        && value
+            .bytes()
+            .next()
+            .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
         && value
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
 }
 
-/// A tenant IdP's public metadata values. Certificates are provisioned by the
+/// A tenant `IdP`'s public metadata values. Certificates are provisioned by the
 /// operator and the active certificate must match the private signing key.
 /// Pending and retiring certificates are published during rotation overlap.
 #[derive(Debug, Clone)]
@@ -335,7 +409,7 @@ pub enum MetadataError {
     SigningFailed,
 }
 
-/// Signs an IdP metadata EntityDescriptor with RSA-SHA256, enveloped
+/// Signs an `IdP` metadata `EntityDescriptor` with RSA-SHA256, enveloped
 /// signature and exclusive canonicalization. Only this module's own fixed
 /// serializer is signed; it never canonicalizes arbitrary inbound XML.
 pub fn sign_metadata(
@@ -361,10 +435,12 @@ pub fn sign_metadata(
     }
     let entity = escape_attr(metadata.entity_id);
     let url = escape_attr(metadata.sso_url);
-    let keys = metadata.signing_certificates_der.iter().map(|certificate| {
+    let mut keys = String::new();
+    for certificate in metadata.signing_certificates_der {
         let cert = STANDARD.encode(certificate);
-        format!("<md:KeyDescriptor use=\"signing\"><ds:KeyInfo xmlns:ds=\"{XMLDSIG_NS}\"><ds:X509Data><ds:X509Certificate>{cert}</ds:X509Certificate></ds:X509Data></ds:KeyInfo></md:KeyDescriptor>")
-    }).collect::<String>();
+        write!(&mut keys, "<md:KeyDescriptor use=\"signing\"><ds:KeyInfo xmlns:ds=\"{XMLDSIG_NS}\"><ds:X509Data><ds:X509Certificate>{cert}</ds:X509Certificate></ds:X509Data></ds:KeyInfo></md:KeyDescriptor>")
+            .map_err(|_| MetadataError::SigningFailed)?;
+    }
     // Namespace declarations are placed on the elements where they are
     // visibly used; attributes are in lexical order. Attribute escaping uses
     // precisely the XML C14N required escapes. With this fixed serializer,
@@ -426,8 +502,8 @@ pub struct Assertion<'a> {
     pub expires_at: OffsetDateTime,
 }
 
-/// Signs one module-built assertion using the IdP's RSA-SHA256 key. The
-/// certificate must be published by the IdP metadata route; XML KeyInfo alone
+/// Signs one module-built assertion using the `IdP`'s RSA-SHA256 key. The
+/// certificate must be published by the `IdP` metadata route; XML `KeyInfo` alone
 /// cannot establish trust.
 pub fn sign_assertion(
     assertion: &Assertion<'_>,
@@ -464,16 +540,16 @@ pub fn sign_assertion(
         .format(&Rfc3339)
         .map_err(|_| MetadataError::InvalidInput)?;
     let id = escape_attr(assertion.id);
-    let issuer = escape_text(assertion.issuer);
+    let issuer_text = escape_text(assertion.issuer);
     let subject = escape_text(assertion.subject);
     let audience = escape_text(assertion.audience);
     let recipient = escape_attr(assertion.recipient);
     let request = escape_attr(assertion.in_response_to);
     let session = escape_attr(assertion.session_index);
     let authn_context = escape_text(assertion.authn_context_class_ref);
-    let issuer_element = format!("<saml:Issuer>{issuer}</saml:Issuer>");
+    let issuer_element = format!("<saml:Issuer>{issuer_text}</saml:Issuer>");
     let unsigned = format!(
-        "<saml:Assertion xmlns:saml=\"{ASSERTION_NS}\" ID=\"{id}\" IssueInstant=\"{issued}\" Version=\"2.0\">{issuer_element}<saml:Subject><saml:NameID>{subject}</saml:NameID><saml:SubjectConfirmation Method=\"urn:oasis:names:tc:SAML:2.0:cm:bearer\"><saml:SubjectConfirmationData InResponseTo=\"{request}\" NotOnOrAfter=\"{expires}\" Recipient=\"{recipient}\"></saml:SubjectConfirmationData></saml:SubjectConfirmation></saml:Subject><saml:Conditions NotBefore=\"{issued}\" NotOnOrAfter=\"{expires}\"><saml:AudienceRestriction><saml:Audience>{audience}</saml:Audience></saml:AudienceRestriction></saml:Conditions><saml:AuthnStatement AuthnInstant=\"{authenticated}\" SessionIndex=\"{session}\"><saml:AuthnContext><saml:AuthnContextClassRef>{authn_context}</saml:AuthnContextClassRef></saml:AuthnContext></saml:AuthnStatement></saml:Assertion>"
+        "<saml:Assertion xmlns:saml=\"{ASSERTION_NS}\" ID=\"{id}\" IssueInstant=\"{issued}\" Version=\"2.0\">{issuer_element}<saml:Subject><saml:NameID Format=\"{PERSISTENT_NAME_ID}\">{subject}</saml:NameID><saml:SubjectConfirmation Method=\"urn:oasis:names:tc:SAML:2.0:cm:bearer\"><saml:SubjectConfirmationData InResponseTo=\"{request}\" NotOnOrAfter=\"{expires}\" Recipient=\"{recipient}\"></saml:SubjectConfirmationData></saml:SubjectConfirmation></saml:Subject><saml:Conditions NotBefore=\"{issued}\" NotOnOrAfter=\"{expires}\"><saml:AudienceRestriction><saml:Audience>{audience}</saml:Audience></saml:AudienceRestriction></saml:Conditions><saml:AuthnStatement AuthnInstant=\"{authenticated}\" SessionIndex=\"{session}\"><saml:AuthnContext><saml:AuthnContextClassRef>{authn_context}</saml:AuthnContextClassRef></saml:AuthnContext></saml:AuthnStatement></saml:Assertion>"
     );
     let insertion = unsigned
         .find(&issuer_element)
@@ -491,7 +567,7 @@ pub fn sign_assertion(
 ///
 /// This is an internal serializer, not authorization to issue an assertion.
 /// The SSO route must establish an authenticated session, check the original
-/// validated request and trusted SP, and provision a dedicated IdP signing key
+/// validated request and trusted SP, and provision a dedicated `IdP` signing key
 /// before it calls this function.
 pub fn build_post_response(
     response_id: &str,
@@ -512,10 +588,57 @@ pub fn build_post_response(
     let id = escape_attr(response_id);
     let request = escape_attr(assertion.in_response_to);
     let destination = escape_attr(assertion.recipient);
-    let issuer = escape_text(assertion.issuer);
+    let issuer_text = escape_text(assertion.issuer);
     Ok(format!(
-        "<samlp:Response xmlns:samlp=\"{PROTOCOL_NS}\" ID=\"{id}\" InResponseTo=\"{request}\" Version=\"2.0\" IssueInstant=\"{issued}\" Destination=\"{destination}\"><saml:Issuer xmlns:saml=\"{ASSERTION_NS}\">{issuer}</saml:Issuer><samlp:Status><samlp:StatusCode Value=\"urn:oasis:names:tc:SAML:2.0:status:Success\"></samlp:StatusCode></samlp:Status>{signed_assertion}</samlp:Response>"
+        "<samlp:Response xmlns:samlp=\"{PROTOCOL_NS}\" ID=\"{id}\" InResponseTo=\"{request}\" Version=\"2.0\" IssueInstant=\"{issued}\" Destination=\"{destination}\"><saml:Issuer xmlns:saml=\"{ASSERTION_NS}\">{issuer_text}</saml:Issuer><samlp:Status><samlp:StatusCode Value=\"urn:oasis:names:tc:SAML:2.0:status:Success\"></samlp:StatusCode></samlp:Status>{signed_assertion}</samlp:Response>"
     ))
+}
+
+fn https_url(value: &str) -> bool {
+    Url::parse(value).is_ok_and(|url| {
+        url.scheme() == "https"
+            && url.host_str().is_some()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.fragment().is_none()
+    })
+}
+
+fn valid_xml_attr(value: &str) -> bool {
+    value.chars().all(|ch| {
+        let code = ch as u32;
+        code >= 0x20 && code != 0xFFFE && code != 0xFFFF
+    })
+}
+
+fn escape_attr(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '"' => out.push_str("&quot;"),
+            '\r' => out.push_str("&#xD;"),
+            '\n' => out.push_str("&#xA;"),
+            '\t' => out.push_str("&#x9;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn escape_text(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '\r' => out.push_str("&#xD;"),
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -526,6 +649,25 @@ mod saml_sp_vector_tests {
     const PRIVATE_KEY: &[u8] = include_bytes!("../tests/fixtures/saml_idp/private.pkcs8.der");
     const PUBLIC_KEY: &[u8] = include_bytes!("../tests/fixtures/saml_idp/public.der");
     const CERTIFICATE: &[u8] = include_bytes!("../tests/fixtures/saml_idp/certificate.der");
+
+    #[test]
+    fn keycloak_broker_request_accepts_only_inert_controls() {
+        let xml = format!(
+            "<samlp:AuthnRequest xmlns:samlp=\"{PROTOCOL_NS}\" xmlns:saml=\"{ASSERTION_NS}\" AssertionConsumerServiceURL=\"https://sp.example/acs\" Destination=\"https://idp.example/saml/sso\" ForceAuthn=\"false\" ID=\"ID_608ea2c4-d6a3-4236-80c1-82b41f48d38b\" IssueInstant=\"2026-09-26T12:38:36.006Z\" ProtocolBinding=\"{HTTP_POST}\" Version=\"2.0\"><saml:Issuer>https://sp.example/metadata</saml:Issuer><samlp:NameIDPolicy AllowCreate=\"true\" Format=\"{PERSISTENT_NAME_ID}\"/></samlp:AuthnRequest>"
+        );
+        let parsed = parse_authn_request(xml.as_bytes()).expect("Keycloak bounded request");
+        assert_eq!(parsed.id, "ID_608ea2c4-d6a3-4236-80c1-82b41f48d38b");
+        assert_eq!(parsed.issuer, "https://sp.example/metadata");
+
+        for variant in [
+            xml.replace("ForceAuthn=\"false\"", "ForceAuthn=\"true\""),
+            xml.replace(PERSISTENT_NAME_ID, "urn:oasis:names:tc:SAML:2.0:nameid-format:emailAddress"),
+            xml.replace("AllowCreate=\"true\"", "AllowCreate=\"false\""),
+            xml.replace("/></samlp:AuthnRequest>", "/><samlp:NameIDPolicy AllowCreate=\"true\" Format=\"urn:oasis:names:tc:SAML:2.0:nameid-format:persistent\"/></samlp:AuthnRequest>"),
+        ] {
+            assert!(parse_authn_request(variant.as_bytes()).is_err());
+        }
+    }
 
     fn between<'a>(xml: &'a str, start: &str, end: &str) -> &'a str {
         let from = xml.find(start).expect("start tag") + start.len();
@@ -596,57 +738,13 @@ mod saml_sp_vector_tests {
         assert!(response.contains(&format!("Destination=\"{acs}\"")));
         assert!(response.contains("InResponseTo=\"_sp-request-001\""));
         assert!(response.contains("<saml:Audience>https://sp.example/metadata</saml:Audience>"));
+        assert!(response.contains(&format!(
+            "<saml:NameID Format=\"{PERSISTENT_NAME_ID}\">alice@example.test</saml:NameID>"
+        )));
         assert!(response.contains(&format!("Recipient=\"{acs}\"")));
         let assertion_start = response.find("<saml:Assertion").expect("assertion");
         let assertion_end =
             response.find("</saml:Assertion>").expect("assertion end") + "</saml:Assertion>".len();
         verify_enveloped(&response[assertion_start..assertion_end], "#_assertion-one");
     }
-}
-
-fn https_url(value: &str) -> bool {
-    Url::parse(value).is_ok_and(|url| {
-        url.scheme() == "https"
-            && url.host_str().is_some()
-            && url.username().is_empty()
-            && url.password().is_none()
-            && url.fragment().is_none()
-    })
-}
-
-fn valid_xml_attr(value: &str) -> bool {
-    value.chars().all(|ch| {
-        let code = ch as u32;
-        code >= 0x20 && code != 0xFFFE && code != 0xFFFF
-    })
-}
-
-fn escape_attr(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for ch in value.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '"' => out.push_str("&quot;"),
-            '\r' => out.push_str("&#xD;"),
-            '\n' => out.push_str("&#xA;"),
-            '\t' => out.push_str("&#x9;"),
-            _ => out.push(ch),
-        }
-    }
-    out
-}
-
-fn escape_text(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for ch in value.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '\r' => out.push_str("&#xD;"),
-            _ => out.push(ch),
-        }
-    }
-    out
 }

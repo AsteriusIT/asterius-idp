@@ -1,11 +1,11 @@
 //! Tenant-routed SAML browser SSO.
 //!
-//! The SP's AuthnRequest is verified against operator-pinned trust and its ID
+//! The SP's `AuthnRequest` is verified against operator-pinned trust and its ID
 //! is reserved before any login. A browser without a session enters the
 //! existing first-party login; a one-use pending row is bound to that login's
 //! resulting session and rechecks SP trust at resume. No raw XML or arbitrary
-//! ACS is carried through the browser. Unsupported ForceAuthn,
-//! IsPassive and RequestedAuthnContext are rejected by the bounded parser.
+//! ACS is carried through the browser. `ForceAuthn=true`, `IsPassive` and
+//! `RequestedAuthnContext` are rejected by the bounded parser.
 //! The response can only post to the trusted ACS.
 
 use crate::http::protocol::ClientEndpoints;
@@ -186,7 +186,7 @@ async fn resume(
     let session = match browser_session(&endpoints, &tenant, &headers, now).await {
         Ok(Some(session)) => session,
         Ok(None) => return refused(StatusCode::UNAUTHORIZED),
-        Err(response) => return response,
+        Err(status) => return refused(status),
     };
     let pending = match endpoints
         .store
@@ -217,7 +217,7 @@ async fn issue(
     let now = OffsetDateTime::now_utc();
     let session = match browser_session(&endpoints, &tenant, &headers, now).await {
         Ok(session) => session,
-        Err(response) => return response,
+        Err(status) => return refused(status),
     };
     let validator = SamlRequestValidator::new(endpoints.store.clone());
     let request = match input {
@@ -247,7 +247,7 @@ async fn browser_session(
     tenant: &Tenant,
     headers: &HeaderMap,
     now: OffsetDateTime,
-) -> Result<Option<Session>, Response> {
+) -> Result<Option<Session>, StatusCode> {
     let cookies = crate::http::cookies(headers);
     let Some(cookie) = asterius_web::interaction::cookie_value(
         &cookies,
@@ -269,7 +269,7 @@ async fn browser_session(
         Ok(_) => Ok(None),
         Err(error) => {
             tracing::error!(%error, tenant = %tenant.id, "cannot read SAML browser session");
-            Err(refused(StatusCode::SERVICE_UNAVAILABLE))
+            Err(StatusCode::SERVICE_UNAVAILABLE)
         }
     }
 }
@@ -396,7 +396,7 @@ async fn deliver(
         expires_at,
     };
     let signed = match SamlIdpSigner::new(endpoints.store.clone(), Arc::clone(&endpoints.kek))
-        .build_response(&tenant, &request, &response_id, &assertion)
+        .build_response(tenant, request, &response_id, &assertion)
         .await
     {
         Ok(xml) => xml,
@@ -426,7 +426,7 @@ async fn deliver(
     }
     let mount = mount.map_or_else(crate::tenancy::MountPrefix::root, |Extension(mount)| mount);
     let font_url = crate::http::font_url(&mount);
-    let document = Document::render(&nonce, |nonce| {
+    let document = Document::render(nonce, |nonce| {
         asterius_web::pages::render(&FormPostPage {
             text: &crate::http::i18n::UNTRANSLATED,
             tenant_name: &tenant.display_name,
