@@ -1071,6 +1071,12 @@ fn tenant() -> Section {
                 "Explicit cross-domain ID-JAG approvals for managed agents. The audience is a downstream AS issuer; subject_sector_uri names its SSO subject sector; resources and scopes are strict allow-lists. No approval can be inferred from a token request.",
             ),
             key(
+                "id_jag_trust",
+                "array of { issuer, jwks_file, actor_client_id, client_id, resources, scopes } tables",
+                "empty (ID-JAG redemption disabled)".to_owned(),
+                "Operator-pinned upstream issuer keys, one actor identity, downstream client and strict resource/scope allow-lists. Files are validated at startup; the JWT-bearer redemption handler remains disabled until replay, subject mapping and consent are implemented.",
+            ),
+            key(
                 "oid4vp_verifier",
                 "array of verifier policy tables",
                 "empty (OID4VP disabled)".to_owned(),

@@ -596,6 +596,7 @@ fn assemble(
             http_signature_peers: Arc::default(),
             http_signature_replay: Arc::clone(&replay),
             id_jag_approvals: Arc::default(),
+            id_jag_trusts: Arc::default(),
             native_sso_approvals: Arc::default(),
             oid4vp_verifiers: Arc::default(),
             claims_providers: Arc::default(),
