@@ -26,6 +26,7 @@ import { Overview } from './overview';
 import { Groups } from './groups';
 import { ScimProvisioning } from './scim';
 import { FederationKeys } from './federation-keys';
+import { SamlIdpKey } from './saml-idp-key';
 
 /**
  * What the shell is doing, as one value.
@@ -178,6 +179,7 @@ function RouteScreen({
     return <Keys session={session} />;
   }
   if (route === 'federation') return <FederationKeys session={session} />;
+  if (route === 'saml') return <SamlIdpKey session={session} />;
   if (route === 'settings') {
     // The subject is the session's own tenant unless the Tenants screen named
     // another one, which only a deployment-scoped caller can have reached.
