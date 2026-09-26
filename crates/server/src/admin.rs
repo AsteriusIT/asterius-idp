@@ -330,6 +330,7 @@ pub struct Deployment {
     queue: Option<Arc<dyn asterius_domain::outbox::OutboxQueue>>,
     argon2: asterius_domain::Argon2Parameters,
     issuance: Option<Arc<crate::http::agent_issuance::IssuanceGuard>>,
+    id_jag_trusts: Arc<crate::id_jag_trust::IdJagTrusts>,
 }
 
 impl std::fmt::Debug for Deployment {
@@ -392,6 +393,7 @@ impl Deployment {
             queue: parts.queue,
             argon2: parts.argon2,
             issuance: parts.issuance,
+            id_jag_trusts: parts.id_jag_trusts,
         }
     }
 }
@@ -400,6 +402,8 @@ impl Deployment {
 pub struct DeploymentParts {
     /// The connection pool every tenant scope is opened on.
     pub store: Store,
+    /// Startup-validated upstream issuer/actor pins for ID-JAG mappings.
+    pub id_jag_trusts: Arc<crate::id_jag_trust::IdJagTrusts>,
     /// The process's `dyn TenantRepository`, which is `ProvisionedTenants`.
     pub tenants: Arc<dyn TenantRepository>,
     /// The process's `TenantKeyStore`, holding this deployment's KEK.
@@ -526,6 +530,51 @@ impl asterius_admin_api::backend::PolicyTrial for DeploymentPolicyTrial {
             time::OffsetDateTime::now_utc(),
         )
         .await
+    }
+}
+
+#[derive(Debug, Clone)]
+struct DeploymentIdJagBindings {
+    store: Store,
+    trusts: Arc<crate::id_jag_trust::IdJagTrusts>,
+}
+
+#[async_trait::async_trait]
+impl asterius_admin_api::id_jag::IdJagBindings for DeploymentIdJagBindings {
+    async fn bind(
+        &self,
+        tenant: &TenantId,
+        binding: &asterius_admin_api::id_jag::SubjectBinding,
+    ) -> Result<(), DomainError> {
+        if !self
+            .trusts
+            .supports_issuer(tenant.as_str(), binding.issuer.as_str())
+        {
+            return Err(DomainError::NotFound);
+        }
+        self.store
+            .scope(tenant.clone())
+            .id_jag_redemption()
+            .bind_subject(binding.issuer.as_str(), &binding.subject, binding.user)
+            .await
+    }
+
+    async fn remove(
+        &self,
+        tenant: &TenantId,
+        binding: &asterius_admin_api::id_jag::SubjectBinding,
+    ) -> Result<bool, DomainError> {
+        if !self
+            .trusts
+            .supports_issuer(tenant.as_str(), binding.issuer.as_str())
+        {
+            return Err(DomainError::NotFound);
+        }
+        self.store
+            .scope(tenant.clone())
+            .id_jag_redemption()
+            .remove_subject(binding.issuer.as_str(), &binding.subject, binding.user)
+            .await
     }
 }
 
@@ -2387,6 +2436,13 @@ impl AdminBackend for Deployment {
             kek: Arc::clone(&self.kek),
             capabilities: self.capabilities,
         })
+    }
+
+    fn id_jag_bindings(&self) -> Option<Arc<dyn asterius_admin_api::id_jag::IdJagBindings>> {
+        Some(Arc::new(DeploymentIdJagBindings {
+            store: self.store.clone(),
+            trusts: Arc::clone(&self.id_jag_trusts),
+        }))
     }
 
     fn application_roles(&self) -> Arc<dyn asterius_domain::ApplicationRoleDirectory> {

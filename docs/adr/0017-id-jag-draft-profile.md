@@ -69,6 +69,13 @@ the predicate remains closed. A future authenticated owner flow must create
 and revoke consent, then token issuance and audit must be attached without
 letting a failed issuance leave a usable grant.
 
+An operator with `admin.users:write` may create or remove a binding through
+`PUT` or `DELETE /admin/api/v1/id-jag/subjects`, giving the configured issuer,
+exact upstream subject and local user UUID. The issuer must be present in this
+tenant's pinned trust; the user must be active when bound. An existing binding
+cannot silently move to another user. Neither operation writes the upstream
+subject into audit detail, and neither grants owner consent.
+
 ## Consequences
 
 A deployment can authorize a managed agent's cross-app access with a bounded,

@@ -442,6 +442,12 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
     /// reach and queue where nothing delivers from.
     fn ssf(&self) -> Arc<dyn crate::ssf::SsfAdministration>;
 
+    /// Operator-owned upstream ID-JAG subject bindings. No consent writes are
+    /// reachable through this port.
+    fn id_jag_bindings(&self) -> Option<Arc<dyn crate::id_jag::IdJagBindings>> {
+        None
+    }
+
     /// The tenants' authorization policies, for the PDP's admin screens
     /// (`ast-pj0.4`).
     ///

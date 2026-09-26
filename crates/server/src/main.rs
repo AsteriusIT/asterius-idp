@@ -304,7 +304,7 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
         // and the admin API's dead-letter screen reads through it, so the
         // screen reports the schedule the worker is enforcing (`ast-0ju.9`).
         let outbox = outbox_handle(&store, config.outbox);
-        let admin_context = AdminContext::of(&config, &outbound, &outbox, &kek);
+        let admin_context = AdminContext::of(&config, &outbound, &outbox, &kek, &id_jag_trusts);
         let client_keys = client_key_cache(&outbound, &store);
         let replay = Arc::new(PgReplayGuard::new(store.pool().clone()));
         let authenticator = client_authenticator(client_keys, &replay, &store, trust_anchors)?;
@@ -492,6 +492,7 @@ fn operational_routes(store: &Store, config: &Config, metrics: Metrics) -> Opera
 /// protocol endpoints', and the two would then disagree about what a valid
 /// client is.
 struct AdminContext {
+    id_jag_trusts: Arc<asterius_server::id_jag_trust::IdJagTrusts>,
     rate_limit_policy: (
         asterius_domain::LoginLimits,
         asterius_domain::EndpointLimits,
@@ -539,8 +540,10 @@ impl AdminContext {
         outbound: &Arc<dyn asterius_domain::ports::ClientUrlFetcher>,
         outbox: &asterius_store_pg::PgOutbox,
         kek: &Arc<dyn asterius_jose::Kek>,
+        id_jag_trusts: &Arc<asterius_server::id_jag_trust::IdJagTrusts>,
     ) -> Self {
         Self {
+            id_jag_trusts: Arc::clone(id_jag_trusts),
             rate_limit_policy: (config.login, config.limits),
             issuance: issuance_guard(config),
             capabilities: config.features,
@@ -606,6 +609,7 @@ fn admin_routes(
         backend: Arc::new(
             asterius_server::admin::Deployment::new(asterius_server::admin::DeploymentParts {
                 store: store.clone(),
+                id_jag_trusts: context.id_jag_trusts,
                 tenants: Arc::clone(tenants),
                 keys: Arc::clone(keys) as Arc<dyn asterius_domain::KeyAdministration>,
                 directory,

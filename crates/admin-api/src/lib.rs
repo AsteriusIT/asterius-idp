@@ -51,6 +51,7 @@ pub mod console;
 pub mod csrf;
 pub mod error;
 pub mod groups;
+pub mod id_jag;
 pub mod idempotency;
 pub mod initial_access_tokens;
 pub mod keys;
@@ -185,6 +186,8 @@ pub const SSF_STREAM_VERIFY_ID: &str = "ssf.streams.verify";
 pub const SSF_RECEIVER_SUBJECT_BIND_ID: &str = "ssf.receiver.subject.bind";
 /// The `operationId` of removing a trusted SSF subject binding.
 pub const SSF_RECEIVER_SUBJECT_REMOVE_ID: &str = "ssf.receiver.subject.remove";
+pub const ID_JAG_SUBJECT_BIND_ID: &str = "id_jag.subject.bind";
+pub const ID_JAG_SUBJECT_REMOVE_ID: &str = "id_jag.subject.remove";
 /// The `operationId` of `GET /audit/events`.
 pub const AUDIT_EVENTS_LIST_ID: &str = "audit.events.list";
 /// The `operationId` of `GET /audit/events/export`.
@@ -938,6 +941,25 @@ pub const SSF_RECEIVER_SUBJECT_REMOVE: Operation = Operation::mutation(
     "Removes one configured SSF peer subject mapping",
 );
 
+/// Binds one trusted upstream ID-JAG subject to a local user. Consent remains
+/// a separate account-owner decision.
+pub const ID_JAG_SUBJECT_BIND: Operation = Operation::mutation(
+    ID_JAG_SUBJECT_BIND_ID,
+    "/id-jag/subjects",
+    M::Put,
+    A::new(R::Tenant, "admin.users:write"),
+    "Binds one configured ID-JAG issuer subject to a local account",
+);
+
+/// Removes an exact upstream ID-JAG subject mapping.
+pub const ID_JAG_SUBJECT_REMOVE: Operation = Operation::mutation(
+    ID_JAG_SUBJECT_REMOVE_ID,
+    "/id-jag/subjects",
+    M::Delete,
+    A::new(R::Tenant, "admin.users:write"),
+    "Removes one configured ID-JAG subject mapping",
+);
+
 /// This tenant's audit trail, filtered, one cursor page at a time
 /// (`ast-lh3.9`).
 ///
@@ -1685,7 +1707,7 @@ pub const SCIM_BULK: Operation = Operation::mutation(
     "SCIM Bulk is unsupported by this service",
 );
 
-static REGISTRY: [Operation; 120] = [
+static REGISTRY: [Operation; 122] = [
     SESSION_READ,
     SESSION_END,
     OVERVIEW_USERS,
@@ -1739,6 +1761,8 @@ static REGISTRY: [Operation; 120] = [
     SSF_STREAM_VERIFY,
     SSF_RECEIVER_SUBJECT_BIND,
     SSF_RECEIVER_SUBJECT_REMOVE,
+    ID_JAG_SUBJECT_BIND,
+    ID_JAG_SUBJECT_REMOVE,
     AUDIT_EVENTS_LIST,
     AUDIT_EVENTS_EXPORT,
     USERS_LIST,
