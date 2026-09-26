@@ -32,6 +32,7 @@ mod initial_access_tokens;
 mod invitations;
 mod key_store;
 mod keys;
+mod ldap_sync;
 mod native_sso;
 mod notifications;
 mod oid4vci_nonces;
@@ -100,6 +101,7 @@ pub use invitations::{
 };
 pub use key_store::TenantKeyStore;
 pub use keys::{PgKeyRepository, Rotation, RotationSchedule};
+pub use ldap_sync::{LdapGroup, LdapSnapshot, LdapSyncOutcome, LdapUser, PgLdapSync};
 pub use native_sso::{NativeSsoBinding, PgNativeSso};
 pub use notifications::{PgOutboxMailSender, QueuedNotification};
 pub use oid4vci_nonces::{NONCE_LIFETIME as OID4VCI_NONCE_LIFETIME, PgOid4vciNonces};

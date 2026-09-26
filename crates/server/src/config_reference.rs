@@ -1104,7 +1104,7 @@ fn tenant() -> Section {
                 "ldap_source",
                 "{ url, base_dn, bind_dn, bind_password_file, user_filter, external_id_attribute, username_attribute, email_attribute, display_name_attribute, group_base_dn?, group_filter?, group_name_attribute?, group_member_attribute? } table",
                 "absent (LDAP synchronization disabled)".to_owned(),
-                "An explicit per-tenant LDAPS source. The URL must be an LDAPS origin without embedded credentials; bind_password_file is an absolute operator-managed secret path. Filters are static and contain no substitutions. All four group fields must be supplied together. Only profile and group names can be mapped; privileged roles and credentials have no mapping. This configuration is validated at startup but does not yet start a directory synchronization worker.",
+                "An explicit per-tenant LDAPS source. The URL must be an LDAPS origin without embedded credentials; bind_password_file is an absolute operator-managed secret path. Filters are static and contain no substitutions. All four group fields must be supplied together. The group member attribute must contain user DNs. Only approved profile fields, managed group names, and memberships are mapped; privileged roles and credentials have no mapping. Run `asterius ldap-sync <tenant>` explicitly to read a bounded directory snapshot and apply only LDAP-owned resources; no background worker starts from this configuration.",
             ),
         ],
     }

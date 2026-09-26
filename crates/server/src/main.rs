@@ -33,6 +33,7 @@ use asterius_store_pg::{
     PgInitialAccessTokens, PgKekRewrap, PgReplayGuard, PgRetention, PgTenantRepository,
     PgTenantSettings, ProvisionedTenants, RewrapOutcome, Store, TenantKeyStore,
 };
+use sha2::Digest as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -42,6 +43,7 @@ const DEFAULT_CONFIG_PATH: &str = "asterius.toml";
 const USAGE: &str = "usage: asterius [--config <path>] [--config-reference] [--admin-openapi]\n       \
                      asterius mail-test <recipient> [--config <path>]\n       \
                      asterius federation-rotate <tenant> [--config <path>]\n       \
+                     asterius ldap-sync <tenant> [--config <path>]\n       \
                      asterius rewrap-kek [--new-kek-file <path> | --new-kek-env <var>] \
                      [--config <path>]";
 
@@ -65,6 +67,7 @@ fn run() -> Result<(), String> {
         Command::RewrapKek(new_kek) => rewrap_kek(&invocation.config, new_kek.as_ref()),
         Command::MailTest(recipient) => mail_test(&invocation.config, &recipient),
         Command::FederationRotate(tenant) => federation_rotate(&invocation.config, &tenant),
+        Command::LdapSync(tenant) => ldap_sync(&invocation.config, &tenant),
     }
 }
 
@@ -81,6 +84,53 @@ fn mail_test(path: &std::path::Path, recipient: &str) -> Result<(), String> {
     runtime.block_on(sender.send_test(recipient))?;
     println!("mail provider accepted the test message");
     Ok(())
+}
+
+/// The only LDAP trigger: an operator explicitly invokes this command for a
+/// configured tenant. The directory is read in full before persistence begins.
+fn ldap_sync(path: &std::path::Path, tenant: &str) -> Result<(), String> {
+    let config = Config::load(path).map_err(|error| error.to_string())?;
+    let tenant_id = asterius_domain::TenantId::parse(tenant).map_err(|error| error.to_string())?;
+    let source = config
+        .tenants
+        .iter()
+        .find(|entry| entry.id == tenant_id)
+        .and_then(|entry| entry.ldap_source.as_ref())
+        .ok_or_else(|| format!("tenant {tenant} has no configured LDAP source"))?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("cannot start LDAP synchronization: {error}"))?;
+    runtime.block_on(async {
+        let snapshot = asterius_server::ldap_sync::read(source).await?;
+        let source_key = hex::encode(sha2::Sha256::digest(format!(
+            "{}\n{}\n{}\n{}",
+            source.url,
+            source.base_dn,
+            source.bind_dn,
+            source.group_base_dn.as_deref().unwrap_or_default(),
+        )));
+        let store = Store::connect(
+            config.database.url.expose(),
+            config.database.max_connections,
+        )
+        .await
+        .map_err(|error| format!("cannot connect to the database: {error}"))?;
+        store.migrate().await.map_err(|error| format!("cannot apply migrations: {error}"))?;
+        let result = asterius_store_pg::PgLdapSync::new(store.pool().clone())
+            .apply(&tenant_id, &source_key, &snapshot)
+            .await
+            .map_err(|error| format!("LDAP synchronization refused: {error}"))?;
+        println!(
+            "LDAP sync for {tenant}: {} users created, {} updated; {} groups created, {} updated; {} memberships changed",
+            result.users_created,
+            result.users_updated,
+            result.groups_created,
+            result.groups_updated,
+            result.memberships_changed,
+        );
+        Ok(())
+    })
 }
 
 fn federation_rotate(path: &std::path::Path, tenant: &str) -> Result<(), String> {
@@ -1197,6 +1247,8 @@ enum Command {
     MailTest(String),
     /// Publish a successor key before it becomes an active signer.
     FederationRotate(String),
+    /// Fetch and apply one LDAPS snapshot for a configured tenant.
+    LdapSync(String),
     /// Re-seal everything under the KEK named on the command line, and exit.
     ///
     /// `None` means "the destination is in the configuration": the deployment
@@ -1267,6 +1319,14 @@ impl Invocation {
                             .map_err(|_| "federation-rotate needs a UTF-8 tenant")?,
                     );
                 }
+                Some("ldap-sync") => {
+                    let value = arguments.next().ok_or("ldap-sync needs a tenant")?;
+                    command = Command::LdapSync(
+                        value
+                            .into_string()
+                            .map_err(|_| "ldap-sync needs a UTF-8 tenant")?,
+                    );
+                }
                 Some("--new-kek-file") => {
                     let value = arguments.next().ok_or("--new-kek-file needs a path")?;
                     new_kek_file = Some(PathBuf::from(value));
@@ -1311,7 +1371,15 @@ impl Invocation {
             (Command::Serve, None, None) => Command::Serve,
             (Command::MailTest(recipient), None, None) => Command::MailTest(recipient),
             (Command::FederationRotate(tenant), None, None) => Command::FederationRotate(tenant),
-            (Command::MailTest(_) | Command::FederationRotate(_) | Command::Serve, _, _) => {
+            (Command::LdapSync(tenant), None, None) => Command::LdapSync(tenant),
+            (
+                Command::MailTest(_)
+                | Command::FederationRotate(_)
+                | Command::LdapSync(_)
+                | Command::Serve,
+                _,
+                _,
+            ) => {
                 return Err(format!(
                     "--new-kek-file and --new-kek-env belong to rewrap-kek\n{USAGE}"
                 ));
