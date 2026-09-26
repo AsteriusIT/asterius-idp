@@ -283,6 +283,19 @@ async fn materialize_cimd_client(
     }
     let client_id = asterius_domain::CimdClientId::parse(raw_client_id)
         .map_err(|_| asterius_domain::DomainError::invalid("client_id", "invalid CIMD URL"))?;
+    if endpoints
+        .ipsie_identity_only_clients
+        .get(tenant.id.as_str())
+        .is_some_and(|clients| clients.contains(client_id.as_str()))
+    {
+        // A URL-controlled metadata document is self-service registration.
+        // A listed candidate must have been provisioned through the protected
+        // admin path, even if a CIMD row was materialized before this policy.
+        return Err(asterius_domain::DomainError::invalid(
+            "client_id",
+            "this client requires protected operator registration",
+        ));
+    }
     let now = time::OffsetDateTime::now_utc();
     let clients = scope.clients(endpoints.capabilities);
     let cache = clients.find_document(&client_id).await?;
@@ -305,17 +318,6 @@ async fn materialize_cimd_client(
         asterius_domain::DomainError::invalid("client_metadata", "invalid CIMD document")
     })?;
     let id = asterius_domain::ClientId::new(client_id.as_str());
-    if endpoints
-        .ipsie_identity_only_clients
-        .get(tenant.id.as_str())
-        .is_some_and(|clients| clients.contains(id.as_str()))
-        && !registration.is_identity_only_for(tenant.issuer.as_str())
-    {
-        return Err(asterius_domain::DomainError::invalid(
-            "client_metadata",
-            "this client requires identity scopes and the tenant issuer as its only resource",
-        ));
-    }
     if endpoints
         .ipsie_https_only_clients
         .get(tenant.id.as_str())

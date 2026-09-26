@@ -539,13 +539,13 @@ async fn registered(
         .resources
         .insert(context.tenant.default_resource.clone());
 
-    // Minted after document validation. A selected-ID HTTPS policy must run
-    // after minting, because the client identifier cannot be caller-chosen.
+    // Minted after document validation. The caller cannot choose this ID, but
+    // a future mint can still match an operator-selected candidate; dynamic
+    // registration never qualifies as protected operator registration.
     let client_id = ClientId::mint();
     if context
         .ipsie_identity_only_clients
         .is_some_and(|clients| clients.contains(client_id.as_str()))
-        && !registration.is_identity_only_for(context.tenant.issuer.as_str())
     {
         record(
             context,
@@ -559,7 +559,7 @@ async fn registered(
         return error(
             StatusCode::BAD_REQUEST,
             "invalid_client_metadata",
-            "this client requires identity scopes and the tenant issuer as its only resource",
+            "this client requires protected operator registration",
         );
     }
     if context

@@ -779,6 +779,21 @@ pub async fn update(
         }
     };
 
+    if context
+        .ipsie_identity_only_clients
+        .is_some_and(|clients| clients.contains(client_id.as_str()))
+    {
+        return rejected(
+            context,
+            now,
+            &client_id,
+            StatusCode::FORBIDDEN,
+            "invalid_client_metadata",
+            "this client requires protected operator registration",
+        )
+        .await;
+    }
+
     if let Some(refusal) = inadmissible(context, &client_id, headers, body, now).await {
         return refusal;
     }
