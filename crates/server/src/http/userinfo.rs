@@ -167,13 +167,12 @@ pub trait UserInfoSource: std::fmt::Debug + Send + Sync {
     /// this endpoint answers.
     async fn is_denylisted(&self, jti: &str) -> Result<bool, DomainError>;
 
-    /// The `userinfo_signed_response_alg` a client registered, if any.
+    /// The registered signing and encryption policy for UserInfo.
     ///
     /// A question rather than the whole client row, so this endpoint still
-    /// cannot reach anything else a client carries. `None` is OIDC Core
-    /// §5.3.2's default — a plain JSON object — and is also what a client that
-    /// no longer exists gets: a response signed for a registration nobody can
-    /// read is not a response this server can stand behind.
+    /// cannot reach unrelated client policy. No signing algorithm is OIDC Core
+    /// §5.3.2's plain JSON default only for an existing registration. A missing
+    /// client fails closed, since its former encryption preference is unknown.
     ///
     /// Asked with the *grant's* `client_id` and never with the access token's,
     /// so what shapes the response is the registration the authorization was
@@ -181,14 +180,11 @@ pub trait UserInfoSource: std::fmt::Debug + Send + Sync {
     ///
     /// # Errors
     ///
-    /// [`DomainError`] when the row cannot be read. Never `None` for an
-    /// unreadable store: silently serving JSON to a client that registered a
-    /// signature would drop the signature on exactly the deployment that is
-    /// already failing.
-    async fn signed_response_alg(
+    /// [`DomainError`] when the row cannot be read or no longer exists.
+    async fn response_policy(
         &self,
         client: &ClientId,
-    ) -> Result<Option<SigningAlgorithm>, DomainError>;
+    ) -> Result<UserInfoResponsePolicy, DomainError>;
 
     /// The instant before which this client and this grant withdrew every
     /// access token they had issued, if either of them did.
@@ -207,6 +203,14 @@ pub trait UserInfoSource: std::fmt::Debug + Send + Sync {
         client: &ClientId,
         grant: Option<&GrantId>,
     ) -> Result<Option<OffsetDateTime>, DomainError>;
+}
+
+/// The client's signed and optionally nested encrypted UserInfo response.
+#[derive(Debug)]
+pub struct UserInfoResponsePolicy {
+    pub signing_algorithm: Option<SigningAlgorithm>,
+    /// Inline RP JWKS; present only when encryption was registered.
+    pub encryption_jwks: Option<Value>,
 }
 
 /// What one UserInfo request needs.
@@ -656,7 +660,14 @@ async fn render(
     // Read here rather than before the token was verified: the client is the
     // one the *grant* names, and until `live_grant` ran the only `client_id`
     // available came out of a token this code had not checked.
-    let Some(algorithm) = context.source.signed_response_alg(&grant.client).await? else {
+    let policy = context.source.response_policy(&grant.client).await?;
+    let Some(algorithm) = policy.signing_algorithm else {
+        if policy.encryption_jwks.is_some() {
+            return Err(Refused::from(DomainError::invalid(
+                "userinfo",
+                "encrypted response has no signing algorithm",
+            )));
+        }
         return Ok(no_store(
             (StatusCode::OK, axum::Json(Value::Object(body))).into_response(),
         ));
@@ -675,11 +686,24 @@ async fn render(
             &claims,
         )
         .await?;
+    let body = if let Some(document) = policy.encryption_jwks {
+        let encoded = serde_json::to_vec(&document).map_err(|_| {
+            DomainError::invalid("userinfo", "registered encryption key is invalid")
+        })?;
+        let recipient = asterius_jose::jwe::Recipient::from_jwks(&encoded, None).map_err(|_| {
+            DomainError::invalid("userinfo", "registered encryption key is invalid")
+        })?;
+        recipient
+            .encrypt_signed_jwt(signed.as_str())
+            .map_err(|_| DomainError::invalid("userinfo", "encryption failed"))?
+    } else {
+        signed.as_str().to_owned()
+    };
     Ok(no_store(
         (
             StatusCode::OK,
             [(header::CONTENT_TYPE, JWT_CONTENT_TYPE)],
-            signed.as_str().to_owned(),
+            body,
         )
             .into_response(),
     ))

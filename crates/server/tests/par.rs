@@ -308,6 +308,8 @@ async fn run(
     let tenant = tenant();
     let clients = FakeClients(Some(client()));
     let context = PushContext {
+        ipsie_https_only_clients: None,
+        ipsie_identity_only_clients: None,
         tenant: &tenant,
         clients: &clients,
         requests,
@@ -388,6 +390,8 @@ async fn only_an_explicit_oidc_client_can_store_a_direct_authorization_request()
 
     let result = direct(
         PushContext {
+            ipsie_https_only_clients: None,
+            ipsie_identity_only_clients: None,
             tenant: &tenant,
             clients: &clients,
             requests: &requests,
@@ -413,6 +417,8 @@ async fn only_an_explicit_oidc_client_can_store_a_direct_authorization_request()
     let fapi_clients = FakeClients(Some(client()));
     let refused = direct(
         PushContext {
+            ipsie_https_only_clients: None,
+            ipsie_identity_only_clients: None,
             tenant: &tenant,
             clients: &fapi_clients,
             requests: &requests,
@@ -734,6 +740,8 @@ async fn a_body_that_is_not_a_form_is_refused() {
 
     let response = push(
         PushContext {
+            ipsie_https_only_clients: None,
+            ipsie_identity_only_clients: None,
             tenant: &tenant,
             clients: &clients,
             requests: &requests,
@@ -774,6 +782,8 @@ async fn a_form_content_type_with_a_charset_is_accepted() {
 
     let response = push(
         PushContext {
+            ipsie_https_only_clients: None,
+            ipsie_identity_only_clients: None,
             tenant: &tenant,
             clients: &clients,
             requests: &requests,
@@ -807,6 +817,8 @@ async fn an_oversized_body_is_refused_before_it_is_parsed() {
 
     let response = push(
         PushContext {
+            ipsie_https_only_clients: None,
+            ipsie_identity_only_clients: None,
             tenant: &tenant,
             clients: &clients,
             requests: &requests,
@@ -862,6 +874,8 @@ async fn a_proof_on_the_push_pins_the_key_the_code_issuer_reads() {
 
     let response = push(
         PushContext {
+            ipsie_https_only_clients: None,
+            ipsie_identity_only_clients: None,
             tenant: &tenant,
             clients: &clients,
             requests: &requests,
@@ -909,6 +923,8 @@ async fn a_proof_and_a_dpop_jkt_that_disagree_are_refused() {
 
     let response = push(
         PushContext {
+            ipsie_https_only_clients: None,
+            ipsie_identity_only_clients: None,
             tenant: &tenant,
             clients: &clients,
             requests: &requests,
@@ -951,6 +967,8 @@ async fn a_proof_and_a_matching_dpop_jkt_are_accepted() {
 
     let response = push(
         PushContext {
+            ipsie_https_only_clients: None,
+            ipsie_identity_only_clients: None,
             tenant: &tenant,
             clients: &clients,
             requests: &requests,
@@ -1116,6 +1134,8 @@ async fn pushed_as(client: Client, pairs: &[(&str, &str)]) -> (StatusCode, Value
     let requests = FakeRequests::default();
     let response = push(
         PushContext {
+            ipsie_https_only_clients: None,
+            ipsie_identity_only_clients: None,
             tenant: &tenant,
             clients: &clients,
             requests: &requests,
@@ -1183,6 +1203,8 @@ async fn a_registered_resource_is_stored_with_the_request() {
 
     let response = push(
         PushContext {
+            ipsie_https_only_clients: None,
+            ipsie_identity_only_clients: None,
             tenant: &tenant,
             clients: &clients,
             requests: &requests,
@@ -1330,6 +1352,8 @@ async fn an_accepted_authorization_details_is_stored_with_the_request() {
 
     let response = push(
         PushContext {
+            ipsie_https_only_clients: None,
+            ipsie_identity_only_clients: None,
             tenant: &tenant,
             clients: &clients,
             requests: &requests,
@@ -1468,6 +1492,8 @@ async fn pushed_with_jar(
 
     let response = push(
         PushContext {
+            ipsie_https_only_clients: None,
+            ipsie_identity_only_clients: None,
             tenant: &tenant,
             clients: &clients,
             requests: &requests,
@@ -1841,6 +1867,8 @@ async fn pushed_with_grant_management(
     let clients = FakeClients(Some(client()));
     let requests = FakeRequests::default();
     let context = PushContext {
+        ipsie_https_only_clients: None,
+        ipsie_identity_only_clients: None,
         tenant: &tenant,
         clients: &clients,
         requests: &requests,
@@ -2127,6 +2155,8 @@ async fn pushed_with_jar_and_grant_management(
 
     let response = push(
         PushContext {
+            ipsie_https_only_clients: None,
+            ipsie_identity_only_clients: None,
             tenant: &tenant,
             clients: &clients,
             requests: &requests,

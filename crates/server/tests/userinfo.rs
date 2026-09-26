@@ -151,16 +151,19 @@ impl UserInfoSource for FakeRows {
         Ok(self.denylisted.as_deref() == Some(jti))
     }
 
-    async fn signed_response_alg(
+    async fn response_policy(
         &self,
         client: &ClientId,
-    ) -> Result<Option<SigningAlgorithm>, DomainError> {
+    ) -> Result<asterius_server::http::userinfo::UserInfoResponsePolicy, DomainError> {
         self.reads.fetch_add(1, Ordering::SeqCst);
         // Keyed on the client the grant names, so a test that changed it would
         // stop seeing the registration it set up.
-        Ok(self
-            .signed_response_alg
-            .filter(|_| client.as_str() == CLIENT))
+        Ok(asterius_server::http::userinfo::UserInfoResponsePolicy {
+            signing_algorithm: self
+                .signed_response_alg
+                .filter(|_| client.as_str() == CLIENT),
+            encryption_jwks: None,
+        })
     }
 
     async fn access_tokens_revoked_before(

@@ -2962,7 +2962,7 @@ mod automation_tests {
     use base64::Engine as _;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
     use serde_json::{Value, json};
-    use sha2::{Digest as _, Sha256};
+    use sha2::Sha256;
     use std::collections::BTreeSet;
     use std::sync::Mutex;
 

@@ -291,6 +291,8 @@ async fn post_under(
 ) -> Response {
     register(
         RegisterContext {
+            ipsie_https_only_clients: None,
+            ipsie_identity_only_clients: None,
             tenant_policy,
             tenant: &tenant(),
             clients: registry,
@@ -425,6 +427,8 @@ async fn post_gated_by(
 ) -> Response {
     register(
         RegisterContext {
+            ipsie_https_only_clients: None,
+            ipsie_identity_only_clients: None,
             tenant_policy,
             tenant: &tenant(),
             clients: registry,
@@ -468,6 +472,8 @@ async fn post_to(
 ) -> Response {
     register(
         RegisterContext {
+            ipsie_https_only_clients: None,
+            ipsie_identity_only_clients: None,
             tenant_policy: &asterius_domain::RegistrationPolicy::default(),
             tenant: &tenant(),
             clients: registry,
@@ -502,6 +508,8 @@ async fn post_with_capabilities(
 ) -> Response {
     register(
         RegisterContext {
+            ipsie_https_only_clients: None,
+            ipsie_identity_only_clients: None,
             tenant_policy: &asterius_domain::RegistrationPolicy::default(),
             tenant: &tenant(),
             clients: registry,

@@ -15,6 +15,7 @@ pub mod dpop;
 pub mod federation;
 pub mod http_signatures;
 pub mod id_jag;
+pub mod jwe;
 pub mod jws;
 pub mod kek;
 pub mod key;

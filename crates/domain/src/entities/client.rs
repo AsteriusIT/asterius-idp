@@ -1078,8 +1078,8 @@ impl std::fmt::Display for RedirectUri {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct ClientMetadata {
-    /// Unknown extensions are ignored, except unsupported response encryption
-    /// requests, which must not be silently downgraded to plaintext.
+    /// Unknown extensions are ignored; response encryption members are checked
+    /// explicitly below so a request is never silently downgraded.
     #[serde(flatten)]
     pub additional_metadata: BTreeMap<String, serde_json::Value>,
     /// Human-readable name, shown on the consent screen.
@@ -1230,6 +1230,8 @@ pub struct ClientRegistration {
     pub jwks: JwksSource,
     /// OIDC Registration §2.
     pub id_token_signed_response_alg: SigningAlgorithm,
+    /// Whether the signed ID token is nested in compact JWE.
+    pub encrypt_id_token: bool,
     /// OIDC Registration §2. `None` means the client registered no request
     /// objects; JAR is `ast-s36.1` and is not implemented.
     pub request_object_signing_alg: Option<SigningAlgorithm>,
@@ -1252,6 +1254,8 @@ pub struct ClientRegistration {
     /// which is why registering one is checked against the tenant's keys
     /// (`register::unsignable`) as `id_token_signed_response_alg` is.
     pub userinfo_signed_response_alg: Option<SigningAlgorithm>,
+    /// Whether signed UserInfo is nested in compact JWE.
+    pub encrypt_userinfo: bool,
     /// RFC 9701 §6. `None` keeps RFC 7662 JSON introspection.
     pub introspection_signed_response_alg: Option<SigningAlgorithm>,
     /// CIBA Core 1.0 §4. `Some` exactly when `grant_types` contains the CIBA
@@ -1837,19 +1841,6 @@ impl ClientMetadata {
         capabilities: Capabilities,
         compliance_profile: ClientComplianceProfile,
     ) -> Result<ClientRegistration, ClientMetadataError> {
-        for field in [
-            "id_token_encrypted_response_alg",
-            "id_token_encrypted_response_enc",
-            "userinfo_encrypted_response_alg",
-            "userinfo_encrypted_response_enc",
-        ] {
-            if self.additional_metadata.contains_key(field) {
-                return Err(ClientMetadataError::rejected(
-                    field,
-                    "encrypted responses are not supported",
-                ));
-            }
-        }
         let token_endpoint_auth_method = self.auth_method(capabilities, compliance_profile)?;
         let tls_client_auth_subject =
             self.tls_client_auth_subject(token_endpoint_auth_method, capabilities)?;
@@ -1941,6 +1932,34 @@ impl ClientMetadata {
         self.check_par(compliance_profile)?;
         let use_mtls_endpoint_aliases = self.mtls_endpoint_aliases(capabilities)?;
         let agent = self.agent(&grant_types, &redirect_uris)?;
+        let encrypt_id_token = encryption_pair(
+            "id_token_encrypted_response_alg",
+            self.additional_metadata
+                .get("id_token_encrypted_response_alg"),
+            "id_token_encrypted_response_enc",
+            self.additional_metadata
+                .get("id_token_encrypted_response_enc"),
+        )?;
+        let encrypt_userinfo = encryption_pair(
+            "userinfo_encrypted_response_alg",
+            self.additional_metadata
+                .get("userinfo_encrypted_response_alg"),
+            "userinfo_encrypted_response_enc",
+            self.additional_metadata
+                .get("userinfo_encrypted_response_enc"),
+        )?;
+        if encrypt_userinfo && self.userinfo_signed_response_alg.is_none() {
+            return Err(ClientMetadataError::rejected(
+                "userinfo_encrypted_response_alg",
+                "requires userinfo_signed_response_alg for signed-then-encrypted UserInfo",
+            ));
+        }
+        if (encrypt_id_token || encrypt_userinfo) && !matches!(jwks, JwksSource::Inline(_)) {
+            return Err(ClientMetadataError::rejected(
+                "jwks",
+                "response encryption requires an inline JWK Set with an encryption key",
+            ));
+        }
 
         Ok(ClientRegistration {
             compliance_profile,
@@ -1958,6 +1977,7 @@ impl ClientMetadata {
                 Some(raw) => signing_algorithm("id_token_signed_response_alg", raw)?,
                 None => SigningAlgorithm::DEFAULT,
             },
+            encrypt_id_token,
             request_object_signing_alg: self
                 .request_object_signing_alg
                 .as_deref()
@@ -1978,6 +1998,7 @@ impl ClientMetadata {
                 .as_deref()
                 .map(|raw| signing_algorithm("userinfo_signed_response_alg", raw))
                 .transpose()?,
+            encrypt_userinfo,
             introspection_signed_response_alg: self
                 .introspection_signed_response_alg
                 .as_deref()
@@ -2976,6 +2997,35 @@ fn check_ciba_sector(
         });
     }
     Ok(())
+}
+
+/// Requires both encryption members together. Raw JSON retains explicit null,
+/// which must never become an absent preference and silently yield plaintext.
+fn encryption_pair(
+    alg_field: &'static str,
+    alg: Option<&serde_json::Value>,
+    enc_field: &'static str,
+    enc: Option<&serde_json::Value>,
+) -> Result<bool, ClientMetadataError> {
+    match (
+        alg.map(serde_json::Value::as_str),
+        enc.map(serde_json::Value::as_str),
+    ) {
+        (None, None) => Ok(false),
+        (Some(Some("RSA-OAEP-256")), Some(Some("A256GCM"))) => Ok(true),
+        (None, Some(_)) => Err(ClientMetadataError::rejected(
+            enc_field,
+            "requires an encryption algorithm",
+        )),
+        (Some(_), None) => Err(ClientMetadataError::rejected(
+            alg_field,
+            "requires A256GCM content encryption",
+        )),
+        (Some(_), Some(_)) => Err(ClientMetadataError::rejected(
+            alg_field,
+            "supported pair is RSA-OAEP-256 and A256GCM",
+        )),
+    }
 }
 
 /// Parses an `alg` from client metadata against ADR-0003's allow-list.

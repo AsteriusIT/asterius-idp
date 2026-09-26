@@ -401,6 +401,7 @@ impl Fixture {
         let authenticated = client.clone();
         let response = token(
             TokenContext {
+                ipsie_identity_only_clients: None,
                 certificate: None,
                 tenant: &self.tenant,
                 clients: &clients,

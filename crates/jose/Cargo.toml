@@ -21,6 +21,8 @@ async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+# Encode public JWK n/e as X.509 DER for aws-lc-rs; RSA encryption stays in aws-lc.
+rsa = { version = "0.9.10", default-features = false, features = ["std"] }
 thiserror.workspace = true
 time.workspace = true
 # The shared fetch backoff (`ast-mxc.8`) is best-effort: a store that cannot be
