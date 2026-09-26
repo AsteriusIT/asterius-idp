@@ -1217,6 +1217,8 @@ mod tests {
             id_token_signed_response_alg: SigningAlgorithm::Es256,
             encrypt_id_token: false,
             request_object_signing_alg: None,
+            authorization_signed_response_alg: None,
+            response_modes: None,
             backchannel_authentication_request_signing_alg: None,
             subject_type: SubjectType::Public,
             sector_identifier_uri: None,
