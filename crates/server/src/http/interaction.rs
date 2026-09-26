@@ -1310,7 +1310,7 @@ async fn amended(
     if action.apply(&mut held, grant, now).is_err() {
         tracing::info!(
             tenant = %context.tenant.id,
-            "a merge would have produced a grant too large to store"
+            "a merge would have produced an invalid or incompatible grant"
         );
         return Err("invalid_request");
     }
