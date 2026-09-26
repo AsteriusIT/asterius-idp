@@ -1383,6 +1383,9 @@ impl Invocation {
     /// Hand-rolled, like the rest of this binary's argument handling: the
     /// surface is a subcommand and three flags, and a parser dependency for
     /// that is a dependency to audit for the life of the project.
+    // Keep command and option precedence in one place so malformed invocations
+    // receive one deterministic refusal before any configuration is loaded.
+    #[allow(clippy::too_many_lines)]
     fn parse<I>(arguments: I) -> Result<Self, String>
     where
         I: IntoIterator<Item = std::ffi::OsString>,
