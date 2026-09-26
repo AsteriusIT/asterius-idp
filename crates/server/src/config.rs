@@ -369,6 +369,9 @@ pub struct LdapSourceConfig {
 pub struct SsfUpstreamPeerConfig {
     pub issuer: Issuer,
     pub bearer_token_file: PathBuf,
+    /// Explicit consent to receive signals for every subject the upstream
+    /// transmitter considers eligible (`default_subjects: ALL`).
+    pub allow_all_subjects: bool,
 }
 
 /// Operator-pinned request signing key for one SSF transmitter.
@@ -905,6 +908,8 @@ struct RawLdapSource {
 struct RawSsfUpstreamPeer {
     issuer: String,
     bearer_token_file: PathBuf,
+    #[serde(default)]
+    allow_all_subjects: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2317,6 +2322,7 @@ fn validate_ssf_upstream_peers(
             Some(SsfUpstreamPeerConfig {
                 issuer,
                 bearer_token_file: entry.bearer_token_file,
+                allow_all_subjects: entry.allow_all_subjects,
             })
         })
         .collect()

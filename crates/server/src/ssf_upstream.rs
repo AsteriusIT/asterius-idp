@@ -50,7 +50,10 @@ pub async fn verify_recorded_stream(
         ssf_receiver::configured_peer(endpoints, tenant, &peer)
             .await
             .map_err(|_| SetupError::Peer)?;
-    if issuer != config.issuer || !metadata.supports_poll {
+    if issuer != config.issuer
+        || !metadata.supports_poll
+        || !metadata.subject_policy_allowed(config.allow_all_subjects)
+    {
         return Err(SetupError::Peer);
     }
     same_origin_management_endpoint(&metadata.configuration_endpoint, &issuer)?;
@@ -93,6 +96,7 @@ pub async fn verify_recorded_stream(
     let remote = reconcile_listed(
         &listed,
         &metadata,
+        config.allow_all_subjects,
         &issuer,
         &recorded.audience,
         &recorded.events_requested,
@@ -137,7 +141,10 @@ pub async fn poll_once(
         ssf_receiver::configured_peer(endpoints, tenant, &peer)
             .await
             .map_err(|_| SetupError::Peer)?;
-    if issuer != config.issuer || !metadata.supports_poll {
+    if issuer != config.issuer
+        || !metadata.supports_poll
+        || !metadata.subject_policy_allowed(config.allow_all_subjects)
+    {
         return Err(SetupError::Peer);
     }
     let repository = endpoints
@@ -413,7 +420,10 @@ pub async fn create_poll_stream(
     let (issuer, _jwks, scopes, metadata) = ssf_receiver::configured_peer(endpoints, tenant, &peer)
         .await
         .map_err(|_| SetupError::Peer)?;
-    if issuer != config.issuer || !metadata.supports_poll {
+    if issuer != config.issuer
+        || !metadata.supports_poll
+        || !metadata.subject_policy_allowed(config.allow_all_subjects)
+    {
         return Err(SetupError::Peer);
     }
     same_origin_management_endpoint(&metadata.configuration_endpoint, &issuer)?;
@@ -479,9 +489,15 @@ pub async fn create_poll_stream(
         saved
     };
     let listed = list_streams(poster, &metadata.configuration_endpoint, &authorization).await?;
-    if let Some(established) =
-        reconcile_listed(&listed, &metadata, &issuer, &audience, &events, now)?
-    {
+    if let Some(established) = reconcile_listed(
+        &listed,
+        &metadata,
+        config.allow_all_subjects,
+        &issuer,
+        &audience,
+        &events,
+        now,
+    )? {
         same_origin_management_endpoint(
             established
                 .poll_endpoint
@@ -520,6 +536,7 @@ pub async fn create_poll_stream(
         }
         let established = ssf_receiver::validated_upstream_stream(
             &metadata,
+            config.allow_all_subjects,
             &issuer,
             &audience,
             &events,
@@ -577,6 +594,7 @@ async fn list_streams(
 fn reconcile_listed(
     listed: &[Value],
     metadata: &ssf_receiver::UpstreamMetadata,
+    allow_all_subjects: bool,
     issuer: &asterius_domain::Issuer,
     audience: &str,
     events: &[String],
@@ -595,6 +613,7 @@ fn reconcile_listed(
     let document = serde_json::to_vec(value).map_err(|_| SetupError::Response)?;
     ssf_receiver::validated_upstream_stream(
         metadata,
+        allow_all_subjects,
         issuer,
         audience,
         events,

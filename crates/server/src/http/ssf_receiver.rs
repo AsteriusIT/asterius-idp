@@ -602,6 +602,17 @@ impl UpstreamMetadataCache {
 }
 
 impl UpstreamMetadata {
+    /// ALL is opt-in because the transmitter can send events for subjects the
+    /// receiver has never enrolled. NONE keeps the existing peer behavior;
+    /// its actual subject enrollment remains the operator's responsibility.
+    pub fn subject_policy_allowed(&self, allow_all_subjects: bool) -> bool {
+        match self.default_subjects.as_deref() {
+            Some("NONE") => true,
+            Some("ALL") => allow_all_subjects,
+            _ => false,
+        }
+    }
+
     fn from_document(document: &[u8], issuer: &Issuer) -> Result<Self, ReceiverError> {
         let value: Value = serde_json::from_slice(document).map_err(|_| ReceiverError::Metadata)?;
         let object = value.as_object().ok_or(ReceiverError::Metadata)?;
@@ -695,6 +706,7 @@ impl UpstreamMetadata {
 /// still apply its DNS/IP SSRF guard when it is eventually used.
 pub fn validated_upstream_stream(
     metadata: &UpstreamMetadata,
+    allow_all_subjects: bool,
     issuer: &Issuer,
     audience: &str,
     requested_events: &[String],
@@ -711,9 +723,9 @@ pub fn validated_upstream_stream(
         || !content_type.is_some_and(|value| value.split(';').next().is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("application/json")))
         || document.is_empty()
         || document.len() > 8 * 1024
-        // A valid transmitter may default to ALL, but this receiver will not
-        // establish a stream that silently includes every subject.
-        || metadata.default_subjects.as_deref() != Some("NONE")
+        // A valid transmitter may default to ALL, but only explicit tenant
+        // policy authorizes the receiver to accept that broader stream.
+        || !metadata.subject_policy_allowed(allow_all_subjects)
         || requested_events.is_empty()
         || requested_events.len() > 16
         || requested_events.iter().collect::<BTreeSet<_>>().len() != requested_events.len()
