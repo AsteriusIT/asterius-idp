@@ -32,6 +32,17 @@ struct Trust {
 #[derive(Debug, Clone, Default)]
 pub struct IdJagTrusts(HashMap<String, HashMap<(String, String), Trust>>);
 
+/// A configured authorization choice safe to show an account owner. Signing
+/// keys and operator-owned JWKS paths never leave the trust store.
+#[derive(Debug, Clone)]
+pub struct IdJagConsentOption {
+    pub issuer: String,
+    pub actor_client_id: String,
+    pub client_id: String,
+    pub resources: Vec<String>,
+    pub scopes: Vec<String>,
+}
+
 impl IdJagTrusts {
     /// Whether an operator configured this upstream issuer for at least one
     /// downstream client in the routed tenant.
@@ -40,6 +51,26 @@ impl IdJagTrusts {
         self.0
             .get(tenant_id)
             .is_some_and(|trusted| trusted.keys().any(|(configured, _)| configured == issuer))
+    }
+
+    /// The tenant's exact operator-pinned choices for the owner consent page.
+    #[must_use]
+    pub fn consent_options(&self, tenant_id: &str) -> Vec<IdJagConsentOption> {
+        let mut options: Vec<_> = self
+            .0
+            .get(tenant_id)
+            .into_iter()
+            .flat_map(|trusts| trusts.values())
+            .map(|trust| IdJagConsentOption {
+                issuer: trust.config.issuer.as_str().to_owned(),
+                actor_client_id: trust.config.actor_client_id.clone(),
+                client_id: trust.config.client_id.clone(),
+                resources: trust.config.resources.iter().cloned().collect(),
+                scopes: trust.config.scopes.iter().cloned().collect(),
+            })
+            .collect();
+        options.sort_by(|a, b| (&a.issuer, &a.client_id).cmp(&(&b.issuer, &b.client_id)));
+        options
     }
 
     /// Loads each operator-owned JWKS file with a strict size bound.

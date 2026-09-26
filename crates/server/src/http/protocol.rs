@@ -45,8 +45,8 @@ use crate::http::token::{self, TokenContext};
 use crate::http::userinfo;
 use crate::http::verify_email;
 use crate::http::{
-    account_activity, account_claims_providers, account_email, account_passkeys, account_password,
-    account_sessions, account_totp,
+    account_activity, account_claims_providers, account_email, account_id_jag, account_passkeys,
+    account_password, account_sessions, account_totp,
 };
 use crate::tenancy::MountPrefix;
 use crate::tenant_settings::SettingsDirectory;
@@ -949,6 +949,12 @@ fn account_pages(endpoints: Arc<ClientEndpoints>) -> Router {
             account_claims_providers::PAGE_PATH,
             get(account_claims_providers_page)
                 .post(account_claims_providers_submit)
+                .with_state(Arc::clone(&endpoints)),
+        )
+        .route(
+            account_id_jag::PAGE_PATH,
+            get(account_id_jag_page)
+                .post(account_id_jag_submit)
                 .with_state(Arc::clone(&endpoints)),
         )
         .route(
@@ -6675,6 +6681,7 @@ struct AccountParts {
     email_changes: asterius_store_pg::PgEmailChangeRequests,
     passkeys: asterius_store_pg::PgPasskeyRepository,
     totp_credentials: asterius_store_pg::PgTotpCredentials,
+    id_jag: asterius_store_pg::PgIdJagRedemption,
     /// `None` where the deployment has configured no password method, which is
     /// a deployment whose accounts sign in with passkeys only.
     passwords: Option<asterius_store_pg::PgPasswordVerifier>,
@@ -6702,6 +6709,7 @@ async fn account_parts(
         ),
         passkeys: scope.passkeys(),
         totp_credentials: scope.totp_credentials(Arc::clone(&endpoints.kek)),
+        id_jag: scope.id_jag_redemption(),
         passwords: endpoints.passwords(&tenant.id),
         mail: scope.mail(),
         queues: crate::outbox::PgSsfQueues::new(
@@ -6923,6 +6931,50 @@ async fn account_passkeys_sign_in(
         time::OffsetDateTime::now_utc(),
     )
     .await
+}
+
+/// Account-owner ID-JAG approvals, bound to this tenant and browser session.
+async fn account_id_jag_page(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let parts = match account_parts(&endpoints, &tenant).await {
+        Ok(parts) => parts,
+        Err(_) => return unavailable(),
+    };
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    let context = account_id_jag::ConsentContext {
+        account: account_context(&tenant, &parts, &text, &nonce, mount),
+        store: &parts.id_jag,
+        trusts: endpoints.id_jag_trusts.as_ref(),
+    };
+    account_id_jag::page(&context, &headers, time::OffsetDateTime::now_utc()).await
+}
+
+async fn account_id_jag_submit(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let parts = match account_parts(&endpoints, &tenant).await {
+        Ok(parts) => parts,
+        Err(_) => return unavailable(),
+    };
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    let context = account_id_jag::ConsentContext {
+        account: account_context(&tenant, &parts, &text, &nonce, mount),
+        store: &parts.id_jag,
+        trusts: endpoints.id_jag_trusts.as_ref(),
+    };
+    account_id_jag::submit(&context, &headers, &body, time::OffsetDateTime::now_utc()).await
 }
 
 /// `GET /account/totp` — lifecycle status without opening a stored seed.
