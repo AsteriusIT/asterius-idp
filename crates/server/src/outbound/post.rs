@@ -335,7 +335,36 @@ impl HttpsPoster {
             });
         }
 
-        match tokio::time::timeout(TOTAL_TIMEOUT, self.send(url, request, body)).await {
+        match tokio::time::timeout(
+            TOTAL_TIMEOUT,
+            self.send(url, request, body, hyper::Method::POST),
+        )
+        .await
+        {
+            Ok(outcome) => outcome,
+            Err(_) => Err(PostError::Reach(FetchError::TimedOut {
+                host: ssrf::check_url(url).map_or_else(|_| "the URL".to_owned(), |t| t.host),
+            })),
+        }
+    }
+
+    /// Reads a bounded management response with the same SSRF, TLS, redirect,
+    /// DNS and timeout rules as a POST. The OAuth credential remains a
+    /// sensitive header and is not included in errors or `Debug` output.
+    pub async fn get_with_response(
+        &self,
+        url: &str,
+        authorization: &str,
+    ) -> Result<PostResponse, PostError> {
+        let request = PostRequest::of("")
+            .accepting("application/json")
+            .authorized_by(Some(authorization));
+        match tokio::time::timeout(
+            TOTAL_TIMEOUT,
+            self.send(url, request, &[], hyper::Method::GET),
+        )
+        .await
+        {
             Ok(outcome) => outcome,
             Err(_) => Err(PostError::Reach(FetchError::TimedOut {
                 host: ssrf::check_url(url).map_or_else(|_| "the URL".to_owned(), |t| t.host),
@@ -349,11 +378,12 @@ impl HttpsPoster {
         url: &str,
         request: PostRequest<'_>,
         body: &[u8],
+        method: hyper::Method,
     ) -> Result<PostResponse, PostError> {
         let target = ssrf::check_url(url).map_err(FetchError::from)?;
         let addresses = vetted_addresses(&target).await?;
         let stream = self.connections.connect(&target, &addresses).await?;
-        exchange(&target, request, body, stream).await
+        exchange(&target, request, body, method, stream).await
     }
 }
 
@@ -362,6 +392,7 @@ async fn exchange(
     target: &Target,
     request: PostRequest<'_>,
     body: &[u8],
+    method: hyper::Method,
     stream: tokio_rustls::client::TlsStream<tokio::net::TcpStream>,
 ) -> Result<PostResponse, PostError> {
     let failed = || {
@@ -380,14 +411,16 @@ async fn exchange(
     });
 
     let mut builder = hyper::Request::builder()
-        .method(hyper::Method::POST)
+        .method(method.clone())
         .uri(&target.request_target)
         .header(HOST, &target.authority)
-        .header(CONTENT_TYPE, request.content_type)
         .header(USER_AGENT, format!("asterius/{}", crate::VERSION))
         // One request per connection, as in `super::jwks`: nothing here reuses
         // it, and saying so lets the receiver close rather than hold a socket.
         .header(hyper::header::CONNECTION, "close");
+    if method == hyper::Method::POST {
+        builder = builder.header(CONTENT_TYPE, request.content_type);
+    }
     if let Some(accept) = request.accept {
         builder = builder.header(ACCEPT, accept);
     }

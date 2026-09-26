@@ -86,11 +86,19 @@ response validator refuses a stream with a changed issuer, audience, event
 set, or delivery method. It also requires `default_subjects: NONE`, so a new
 stream cannot silently subscribe to every subject.
 
-No outbound OAuth credential is configured for upstream stream management.
-Consequently this receiver does not yet call the upstream configuration
-endpoint or record a stream automatically: neither the inbound `ssf.receive`
-scope nor a peer's registered signing key authorizes this server as an upstream
-OAuth client. Poll delivery, acknowledgements, explicit subject enrollment,
+An operator may now configure `tenant.ssf_upstream_peer` with a canonical
+issuer and a bearer token file for outbound OAuth management. The credential
+is read only for an explicit management call and is sent only to same-origin
+configuration and status endpoints retained from verified metadata, through
+the guarded HTTPS transport. The create service checks a 201 JSON stream
+configuration, then a 200 JSON status response for the exact stream ID before
+recording the stream. This remains unexposed: a remote creation can succeed
+just before local persistence fails, and automated retry could create an
+orphan or duplicate stream. The operator must reconcile that condition before
+an operational route can be enabled. The token file has no automatic refresh;
+operators must rotate it before expiry. Neither inbound `ssf.receive` scope nor
+a peer's registered signing key authorizes outbound management. Poll delivery,
+acknowledgements, explicit subject enrollment,
 and the complete CAEP event vocabulary remain incomplete. Local lifecycle,
 audit, and resulting outbound notifications now commit atomically. The CAEP
 Interoperability Profile's RS256 requirement remains unresolved against

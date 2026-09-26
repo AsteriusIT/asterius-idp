@@ -25,6 +25,7 @@ pub mod retention;
 pub mod rotation;
 pub mod signing;
 pub mod ssf;
+pub mod ssf_upstream;
 pub mod tenancy;
 pub mod tenant_settings;
 

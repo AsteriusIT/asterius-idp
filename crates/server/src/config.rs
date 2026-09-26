@@ -321,6 +321,18 @@ pub struct TenantConfig {
     pub claims_providers: Vec<ClaimsProviderConfig>,
     /// Peers whose SSF receiver requests require RFC 9421 signatures.
     pub http_signature_peers: Vec<HttpSignaturePeerConfig>,
+    /// Explicit outbound OAuth authorization for upstream SSF management.
+    /// This is separate from a peer's inbound `ssf.receive` registration.
+    pub ssf_upstream_peers: Vec<SsfUpstreamPeerConfig>,
+}
+
+/// Operator-provided bearer credential source for one upstream transmitter.
+/// Only the path is held in configuration; the token is read for a management
+/// call, zeroized afterwards, and never stored in the stream table.
+#[derive(Debug, Clone)]
+pub struct SsfUpstreamPeerConfig {
+    pub issuer: Issuer,
+    pub bearer_token_file: PathBuf,
 }
 
 /// Operator-pinned request signing key for one SSF transmitter.
@@ -813,6 +825,14 @@ struct RawTenant {
     oid4vp_verifier: Option<Vec<RawOid4vpVerifier>>,
     claims_provider: Option<Vec<RawClaimsProvider>>,
     http_signature_peer: Option<Vec<RawHttpSignaturePeer>>,
+    ssf_upstream_peer: Option<Vec<RawSsfUpstreamPeer>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawSsfUpstreamPeer {
+    issuer: String,
+    bearer_token_file: PathBuf,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2140,6 +2160,8 @@ fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantCo
         let claims_providers = validate_claims_providers(index, tenant.claims_provider, errors);
         let http_signature_peers =
             validate_http_signature_peers(index, tenant.http_signature_peer, errors);
+        let ssf_upstream_peers =
+            validate_ssf_upstream_peers(index, tenant.ssf_upstream_peer, errors);
 
         if let (Some(id), Some(issuer)) = (id, issuer) {
             let default_resource = default_resource.unwrap_or_else(|| issuer.as_str().to_owned());
@@ -2158,10 +2180,48 @@ fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantCo
                 oid4vp_verifiers,
                 claims_providers,
                 http_signature_peers,
+                ssf_upstream_peers,
             });
         }
     }
     tenants
+}
+
+fn validate_ssf_upstream_peers(
+    tenant_index: usize,
+    raw: Option<Vec<RawSsfUpstreamPeer>>,
+    errors: &mut Collector,
+) -> Vec<SsfUpstreamPeerConfig> {
+    let mut seen = BTreeSet::new();
+    raw.unwrap_or_default()
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, entry)| {
+            let path = format!("tenant[{tenant_index}].ssf_upstream_peer[{index}]");
+            let issuer = match Issuer::parse(&entry.issuer) {
+                Ok(issuer) if issuer.as_str() == entry.issuer => issuer,
+                _ => {
+                    errors.problem(format!("{path}.issuer"), "must be a canonical HTTPS issuer");
+                    return None;
+                }
+            };
+            if !seen.insert(issuer.as_str().to_owned()) {
+                errors.problem(format!("{path}.issuer"), "duplicate upstream issuer");
+                return None;
+            }
+            if entry.bearer_token_file.as_os_str().is_empty() {
+                errors.problem(
+                    format!("{path}.bearer_token_file"),
+                    "must name a credential file",
+                );
+                return None;
+            }
+            Some(SsfUpstreamPeerConfig {
+                issuer,
+                bearer_token_file: entry.bearer_token_file,
+            })
+        })
+        .collect()
 }
 
 fn validate_http_signature_peers(
