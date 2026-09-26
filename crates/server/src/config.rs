@@ -317,6 +317,16 @@ pub struct TenantConfig {
     pub oid4vp_verifiers: Vec<Oid4vpVerifierConfig>,
     /// Operator-pinned Claims Providers eligible for aggregated delivery.
     pub claims_providers: Vec<ClaimsProviderConfig>,
+    /// Peers whose SSF receiver requests require RFC 9421 signatures.
+    pub http_signature_peers: Vec<HttpSignaturePeerConfig>,
+}
+
+/// Operator-pinned request signing key for one SSF transmitter.
+#[derive(Debug, Clone)]
+pub struct HttpSignaturePeerConfig {
+    pub client_id: String,
+    pub keyid: String,
+    pub public_key_file: PathBuf,
 }
 
 /// Static CP registration and trust profile. The OAuth setup flow owns the
@@ -771,6 +781,15 @@ struct RawTenant {
     native_sso_approval: Option<Vec<RawNativeSsoApproval>>,
     oid4vp_verifier: Option<Vec<RawOid4vpVerifier>>,
     claims_provider: Option<Vec<RawClaimsProvider>>,
+    http_signature_peer: Option<Vec<RawHttpSignaturePeer>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawHttpSignaturePeer {
+    client_id: String,
+    keyid: String,
+    public_key_file: PathBuf,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2069,6 +2088,8 @@ fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantCo
         let oid4vp_verifiers =
             validate_oid4vp_verifiers(index, issuer.as_ref(), tenant.oid4vp_verifier, errors);
         let claims_providers = validate_claims_providers(index, tenant.claims_provider, errors);
+        let http_signature_peers =
+            validate_http_signature_peers(index, tenant.http_signature_peer, errors);
 
         if let (Some(id), Some(issuer)) = (id, issuer) {
             let default_resource = default_resource.unwrap_or_else(|| issuer.as_str().to_owned());
@@ -2085,10 +2106,56 @@ fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantCo
                 native_sso_approvals,
                 oid4vp_verifiers,
                 claims_providers,
+                http_signature_peers,
             });
         }
     }
     tenants
+}
+
+fn validate_http_signature_peers(
+    tenant_index: usize,
+    raw: Option<Vec<RawHttpSignaturePeer>>,
+    errors: &mut Collector,
+) -> Vec<HttpSignaturePeerConfig> {
+    let entries = raw.unwrap_or_default();
+    if entries.len() > 16 {
+        errors.problem(
+            format!("tenant[{tenant_index}].http_signature_peer"),
+            "at most sixteen HTTP signature peers may be configured",
+        );
+        return Vec::new();
+    }
+    let mut seen = BTreeSet::new();
+    entries
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, entry)| {
+            let path = format!("tenant[{tenant_index}].http_signature_peer[{index}]");
+            if entry.client_id.is_empty()
+                || entry.client_id.len() > 255
+                || !seen.insert(entry.client_id.clone())
+            {
+                errors.problem(format!("{path}.client_id"), "must be nonempty and unique");
+                return None;
+            }
+            if entry.keyid.is_empty()
+                || entry.keyid.len() > 128
+                || !entry
+                    .keyid
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+            {
+                errors.problem(format!("{path}.keyid"), "invalid RFC 9421 key identifier");
+                return None;
+            }
+            Some(HttpSignaturePeerConfig {
+                client_id: entry.client_id,
+                keyid: entry.keyid,
+                public_key_file: entry.public_key_file,
+            })
+        })
+        .collect()
 }
 
 fn validate_native_sso_approvals(

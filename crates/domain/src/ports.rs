@@ -1782,6 +1782,8 @@ pub enum ReplayPurpose {
     /// the reason the `subject` argument documents: a shared namespace would
     /// let one administrator burn another's keys.
     AdminIdempotency,
+    /// An RFC 9421 signed request to a configured SSF receiver.
+    HttpSignature,
 }
 
 impl ReplayPurpose {
@@ -1792,6 +1794,7 @@ impl ReplayPurpose {
             Self::ClientAssertion => "client_assertion",
             Self::DpopProof => "dpop_proof",
             Self::AdminIdempotency => "admin_idempotency",
+            Self::HttpSignature => "http_signature",
         }
     }
 }

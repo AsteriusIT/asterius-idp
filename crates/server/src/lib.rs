@@ -13,6 +13,7 @@ pub mod config;
 pub mod config_reference;
 pub mod federation;
 pub mod http;
+pub mod http_signatures;
 pub mod mtls;
 pub mod observability;
 pub mod oid4vp;
