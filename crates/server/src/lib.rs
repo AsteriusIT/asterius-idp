@@ -28,6 +28,7 @@ pub mod saml;
 pub mod saml_post;
 pub mod saml_redirect;
 pub mod saml_validation;
+pub mod saml_xmlsig;
 pub mod signing;
 pub mod ssf;
 pub mod ssf_upstream;

@@ -138,7 +138,7 @@ dependencies = [
  "asterius-web",
  "async-trait",
  "axum",
- "base64",
+ "base64 0.22.1",
  "futures-core",
  "hex",
  "http-body-util",
@@ -161,7 +161,7 @@ name = "asterius-domain"
 version = "0.0.0"
 dependencies = [
  "async-trait",
- "base64",
+ "base64 0.22.1",
  "getrandom 0.3.4",
  "hex",
  "hmac",
@@ -187,7 +187,7 @@ dependencies = [
  "asterius-domain",
  "async-trait",
  "aws-lc-rs",
- "base64",
+ "base64 0.22.1",
  "serde",
  "serde_json",
  "sha2",
@@ -204,7 +204,7 @@ name = "asterius-oidc"
 version = "0.0.0"
 dependencies = [
  "asterius-domain",
- "base64",
+ "base64 0.22.1",
  "getrandom 0.3.4",
  "proptest",
  "serde",
@@ -232,7 +232,7 @@ dependencies = [
  "async-trait",
  "aws-lc-rs",
  "axum",
- "base64",
+ "base64 0.22.1",
  "ciborium",
  "flate2",
  "getrandom 0.3.4",
@@ -244,7 +244,7 @@ dependencies = [
  "ldap3",
  "metrics",
  "metrics-exporter-prometheus",
- "quick-xml",
+ "quick-xml 0.42.0",
  "rustls",
  "rustls-pki-types",
  "rustls-webpki",
@@ -265,6 +265,7 @@ dependencies = [
  "url",
  "uuid",
  "webpki-roots 1.0.9",
+ "xml-sec",
  "zeroize",
 ]
 
@@ -274,7 +275,7 @@ version = "0.0.0"
 dependencies = [
  "asterius-domain",
  "asterius-jose",
- "base64",
+ "base64 0.22.1",
  "getrandom 0.3.4",
  "jsonwebtoken",
  "proptest",
@@ -296,7 +297,7 @@ dependencies = [
  "asterius-jose",
  "asterius-ssf",
  "async-trait",
- "base64",
+ "base64 0.22.1",
  "hex",
  "serde_json",
  "sha2",
@@ -333,7 +334,7 @@ version = "0.0.0"
 dependencies = [
  "asterius-domain",
  "aws-lc-rs",
- "base64",
+ "base64 0.22.1",
  "ciborium",
  "serde",
  "serde_json",
@@ -453,6 +454,12 @@ name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+
+[[package]]
+name = "base64"
+version = "0.23.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
 name = "base64ct"
@@ -609,6 +616,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
+name = "core_detect"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f8f80099a98041a3d1622845c271458a2d73e688351bf3cb999266764b81d48"
+
+[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -763,6 +776,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "252afb9ae5eaa683babdc6a068b3f5726eb19e05070c731f9b2a23a7c3e8ed34"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "encoding_rs"
+version = "0.8.42"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e985e0451871ad22fb8d2b6b076e2028a502a0d3950998c2c5c0a4f9b5d9679"
+dependencies = [
+ "cfg-if",
+ "core_detect",
+ "multiversion_no_op",
+ "rustversion",
+ "scopeguard",
+ "simdutf8",
 ]
 
 [[package]]
@@ -1384,7 +1411,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "881733cbc631fc9e472e24447ce32a64bedf2da498d6d8570b08edc87de71f65"
 dependencies = [
  "aws-lc-rs",
- "base64",
+ "base64 0.22.1",
  "getrandom 0.2.17",
  "js-sys",
  "serde",
@@ -1539,7 +1566,7 @@ version = "0.17.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2b166dea96003ee2531cf14833efedced545751d800f03535801d833313f8c15"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "indexmap",
  "metrics",
  "metrics-util",
@@ -1616,6 +1643,12 @@ dependencies = [
  "num-traits",
  "pxfm",
 ]
+
+[[package]]
+name = "multiversion_no_op"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 
 [[package]]
 name = "nom"
@@ -1907,6 +1940,15 @@ name = "quick-error"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a993555f31e5a609f617c12db6250dedcac1b0a85076912c436e6fc9b2c8e6a3"
+
+[[package]]
+name = "quick-xml"
+version = "0.41.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e660451e55124f798a69a5af3f49ccfbefbd41910eefd25caf2393e1f3473ec1"
+dependencies = [
+ "memchr",
+]
 
 [[package]]
 name = "quick-xml"
@@ -2217,6 +2259,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "self_cell"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ab42ca02749e120097e328d91d415325bdf43b1c72c4c8badf37375fe40a813"
+
+[[package]]
 name = "serde"
 version = "1.0.229"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2355,6 +2403,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
 
 [[package]]
+name = "simdutf8"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
+
+[[package]]
 name = "sketches-ddsketch"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2423,7 +2477,7 @@ version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee6798b1838b6a0f69c007c133b8df5866302197e404e8b6ee8ed3e3a5e68dc6"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "bytes",
  "crc",
  "crossbeam-queue",
@@ -2500,7 +2554,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aa003f0038df784eb8fecbbac13affe3da23b45194bd57dba231c8f48199c526"
 dependencies = [
  "atoi",
- "base64",
+ "base64 0.22.1",
  "bitflags",
  "byteorder",
  "bytes",
@@ -2544,7 +2598,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "db58fcd5a53cf07c184b154801ff91347e4c30d17a3562a635ff028ad5deda46"
 dependencies = [
  "atoi",
- "base64",
+ "base64 0.22.1",
  "bitflags",
  "byteorder",
  "crc",
@@ -3405,6 +3459,28 @@ dependencies = [
  "rusticata-macros",
  "thiserror",
  "time",
+]
+
+[[package]]
+name = "xml-sec"
+version = "0.1.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a789585f3724ef1c24ceca61b9b585adadb408b398ab20d98b8a136a662bb4e"
+dependencies = [
+ "base64 0.23.1",
+ "quick-xml 0.41.0",
+ "self_cell",
+ "thiserror",
+ "xmloxide",
+]
+
+[[package]]
+name = "xmloxide"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "58666a3723753360aa92f2eda5c6f5392285c6d7f063b4c2b07f47c697a22b47"
+dependencies = [
+ "encoding_rs",
 ]
 
 [[package]]
