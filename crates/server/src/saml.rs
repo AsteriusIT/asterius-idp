@@ -316,14 +316,14 @@ fn valid_xml_id(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
 }
 
-/// A tenant IdP's public metadata values. The signing certificate is
-/// provisioned by the operator and must match the private key supplied to
-/// `sign_metadata`; this module does not manufacture certificates.
+/// A tenant IdP's public metadata values. Certificates are provisioned by the
+/// operator and the active certificate must match the private signing key.
+/// Pending and retiring certificates are published during rotation overlap.
 #[derive(Debug, Clone)]
 pub struct IdpMetadata<'a> {
     pub entity_id: &'a str,
-    pub sso_redirect_url: &'a str,
-    pub signing_certificate_der: &'a [u8],
+    pub sso_url: &'a str,
+    pub signing_certificates_der: &'a [&'a [u8]],
 }
 
 /// Errors generated while constructing signed metadata.
@@ -345,17 +345,26 @@ pub fn sign_metadata(
     if metadata.entity_id.is_empty()
         || metadata.entity_id.len() > 1024
         || !valid_xml_attr(metadata.entity_id)
-        || metadata.signing_certificate_der.is_empty()
-        || metadata.signing_certificate_der.len() > 16_384
-        || metadata.sso_redirect_url.len() > 2048
-        || !https_url(metadata.sso_redirect_url)
-        || !valid_xml_attr(metadata.sso_redirect_url)
+        || metadata.signing_certificates_der.is_empty()
+        || metadata.signing_certificates_der.len() > 2
+        || metadata
+            .signing_certificates_der
+            .iter()
+            .any(|certificate| certificate.is_empty() || certificate.len() > 16_384)
+        || metadata.signing_certificates_der.len() == 2
+            && metadata.signing_certificates_der[0] == metadata.signing_certificates_der[1]
+        || metadata.sso_url.len() > 2048
+        || !https_url(metadata.sso_url)
+        || !valid_xml_attr(metadata.sso_url)
     {
         return Err(MetadataError::InvalidInput);
     }
     let entity = escape_attr(metadata.entity_id);
-    let url = escape_attr(metadata.sso_redirect_url);
-    let cert = STANDARD.encode(metadata.signing_certificate_der);
+    let url = escape_attr(metadata.sso_url);
+    let keys = metadata.signing_certificates_der.iter().map(|certificate| {
+        let cert = STANDARD.encode(certificate);
+        format!("<md:KeyDescriptor use=\"signing\"><ds:KeyInfo xmlns:ds=\"{XMLDSIG_NS}\"><ds:X509Data><ds:X509Certificate>{cert}</ds:X509Certificate></ds:X509Data></ds:KeyInfo></md:KeyDescriptor>")
+    }).collect::<String>();
     // Namespace declarations are placed on the elements where they are
     // visibly used; attributes are in lexical order. Attribute escaping uses
     // precisely the XML C14N required escapes. With this fixed serializer,
@@ -363,7 +372,7 @@ pub fn sign_metadata(
     // transform. Changes to serialization require checking that invariant
     // against an independent XML C14N implementation before deployment.
     let unsigned = format!(
-        "<md:EntityDescriptor xmlns:md=\"{METADATA_NS}\" entityID=\"{entity}\"><md:IDPSSODescriptor protocolSupportEnumeration=\"{PROTOCOL_NS}\"><md:KeyDescriptor use=\"signing\"><ds:KeyInfo xmlns:ds=\"{XMLDSIG_NS}\"><ds:X509Data><ds:X509Certificate>{cert}</ds:X509Certificate></ds:X509Data></ds:KeyInfo></md:KeyDescriptor><md:SingleSignOnService Binding=\"urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect\" Location=\"{url}\"></md:SingleSignOnService></md:IDPSSODescriptor></md:EntityDescriptor>"
+        "<md:EntityDescriptor xmlns:md=\"{METADATA_NS}\" entityID=\"{entity}\"><md:IDPSSODescriptor protocolSupportEnumeration=\"{PROTOCOL_NS}\">{keys}<md:SingleSignOnService Binding=\"urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect\" Location=\"{url}\"></md:SingleSignOnService><md:SingleSignOnService Binding=\"{HTTP_POST}\" Location=\"{url}\"></md:SingleSignOnService></md:IDPSSODescriptor></md:EntityDescriptor>"
     );
     let split = unsigned.find('>').ok_or(MetadataError::SigningFailed)? + 1;
     sign_enveloped(&unsigned, split, "", private_key_pkcs8)

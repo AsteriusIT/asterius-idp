@@ -9,8 +9,8 @@
 //! The response can only post to the trusted ACS.
 
 use crate::http::protocol::ClientEndpoints;
-use crate::saml::Assertion;
-use crate::saml_idp_signer::SamlIdpSigner;
+use crate::saml::{Assertion, IdpMetadata, sign_metadata};
+use crate::saml_idp_signer::{SamlIdpSigner, validate_key_pair};
 use crate::saml_validation::{SamlRequestValidator, ValidationError};
 use asterius_domain::{SessionRepository as _, Tenant, UserId, UserStatus};
 use asterius_web::Brand;
@@ -27,11 +27,84 @@ use std::sync::Arc;
 use time::{Duration, OffsetDateTime};
 use url::Url;
 
+/// Tenant-relative metadata, mounted only alongside the live SSO route.
+pub const METADATA_PATH: &str = "/saml/metadata";
+
 /// Only these two bindings have live request verification and response paths.
 pub fn routes(endpoints: Arc<ClientEndpoints>) -> Router {
     Router::new()
         .route("/saml/sso", get(redirect).post(post_form))
+        .route(METADATA_PATH, get(metadata))
         .with_state(endpoints)
+}
+
+async fn metadata(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+) -> Response {
+    let repository = endpoints
+        .store
+        .scope(tenant.id.clone())
+        .saml_idp_keys(Arc::clone(&endpoints.kek));
+    let active = match repository.load_for_signing().await {
+        Ok(Some(active)) => active,
+        Ok(None) => return refused(StatusCode::NOT_FOUND),
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot load SAML metadata signing key");
+            return refused(StatusCode::SERVICE_UNAVAILABLE);
+        }
+    };
+    if let Err(error) = validate_key_pair(&active.certificate_der, &active.private_key_pkcs8) {
+        tracing::error!(%error, tenant = %tenant.id, "invalid SAML metadata signing key");
+        return refused(StatusCode::SERVICE_UNAVAILABLE);
+    }
+    let published = match repository.published().await {
+        Ok(published) => published,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot load SAML published certificates");
+            return refused(StatusCode::SERVICE_UNAVAILABLE);
+        }
+    };
+    if published.len() > 2
+        || published.iter().filter(|key| key.state == "active").count() != 1
+        || !published
+            .iter()
+            .any(|key| key.state == "active" && key.certificate_der == active.certificate_der)
+    {
+        tracing::error!(tenant = %tenant.id, "inconsistent SAML certificate rotation state");
+        return refused(StatusCode::SERVICE_UNAVAILABLE);
+    }
+    let certificates = published
+        .iter()
+        .map(|key| key.certificate_der.as_slice())
+        .collect::<Vec<_>>();
+    let sso_url = format!("{}/saml/sso", tenant.issuer.as_str().trim_end_matches('/'));
+    let document = match sign_metadata(
+        &IdpMetadata {
+            entity_id: tenant.issuer.as_str(),
+            sso_url: &sso_url,
+            signing_certificates_der: &certificates,
+        },
+        &active.private_key_pkcs8,
+    ) {
+        Ok(document) => document,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot sign SAML metadata");
+            return refused(StatusCode::SERVICE_UNAVAILABLE);
+        }
+    };
+    (
+        StatusCode::OK,
+        [
+            (
+                header::CONTENT_TYPE,
+                "application/samlmetadata+xml; charset=utf-8",
+            ),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        document,
+    )
+        .into_response()
 }
 
 async fn redirect(
