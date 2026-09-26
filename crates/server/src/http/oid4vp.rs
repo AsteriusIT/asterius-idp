@@ -147,7 +147,7 @@ async fn response(
         client_id: transaction.client_id,
         credential_id: transaction.credential_id,
     };
-    let verified = extract_direct_post(&pending, &form).and_then(|offered| {
+    let presentation_result = extract_direct_post(&pending, &form).and_then(|offered| {
         asterius_jose::oid4vp::verify_jwt_vc_json(
             &offered.vp_jwt,
             &verifier.policy(transaction.nonce),
@@ -155,7 +155,7 @@ async fn response(
         )
         .map_err(|_| asterius_oidc::oid4vp::Oid4vpError::Response("presentation was refused"))
     });
-    let outcome = if verified.is_ok() {
+    let outcome = if presentation_result.is_ok() {
         Outcome::Success
     } else {
         Outcome::Failure
@@ -168,14 +168,14 @@ async fn response(
         now,
     )
     .detail(Detail::new().text("verifier_id", &transaction.verifier_id));
-    if let Ok(presentation) = &verified {
+    if let Ok(presentation) = &presentation_result {
         event = event.subject(presentation.holder.clone());
     }
     if let Err(error) = endpoints.audit.record(event).await {
         tracing::error!(%error, tenant = %tenant.id, "OID4VP audit write failed");
         return refused(StatusCode::SERVICE_UNAVAILABLE);
     }
-    let Ok(verified) = verified else {
+    let Ok(presentation) = presentation_result else {
         return match transactions.record_rejected(state, now).await {
             Ok(_) => refused(StatusCode::BAD_REQUEST),
             Err(error) => {
@@ -184,12 +184,12 @@ async fn response(
             }
         };
     };
-    let claims = Value::Array(verified.disclosed_claims);
+    let claims = Value::Array(presentation.disclosed_claims);
     match transactions
         .record_verified(
             state,
-            &verified.holder,
-            &verified.credential_issuer,
+            &presentation.holder,
+            &presentation.credential_issuer,
             &claims,
             now,
         )
@@ -330,6 +330,10 @@ fn transactions(
     asterius_store_pg::PgOid4vpTransactions::new(endpoints.store.pool().clone(), tenant.id.clone())
 }
 
+#[expect(
+    clippy::result_large_err,
+    reason = "These HTTP guard helpers return the response directly when the request is rejected."
+)]
 async fn throttle_address(
     endpoints: &ClientEndpoints,
     tenant: &Tenant,
@@ -347,6 +351,10 @@ async fn throttle_address(
     .await
 }
 
+#[expect(
+    clippy::result_large_err,
+    reason = "These HTTP guard helpers return the response directly when the request is rejected."
+)]
 async fn throttle_client(
     endpoints: &ClientEndpoints,
     tenant: &Tenant,
@@ -363,6 +371,10 @@ async fn throttle_client(
     .await
 }
 
+#[expect(
+    clippy::result_large_err,
+    reason = "These HTTP guard helpers return the response directly when the request is rejected."
+)]
 async fn charge(
     endpoints: &ClientEndpoints,
     tenant: &Tenant,

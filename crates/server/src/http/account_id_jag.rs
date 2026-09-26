@@ -6,6 +6,7 @@ use asterius_web::Document;
 use axum::body::Bytes;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use std::fmt::Write as _;
 use time::OffsetDateTime;
 
 use crate::http::account::{
@@ -46,6 +47,10 @@ pub async fn page(
     render_current(context, &session, now, None, StatusCode::OK).await
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "The consent handler keeps validation and grant or revocation responses together."
+)]
 pub async fn submit(
     context: &ConsentContext<'_>,
     headers: &HeaderMap,
@@ -282,24 +287,25 @@ fn render(
 ) -> Response {
     let csrf = csrf_for(session, CSRF_SEPARATOR);
     let action = escape_html(&context.account.mount.absolute(PAGE_PATH));
-    let mut content = String::new();
+    let mut markup = String::new();
     if let Some(message) = message {
-        content.push_str(&format!("<p role=\"status\">{}</p>", escape_html(message)));
+        write!(markup, "<p role=\"status\">{}</p>", escape_html(message))
+            .expect("writing to String cannot fail");
     }
-    content.push_str("<h2>Current approvals</h2>");
+    markup.push_str("<h2>Current approvals</h2>");
     if consents.is_empty() {
-        content.push_str("<p>No active approvals.</p>");
+        markup.push_str("<p>No active approvals.</p>");
     }
     for consent in consents {
-        content.push_str(&format!(
+        write!(markup,
             "<section><p>Issuer: <code>{}</code><br>Actor: <code>{}</code><br>Client: <code>{}</code><br>Resource: <code>{}</code><br>Scopes: <code>{}</code><br>Expires: <time>{}</time></p><form method=\"post\" action=\"{action}\">{}<button name=\"action\" value=\"revoke\">Revoke</button></form></section>",
             escape_html(&consent.issuer), escape_html(&consent.actor_client_id),
             escape_html(&consent.client_id), escape_html(&consent.resource),
             escape_html(&consent.scopes.join(" ")), account::stamp(consent.expires_at),
             tuple_fields(&csrf, &consent.issuer, &consent.actor_client_id, &consent.client_id, &consent.resource),
-        ));
+        ).expect("writing to String cannot fail");
     }
-    content.push_str("<h2>New approval</h2><p>Approvals last at most 30 days. Only issuers linked to your account by an operator appear here.</p>");
+    markup.push_str("<h2>New approval</h2><p>Approvals last at most 30 days. Only issuers linked to your account by an operator appear here.</p>");
     let mut offered = false;
     for option in options
         .iter()
@@ -307,31 +313,33 @@ fn render(
     {
         for resource in &option.resources {
             offered = true;
-            content.push_str(&format!(
+            write!(markup,
                 "<form method=\"post\" action=\"{action}\"><p>Issuer: <code>{}</code><br>Actor: <code>{}</code><br>Client: <code>{}</code><br>Resource: <code>{}</code></p>{}",
                 escape_html(&option.issuer), escape_html(&option.actor_client_id),
                 escape_html(&option.client_id), escape_html(resource),
                 tuple_fields(&csrf, &option.issuer, &option.actor_client_id, &option.client_id, resource),
-            ));
+            ).expect("writing to String cannot fail");
             for scope in &option.scopes {
-                content.push_str(&format!(
+                write!(
+                    markup,
                     "<label><input type=\"checkbox\" name=\"scope\" value=\"{}\">{}</label> ",
                     escape_html(scope),
                     escape_html(scope)
-                ));
+                )
+                .expect("writing to String cannot fail");
             }
-            content.push_str(
+            markup.push_str(
                 "<button name=\"action\" value=\"grant\">Approve selected scopes</button></form>",
             );
         }
     }
     if !offered {
-        content.push_str("<p>No linked, configured issuer is available for approval.</p>");
+        markup.push_str("<p>No linked, configured issuer is available for approval.</p>");
     }
     let account = escape_html(&context.account.mount.absolute(account::PAGE_PATH));
     let document = Document::render(context.account.nonce, |_nonce| {
         format!(
-            "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"referrer\" content=\"no-referrer\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>External identity approvals</title></head><body><main><h1>External identity approvals</h1>{content}<p><a href=\"{account}\">Back to account</a></p></main></body></html>"
+            "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"referrer\" markup=\"no-referrer\"><meta name=\"viewport\" markup=\"width=device-width, initial-scale=1\"><title>External identity approvals</title></head><body><main><h1>External identity approvals</h1>{markup}<p><a href=\"{account}\">Back to account</a></p></main></body></html>"
         )
     });
     let mut response = (status, no_store(), document).into_response();

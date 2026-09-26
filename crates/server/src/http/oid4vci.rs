@@ -1,4 +1,4 @@
-//! Tenant-scoped OpenID4VCI 1.0 identity credential endpoints.
+//! Tenant-scoped `OpenID4VCI` 1.0 identity credential endpoints.
 //!
 //! OAuth authorization-code issuance remains the existing `/authorize` and
 //! `/token` flow. A wallet must obtain a token scoped for the configured
@@ -22,7 +22,7 @@ use time::OffsetDateTime;
 
 /// Paths mounted only for tenants that opted in to this identity credential.
 pub const CREDENTIAL_PATH: &str = "/credential";
-/// The public nonce endpoint from OpenID4VCI §7.
+/// The public nonce endpoint from `OpenID4VCI` §7.
 pub const NONCE_PATH: &str = "/nonce";
 /// A hostable JSON Credential Offer for the authorization-code flow.
 pub const OFFER_PATH: &str = "/credential-offer";
@@ -209,7 +209,7 @@ async fn authorized_subject(
         .grants
         .revoked_before(&client_id, Some(&grant_id))
         .await?;
-    if access_token::withdrawn(&verified, cutoff) {
+    if access_token::withdrawn(verified, cutoff) {
         return Err(invalid_token());
     }
     if !carries_scope(verified, context.configuration.scope())

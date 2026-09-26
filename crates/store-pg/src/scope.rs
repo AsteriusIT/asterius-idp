@@ -33,7 +33,7 @@ impl<'a> TenantScope<'a> {
         Self { pool, tenant }
     }
 
-    /// Explicit SAML SP trust and AuthnRequest replay reservations.
+    /// Explicit SAML SP trust and `AuthnRequest` replay reservations.
     #[must_use]
     pub fn saml_trust(&self) -> crate::PgSamlTrust {
         crate::PgSamlTrust::new(self.pool.clone(), self.tenant.clone())
@@ -45,7 +45,7 @@ impl<'a> TenantScope<'a> {
         crate::PgSamlPending::new(self.pool.clone(), self.tenant.clone())
     }
 
-    /// Dedicated KEK-wrapped SAML IdP signing material for this tenant.
+    /// Dedicated KEK-wrapped SAML `IdP` signing material for this tenant.
     #[must_use]
     pub fn saml_idp_keys(&self, kek: Arc<dyn Kek>) -> crate::PgSamlIdpKeys {
         crate::PgSamlIdpKeys::new(self.pool.clone(), self.tenant.clone(), kek)

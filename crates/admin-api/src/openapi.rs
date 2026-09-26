@@ -155,56 +155,7 @@ protect a top-level GET, so the registry's types make a mutating GET \
 unexpressible.";
 
 fn operation_object(operation: &Operation) -> Value {
-    let mut parameters: Vec<Value> = Vec::new();
-    for placeholder in path_parameters(operation.path()) {
-        parameters.push(json!({
-            "name": placeholder,
-            "in": "path",
-            "required": true,
-            "schema": { "type": "string" },
-        }));
-    }
-    if operation.is_paginated() {
-        parameters.push(json!({ "$ref": "#/components/parameters/cursor" }));
-        parameters.push(json!({ "$ref": "#/components/parameters/limit" }));
-    }
-    if is_audit_query(operation) {
-        for (name, description) in crate::audit::PARAMETERS {
-            parameters.push(json!({
-                "name": name,
-                "in": "query",
-                "required": false,
-                "description": description,
-                "schema": { "type": "string", "maxLength": crate::audit::MAX_VALUE_LEN },
-            }));
-        }
-    }
-    if operation.id() == crate::GROUPS_LIST_ID {
-        parameters.push(json!({
-            "name": "q",
-            "in": "query",
-            "required": false,
-            "description": "A literal case-insensitive substring of the machine or display name.",
-            "schema": {"type": "string", "maxLength": asterius_domain::GroupMetadata::MAX_DISPLAY_BYTES},
-        }));
-    }
-    if matches!(
-        operation.id(),
-        crate::SCIM_USERS_LIST_ID | crate::SCIM_GROUPS_LIST_ID
-    ) {
-        parameters.extend([
-            json!({"name":"startIndex","in":"query","required":false,
-                "description":"One-based index; at most 10001.",
-                "schema":{"type":"integer","minimum":1,"maximum":10001,"default":1}}),
-            json!({"name":"count","in":"query","required":false,
-                "description":"Requested results; zero returns only totalResults.",
-                "schema":{"type":"integer","minimum":0,"maximum":200,"default":100}}),
-            json!({"name":"filter","in":"query","required":false,
-                "description":"Only one equality filter is supported: userName for Users, displayName for Groups.",
-                "schema":{"type":"string"}}),
-        ]);
-    }
-
+    let parameters = operation_parameters(operation);
     let mut object = json!({
         "operationId": operation.id(),
         "summary": operation.summary(),
@@ -274,6 +225,60 @@ fn operation_object(operation: &Operation) -> Value {
     }
 
     object
+}
+
+fn operation_parameters(operation: &Operation) -> Vec<Value> {
+    let mut parameters: Vec<Value> = Vec::new();
+    for placeholder in path_parameters(operation.path()) {
+        parameters.push(json!({
+            "name": placeholder,
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+        }));
+    }
+    if operation.is_paginated() {
+        parameters.push(json!({ "$ref": "#/components/parameters/cursor" }));
+        parameters.push(json!({ "$ref": "#/components/parameters/limit" }));
+    }
+    if is_audit_query(operation) {
+        for (name, description) in crate::audit::PARAMETERS {
+            parameters.push(json!({
+                "name": name,
+                "in": "query",
+                "required": false,
+                "description": description,
+                "schema": { "type": "string", "maxLength": crate::audit::MAX_VALUE_LEN },
+            }));
+        }
+    }
+    if operation.id() == crate::GROUPS_LIST_ID {
+        parameters.push(json!({
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "description": "A literal case-insensitive substring of the machine or display name.",
+            "schema": {"type": "string", "maxLength": asterius_domain::GroupMetadata::MAX_DISPLAY_BYTES},
+        }));
+    }
+    if matches!(
+        operation.id(),
+        crate::SCIM_USERS_LIST_ID | crate::SCIM_GROUPS_LIST_ID
+    ) {
+        parameters.extend([
+            json!({"name":"startIndex","in":"query","required":false,
+                "description":"One-based index; at most 10001.",
+                "schema":{"type":"integer","minimum":1,"maximum":10001,"default":1}}),
+            json!({"name":"count","in":"query","required":false,
+                "description":"Requested results; zero returns only totalResults.",
+                "schema":{"type":"integer","minimum":0,"maximum":200,"default":100}}),
+            json!({"name":"filter","in":"query","required":false,
+                "description":"Only one equality filter is supported: userName for Users, displayName for Groups.",
+                "schema":{"type":"string"}}),
+        ]);
+    }
+
+    parameters
 }
 
 fn invitation_documentation(operation: &Operation, object: &mut Value) {

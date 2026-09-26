@@ -1,4 +1,4 @@
-//! Tenant-scoped custody of the dedicated SAML IdP RSA signing key.
+//! Tenant-scoped custody of the dedicated SAML `IdP` RSA signing key.
 //!
 //! The operator validates the certificate/key pair before provisioning. Only
 //! the public certificate is stored in the clear. The private PKCS#8 DER is

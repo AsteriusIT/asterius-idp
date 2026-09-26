@@ -350,7 +350,7 @@ pub(crate) async fn apply_verified_event(
         std::sync::Arc::clone(&endpoints.kek),
     );
     let preparer = ReceiverPreparer {
-        tenant: &tenant,
+        tenant,
         clients: &clients,
         users: &subjects,
         reservations: &subjects.reservations,
@@ -371,9 +371,11 @@ pub(crate) async fn apply_verified_event(
         )
         .await
     {
-        Ok(asterius_store_pg::ReceiverOutcome::Applied)
-        | Ok(asterius_store_pg::ReceiverOutcome::Stale)
-        | Ok(asterius_store_pg::ReceiverOutcome::Duplicate) => Ok(()),
+        Ok(
+            asterius_store_pg::ReceiverOutcome::Applied
+            | asterius_store_pg::ReceiverOutcome::Stale
+            | asterius_store_pg::ReceiverOutcome::Duplicate,
+        ) => Ok(()),
         Err(asterius_domain::DomainError::Invalid { .. }) => Err(ApplyError::Invalid),
         Err(_) => Err(ApplyError::Storage),
     }
@@ -615,6 +617,7 @@ impl UpstreamMetadata {
     /// ALL is opt-in because the transmitter can send events for subjects the
     /// receiver has never enrolled. NONE keeps the existing peer behavior;
     /// its actual subject enrollment remains the operator's responsibility.
+    #[must_use]
     pub fn subject_policy_allowed(&self, allow_all_subjects: bool) -> bool {
         match self.default_subjects.as_deref() {
             Some("NONE") => true,
@@ -719,6 +722,9 @@ impl UpstreamMetadata {
 /// configured issuer, chosen audience, requested event set and delivery mode.
 /// A poll URL is accepted only as an HTTPS URL; the outbound transport must
 /// still apply its DNS/IP SSRF guard when it is eventually used.
+// Keep this protocol transition together so validation and issuance order stays auditable.
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
 pub fn validated_upstream_stream(
     metadata: &UpstreamMetadata,
     allow_all_subjects: bool,
@@ -1057,6 +1063,8 @@ pub async fn verify_polled_stream_verification(
     })
 }
 
+// These local subject-policy fixtures stay adjacent to their validation helpers.
+#[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod upstream_subject_policy_tests {
     use super::*;
@@ -1169,9 +1177,8 @@ async fn verify_for_configured_peer_mode(
     )
     .await?;
     let required_scope = match event.event_type {
-        LifecycleEventType::SessionRevoked => RECEIVE_SCOPE,
         LifecycleEventType::AccountDisabled => DISABLE_ACCOUNT_SCOPE,
-        LifecycleEventType::CredentialChange => RECEIVE_SCOPE,
+        LifecycleEventType::SessionRevoked | LifecycleEventType::CredentialChange => RECEIVE_SCOPE,
     };
     if !scopes.contains(required_scope) {
         return Err(ReceiverError::Peer);
@@ -1185,6 +1192,8 @@ async fn verify_for_configured_peer_mode(
 /// granted [`RECEIVE_SCOPE`] by tenant registration policy. Its identity is
 /// pinned to `iss`; key material comes exclusively from `jwks`. This function
 /// never reads a key URL from the token.
+// The explicit inputs preserve each issuer dependency at the call boundary.
+#[allow(clippy::too_many_arguments)]
 pub async fn verify_inbound_set(
     cache: &ClientKeyCache,
     tenant: &Tenant,
@@ -1223,7 +1232,7 @@ async fn verify_inbound_set_mode(
 ) -> Result<VerifiedEvent, ReceiverError> {
     let verified =
         verify_signed_set_mode(cache, tenant, client, issuer, jwks, audience, token, now).await?;
-    parse_verified_event(client, verified, now, mode)
+    parse_verified_event(client, &verified, now, mode)
 }
 
 #[allow(clippy::too_many_arguments)] // The trust pins are explicit at this boundary.
@@ -1263,7 +1272,7 @@ async fn verify_signed_set_mode(
 
 fn parse_verified_event(
     peer: &ClientId,
-    verified: Verified,
+    verified: &Verified,
     now: OffsetDateTime,
     mode: DeliveryMode,
 ) -> Result<VerifiedEvent, ReceiverError> {
@@ -1300,8 +1309,7 @@ fn parse_verified_event(
     if claims
         .get("txn")
         .and_then(Value::as_str)
-        .filter(|value| !value.is_empty() && value.len() <= 255)
-        .is_none()
+        .is_none_or(|value| value.is_empty() || value.len() > 255)
     {
         return Err(ReceiverError::Profile);
     }

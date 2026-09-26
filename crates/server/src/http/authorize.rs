@@ -513,13 +513,14 @@ async fn refuse(
         return error_page(context, StatusCode::INTERNAL_SERVER_ERROR);
     };
     let mode = match string("response_mode") {
-        Some(raw) => match ResponseMode::parse(&raw) {
-            Ok(mode) => mode,
-            Err(_) => {
+        Some(raw) => {
+            if let Ok(mode) = ResponseMode::parse(&raw) {
+                mode
+            } else {
                 tracing::error!(tenant = %context.tenant.id, "stored request has an invalid response_mode");
                 return error_page(context, StatusCode::INTERNAL_SERVER_ERROR);
             }
-        },
+        }
         None => ResponseMode::Query,
     };
 

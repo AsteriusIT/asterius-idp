@@ -1,4 +1,4 @@
-//! Shared, single-use OpenID4VCI credential proof challenges.
+//! Shared, single-use `OpenID4VCI` credential proof challenges.
 
 use crate::error::to_domain_error;
 use asterius_domain::{DomainError, TenantId, sha256};

@@ -453,7 +453,7 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
         None
     }
 
-    /// Dedicated tenant SAML IdP signing certificate and sealed key.
+    /// Dedicated tenant SAML `IdP` signing certificate and sealed key.
     fn saml_idp_key(&self) -> Option<Arc<dyn crate::saml::IdpKeyAdministration>> {
         None
     }

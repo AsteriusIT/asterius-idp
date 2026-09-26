@@ -1056,7 +1056,7 @@ pub const SAML_SP_REMOVE: Operation = Operation::mutation(
     "Removes tenant SAML SP trust",
 );
 
-/// Inspects this tenant's public SAML IdP signing certificate.
+/// Inspects this tenant's public SAML `IdP` signing certificate.
 pub const SAML_IDP_KEY_READ: Operation = Operation::read(
     SAML_IDP_KEY_READ_ID,
     "/saml/idp-key",
@@ -1065,7 +1065,7 @@ pub const SAML_IDP_KEY_READ: Operation = Operation::read(
     "Inspects tenant SAML IdP signing certificate",
 );
 
-/// Imports one dedicated SAML IdP key and matching certificate.
+/// Imports one dedicated SAML `IdP` key and matching certificate.
 pub const SAML_IDP_KEY_PROVISION: Operation = Operation::mutation(
     SAML_IDP_KEY_PROVISION_ID,
     "/saml/idp-key",

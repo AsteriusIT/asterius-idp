@@ -63,12 +63,24 @@ impl IdJagGrant<'_> {
         }
     }
 
+    // Keep this protocol transition together so validation and issuance order stays auditable.
+    #[allow(clippy::too_many_lines)]
     async fn issue(
         &self,
         tenant: &Tenant,
         client: &Client,
         params: &Parameters,
     ) -> Result<Response, Failure> {
+        // This static profile allowlist belongs with the assertion validator.
+        const ALLOWED: [&str; 7] = [
+            "grant_type",
+            "assertion",
+            "scope",
+            "resource",
+            "client_id",
+            "client_assertion_type",
+            "client_assertion",
+        ];
         if client.registration.token_binding != TokenBinding::Dpop
             || client.registration.subject_type != SubjectType::Pairwise
         {
@@ -87,15 +99,6 @@ impl IdJagGrant<'_> {
                 .get(name)
                 .map_err(|_| Failure::Client("invalid_request", PROFILE))
         };
-        const ALLOWED: [&str; 7] = [
-            "grant_type",
-            "assertion",
-            "scope",
-            "resource",
-            "client_id",
-            "client_assertion_type",
-            "client_assertion",
-        ];
         if params.names().any(|name| !ALLOWED.contains(&name))
             || ALLOWED.iter().any(|name| one(name).is_err())
             || one("grant_type")? != Some("urn:ietf:params:oauth:grant-type:jwt-bearer")

@@ -149,7 +149,7 @@ impl PgCpOAuth {
         started_at: OffsetDateTime,
         now: OffsetDateTime,
     ) -> Result<i64, DomainError> {
-        self.validate(connection, now)?;
+        Self::validate(connection, now)?;
         let access = self
             .seal(
                 user,
@@ -237,7 +237,7 @@ impl PgCpOAuth {
         Ok(revision)
     }
 
-    fn validate(&self, connection: &CpConnection, now: OffsetDateTime) -> Result<(), DomainError> {
+    fn validate(connection: &CpConnection, now: OffsetDateTime) -> Result<(), DomainError> {
         if connection.provider_issuer.is_empty()
             || connection.provider_issuer.len() > 2048
             || connection.provider_subject.is_empty()
@@ -357,7 +357,7 @@ impl PgCpOAuth {
         connection: &CpConnection,
         now: OffsetDateTime,
     ) -> Result<bool, DomainError> {
-        self.validate(connection, now)?;
+        Self::validate(connection, now)?;
         let access = self
             .seal(
                 user,

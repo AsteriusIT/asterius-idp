@@ -91,6 +91,8 @@ impl PgAggregatedClaims {
             .await
     }
 
+    // The row lock, revision guard, and claim replacement form one transaction.
+    #[allow(clippy::too_many_lines)]
     async fn replace_guarded(
         &self,
         user: UserId,

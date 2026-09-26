@@ -1949,13 +1949,10 @@ impl Handling<'_> {
                     .allow_ephemeral_subjects
                     .unwrap_or(previous.allows_ephemeral_subjects()),
             )
-            .with_ida_frameworks(
-                requested
-                    .ida_frameworks
-                    .as_ref()
-                    .map(|names| names.iter().cloned().collect())
-                    .unwrap_or_else(|| previous.ida_frameworks().clone()),
-            )
+            .with_ida_frameworks(requested.ida_frameworks.as_ref().map_or_else(
+                || previous.ida_frameworks().clone(),
+                |names| names.iter().cloned().collect(),
+            ))
             .map_err(|error| AdminError::Invalid(error.to_string()))?;
 
         repository
@@ -6126,6 +6123,14 @@ fn settings_diff(tenant: &TenantId, before: &TenantSettings, after: &TenantSetti
                 after.allows_non_fapi_clients(),
             );
     }
+    credential_issuance_diff(detail, before, after)
+}
+
+fn credential_issuance_diff(
+    mut detail: Detail,
+    before: &TenantSettings,
+    after: &TenantSettings,
+) -> Detail {
     if before.credential_issuance() != after.credential_issuance() {
         detail = detail
             .flag(

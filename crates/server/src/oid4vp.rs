@@ -1,4 +1,4 @@
-//! Operator-pinned OpenID4VP verifier policies loaded at process startup.
+//! Operator-pinned `OpenID4VP` verifier policies loaded at process startup.
 
 use crate::config::{Oid4vpVerifierConfig, TenantConfig};
 use asterius_jose::{ClientKeySet, keys_from_jwk_set, oid4vp::PresentationPolicy};
@@ -106,15 +106,17 @@ fn load_verifier(config: &Oid4vpVerifierConfig) -> Result<ConfiguredVerifier, St
 }
 
 fn load_keys(path: &Path) -> Result<ClientKeySet, String> {
-    const MAX_JWKS_BYTES: u64 = 65_536;
+    const MAX_JWKS_BYTES: usize = 65_536;
     let metadata = std::fs::metadata(path)
         .map_err(|error| format!("cannot read OID4VP JWKS {}: {error}", path.display()))?;
-    if metadata.len() > MAX_JWKS_BYTES {
+    let metadata_len = usize::try_from(metadata.len())
+        .map_err(|_| format!("OID4VP JWKS {} exceeds 64 KiB", path.display()))?;
+    if metadata_len > MAX_JWKS_BYTES {
         return Err(format!("OID4VP JWKS {} exceeds 64 KiB", path.display()));
     }
     let bytes = std::fs::read(path)
         .map_err(|error| format!("cannot read OID4VP JWKS {}: {error}", path.display()))?;
-    if bytes.len() > MAX_JWKS_BYTES as usize {
+    if bytes.len() > MAX_JWKS_BYTES {
         return Err(format!("OID4VP JWKS {} exceeds 64 KiB", path.display()));
     }
     let jwks = serde_json::from_slice(&bytes)
