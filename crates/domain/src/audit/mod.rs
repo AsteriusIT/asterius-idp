@@ -564,10 +564,12 @@ impl EventType {
 
     /// A receiver removed a subject from a stream (SSF 1.0 §8.1.3.3).
     pub const SSF_SUBJECT_REMOVED: Self = Self("ssf.subject_removed");
+    /// An OP sent, or failed to send, an account lifecycle command to an RP.
+    pub const PROVIDER_COMMAND_DELIVERED: Self = Self("provider_command.delivered");
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 83] = [
+    pub const ALL: [Self; 84] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -648,6 +650,7 @@ impl EventType {
         Self::SSF_STREAM_STATUS_CHANGED,
         Self::SSF_SUBJECT_ADDED,
         Self::SSF_SUBJECT_REMOVED,
+        Self::PROVIDER_COMMAND_DELIVERED,
         Self::SSF_VERIFICATION_REQUESTED,
         Self::OUTBOX_RETRIED,
         Self::OUTBOX_DROPPED,

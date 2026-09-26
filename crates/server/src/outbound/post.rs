@@ -49,7 +49,9 @@ use crate::outbound::jwks::{FetchError, HttpsClientUrlFetcher, TOTAL_TIMEOUT, ve
 use crate::outbound::ssrf::{self, Target};
 use http_body_util::{BodyExt as _, Full};
 use hyper::body::Bytes;
-use hyper::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HOST, HeaderValue, USER_AGENT};
+use hyper::header::{
+    ACCEPT, AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, HOST, HeaderValue, USER_AGENT,
+};
 use hyper_util::rt::TokioIo;
 
 /// The most bytes this server will send in one delivery.
@@ -67,6 +69,36 @@ pub const MAX_REQUEST_BYTES: usize = 128 * 1024;
 /// caller that parses it (RFC 8935 §2.3). Public because that second bound is
 /// part of what a caller is promised.
 pub const MAX_RESPONSE_BYTES: usize = 8 * 1024;
+
+/// A bounded successful HTTP answer for protocols whose response has meaning.
+///
+/// The body may be a third party's data or contain an identifier. It is never
+/// included in `Debug`, tracing, or [`PostError`]'s display text.
+pub struct PostResponse {
+    /// HTTP status returned by the receiver.
+    pub status: u16,
+    /// At most [`MAX_RESPONSE_BYTES`] from the response body.
+    pub body: Vec<u8>,
+    /// Content type, when present and a valid HTTP header string.
+    pub content_type: Option<String>,
+    /// Cache policy, when present and a valid HTTP header string.
+    pub cache_control: Option<String>,
+    /// Whether more body bytes existed beyond the returned bound.
+    pub truncated: bool,
+}
+
+impl std::fmt::Debug for PostResponse {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PostResponse")
+            .field("status", &self.status)
+            .field("body_len", &self.body.len())
+            .field("content_type_present", &self.content_type.is_some())
+            .field("cache_control_present", &self.cache_control.is_some())
+            .field("truncated", &self.truncated)
+            .finish()
+    }
+}
 
 /// Why a delivery did not happen.
 ///
@@ -277,6 +309,25 @@ impl HttpsPoster {
         request: PostRequest<'_>,
         body: &[u8],
     ) -> Result<u16, PostError> {
+        self.post_with_response(url, request, body)
+            .await
+            .map(|response| response.status)
+    }
+
+    /// Deliver a request and return bounded success metadata and body.
+    ///
+    /// Used by protocols such as Provider Commands where an HTTP 200 alone
+    /// does not prove that the receiver acted on the intended account.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PostError`] for unsafe destinations or failed delivery.
+    pub async fn post_with_response(
+        &self,
+        url: &str,
+        request: PostRequest<'_>,
+        body: &[u8],
+    ) -> Result<PostResponse, PostError> {
         if body.len() > MAX_REQUEST_BYTES {
             return Err(PostError::TooLarge {
                 size: body.len(),
@@ -298,7 +349,7 @@ impl HttpsPoster {
         url: &str,
         request: PostRequest<'_>,
         body: &[u8],
-    ) -> Result<u16, PostError> {
+    ) -> Result<PostResponse, PostError> {
         let target = ssrf::check_url(url).map_err(FetchError::from)?;
         let addresses = vetted_addresses(&target).await?;
         let stream = self.connections.connect(&target, &addresses).await?;
@@ -312,7 +363,7 @@ async fn exchange(
     request: PostRequest<'_>,
     body: &[u8],
     stream: tokio_rustls::client::TlsStream<tokio::net::TcpStream>,
-) -> Result<u16, PostError> {
+) -> Result<PostResponse, PostError> {
     let failed = || {
         PostError::Reach(FetchError::Http {
             host: target.host.clone(),
@@ -361,6 +412,18 @@ async fn exchange(
 
     let response = sender.send_request(request).await.map_err(|_| failed())?;
     let status = response.status();
+    let content_type = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| value.len() <= 128)
+        .map(str::to_owned);
+    let cache_control = response
+        .headers()
+        .get(CACHE_CONTROL)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| value.len() <= 128)
+        .map(str::to_owned);
 
     // Read to a bound rather than to the end, and kept only to hand to the
     // caller when the answer was a refusal: RFC 8935 §2.3 is the one body in
@@ -368,11 +431,13 @@ async fn exchange(
     // never finishes would otherwise keep the connection until the timeout.
     let mut kept: Vec<u8> = Vec::new();
     let mut incoming = response.into_body();
+    let mut truncated = false;
     while let Some(Ok(frame)) = incoming.frame().await {
         if let Some(chunk) = frame.data_ref() {
             let room = MAX_RESPONSE_BYTES - kept.len();
             if chunk.len() >= room {
                 kept.extend_from_slice(&chunk[..room]);
+                truncated = true;
                 break;
             }
             kept.extend_from_slice(chunk);
@@ -393,7 +458,13 @@ async fn exchange(
             body: kept,
         });
     }
-    Ok(status.as_u16())
+    Ok(PostResponse {
+        status: status.as_u16(),
+        body: kept,
+        content_type,
+        cache_control,
+        truncated,
+    })
 }
 
 #[cfg(test)]
