@@ -1124,6 +1124,12 @@ fn tenant() -> Section {
                 "empty (ordinary audience rules)".to_owned(),
                 "For each listed client, permit only authorization-code and optional refresh grants, OIDC identity scopes (openid, profile, email, address, phone, offline_access), and the tenant issuer as its sole access-token audience. The issuer must be registered as a resource server and assigned to the client; missing setup fails closed. PAR, registration writes, and token issuance enforce this boundary. This does not claim full IPSIE SL1 conformance.",
             ),
+            key(
+                "ipsie_rp_session",
+                "array of { client_id, lifetime_seconds } tables",
+                "empty (session_expiry omitted)".to_owned(),
+                "For each client also listed in ipsie_identity_only_client, issue an integer session_expiry in new code-flow and refresh ID tokens. The deadline is the ID token issuance time plus the configured lifetime (60 to 86400 seconds). A refresh that returns a new ID token starts a new RP session deadline. This does not derive from the OP browser session or user claims and does not claim full IPSIE SL1 conformance.",
+            ),
         ],
     }
 }

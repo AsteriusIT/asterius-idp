@@ -580,6 +580,7 @@ impl TokenExchange<'_> {
             tenant,
             client,
             issuance::IdTokenParts {
+                rp_session_lifetime_seconds: None,
                 acr_policy: self.acr_policy,
                 claimed: &claimed,
                 session: &facts,

@@ -75,6 +75,8 @@ const INVALID_GRANT: &str = "the authorization code cannot be redeemed";
 pub struct AuthorizationCode<'a> {
     /// Client IDs whose issued access tokens must target only this OP.
     pub ipsie_identity_only_clients: Option<&'a std::collections::BTreeSet<String>>,
+    /// Explicit RP session lifetimes; only identity-only clients may appear.
+    pub ipsie_rp_session_lifetimes: Option<&'a std::collections::HashMap<String, u32>>,
     /// Current tenant assurance policy, resolved once for this issuance.
     pub acr_policy: &'a asterius_domain::AcrPolicy,
     /// Codes for this tenant.
@@ -431,6 +433,9 @@ impl AuthorizationCode<'_> {
         // than on the request, because the scope was settled at consent.
         let id_token = if grant.scopes.contains("openid") {
             let parts = issuance::IdTokenParts {
+                rp_session_lifetime_seconds: self
+                    .ipsie_rp_session_lifetimes
+                    .and_then(|lifetimes| lifetimes.get(client.id.as_str()).copied()),
                 device_secret_hash: device_secret.as_ref().map(|issued| issued.ds_hash.as_str()),
                 acr_policy: self.acr_policy,
                 claimed: &claimed,

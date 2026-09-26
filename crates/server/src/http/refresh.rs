@@ -94,6 +94,7 @@ const INVALID_GRANT: &str = "the refresh token cannot be redeemed";
 pub struct RefreshToken<'a> {
     /// Client IDs whose issued access tokens must target only this OP.
     pub ipsie_identity_only_clients: Option<&'a std::collections::BTreeSet<String>>,
+    pub ipsie_rp_session_lifetimes: Option<&'a std::collections::HashMap<String, u32>>,
     /// Current tenant assurance policy, resolved once for this issuance.
     pub acr_policy: &'a asterius_domain::AcrPolicy,
     /// Refresh tokens for this tenant.
@@ -177,6 +178,7 @@ impl<'a> RefreshToken<'a> {
     ) -> Self {
         Self {
             ipsie_identity_only_clients: code.ipsie_identity_only_clients,
+            ipsie_rp_session_lifetimes: code.ipsie_rp_session_lifetimes,
             tokens: code.refresh_tokens,
             native_sso: code.native_sso,
             native_sso_approvals: code.native_sso_approvals,
@@ -559,6 +561,9 @@ impl RefreshToken<'_> {
         // code applies, it is the only thing it can produce.
         let id_token = if effective.contains("openid") {
             let parts = issuance::IdTokenParts {
+                rp_session_lifetime_seconds: self
+                    .ipsie_rp_session_lifetimes
+                    .and_then(|lifetimes| lifetimes.get(client.id.as_str()).copied()),
                 device_secret_hash,
                 acr_policy: self.acr_policy,
                 claimed: &claimed,

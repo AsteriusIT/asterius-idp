@@ -806,6 +806,8 @@ fn grant_management_resource(
 /// which the request's claims could be passed instead.
 #[derive(Debug)]
 pub struct IdTokenParts<'a> {
+    /// Operator policy for the RP session created by this ID token, in seconds.
+    pub rp_session_lifetime_seconds: Option<u32>,
     /// Current policy, including whether methods may be released.
     pub acr_policy: &'a asterius_domain::AcrPolicy,
     /// The authority the tokens are minted from.
@@ -887,6 +889,7 @@ pub async fn sign_id_token(
     now: time::OffsetDateTime,
 ) -> Result<String, DomainError> {
     let IdTokenParts {
+        rp_session_lifetime_seconds,
         acr_policy,
         claimed,
         session,
@@ -905,6 +908,15 @@ pub async fn sign_id_token(
         access_token,
         now,
     );
+    if let Some(seconds) = rp_session_lifetime_seconds {
+        // A refreshed ID token creates a new RP deadline. This is independent
+        // of both the original auth_time and the OP browser session lifetime.
+        let expiry = now
+            .unix_timestamp()
+            .checked_add(i64::from(seconds))
+            .ok_or_else(|| DomainError::invalid("session_expiry", "deadline overflow"))?;
+        builder = builder.with_session_expiry(expiry);
+    }
     // OIDC Core §3.1.3.7 item 11: echoed byte-exact, and only when the
     // authorization request carried one.
     if let Some(nonce) = nonce {

@@ -333,6 +333,14 @@ pub struct TenantConfig {
     pub ipsie_https_only_clients: Vec<String>,
     /// Client IDs restricted to OIDC identity scopes and issuer audience.
     pub ipsie_identity_only_clients: Vec<String>,
+    /// Explicit RP session lifetimes for selected IPSIE candidate clients.
+    pub ipsie_rp_sessions: Vec<IpsieRpSessionConfig>,
+}
+
+#[derive(Debug, Clone)]
+pub struct IpsieRpSessionConfig {
+    pub client_id: String,
+    pub lifetime_seconds: u32,
 }
 
 /// A tenant's inactive LDAP source and explicit, non-privileged mapping.
@@ -864,6 +872,14 @@ struct RawTenant {
     fapi_message_signing_client: Option<Vec<String>>,
     ipsie_https_only_client: Option<Vec<String>>,
     ipsie_identity_only_client: Option<Vec<String>>,
+    ipsie_rp_session: Option<Vec<RawIpsieRpSession>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawIpsieRpSession {
+    client_id: String,
+    lifetime_seconds: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2233,6 +2249,12 @@ fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantCo
             validate_ipsie_https_only_clients(index, tenant.ipsie_https_only_client, errors);
         let ipsie_identity_only_clients =
             validate_ipsie_identity_only_clients(index, tenant.ipsie_identity_only_client, errors);
+        let ipsie_rp_sessions = validate_ipsie_rp_sessions(
+            index,
+            tenant.ipsie_rp_session,
+            &ipsie_identity_only_clients,
+            errors,
+        );
 
         if let (Some(id), Some(issuer)) = (id, issuer) {
             let default_resource = default_resource.unwrap_or_else(|| issuer.as_str().to_owned());
@@ -2256,6 +2278,7 @@ fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantCo
                 fapi_message_signing_clients,
                 ipsie_https_only_clients,
                 ipsie_identity_only_clients,
+                ipsie_rp_sessions,
             });
         }
     }
@@ -2513,6 +2536,53 @@ fn validate_ipsie_identity_only_clients(
                 return None;
             }
             Some(client_id)
+        })
+        .collect()
+}
+
+fn validate_ipsie_rp_sessions(
+    tenant_index: usize,
+    raw: Option<Vec<RawIpsieRpSession>>,
+    identity_only_clients: &[String],
+    errors: &mut Collector,
+) -> Vec<IpsieRpSessionConfig> {
+    let entries = raw.unwrap_or_default();
+    if entries.len() > 32 {
+        errors.problem(
+            format!("tenant[{tenant_index}].ipsie_rp_session"),
+            "at most 32 client policies may be configured",
+        );
+        return Vec::new();
+    }
+    let mut seen = BTreeSet::new();
+    entries
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, entry)| {
+            let path = format!("tenant[{tenant_index}].ipsie_rp_session[{index}]");
+            if entry.client_id.is_empty()
+                || entry.client_id.len() > 255
+                || entry.client_id.chars().any(char::is_control)
+                || !seen.insert(entry.client_id.clone())
+                || !identity_only_clients.contains(&entry.client_id)
+            {
+                errors.problem(
+                    format!("{path}.client_id"),
+                    "must be a distinct client ID also listed in ipsie_identity_only_client",
+                );
+                return None;
+            }
+            if !(60..=86_400).contains(&entry.lifetime_seconds) {
+                errors.problem(
+                    format!("{path}.lifetime_seconds"),
+                    "must be between 60 and 86400 seconds",
+                );
+                return None;
+            }
+            Some(IpsieRpSessionConfig {
+                client_id: entry.client_id,
+                lifetime_seconds: entry.lifetime_seconds,
+            })
         })
         .collect()
 }

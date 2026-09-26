@@ -253,6 +253,7 @@ pub struct IdToken<'a> {
     managed_groups: Vec<String>,
     key_bound_jwk: Option<Value>,
     device_secret_hash: Option<String>,
+    session_expiry: Option<i64>,
 }
 
 impl<'a> IdToken<'a> {
@@ -316,6 +317,7 @@ impl<'a> IdToken<'a> {
             managed_groups: Vec::new(),
             key_bound_jwk: None,
             device_secret_hash: None,
+            session_expiry: None,
         }
     }
 
@@ -348,6 +350,12 @@ impl<'a> IdToken<'a> {
     /// back-channel logout.
     pub fn for_session(mut self, session: Session) -> Self {
         self.session = Some(session);
+        self
+    }
+
+    /// Sets the operator-computed RP session deadline as a Unix timestamp.
+    pub fn with_session_expiry(mut self, expiry: i64) -> Self {
+        self.session_expiry = Some(expiry);
         self
     }
 
@@ -501,6 +509,9 @@ impl<'a> IdToken<'a> {
             "auth_time".to_owned(),
             Value::from(self.authentication.authenticated_at.unix_timestamp()),
         );
+        if let Some(expiry) = self.session_expiry {
+            claims.insert("session_expiry".to_owned(), Value::from(expiry));
+        }
         if let Some(nonce) = self.nonce {
             claims.insert("nonce".to_owned(), Value::String(nonce));
         }

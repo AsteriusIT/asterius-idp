@@ -128,6 +128,9 @@ pub struct ClientEndpoints {
     /// Operator-selected clients limited to OP identity audiences.
     pub ipsie_identity_only_clients:
         Arc<std::collections::HashMap<String, std::collections::BTreeSet<String>>>,
+    /// Per-client RP session lifetime in seconds for selected IPSIE candidates.
+    pub ipsie_rp_session_lifetimes:
+        Arc<std::collections::HashMap<String, std::collections::HashMap<String, u32>>>,
     /// Bounded, fail-closed discovery cache for configured SSF transmitters.
     pub ssf_metadata_cache: Arc<crate::http::ssf_receiver::UpstreamMetadataCache>,
     /// Pinned request-signature keys for configured SSF transmitters.
@@ -4026,6 +4029,7 @@ async fn dispatch_grants(
         ipsie_identity_only_clients: endpoints
             .ipsie_identity_only_clients
             .get(tenant.id.as_str()),
+        ipsie_rp_session_lifetimes: endpoints.ipsie_rp_session_lifetimes.get(tenant.id.as_str()),
         acr_policy: &acr_policy,
         roles: &application_roles,
         groups: &managed_groups,
