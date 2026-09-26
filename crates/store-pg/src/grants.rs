@@ -69,7 +69,7 @@ use asterius_domain::{
     ClaimedGrant, ClientId, DomainError, Grant, GrantId, GrantRecord, LiveAccessToken,
     RevocationReason, SessionId, SubjectId, TenantId, UserId,
 };
-use sqlx::postgres::PgPool;
+use sqlx::postgres::{PgConnection, PgPool};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -133,7 +133,22 @@ impl PgGrantRepository {
     /// id is not a UUID, [`DomainError::Conflict`] when the client does not
     /// exist or the id is taken, or a storage error.
     pub async fn create(&self, grant: &Grant) -> Result<(), DomainError> {
-        if grant.tenant != self.tenant {
+        Self::insert_on(
+            &mut *self.pool.acquire().await.map_err(to_domain_error)?,
+            &self.tenant,
+            grant,
+        )
+        .await
+    }
+
+    /// Inserts a grant using an existing transaction connection. Redemption
+    /// uses this to commit the replay claim, grant and audit record together.
+    pub(crate) async fn insert_on(
+        connection: &mut PgConnection,
+        tenant: &TenantId,
+        grant: &Grant,
+    ) -> Result<(), DomainError> {
+        if grant.tenant != *tenant {
             // The scope is the tenant. An entity from another one arriving here
             // is a bug in the caller, and writing it would file one customer's
             // authorization under another's.
@@ -170,7 +185,7 @@ impl PgGrantRepository {
                                  acr, amr, created_at, updated_at, expires_at, claimed_at)
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
                      $17, $18, $19)",
-            self.tenant.as_str(),
+            tenant.as_str(),
             id,
             grant.client.as_str(),
             grant.user.map(|user| *user.as_uuid()),
@@ -190,7 +205,7 @@ impl PgGrantRepository {
             grant.expires_at,
             grant.claimed_at,
         )
-        .execute(&self.pool)
+        .execute(connection)
         .await
         .map(|_| ())
         .map_err(to_domain_error)
