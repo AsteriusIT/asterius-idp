@@ -63,6 +63,7 @@ aws-lc-rs = "1"
 quick-xml = "0.42"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 xml-sec = { version = "0.1.16", default-features = false, features = ["c14n", "xml-backend-xmloxide"] }
+x509-parser = { version = "0.18.1", default-features = false }
 uuid = { version = "1", features = ["v4", "serde"] }
 toml = "0.9"
 # Raster decoding for a tenant's logo (`ast-ndk.1`), in the admin API adapter

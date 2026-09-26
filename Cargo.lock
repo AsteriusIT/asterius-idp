@@ -154,6 +154,7 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
@@ -265,6 +266,7 @@ dependencies = [
  "url",
  "uuid",
  "webpki-roots 1.0.9",
+ "x509-parser",
  "xml-sec",
  "zeroize",
 ]

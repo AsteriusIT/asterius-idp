@@ -195,6 +195,8 @@ pub const ID_JAG_SUBJECT_REMOVE_ID: &str = "id_jag.subject.remove";
 pub const SAML_SP_LIST_ID: &str = "saml.sp.list";
 pub const SAML_SP_PROVISION_ID: &str = "saml.sp.provision";
 pub const SAML_SP_REMOVE_ID: &str = "saml.sp.remove";
+pub const SAML_IDP_KEY_READ_ID: &str = "saml.idp_key.read";
+pub const SAML_IDP_KEY_PROVISION_ID: &str = "saml.idp_key.provision";
 /// The `operationId` of `GET /audit/events`.
 pub const AUDIT_EVENTS_LIST_ID: &str = "audit.events.list";
 /// The `operationId` of `GET /audit/events/export`.
@@ -1022,6 +1024,24 @@ pub const SAML_SP_REMOVE: Operation = Operation::mutation(
     "Removes tenant SAML SP trust",
 );
 
+/// Inspects this tenant's public SAML IdP signing certificate.
+pub const SAML_IDP_KEY_READ: Operation = Operation::read(
+    SAML_IDP_KEY_READ_ID,
+    "/saml/idp-key",
+    S::Get,
+    A::new(R::Tenant, "admin.saml:read"),
+    "Inspects tenant SAML IdP signing certificate",
+);
+
+/// Imports one dedicated SAML IdP key and matching certificate.
+pub const SAML_IDP_KEY_PROVISION: Operation = Operation::mutation(
+    SAML_IDP_KEY_PROVISION_ID,
+    "/saml/idp-key",
+    M::Put,
+    A::new(R::Tenant, "admin.saml:write"),
+    "Provisions tenant SAML IdP signing key",
+);
+
 /// This tenant's audit trail, filtered, one cursor page at a time
 /// (`ast-lh3.9`).
 ///
@@ -1769,7 +1789,7 @@ pub const SCIM_BULK: Operation = Operation::mutation(
     "SCIM Bulk is unsupported by this service",
 );
 
-static REGISTRY: [Operation; 128] = [
+static REGISTRY: [Operation; 130] = [
     SESSION_READ,
     SESSION_END,
     OVERVIEW_USERS,
@@ -1831,6 +1851,8 @@ static REGISTRY: [Operation; 128] = [
     SAML_SP_LIST,
     SAML_SP_PROVISION,
     SAML_SP_REMOVE,
+    SAML_IDP_KEY_READ,
+    SAML_IDP_KEY_PROVISION,
     AUDIT_EVENTS_LIST,
     AUDIT_EVENTS_EXPORT,
     USERS_LIST,

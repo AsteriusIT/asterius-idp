@@ -591,6 +591,48 @@ struct DeploymentSamlSpTrust {
     store: Store,
 }
 
+#[derive(Debug, Clone)]
+struct DeploymentSamlIdpKey {
+    store: Store,
+    kek: Arc<dyn asterius_jose::Kek>,
+}
+
+#[async_trait::async_trait]
+impl asterius_admin_api::saml::IdpKeyAdministration for DeploymentSamlIdpKey {
+    async fn inspect(
+        &self,
+        tenant: &TenantId,
+    ) -> Result<Option<asterius_admin_api::saml::IdpKeySummary>, DomainError> {
+        use base64::Engine as _;
+        Ok(self
+            .store
+            .scope(tenant.clone())
+            .saml_idp_keys(Arc::clone(&self.kek))
+            .summary()
+            .await?
+            .map(|summary| asterius_admin_api::saml::IdpKeySummary {
+                state: "provisioned",
+                certificate_sha256: summary.certificate_sha256,
+                certificate_der_base64: base64::engine::general_purpose::STANDARD
+                    .encode(summary.certificate_der),
+                created_at: summary.created_at,
+            }))
+    }
+
+    async fn provision(
+        &self,
+        tenant: &TenantId,
+        key: &asterius_admin_api::saml::NewIdpKey,
+    ) -> Result<bool, DomainError> {
+        crate::saml_idp_signer::validate_key_pair(&key.certificate_der, &key.private_key_pkcs8)?;
+        self.store
+            .scope(tenant.clone())
+            .saml_idp_keys(Arc::clone(&self.kek))
+            .provision(&key.certificate_der, &key.private_key_pkcs8)
+            .await
+    }
+}
+
 #[async_trait::async_trait]
 impl asterius_admin_api::saml::SpAdministration for DeploymentSamlSpTrust {
     async fn list(
@@ -2685,6 +2727,13 @@ impl AdminBackend for Deployment {
     fn saml_sp_trust(&self) -> Option<Arc<dyn asterius_admin_api::saml::SpAdministration>> {
         Some(Arc::new(DeploymentSamlSpTrust {
             store: self.store.clone(),
+        }))
+    }
+
+    fn saml_idp_key(&self) -> Option<Arc<dyn asterius_admin_api::saml::IdpKeyAdministration>> {
+        Some(Arc::new(DeploymentSamlIdpKey {
+            store: self.store.clone(),
+            kek: Arc::clone(&self.kek),
         }))
     }
 

@@ -96,6 +96,8 @@ pub struct Rewrap {
     pub ciba_ping_envelopes: u64,
     /// Federation signing keys re-sealed under the new KEK.
     pub federation_keys: u64,
+    /// Dedicated SAML IdP private keys re-sealed under the new KEK.
+    pub saml_idp_keys: u64,
     /// Signed Claims Provider UserInfo rows re-sealed under the new KEK.
     pub claims_provider_sources: u64,
     /// Pending CP PKCE verifiers re-sealed under the new KEK.
@@ -128,6 +130,7 @@ impl Rewrap {
             && self.ssf_push_credentials == 0
             && self.ciba_ping_envelopes == 0
             && self.federation_keys == 0
+            && self.saml_idp_keys == 0
             && self.claims_provider_sources == 0
             && self.claims_provider_pkce == 0
             && self.claims_provider_tokens == 0
@@ -211,6 +214,7 @@ impl PgKekRewrap {
             ciba_ping_envelopes: Self::ciba_ping_envelopes(&mut transaction, tenant, from, to)
                 .await?,
             federation_keys: Self::federation_keys(&mut transaction, tenant, from, to).await?,
+            saml_idp_keys: Self::saml_idp_keys(&mut transaction, tenant, from, to).await?,
             claims_provider_sources: Self::claims_provider_sources(
                 &mut transaction,
                 tenant,
@@ -610,6 +614,55 @@ impl PgKekRewrap {
         Ok(moved)
     }
 
+    async fn saml_idp_keys(
+        transaction: &mut Transaction<'_>,
+        tenant: &TenantId,
+        from: &dyn Kek,
+        to: &dyn Kek,
+    ) -> Result<u64, DomainError> {
+        let row = sqlx::query(
+            "select certificate_sha256, private_key_ciphertext, private_key_nonce, kek_id
+               from saml_idp_signing_keys where tenant_id = $1 and kek_id = $2 for update",
+        )
+        .bind(tenant.as_str())
+        .bind(from.id())
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(to_domain_error)?;
+        let Some(row) = row else { return Ok(0) };
+        let fingerprint: Vec<u8> =
+            sqlx::Row::try_get(&row, "certificate_sha256").map_err(to_domain_error)?;
+        let fingerprint_hex = hex::encode(fingerprint);
+        let wrapped = WrappedKey::from_parts(
+            sqlx::Row::try_get::<String, _>(&row, "kek_id").map_err(to_domain_error)?,
+            sqlx::Row::try_get(&row, "private_key_nonce").map_err(to_domain_error)?,
+            sqlx::Row::try_get(&row, "private_key_ciphertext").map_err(to_domain_error)?,
+        )
+        .map_err(storage_error)?;
+        let binding =
+            KeyBinding::row_secret(tenant, RowSecret::SamlIdpSigningKey, &fingerprint_hex);
+        let plaintext = from
+            .unwrap(binding, &wrapped)
+            .await
+            .map_err(storage_error)?;
+        let resealed = to.wrap(binding, &plaintext).await.map_err(storage_error)?;
+        let moved = sqlx::query(
+            "update saml_idp_signing_keys
+                set private_key_ciphertext = $1, private_key_nonce = $2, kek_id = $3
+              where tenant_id = $4 and kek_id = $5",
+        )
+        .bind(resealed.ciphertext())
+        .bind(resealed.nonce())
+        .bind(resealed.kek_id())
+        .bind(tenant.as_str())
+        .bind(from.id())
+        .execute(&mut **transaction)
+        .await
+        .map_err(to_domain_error)?
+        .rows_affected();
+        Ok(moved)
+    }
+
     async fn claims_provider_sources(
         transaction: &mut Transaction<'_>,
         tenant: &TenantId,
@@ -846,6 +899,14 @@ impl PgKekRewrap {
         .fetch_one(&mut **transaction)
         .await
         .map_err(to_domain_error)?;
+        let saml: i64 = sqlx::query_scalar(
+            "select count(*) from saml_idp_signing_keys where tenant_id = $1 and kek_id = $2",
+        )
+        .bind(tenant.as_str())
+        .bind(kek_id)
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(to_domain_error)?;
         let claims_sources: i64 = sqlx::query_scalar(
             "select count(*) from aggregated_claim_sources where tenant_id = $1 and kek_id = $2",
         )
@@ -871,6 +932,7 @@ impl PgKekRewrap {
             + credentials.unsigned_abs()
             + envelopes.unsigned_abs()
             + federation.unsigned_abs()
+            + saml.unsigned_abs()
             + claims_sources.unsigned_abs()
             + cp_pending.unsigned_abs()
             + cp_tokens.unsigned_abs())
@@ -932,6 +994,8 @@ impl PgKekRewrap {
         .map_err(to_domain_error)?;
         let federation: i64 = sqlx::query_scalar("select count(*) from federation_signing_keys where tenant_id = $1 and kek_id <> $2 and kek_id <> $3")
             .bind(tenant.as_str()).bind(from.id()).bind(to.id()).fetch_one(&mut **transaction).await.map_err(to_domain_error)?;
+        let saml: i64 = sqlx::query_scalar("select count(*) from saml_idp_signing_keys where tenant_id = $1 and kek_id <> $2 and kek_id <> $3")
+            .bind(tenant.as_str()).bind(from.id()).bind(to.id()).fetch_one(&mut **transaction).await.map_err(to_domain_error)?;
         let claims_sources: i64 = sqlx::query_scalar(
             "select count(*) from aggregated_claim_sources
              where tenant_id = $1 and kek_id is not null and kek_id <> $2 and kek_id <> $3",
@@ -968,6 +1032,7 @@ impl PgKekRewrap {
             + credentials.unsigned_abs()
             + envelopes.unsigned_abs()
             + federation.unsigned_abs()
+            + saml.unsigned_abs()
             + claims_sources.unsigned_abs()
             + cp_pending.unsigned_abs()
             + cp_tokens.unsigned_abs())
@@ -1045,6 +1110,7 @@ mod tests {
             ssf_push_credentials: 0,
             ciba_ping_envelopes: 0,
             federation_keys: 0,
+            saml_idp_keys: 0,
             claims_provider_sources: 0,
             claims_provider_pkce: 0,
             claims_provider_tokens: 0,

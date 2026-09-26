@@ -421,7 +421,7 @@ pub struct Assertion<'a> {
 }
 
 /// Signs one module-built assertion using the IdP's RSA-SHA256 key. The
-/// certificate is advertised in separately signed IdP metadata; XML KeyInfo
+/// certificate must be published by a later IdP metadata route; XML KeyInfo
 /// cannot itself establish trust.
 pub fn sign_assertion(
     assertion: &Assertion<'_>,

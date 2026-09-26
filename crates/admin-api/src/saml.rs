@@ -4,16 +4,93 @@
 //! are stored for a later SSO implementation; no submitted XML is trusted.
 //! `allow_unsigned_requests` must be supplied explicitly. It defaults to
 //! false in storage. HTTP-Redirect signatures require a separate pinned key;
-//! XML Signature verification remains unavailable.
+//! XML Signature verification is handled by the server's strict POST profile.
 
 use asterius_domain::{DomainError, TenantId};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use url::Url;
+use zeroize::{Zeroize as _, Zeroizing};
 
 /// Maximum request body for an SP trust mutation.
 pub const MAX_BODY_BYTES: usize = 4 * 1024;
+/// A certificate and RSA PKCS#8 key can each be 16 KiB before base64.
+pub const MAX_IDP_KEY_BODY_BYTES: usize = 48 * 1024;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawIdpKey {
+    certificate_der_base64: String,
+    private_key_pkcs8_der_base64: String,
+}
+
+impl Drop for RawIdpKey {
+    fn drop(&mut self) {
+        self.private_key_pkcs8_der_base64.zeroize();
+    }
+}
+
+/// Secret input. Debug output and admin responses never contain private DER.
+pub struct NewIdpKey {
+    pub certificate_der: Vec<u8>,
+    pub private_key_pkcs8: Zeroizing<Vec<u8>>,
+}
+
+impl std::fmt::Debug for NewIdpKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NewIdpKey")
+            .field("certificate_len", &self.certificate_der.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Only public material is returned by the administration port.
+#[derive(Debug, Clone, Serialize)]
+pub struct IdpKeySummary {
+    /// A provisioned key is usable internally but does not enable SSO.
+    pub state: &'static str,
+    pub certificate_sha256: String,
+    pub certificate_der_base64: String,
+    pub created_at: OffsetDateTime,
+}
+
+/// Parses one bounded operator key import; cryptographic validation is done
+/// by the deployment before any material is sealed or stored.
+pub fn parse_idp_key(body: &[u8]) -> Result<NewIdpKey, crate::error::AdminError> {
+    if body.is_empty() || body.len() > MAX_IDP_KEY_BODY_BYTES {
+        return Err(crate::error::AdminError::Invalid(
+            "invalid SAML IdP key".to_owned(),
+        ));
+    }
+    let raw: RawIdpKey = serde_json::from_slice(body)
+        .map_err(|_| crate::error::AdminError::Invalid("invalid SAML IdP key".to_owned()))?;
+    let certificate_der = STANDARD
+        .decode(&raw.certificate_der_base64)
+        .map_err(|_| crate::error::AdminError::Invalid("invalid SAML IdP key".to_owned()))?;
+    let private_key_pkcs8 = Zeroizing::new(
+        STANDARD
+            .decode(&raw.private_key_pkcs8_der_base64)
+            .map_err(|_| crate::error::AdminError::Invalid("invalid SAML IdP key".to_owned()))?,
+    );
+    if !(256..=16_384).contains(&certificate_der.len())
+        || !(256..=16_384).contains(&private_key_pkcs8.len())
+    {
+        return Err(crate::error::AdminError::Invalid(
+            "invalid SAML IdP key".to_owned(),
+        ));
+    }
+    Ok(NewIdpKey {
+        certificate_der,
+        private_key_pkcs8,
+    })
+}
+
+#[async_trait::async_trait]
+pub trait IdpKeyAdministration: Send + Sync {
+    async fn inspect(&self, tenant: &TenantId) -> Result<Option<IdpKeySummary>, DomainError>;
+    async fn provision(&self, tenant: &TenantId, key: &NewIdpKey) -> Result<bool, DomainError>;
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]

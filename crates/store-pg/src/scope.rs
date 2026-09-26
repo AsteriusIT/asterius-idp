@@ -39,6 +39,12 @@ impl<'a> TenantScope<'a> {
         crate::PgSamlTrust::new(self.pool.clone(), self.tenant.clone())
     }
 
+    /// Dedicated KEK-wrapped SAML IdP signing material for this tenant.
+    #[must_use]
+    pub fn saml_idp_keys(&self, kek: Arc<dyn Kek>) -> crate::PgSamlIdpKeys {
+        crate::PgSamlIdpKeys::new(self.pool.clone(), self.tenant.clone(), kek)
+    }
+
     /// Invitations to create accounts in this tenant.
     #[must_use]
     pub fn invitations(&self) -> crate::PgInvitations {
