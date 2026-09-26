@@ -518,6 +518,92 @@ pub fn build_post_response(
     ))
 }
 
+#[cfg(test)]
+mod saml_sp_vector_tests {
+    use super::*;
+    use aws_lc_rs::signature::{RSA_PKCS1_2048_8192_SHA256, UnparsedPublicKey};
+
+    const PRIVATE_KEY: &[u8] = include_bytes!("../tests/fixtures/saml_idp/private.pkcs8.der");
+    const PUBLIC_KEY: &[u8] = include_bytes!("../tests/fixtures/saml_idp/public.der");
+    const CERTIFICATE: &[u8] = include_bytes!("../tests/fixtures/saml_idp/certificate.der");
+
+    fn between<'a>(xml: &'a str, start: &str, end: &str) -> &'a str {
+        let from = xml.find(start).expect("start tag") + start.len();
+        let to = xml[from..].find(end).expect("end tag") + from;
+        &xml[from..to]
+    }
+
+    fn verify_enveloped(xml: &str, reference: &str) {
+        let signature_start = xml
+            .find("<ds:Signature xmlns:ds=")
+            .expect("enveloped signature");
+        let signature_end =
+            xml.find("</ds:Signature>").expect("signature end") + "</ds:Signature>".len();
+        let unsigned = format!("{}{}", &xml[..signature_start], &xml[signature_end..]);
+        let info_start = xml.find("<ds:SignedInfo").expect("SignedInfo");
+        let info_end =
+            xml.find("</ds:SignedInfo>").expect("SignedInfo end") + "</ds:SignedInfo>".len();
+        let info = &xml[info_start..info_end];
+        assert!(info.contains(&format!("<ds:Reference URI=\"{reference}\">")));
+        let digest = STANDARD
+            .decode(between(info, "<ds:DigestValue>", "</ds:DigestValue>"))
+            .expect("digest base64");
+        assert_eq!(digest, Sha256::digest(unsigned.as_bytes()).as_slice());
+        let signature = STANDARD
+            .decode(between(xml, "<ds:SignatureValue>", "</ds:SignatureValue>"))
+            .expect("signature base64");
+        UnparsedPublicKey::new(&RSA_PKCS1_2048_8192_SHA256, PUBLIC_KEY)
+            .verify(info.as_bytes(), &signature)
+            .expect("IdP signature verifies with published key");
+    }
+
+    #[test]
+    fn signed_idp_metadata_and_post_response_bind_sp_acs_and_request() {
+        let entity = "https://idp.example/t/alpha";
+        let sso = "https://idp.example/t/alpha/saml/sso";
+        let acs = "https://sp.example/saml/acs";
+        let metadata = sign_metadata(
+            &IdpMetadata {
+                entity_id: entity,
+                sso_url: sso,
+                signing_certificates_der: &[CERTIFICATE],
+            },
+            PRIVATE_KEY,
+        )
+        .expect("live signed metadata");
+        assert!(metadata.contains(&format!("entityID=\"{entity}\"")));
+        assert!(metadata.contains(&format!("Location=\"{sso}\"")));
+        assert!(metadata.contains(&STANDARD.encode(CERTIFICATE)));
+        verify_enveloped(&metadata, "");
+
+        let issued =
+            OffsetDateTime::parse("2026-09-26T12:00:00Z", &Rfc3339).expect("SP request instant");
+        let assertion = Assertion {
+            id: "_assertion-one",
+            issuer: entity,
+            subject: "alice@example.test",
+            audience: "https://sp.example/metadata",
+            recipient: acs,
+            in_response_to: "_sp-request-001",
+            session_index: "_session-one",
+            authn_context_class_ref: "urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport",
+            authenticated_at: issued,
+            issued_at: issued,
+            expires_at: issued + Duration::minutes(5),
+        };
+        let response =
+            build_post_response("_response-one", &assertion, PRIVATE_KEY).expect("signed response");
+        assert!(response.contains(&format!("Destination=\"{acs}\"")));
+        assert!(response.contains("InResponseTo=\"_sp-request-001\""));
+        assert!(response.contains("<saml:Audience>https://sp.example/metadata</saml:Audience>"));
+        assert!(response.contains(&format!("Recipient=\"{acs}\"")));
+        let assertion_start = response.find("<saml:Assertion").expect("assertion");
+        let assertion_end =
+            response.find("</saml:Assertion>").expect("assertion end") + "</saml:Assertion>".len();
+        verify_enveloped(&response[assertion_start..assertion_end], "#_assertion-one");
+    }
+}
+
 fn https_url(value: &str) -> bool {
     Url::parse(value).is_ok_and(|url| {
         url.scheme() == "https"

@@ -16,7 +16,7 @@
 use asterius_domain::ports::{TenantRepository, TenantScoped};
 use asterius_domain::rate_limit::RateLimitStore as _;
 use asterius_domain::{Issuer, Tenant, TenantId, TenantStatus};
-use asterius_store_pg::{MIGRATOR, PgTenantRepository, Store};
+use asterius_store_pg::{MIGRATOR, NewPendingSamlLogin, PgTenantRepository, Store};
 use sqlx::Row;
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
 use std::str::FromStr;
@@ -78,6 +78,93 @@ macro_rules! db_test {
             $body
         }
     };
+}
+
+db_test! {
+    async fn saml_signed_request_replay_is_scoped_and_survives_trust_replacement(db) {
+        seed_tenant(&db.pool, "saml-alpha").await;
+        seed_tenant(&db.pool, "saml-beta").await;
+        let store = Store::from_pool(db.pool.clone());
+        let alpha = store.scope(TenantId::new("saml-alpha")).saml_trust();
+        let beta = store.scope(TenantId::new("saml-beta")).saml_trust();
+        let sp = "https://sp.example/metadata";
+        let acs = "https://sp.example/saml/acs";
+        let key = b"operator-pinned-sp-key";
+        assert!(alpha.provision(sp, acs, false, Some(key)).await.expect("provision alpha"));
+        assert!(beta.provision(sp, acs, false, Some(key)).await.expect("provision beta"));
+
+        assert!(alpha.reserve_signed_request(sp, acs, key, "_request-one").await.expect("first reservation"));
+        assert!(!alpha.reserve_signed_request(sp, acs, key, "_request-one").await.expect("replay"));
+        assert!(!alpha.reserve_signed_request(sp, "https://attacker.example/acs", key, "_request-two").await.expect("wrong ACS"));
+        assert!(!alpha.reserve_signed_request(sp, acs, b"substituted-key", "_request-two").await.expect("wrong key"));
+        assert!(beta.reserve_signed_request(sp, acs, key, "_request-one").await.expect("other tenant reservation"));
+
+        assert!(alpha.remove(sp).await.expect("remove alpha trust"));
+        assert!(alpha.provision(sp, acs, false, Some(key)).await.expect("replace alpha trust"));
+        assert!(!alpha.reserve_signed_request(sp, acs, key, "_request-one").await.expect("replay tombstone survives trust replacement"));
+    }
+}
+
+db_test! {
+    async fn saml_pending_login_requires_exact_session_live_trust_and_one_use(db) {
+        seed_tenant(&db.pool, "saml-alpha").await;
+        seed_tenant(&db.pool, "saml-beta").await;
+        let store = Store::from_pool(db.pool.clone());
+        let alpha_scope = store.scope(TenantId::new("saml-alpha"));
+        let beta_scope = store.scope(TenantId::new("saml-beta"));
+        let trust = alpha_scope.saml_trust();
+        let pending = alpha_scope.saml_pending();
+        let sp = "https://sp.example/metadata";
+        let acs = "https://sp.example/saml/acs";
+        let key = b"operator-pinned-sp-key";
+        assert!(trust.provision(sp, acs, false, Some(key)).await.expect("provision SP"));
+        let now = OffsetDateTime::now_utc();
+        let expires = now + Duration::minutes(10);
+
+        for (label, request_id) in [("first", "_request-one"), ("revoked", "_request-two")] {
+            let interaction_digest = asterius_domain::sha256_hex(format!("interaction-{label}").as_bytes());
+            let interaction_hash = asterius_domain::sha256(format!("interaction-{label}").as_bytes()).to_vec();
+            sqlx::query(
+                "insert into first_party_interactions
+                     (tenant_id, interaction_id_hash, destination, session_id, consumed_at, expires_at)
+                 values ($1, $2, 'saml_sso', 'session-one', $3, $4)"
+            )
+            .bind("saml-alpha")
+            .bind(interaction_hash)
+            .bind(now)
+            .bind(expires)
+            .execute(&db.pool)
+            .await
+            .expect("completed SAML login interaction");
+            let token_digest = asterius_domain::sha256_hex(format!("pending-{label}").as_bytes());
+            pending.begin(&NewPendingSamlLogin {
+                token_digest: &token_digest,
+                interaction_digest: &interaction_digest,
+                sp_entity_id: sp,
+                acs_url: acs,
+                request_id,
+                issued_at: now,
+                relay_state: Some(b"opaque-relay"),
+                signing_key_der: Some(key),
+                expires_at: expires,
+            }).await.expect("store verified pending request");
+        }
+
+        let first = asterius_domain::sha256_hex(b"pending-first");
+        assert!(pending.consume(&first, "other-session", now).await.expect("wrong session").is_none());
+        assert!(beta_scope.saml_pending().consume(&first, "session-one", now).await.expect("other tenant").is_none());
+        let consumed = pending.consume(&first, "session-one", now).await.expect("bound session").expect("one accepted continuation");
+        assert_eq!(consumed.sp_entity_id, sp);
+        assert_eq!(consumed.acs_url, acs);
+        assert_eq!(consumed.request_id, "_request-one");
+        assert_eq!(consumed.relay_state.as_deref(), Some(b"opaque-relay".as_slice()));
+        assert!(pending.consume(&first, "session-one", now).await.expect("second consume").is_none());
+
+        assert!(trust.remove(sp).await.expect("remove pinned trust"));
+        assert!(trust.provision(sp, acs, false, Some(b"rotated-key")).await.expect("replace with new key"));
+        let revoked = asterius_domain::sha256_hex(b"pending-revoked");
+        assert!(pending.consume(&revoked, "session-one", now).await.expect("revoked key").is_none());
+    }
 }
 
 fn tenant(id: &str, issuer: &str) -> Tenant {

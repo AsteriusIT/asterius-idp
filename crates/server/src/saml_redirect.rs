@@ -146,3 +146,71 @@ fn percent_decode(value: &str) -> Result<Vec<u8>, UntrustedSaml> {
     }
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::saml::{SpTrust, TrustedSp, parse_authn_request};
+    use aws_lc_rs::signature::{RSA_PKCS1_2048_8192_SHA256, UnparsedPublicKey};
+
+    const QUERY: &str = include_str!("../tests/fixtures/saml_sp/redirect.query");
+    const XML: &str = include_str!("../tests/fixtures/saml_sp/redirect.xml");
+    const SP_PUBLIC_KEY: &[u8] = include_bytes!("../tests/fixtures/saml_sp/public.der");
+
+    #[test]
+    fn signed_sp_redirect_vector_preserves_exact_signature_input_and_relay_state() {
+        let query = QUERY.trim_end();
+        let parsed = parse_redirect_query(query).expect("valid signed SP redirect vector");
+        assert_eq!(parsed.xml, XML.trim_end().as_bytes());
+        assert_eq!(
+            parsed.relay_state.as_deref(),
+            Some(b"continue:/billing?x=1&y=2".as_slice())
+        );
+        assert_eq!(
+            parsed.signing_input.as_slice(),
+            query
+                .split_once("&Signature=")
+                .expect("signature member")
+                .0
+                .as_bytes(),
+        );
+        UnparsedPublicKey::new(&RSA_PKCS1_2048_8192_SHA256, SP_PUBLIC_KEY)
+            .verify(&parsed.signing_input, &parsed.signature)
+            .expect("SP signature verifies over original encoded octets");
+        let request =
+            parse_authn_request(&parsed.xml).expect("signed vector contains an AuthnRequest");
+        assert_eq!(request.id, "_sp-request-001");
+        assert_eq!(
+            request.destination.as_deref(),
+            Some("https://idp.example/t/alpha/saml/sso")
+        );
+        let mut trust = SpTrust::default();
+        trust
+            .insert(
+                "alpha",
+                TrustedSp::new("https://sp.example/metadata", "https://sp.example/saml/acs")
+                    .expect("pinned SP"),
+            )
+            .expect("alpha trust");
+        assert!(trust.resolve("alpha", &request).is_ok());
+        assert!(
+            trust.resolve("beta", &request).is_err(),
+            "same SP is not trusted in another tenant"
+        );
+    }
+
+    #[test]
+    fn signed_sp_redirect_vector_rejects_relay_tampering_and_query_pollution() {
+        let tampered = QUERY.trim_end().replace("billing", "profile");
+        let parsed =
+            parse_redirect_query(&tampered).expect("tampering keeps the query well formed");
+        assert!(
+            UnparsedPublicKey::new(&RSA_PKCS1_2048_8192_SHA256, SP_PUBLIC_KEY)
+                .verify(&parsed.signing_input, &parsed.signature)
+                .is_err(),
+            "a changed RelayState must invalidate the SP signature"
+        );
+        assert!(parse_redirect_query(&format!("{}&RelayState=second", QUERY.trim_end())).is_err());
+        assert!(parse_redirect_query(&format!("{}&other=ignored", QUERY.trim_end())).is_err());
+    }
+}
