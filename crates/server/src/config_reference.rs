@@ -1094,6 +1094,12 @@ fn tenant() -> Section {
                 "empty (HTTP signatures optional)".to_owned(),
                 "For each listed SSF transmitter, require a canonical RFC 9421 Ed25519 signature over POST, the tenant issuer's /ssf/receiver URL, and the RFC 9530 SHA-256 body digest. public_key_file contains the base64-encoded raw 32-byte Ed25519 public key. Signatures expire within five minutes and their nonces are consumed atomically across replicas. A listed peer cannot fall back to unsigned delivery. To require signed responses to that peer, set both response_signing_keyid and response_private_key_file; the latter is a local Ed25519 PKCS#8 DER key. The receiver signs status and the exact empty response body digest with a two-minute expiry. Missing or invalid response keys fail startup; signing failure refuses the response.",
             ),
+            key(
+                "ssf_upstream_peer",
+                "array of { issuer, bearer_token_file } tables",
+                "empty (upstream management disabled)".to_owned(),
+                "Explicit outbound OAuth bearer source for one canonical upstream SSF issuer. The file contains only the access token, is read with an 8 KiB limit for a management call, and is never included in logs or stream state. Management calls are restricted to same-origin endpoints from verified transmitter metadata and use the guarded HTTPS transport. No automatic setup route or refresh is enabled; rotate the operator-provided token file before expiry.",
+            ),
         ],
     }
 }
