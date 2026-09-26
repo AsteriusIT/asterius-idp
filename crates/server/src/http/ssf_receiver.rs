@@ -266,6 +266,23 @@ async fn receive(
             Err(_) => return peer_response(StatusCode::SERVICE_UNAVAILABLE, Some(pinned)),
         }
     }
+    match apply_verified_event(&endpoints, &tenant, &event, now).await {
+        Ok(()) => peer_response(StatusCode::ACCEPTED, pinned),
+        Err(ApplyError::Invalid) => peer_response(StatusCode::BAD_REQUEST, pinned),
+        Err(ApplyError::Storage) => peer_response(StatusCode::INTERNAL_SERVER_ERROR, pinned),
+    }
+}
+
+/// Applies a verified event through the same atomic replay, lifecycle and
+/// notification path for push and poll delivery. A poll caller acknowledges
+/// only after this returns `Ok`, so replay after an interrupted acknowledgement
+/// is safe.
+pub(crate) async fn apply_verified_event(
+    endpoints: &crate::http::protocol::ClientEndpoints,
+    tenant: &Tenant,
+    event: &VerifiedEvent,
+    now: OffsetDateTime,
+) -> Result<(), ApplyError> {
     let action = match event.event_type {
         LifecycleEventType::SessionRevoked => asterius_store_pg::ReceiverAction::SessionRevoked,
         LifecycleEventType::AccountDisabled => asterius_store_pg::ReceiverAction::AccountDisabled,
@@ -286,7 +303,7 @@ async fn receive(
                 )
             );
             if !valid_credential_type {
-                return peer_response(StatusCode::BAD_REQUEST, pinned);
+                return Err(ApplyError::Invalid);
             }
             match event.event.get("change_type").and_then(Value::as_str) {
                 // A remote credential revocation/removal cannot identify or
@@ -295,7 +312,7 @@ async fn receive(
                     asterius_store_pg::ReceiverAction::CredentialCompromised
                 }
                 Some("create" | "update") => asterius_store_pg::ReceiverAction::ObserveOnly,
-                _ => return peer_response(StatusCode::BAD_REQUEST, pinned),
+                _ => return Err(ApplyError::Invalid),
             }
         }
     };
@@ -335,14 +352,16 @@ async fn receive(
     {
         Ok(asterius_store_pg::ReceiverOutcome::Applied)
         | Ok(asterius_store_pg::ReceiverOutcome::Stale)
-        | Ok(asterius_store_pg::ReceiverOutcome::Duplicate) => {
-            peer_response(StatusCode::ACCEPTED, pinned)
-        }
-        Err(asterius_domain::DomainError::Invalid { .. }) => {
-            peer_response(StatusCode::BAD_REQUEST, pinned)
-        }
-        Err(_) => peer_response(StatusCode::INTERNAL_SERVER_ERROR, pinned),
+        | Ok(asterius_store_pg::ReceiverOutcome::Duplicate) => Ok(()),
+        Err(asterius_domain::DomainError::Invalid { .. }) => Err(ApplyError::Invalid),
+        Err(_) => Err(ApplyError::Storage),
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ApplyError {
+    Invalid,
+    Storage,
 }
 
 fn signed_fields(headers: &HeaderMap) -> Option<SignedFields> {
