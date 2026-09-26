@@ -178,7 +178,7 @@ impl ClaimsProviders {
             .get(tenant_id)
             .into_iter()
             .flat_map(HashMap::values)
-            .filter_map(|provider| provider.registration())
+            .filter_map(Provider::registration)
             .collect();
         registrations.sort_by(|left, right| left.issuer.cmp(&right.issuer));
         registrations
@@ -222,6 +222,9 @@ impl ClaimsProviders {
     /// # Errors
     /// Rejects unknown or unconfigured providers, excess claims, transport
     /// failure and any signature or signed-payload mismatch.
+    // The verified provider context, approved claims and transport are separate
+    // trust inputs; keeping them explicit makes their provenance reviewable.
+    #[allow(clippy::too_many_arguments)]
     pub async fn collect(
         &self,
         tenant: &Tenant,

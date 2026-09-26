@@ -302,6 +302,9 @@ pub async fn delete_recorded_stream(
 /// `jti` in a separate RFC 8936 request. A failure before acknowledgement
 /// leaves the transmitter free to redeliver; the local replay record makes
 /// such redelivery harmless. This operation is not yet scheduled by a worker.
+// Polling has a strict sequence of metadata, stream, SET and ACK checks;
+// keeping that sequence visible prevents acknowledgement before local commit.
+#[allow(clippy::too_many_lines)]
 pub async fn poll_once(
     endpoints: &ClientEndpoints,
     tenant: &Tenant,
@@ -562,7 +565,7 @@ async fn acknowledge_polled_set(
             poll_url,
             PostRequest::of("application/json")
                 .accepting("application/json")
-                .authorized_by(Some(&authorization)),
+                .authorized_by(Some(authorization)),
             &acknowledgement,
         )
         .await
@@ -679,6 +682,9 @@ fn parse_polled_set(response: &PostResponse) -> Result<Option<(String, String)>,
 /// The durable intent blocks a second POST after a crash. A retry reads the
 /// authenticated transmitter list and may adopt one exact match; zero or
 /// multiple matches require operator review and never trigger another POST.
+// Persisted intent, remote creation and reconciliation are one ordered
+// operation; splitting the function would obscure the crash-safe boundary.
+#[allow(clippy::too_many_lines)]
 pub async fn create_poll_stream(
     endpoints: &ClientEndpoints,
     tenant: &Tenant,

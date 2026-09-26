@@ -540,12 +540,9 @@ async fn exchange(
     let mut incoming = response.into_body();
     let mut truncated = false;
     while let Some(next) = incoming.frame().await {
-        let frame = match next {
-            Ok(frame) => frame,
-            Err(_) => {
-                pump.abort();
-                return Err(failed());
-            }
+        let Ok(frame) = next else {
+            pump.abort();
+            return Err(failed());
         };
         if let Some(chunk) = frame.data_ref() {
             let room = response_bound - kept.len();

@@ -458,6 +458,9 @@ impl ClientAuthenticator {
     /// Split from [`Self::authenticate`] purely so that every `return Err`
     /// below passes through one reporting point. The order of the checks, and
     /// the reasons for it, are the module documentation's.
+    // Keep the ordered authentication-method decisions together; splitting
+    // them would obscure the shared refusal and reporting precedence.
+    #[allow(clippy::too_many_lines)]
     async fn decide(
         &self,
         tenant: &Tenant,
