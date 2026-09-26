@@ -96,7 +96,7 @@ pub struct Rewrap {
     pub ciba_ping_envelopes: u64,
     /// Federation signing keys re-sealed under the new KEK.
     pub federation_keys: u64,
-    /// Dedicated SAML IdP private keys re-sealed under the new KEK.
+    /// Dedicated SAML `IdP` private keys re-sealed under the new KEK.
     pub saml_idp_keys: u64,
     /// Signed Claims Provider UserInfo rows re-sealed under the new KEK.
     pub claims_provider_sources: u64,

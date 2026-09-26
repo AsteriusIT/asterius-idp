@@ -1,5 +1,5 @@
 //! Receiver-managed upstream stream controls against a migrated PostgreSQL schema.
-//! Set DATABASE_URL to run these tests; without it, they skip like other store tests.
+//! Set `DATABASE_URL` to run these tests; without it, they skip like other store tests.
 
 use asterius_domain::TenantId;
 use asterius_ssf::{caep::SESSION_REVOKED, stream::DELIVERY_POLL};

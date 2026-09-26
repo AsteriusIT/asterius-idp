@@ -163,7 +163,8 @@ impl PgSsfReceiver {
     /// the effect.
     // The verified SET fields stay explicit so no caller can omit the replay
     // bound, event time, or notification preparer at this security boundary.
-    #[allow(clippy::too_many_arguments)]
+    // Replay claim, lifecycle action, notifications, and audit must commit atomically.
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     pub async fn process(
         &self,
         peer_client_id: &str,
@@ -369,7 +370,7 @@ impl PgSsfReceiver {
         crate::audit::append(&mut transaction, audit).await?;
 
         match action {
-            ReceiverAction::SessionRevoked => {
+            ReceiverAction::SessionRevoked | ReceiverAction::CredentialCompromised => {
                 revoke_sessions(&mut transaction, &self.tenant, user_id, now).await?;
             }
             ReceiverAction::AccountDisabled => {
@@ -383,9 +384,6 @@ impl PgSsfReceiver {
                 .execute(&mut *transaction)
                 .await
                 .map_err(to_domain_error)?;
-                revoke_sessions(&mut transaction, &self.tenant, user_id, now).await?;
-            }
-            ReceiverAction::CredentialCompromised => {
                 revoke_sessions(&mut transaction, &self.tenant, user_id, now).await?;
             }
             ReceiverAction::ObserveOnly => {}

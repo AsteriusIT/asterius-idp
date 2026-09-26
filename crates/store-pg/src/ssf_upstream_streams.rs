@@ -46,6 +46,37 @@ pub struct UpstreamSetupIntent {
     pub started_at: OffsetDateTime,
 }
 
+type SetupIntentRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    Vec<String>,
+    String,
+    OffsetDateTime,
+);
+
+type UpstreamStreamRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    String,
+    Vec<String>,
+    OffsetDateTime,
+    OffsetDateTime,
+    Option<OffsetDateTime>,
+    Option<OffsetDateTime>,
+    Option<OffsetDateTime>,
+    Option<OffsetDateTime>,
+);
+
 /// One tenant's upstream stream records, scoped before any query is written.
 #[derive(Debug, Clone)]
 pub struct PgSsfUpstreamStreams {
@@ -119,17 +150,7 @@ impl PgSsfUpstreamStreams {
         &self,
         peer_client_id: &str,
     ) -> Result<Option<UpstreamSetupIntent>, DomainError> {
-        let row: Option<(
-            String,
-            String,
-            String,
-            String,
-            String,
-            String,
-            Vec<String>,
-            String,
-            OffsetDateTime,
-        )> = sqlx::query_as(
+        let row: Option<SetupIntentRow> = sqlx::query_as(
             "select peer_client_id, issuer, jwks_uri, configuration_endpoint,
                     status_endpoint, audience, events_requested,
                     delivery_method, started_at
@@ -157,6 +178,8 @@ impl PgSsfUpstreamStreams {
     /// Atomically records the verified remote stream and consumes only its
     /// matching pending intent. A stale metadata pin or competing completion
     /// cannot silently replace the stream identity.
+    // The peer lock, intent comparison, stream insert, and intent removal form one transaction.
+    #[allow(clippy::too_many_lines)]
     pub async fn finish_setup(
         &self,
         intent: &UpstreamSetupIntent,
@@ -175,17 +198,7 @@ impl PgSsfUpstreamStreams {
             tx.rollback().await.map_err(to_domain_error)?;
             return Ok(false);
         }
-        let current: Option<(
-            String,
-            String,
-            String,
-            String,
-            String,
-            String,
-            Vec<String>,
-            String,
-            OffsetDateTime,
-        )> = sqlx::query_as(
+        let current: Option<SetupIntentRow> = sqlx::query_as(
             "select peer_client_id, issuer, jwks_uri, configuration_endpoint,
                     status_endpoint, audience, events_requested,
                     delivery_method, started_at
@@ -269,24 +282,7 @@ impl PgSsfUpstreamStreams {
     /// # Errors
     /// Storage errors fail closed.
     pub async fn find(&self, peer_client_id: &str) -> Result<Option<UpstreamStream>, DomainError> {
-        let row: Option<(
-            String,
-            String,
-            String,
-            String,
-            String,
-            String,
-            String,
-            Option<String>,
-            String,
-            Vec<String>,
-            OffsetDateTime,
-            OffsetDateTime,
-            Option<OffsetDateTime>,
-            Option<OffsetDateTime>,
-            Option<OffsetDateTime>,
-            Option<OffsetDateTime>,
-        )> = sqlx::query_as(
+        let row: Option<UpstreamStreamRow> = sqlx::query_as(
             "select peer_client_id, issuer, jwks_uri, configuration_endpoint,
                     status_endpoint, stream_id, delivery_method, poll_endpoint,
                     audience, events_requested, created_at, updated_at, last_polled_at,
@@ -447,7 +443,7 @@ impl PgSsfUpstreamStreams {
             let matches = pending_hash
                 .as_deref()
                 .is_some_and(|expected| ct_eq(expected, state_hash));
-            if !matches || !pending_until.is_some_and(|until| until > now) {
+            if !matches || pending_until.is_none_or(|until| until <= now) {
                 return Ok(false);
             }
         }

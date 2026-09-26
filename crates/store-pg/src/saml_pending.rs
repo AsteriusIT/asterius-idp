@@ -1,6 +1,6 @@
 //! One-use SAML login continuation, bound to the first-party interaction.
 //!
-//! The AuthnRequest was fully verified and replay-reserved before `begin`.
+//! The `AuthnRequest` was fully verified and replay-reserved before `begin`.
 //! Resume is permitted only after that exact interaction is consumed into the
 //! presented session, while the SP trust still names the same ACS and key.
 
