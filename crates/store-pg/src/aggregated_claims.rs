@@ -2,18 +2,20 @@
 //!
 //! Only [`VerifiedClaimSet`] can be inserted. Verification and an end user's
 //! provider/RP consent happen before this repository is called; the upcoming
-//! connection flow owns those decisions. Rows remain short-lived and can be
-//! revoked independently of the local user's own attributes.
+//! connection flow owns those decisions. JWTs are sealed under the deployment
+//! KEK with tenant, user and issuer bound as authenticated data.
 
 use crate::error::to_domain_error;
 use asterius_domain::audit::{Actor, AuditEvent, Detail, EventType, Outcome};
 use asterius_domain::{DomainError, TenantId, UserId};
 use asterius_jose::claims_aggregation::VerifiedClaimSet;
-use sqlx::PgPool;
+use asterius_jose::{Kek, KeyBinding, RowSecret, WrappedKey};
+use sqlx::{PgPool, Row};
+use std::sync::Arc;
 use time::OffsetDateTime;
 
 /// The signed claim source a user still has connected to this tenant.
-#[derive(Clone, PartialEq, Eq, sqlx::FromRow)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct StoredClaimSource {
     /// Pinned Claims Provider issuer.
     pub provider_issuer: String,
@@ -39,15 +41,25 @@ impl std::fmt::Debug for StoredClaimSource {
 }
 
 /// Signed claim sets belonging to one tenant.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PgAggregatedClaims {
     pool: PgPool,
     tenant: TenantId,
+    kek: Arc<dyn Kek>,
+}
+
+impl std::fmt::Debug for PgAggregatedClaims {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PgAggregatedClaims")
+            .field("tenant", &self.tenant)
+            .finish_non_exhaustive()
+    }
 }
 
 impl PgAggregatedClaims {
-    pub(crate) fn new(pool: PgPool, tenant: TenantId) -> Self {
-        Self { pool, tenant }
+    pub(crate) fn new(pool: PgPool, tenant: TenantId, kek: Arc<dyn Kek>) -> Self {
+        Self { pool, tenant, kek }
     }
 
     /// Retain one verified signed response for a user and pinned provider.
@@ -76,6 +88,19 @@ impl PgAggregatedClaims {
                 "provider or signed claim set is invalid",
             ));
         }
+        let binding_row = format!("{}:{provider_issuer}", user.as_uuid());
+        let wrapped = self
+            .kek
+            .wrap(
+                KeyBinding::row_secret(
+                    &self.tenant,
+                    RowSecret::ClaimsProviderUserInfo,
+                    &binding_row,
+                ),
+                verified.jwt().as_bytes(),
+            )
+            .await
+            .map_err(|error| DomainError::Storage(Box::new(error)))?;
         let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
         let present: Option<uuid::Uuid> = sqlx::query_scalar(
             "select user_id from users where tenant_id = $1 and user_id = $2 for update",
@@ -109,11 +134,14 @@ impl PgAggregatedClaims {
         let names: Vec<String> = verified.names().iter().cloned().collect();
         let written = sqlx::query(
             "insert into aggregated_claim_sources
-             (tenant_id, user_id, provider_issuer, provider_subject, signed_userinfo,
-              claim_names, expires_at, stored_at)
-             values ($1, $2, $3, $4, $5, $6, $7, $8)
+             (tenant_id, user_id, provider_issuer, provider_subject, ciphertext,
+              nonce, kek_id, claim_names, expires_at, stored_at)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
              on conflict (tenant_id, user_id, provider_issuer) do update set
-                 signed_userinfo = excluded.signed_userinfo,
+                 signed_userinfo = null,
+                 ciphertext = excluded.ciphertext,
+                 nonce = excluded.nonce,
+                 kek_id = excluded.kek_id,
                  claim_names = excluded.claim_names,
                  expires_at = excluded.expires_at,
                  stored_at = excluded.stored_at,
@@ -124,7 +152,9 @@ impl PgAggregatedClaims {
         .bind(user.as_uuid())
         .bind(provider_issuer)
         .bind(provider_subject)
-        .bind(verified.jwt())
+        .bind(wrapped.ciphertext())
+        .bind(wrapped.nonce())
+        .bind(wrapped.kek_id())
         .bind(&names)
         .bind(verified.expires_at())
         .bind(now)
@@ -167,8 +197,8 @@ impl PgAggregatedClaims {
         user: UserId,
         now: OffsetDateTime,
     ) -> Result<Vec<StoredClaimSource>, DomainError> {
-        let rows = sqlx::query_as::<_, StoredClaimSource>(
-            "select provider_issuer, provider_subject, signed_userinfo, claim_names, expires_at
+        let rows = sqlx::query(
+            "select provider_issuer, provider_subject, ciphertext, nonce, kek_id, claim_names, expires_at
              from aggregated_claim_sources
              where tenant_id = $1 and user_id = $2 and revoked_at is null and expires_at > $3
              order by provider_issuer limit 5",
@@ -185,7 +215,51 @@ impl PgAggregatedClaims {
                 "too many live providers",
             ));
         }
-        Ok(rows)
+        let mut sources = Vec::with_capacity(rows.len());
+        for row in rows {
+            let provider_issuer: String =
+                row.try_get("provider_issuer").map_err(to_domain_error)?;
+            let provider_subject: String =
+                row.try_get("provider_subject").map_err(to_domain_error)?;
+            let ciphertext: Option<Vec<u8>> = row.try_get("ciphertext").map_err(to_domain_error)?;
+            let nonce: Option<Vec<u8>> = row.try_get("nonce").map_err(to_domain_error)?;
+            let kek_id: Option<String> = row.try_get("kek_id").map_err(to_domain_error)?;
+            // A source written before KEK storage was introduced must never be
+            // delivered from its legacy plaintext column. It remains in the
+            // database for an explicit operator migration or recovery.
+            let (Some(ciphertext), Some(nonce), Some(kek_id)) = (ciphertext, nonce, kek_id) else {
+                return Err(DomainError::invalid(
+                    "aggregated_claims",
+                    "legacy plaintext source requires migration",
+                ));
+            };
+            let wrapped = WrappedKey::from_parts(kek_id, nonce, ciphertext)
+                .map_err(|error| DomainError::Storage(Box::new(error)))?;
+            let binding_row = format!("{}:{provider_issuer}", user.as_uuid());
+            let plaintext = self
+                .kek
+                .unwrap(
+                    KeyBinding::row_secret(
+                        &self.tenant,
+                        RowSecret::ClaimsProviderUserInfo,
+                        &binding_row,
+                    ),
+                    &wrapped,
+                )
+                .await
+                .map_err(|error| DomainError::Storage(Box::new(error)))?;
+            let signed_userinfo = String::from_utf8(plaintext.to_vec()).map_err(|_| {
+                DomainError::invalid("aggregated_claims", "stored JWT is not UTF-8")
+            })?;
+            sources.push(StoredClaimSource {
+                provider_issuer,
+                provider_subject,
+                signed_userinfo,
+                claim_names: row.try_get("claim_names").map_err(to_domain_error)?,
+                expires_at: row.try_get("expires_at").map_err(to_domain_error)?,
+            });
+        }
+        Ok(sources)
     }
 
     /// Revoke one provider connection and its cached signed claims.

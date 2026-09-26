@@ -22,8 +22,8 @@ pub struct ClaimsProviderPolicy {
     pub issuer: String,
     /// Pinned public signing keys for that issuer.
     pub keys: ClientKeySet,
-    /// This OP's issuer identifier, the required sole JWT audience.
-    pub op_issuer: String,
+    /// This OP's registered client ID at the CP, the required sole JWT audience.
+    pub op_client_id: String,
     /// CP subject tied to the local user's approved provider connection.
     pub provider_subject: String,
     /// Attributes the user approved the OP to retrieve for this RP request.
@@ -121,7 +121,7 @@ pub fn verify_signed_userinfo(
     now: OffsetDateTime,
 ) -> Result<VerifiedClaimSet, AggregationError> {
     if policy.issuer.is_empty()
-        || policy.op_issuer.is_empty()
+        || policy.op_client_id.is_empty()
         || policy.provider_subject.is_empty()
         || policy.keys.is_empty()
         || policy.approved_claims.is_empty()
@@ -137,14 +137,14 @@ pub fn verify_signed_userinfo(
         SigningAlgorithm::ALL.to_vec(),
     )
     .issued_by(&policy.issuer)
-    .for_audience(&policy.op_issuer);
+    .for_audience(&policy.op_client_id);
     verification.max_bytes = MAX_SIGNED_USERINFO_BYTES;
     let verified = verify(compact, &verification, &policy.keys, now)?;
     let claims = verified
         .claims
         .as_object()
         .ok_or(AggregationError::Claims("payload is not an object"))?;
-    if claims.get("aud").and_then(Value::as_str) != Some(policy.op_issuer.as_str()) {
+    if claims.get("aud").and_then(Value::as_str) != Some(policy.op_client_id.as_str()) {
         return Err(AggregationError::Claims("audience is not this OP alone"));
     }
     if claims.get("sub").and_then(Value::as_str) != Some(policy.provider_subject.as_str()) {

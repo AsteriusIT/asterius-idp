@@ -5,7 +5,8 @@
 //! plaintexts stay exactly what they were and only the envelope around them
 //! changes. Three kinds of row are sealed — `signing_keys.private_key_ciphertext`,
 //! `tenant_pairwise_salts.salt_ciphertext` and
-//! `ssf_streams.authorization_header_ciphertext` — and all of them have to
+//! `ssf_streams.authorization_header_ciphertext` and Claims Provider signed
+//! UserInfo — and all of them have to
 //! move, because a deployment that rotated some still needs the old key to
 //! boot, which is the same as not having rotated at all.
 //!
@@ -95,6 +96,8 @@ pub struct Rewrap {
     pub ciba_ping_envelopes: u64,
     /// Federation signing keys re-sealed under the new KEK.
     pub federation_keys: u64,
+    /// Signed Claims Provider UserInfo rows re-sealed under the new KEK.
+    pub claims_provider_sources: u64,
     /// Rows still sealed under the old KEK when the transaction committed.
     ///
     /// Normally zero. It is not zero when a replica still running on the old
@@ -121,6 +124,7 @@ impl Rewrap {
             && self.ssf_push_credentials == 0
             && self.ciba_ping_envelopes == 0
             && self.federation_keys == 0
+            && self.claims_provider_sources == 0
     }
 
     /// Whether the tenant is now wholly on the new KEK.
@@ -201,6 +205,13 @@ impl PgKekRewrap {
             ciba_ping_envelopes: Self::ciba_ping_envelopes(&mut transaction, tenant, from, to)
                 .await?,
             federation_keys: Self::federation_keys(&mut transaction, tenant, from, to).await?,
+            claims_provider_sources: Self::claims_provider_sources(
+                &mut transaction,
+                tenant,
+                from,
+                to,
+            )
+            .await?,
             left_behind: Self::count_under(&mut transaction, tenant, from.id()).await?,
             stranded: Self::count_stranded(&mut transaction, tenant, from, to).await?,
         };
@@ -584,6 +595,62 @@ impl PgKekRewrap {
         Ok(moved)
     }
 
+    async fn claims_provider_sources(
+        transaction: &mut Transaction<'_>,
+        tenant: &TenantId,
+        from: &dyn Kek,
+        to: &dyn Kek,
+    ) -> Result<u64, DomainError> {
+        let rows = sqlx::query(
+            "select user_id, provider_issuer, ciphertext, nonce, kek_id
+             from aggregated_claim_sources
+             where tenant_id = $1 and kek_id = $2 for update",
+        )
+        .bind(tenant.as_str())
+        .bind(from.id())
+        .fetch_all(&mut **transaction)
+        .await
+        .map_err(to_domain_error)?;
+        let mut moved = 0;
+        for row in rows {
+            let user_id: uuid::Uuid =
+                sqlx::Row::try_get(&row, "user_id").map_err(to_domain_error)?;
+            let issuer: String =
+                sqlx::Row::try_get(&row, "provider_issuer").map_err(to_domain_error)?;
+            let wrapped = WrappedKey::from_parts(
+                sqlx::Row::try_get::<String, _>(&row, "kek_id").map_err(to_domain_error)?,
+                sqlx::Row::try_get(&row, "nonce").map_err(to_domain_error)?,
+                sqlx::Row::try_get(&row, "ciphertext").map_err(to_domain_error)?,
+            )
+            .map_err(storage_error)?;
+            let binding_row = format!("{user_id}:{issuer}");
+            let binding =
+                KeyBinding::row_secret(tenant, RowSecret::ClaimsProviderUserInfo, &binding_row);
+            let plaintext = from
+                .unwrap(binding, &wrapped)
+                .await
+                .map_err(storage_error)?;
+            let resealed = to.wrap(binding, &plaintext).await.map_err(storage_error)?;
+            moved += sqlx::query(
+                "update aggregated_claim_sources
+                 set ciphertext = $1, nonce = $2, kek_id = $3
+                 where tenant_id = $4 and user_id = $5 and provider_issuer = $6 and kek_id = $7",
+            )
+            .bind(resealed.ciphertext())
+            .bind(resealed.nonce())
+            .bind(resealed.kek_id())
+            .bind(tenant.as_str())
+            .bind(user_id)
+            .bind(&issuer)
+            .bind(from.id())
+            .execute(&mut **transaction)
+            .await
+            .map_err(to_domain_error)?
+            .rows_affected();
+        }
+        Ok(moved)
+    }
+
     async fn count_under(
         transaction: &mut Transaction<'_>,
         tenant: &TenantId,
@@ -633,11 +700,20 @@ impl PgKekRewrap {
         .fetch_one(&mut **transaction)
         .await
         .map_err(to_domain_error)?;
+        let claims_sources: i64 = sqlx::query_scalar(
+            "select count(*) from aggregated_claim_sources where tenant_id = $1 and kek_id = $2",
+        )
+        .bind(tenant.as_str())
+        .bind(kek_id)
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(to_domain_error)?;
         Ok(keys.unsigned_abs()
             + salts.unsigned_abs()
             + credentials.unsigned_abs()
             + envelopes.unsigned_abs()
-            + federation.unsigned_abs())
+            + federation.unsigned_abs()
+            + claims_sources.unsigned_abs())
     }
 
     /// How many of the tenant's sealed rows name neither key.
@@ -696,11 +772,22 @@ impl PgKekRewrap {
         .map_err(to_domain_error)?;
         let federation: i64 = sqlx::query_scalar("select count(*) from federation_signing_keys where tenant_id = $1 and kek_id <> $2 and kek_id <> $3")
             .bind(tenant.as_str()).bind(from.id()).bind(to.id()).fetch_one(&mut **transaction).await.map_err(to_domain_error)?;
+        let claims_sources: i64 = sqlx::query_scalar(
+            "select count(*) from aggregated_claim_sources
+             where tenant_id = $1 and kek_id is not null and kek_id <> $2 and kek_id <> $3",
+        )
+        .bind(tenant.as_str())
+        .bind(from.id())
+        .bind(to.id())
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(to_domain_error)?;
         Ok(keys.unsigned_abs()
             + salts.unsigned_abs()
             + credentials.unsigned_abs()
             + envelopes.unsigned_abs()
-            + federation.unsigned_abs())
+            + federation.unsigned_abs()
+            + claims_sources.unsigned_abs())
     }
 }
 
@@ -775,6 +862,7 @@ mod tests {
             ssf_push_credentials: 0,
             ciba_ping_envelopes: 0,
             federation_keys: 0,
+            claims_provider_sources: 0,
             left_behind: 1,
             stranded: 0,
         };
