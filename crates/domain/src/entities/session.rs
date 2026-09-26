@@ -183,9 +183,9 @@ impl SessionStatus {
 pub enum AuthenticationMethod {
     /// A password (RFC 8176 `pwd`).
     Password,
-    /// A passkey or other WebAuthn credential (RFC 8176 `swk`/`hwk` — this
-    /// server does not distinguish software from hardware, because it cannot
-    /// verify the difference).
+    /// A passkey or other WebAuthn credential. The signed assertion proves
+    /// possession of a key (`pop`); this server cannot distinguish `swk` from
+    /// `hwk` without trustworthy attestation.
     Passkey,
     /// A one-time code (RFC 8176 `otp`).
     OneTimeCode,
@@ -211,16 +211,36 @@ impl AuthenticationMethod {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Password => "pwd",
-            Self::Passkey => "swk",
+            Self::Passkey => "pop",
             Self::OneTimeCode => "otp",
             Self::UserVerified => "user",
             Self::ExistingSession => "session",
         }
     }
 
+    /// The IANA-registered `amr` this method can prove in an ID token.
+    ///
+    /// Stored `swk` is accepted for existing session and grant rows, but
+    /// WebAuthn assertions do not prove whether the key is software secured.
+    /// The generic `pop` value states exactly what the verified signature
+    /// establishes. `session` is an internal reuse marker with no IANA entry.
+    #[must_use]
+    pub const fn iana_amr(self) -> Option<&'static str> {
+        match self {
+            Self::Password => Some("pwd"),
+            Self::Passkey => Some("pop"),
+            Self::OneTimeCode => Some("otp"),
+            Self::UserVerified => Some("user"),
+            Self::ExistingSession => None,
+        }
+    }
+
     /// Reads a stored value back.
     #[must_use]
     pub fn parse(value: &str) -> Option<Self> {
+        if value == "swk" {
+            return Some(Self::Passkey);
+        }
         [
             Self::Password,
             Self::Passkey,

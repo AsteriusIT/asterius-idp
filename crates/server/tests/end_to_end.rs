@@ -1992,7 +1992,7 @@ async fn an_essential_acr_travels_from_the_push_into_the_id_token() {
     );
     assert_eq!(
         claims["amr"],
-        json!(["swk", "user"]),
+        json!(["pop", "user"]),
         "OIDC Core §2: the methods the authentication used: {claims}"
     );
 

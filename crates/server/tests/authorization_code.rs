@@ -738,7 +738,7 @@ db_test! {
         // OIDC Core §2: always present, and from the session rather than from
         // the moment the token was minted.
         assert!(id_token["auth_time"].is_number(), "auth_time is missing");
-        assert_eq!(id_token["amr"], json!(["swk"]));
+        assert_eq!(id_token["amr"], json!(["pop"]));
         // §3.1.3.6, and the binding between the two halves of this response.
         assert!(id_token["at_hash"].is_string(), "at_hash is missing");
         // OIDC Back-Channel Logout 1.0 §2.4. The session's public identifier,

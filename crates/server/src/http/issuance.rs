@@ -271,7 +271,7 @@ pub async fn session_facts(
                 amr: session
                     .amr
                     .iter()
-                    .map(|method| method.as_str().to_owned())
+                    .filter_map(|method| method.iana_amr().map(str::to_owned))
                     .collect(),
             },
             // Not `id_digest`: that is the lookup key and it is rewritten on
@@ -293,7 +293,7 @@ pub async fn session_facts(
             amr: recorded
                 .amr
                 .iter()
-                .map(|method| method.as_str().to_owned())
+                .filter_map(|method| method.iana_amr().map(str::to_owned))
                 .collect(),
         },
         // OIDC Back-Channel Logout 1.0 §2.4 has `sid` name a session a relying
@@ -831,9 +831,15 @@ fn authentication_under(
             .level(value)
             .is_some_and(|level| level.is_met_by(&methods))
     });
-    if !policy.releases_amr() {
-        current.amr.clear();
-    }
+    current.amr = if policy.releases_amr() {
+        methods
+            .into_iter()
+            .filter_map(asterius_domain::AuthenticationMethod::iana_amr)
+            .map(str::to_owned)
+            .collect()
+    } else {
+        Vec::new()
+    };
     current
 }
 
@@ -1490,7 +1496,7 @@ mod tests {
             facts.authentication.acr.as_deref(),
             Some("urn:asterius:acr:passkey-uv")
         );
-        assert_eq!(facts.authentication.amr, vec!["pwd", "swk"]);
+        assert_eq!(facts.authentication.amr, vec!["pwd", "pop"]);
         assert_eq!(facts.sid.as_deref(), Some("the-public-sid"));
     }
 
