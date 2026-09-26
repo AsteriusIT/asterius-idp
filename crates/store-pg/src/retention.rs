@@ -801,7 +801,7 @@ pub const POLICY: &[Retention] = &[
             statement: "delete from ssf_receiver_events where ctid = any (array(
                             select ctid from ssf_receiver_events
                              where tenant_id = $1
-                               and expires_at <= $2
+                               and replay_until <= $2
                              limit $3))",
             grace: Duration::ZERO,
         },

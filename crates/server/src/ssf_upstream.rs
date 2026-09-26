@@ -106,7 +106,7 @@ pub async fn poll_once(
         }
         return Ok(false);
     };
-    let event = ssf_receiver::verify_for_configured_peer(
+    let event = ssf_receiver::verify_polled_for_configured_peer(
         endpoints,
         tenant,
         &peer,
@@ -225,6 +225,10 @@ fn invalid_set_error(error: ssf_receiver::ReceiverError) -> Option<(&'static str
         | ssf_receiver::ReceiverError::UnsupportedEvent => {
             Some(("invalid_request", "The SET profile is invalid"))
         }
+        ssf_receiver::ReceiverError::TooOld => Some((
+            "invalid_request",
+            "The SET exceeds this receiver's local polling age limit",
+        )),
         ssf_receiver::ReceiverError::Keys
         | ssf_receiver::ReceiverError::Metadata
         | ssf_receiver::ReceiverError::Peer => None,
