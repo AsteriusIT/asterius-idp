@@ -32,6 +32,165 @@ pub enum SetupError {
     AlreadyConfigured,
     #[error("an upstream stream setup needs operator reconciliation")]
     PendingReview,
+    #[error("the upstream security event could not be applied")]
+    Event,
+}
+
+/// Poll at most one SET from an established upstream stream, apply it through
+/// the push receiver's atomic replay/lifecycle path, then acknowledge its
+/// `jti` in a separate RFC 8936 request. A failure before acknowledgement
+/// leaves the transmitter free to redeliver; the local replay record makes
+/// such redelivery harmless. This operation is not yet scheduled by a worker.
+pub async fn poll_once(
+    endpoints: &ClientEndpoints,
+    tenant: &Tenant,
+    config: &SsfUpstreamPeerConfig,
+    poster: &HttpsPoster,
+    now: OffsetDateTime,
+) -> Result<bool, SetupError> {
+    let peer = ClientId::new(config.issuer.as_str());
+    let (issuer, _jwks, _scopes, metadata) =
+        ssf_receiver::configured_peer(endpoints, tenant, &peer)
+            .await
+            .map_err(|_| SetupError::Peer)?;
+    if issuer != config.issuer || !metadata.supports_poll {
+        return Err(SetupError::Peer);
+    }
+    let repository = endpoints
+        .store
+        .scope(tenant.id.clone())
+        .ssf_upstream_streams();
+    let established = repository
+        .find(peer.as_str())
+        .await
+        .map_err(|_| SetupError::Storage)?
+        .ok_or(SetupError::Peer)?;
+    if established.issuer != issuer.as_str()
+        || established.jwks_uri != metadata.jwks_uri
+        || established.configuration_endpoint != metadata.configuration_endpoint
+        || established.status_endpoint != metadata.status_endpoint
+        || established.delivery_method != stream::DELIVERY_POLL
+        || established.audience
+            != format!("{}{}", tenant.issuer.as_str(), ssf_receiver::RECEIVER_PATH)
+    {
+        return Err(SetupError::Peer);
+    }
+    let poll_url = established
+        .poll_endpoint
+        .as_deref()
+        .ok_or(SetupError::Peer)?;
+    // The management bearer is only sent to the registered issuer's origin.
+    same_origin_management_endpoint(poll_url, &issuer)?;
+    let token = read_bearer_file(&config.bearer_token_file)?;
+    let authorization = Zeroizing::new(format!("Bearer {}", token.as_str()));
+    let request = serde_json::to_vec(&json!({"maxEvents": 1, "returnImmediately": true}))
+        .map_err(|_| SetupError::Response)?;
+    let response = poster
+        .post_with_response(
+            poll_url,
+            PostRequest::of("application/json")
+                .accepting("application/json")
+                .authorized_by(Some(&authorization)),
+            &request,
+        )
+        .await
+        .map_err(|_| SetupError::Transport)?;
+    let received = parse_polled_set(&response)?;
+    let Some((jti, set)) = received else {
+        if !repository
+            .mark_polled(peer.as_str(), &established.stream_id, now)
+            .await
+            .map_err(|_| SetupError::Storage)?
+        {
+            return Err(SetupError::Peer);
+        }
+        return Ok(false);
+    };
+    let event = ssf_receiver::verify_for_configured_peer(
+        endpoints,
+        tenant,
+        &peer,
+        &established.audience,
+        &set,
+        now,
+    )
+    .await
+    .map_err(|_| SetupError::Event)?;
+    if event.peer != peer || event.jti != jti {
+        return Err(SetupError::Event);
+    }
+    let event_uri = match event.event_type {
+        ssf_receiver::LifecycleEventType::SessionRevoked => caep::SESSION_REVOKED,
+        ssf_receiver::LifecycleEventType::CredentialChange => caep::CREDENTIAL_CHANGE,
+        ssf_receiver::LifecycleEventType::AccountDisabled => caep::ACCOUNT_DISABLED,
+    };
+    if !established
+        .events_requested
+        .iter()
+        .any(|uri| uri == event_uri)
+    {
+        return Err(SetupError::Event);
+    }
+    ssf_receiver::apply_verified_event(endpoints, tenant, &event, now)
+        .await
+        .map_err(|_| SetupError::Event)?;
+    let acknowledgement = serde_json::to_vec(&json!({
+        "maxEvents": 0,
+        "returnImmediately": true,
+        "ack": [jti]
+    }))
+    .map_err(|_| SetupError::Response)?;
+    let response = poster
+        .post_with_response(
+            poll_url,
+            PostRequest::of("application/json")
+                .accepting("application/json")
+                .authorized_by(Some(&authorization)),
+            &acknowledgement,
+        )
+        .await
+        .map_err(|_| SetupError::Transport)?;
+    if parse_polled_set(&response)?.is_some() {
+        return Err(SetupError::Response);
+    }
+    if !repository
+        .mark_polled(peer.as_str(), &established.stream_id, now)
+        .await
+        .map_err(|_| SetupError::Storage)?
+    {
+        return Err(SetupError::Peer);
+    }
+    Ok(true)
+}
+
+fn parse_polled_set(response: &PostResponse) -> Result<Option<(String, String)>, SetupError> {
+    if response.status != 200
+        || response.truncated
+        || !json_content_type(response.content_type.as_deref())
+    {
+        return Err(SetupError::Response);
+    }
+    let value: Value = serde_json::from_slice(&response.body).map_err(|_| SetupError::Response)?;
+    let object = value.as_object().ok_or(SetupError::Response)?;
+    let sets = object
+        .get("sets")
+        .and_then(Value::as_object)
+        .ok_or(SetupError::Response)?;
+    if sets.len() > 1
+        || object
+            .get("moreAvailable")
+            .is_some_and(|more| !more.is_boolean())
+    {
+        return Err(SetupError::Response);
+    }
+    let Some((jti, token)) = sets.iter().next() else {
+        return Ok(None);
+    };
+    let token = token.as_str().ok_or(SetupError::Response)?;
+    if jti.is_empty() || token.is_empty() || token.len() > ssf_receiver::MAX_TOKEN_BYTES {
+        return Err(SetupError::Response);
+    }
+    Ok(Some((jti.clone(), token.to_owned())))
 }
 
 /// Create one poll stream using a separate, operator-provided OAuth bearer
@@ -124,6 +283,13 @@ pub async fn create_poll_stream(
     if let Some(established) =
         reconcile_listed(&listed, &metadata, &issuer, &audience, &events, now)?
     {
+        same_origin_management_endpoint(
+            established
+                .poll_endpoint
+                .as_deref()
+                .ok_or(SetupError::Response)?,
+            &issuer,
+        )?;
         verify_and_finish(
             poster,
             &authorization,
@@ -167,6 +333,13 @@ pub async fn create_poll_stream(
             now,
         )
         .map_err(|_| SetupError::Response)?;
+        same_origin_management_endpoint(
+            established
+                .poll_endpoint
+                .as_deref()
+                .ok_or(SetupError::Response)?,
+            &issuer,
+        )?;
         verify_and_finish(
             poster,
             &authorization,
