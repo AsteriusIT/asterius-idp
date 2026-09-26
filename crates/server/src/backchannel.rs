@@ -112,7 +112,10 @@ impl Notifier<'_> {
 
         let mut rows = Vec::with_capacity(participants.len());
         for participant in participants {
-            match self.notice(session, &participant.client, now).await {
+            match self
+                .notice(session.user, &session.public_sid, &participant.client, now)
+                .await
+            {
                 Ok(Some(row)) => rows.push(row),
                 // §2.2: a client with no `backchannel_logout_uri` is not a
                 // participant of back-channel logout. Nothing to send, nothing
@@ -150,6 +153,31 @@ impl Notifier<'_> {
         queued
     }
 
+    /// Prepare one receiver-triggered logout without writing to the outbox.
+    /// The caller must insert every returned row in its lifecycle transaction.
+    pub(crate) async fn prepare_for_receiver(
+        &self,
+        user: uuid::Uuid,
+        sid: &str,
+        clients: &[ClientId],
+        now: OffsetDateTime,
+    ) -> Result<Vec<asterius_domain::outbox::QueuedEvent>, asterius_domain::DomainError> {
+        let mut rows = Vec::new();
+        for client in clients {
+            match self.notice(user, sid, client, now).await {
+                Ok(Some(row)) => rows.push(row),
+                Ok(None) => {}
+                Err(error) => {
+                    return Err(asterius_domain::DomainError::invalid(
+                        "ssf.receiver.notification",
+                        error.to_string(),
+                    ));
+                }
+            }
+        }
+        Ok(rows)
+    }
+
     /// One relying party's logout token, as an outbox row (§2.4, §2.5).
     ///
     /// `Ok(None)` is a client that is not a participant of back-channel
@@ -179,7 +207,8 @@ impl Notifier<'_> {
     /// [`SubjectResolver`]: asterius_domain::ports::SubjectResolver
     async fn notice(
         &self,
-        session: &Session,
+        user: uuid::Uuid,
+        sid: &str,
         client: &ClientId,
         now: OffsetDateTime,
     ) -> Result<Option<asterius_domain::outbox::QueuedEvent>, NoticeError> {
@@ -200,10 +229,9 @@ impl Notifier<'_> {
             return Ok(None);
         };
 
-        let sid = asterius_oidc::tokens::Session::new(&asterius_domain::SessionId::new(
-            &session.public_sid,
-        ))
-        .map_err(NoticeError::Session)?;
+        let public_sid = sid;
+        let sid = asterius_oidc::tokens::Session::new(&asterius_domain::SessionId::new(sid))
+            .map_err(NoticeError::Session)?;
 
         let pairwise_and_session_only = registered.registration.backchannel_logout_session_required
             && registered.registration.subject_type == asterius_domain::SubjectType::Pairwise;
@@ -214,7 +242,7 @@ impl Notifier<'_> {
                 .map_err(|_| NoticeError::Sector)?;
             let subject = self
                 .subjects
-                .subject(asterius_domain::UserId::new(session.user), &sector)
+                .subject(asterius_domain::UserId::new(user), &sector)
                 .await
                 .map_err(NoticeError::Subject)?;
             asterius_oidc::tokens::LogoutToken::about_session(sid).and_subject(
@@ -264,7 +292,7 @@ impl Notifier<'_> {
             // at one relying party delivered out of order say the opposite of
             // what happened. Different clients are different keys, so a wedged
             // receiver holds its own queue and nobody else's.
-            ordering_key: Some(format!("logout:{}:{client}", session.public_sid)),
+            ordering_key: Some(format!("logout:{public_sid}:{client}")),
         }))
     }
 }

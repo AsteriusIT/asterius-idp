@@ -950,6 +950,36 @@ impl PgUserRepository {
         Ok(SubjectId::new(stored))
     }
 
+    /// Resolves a subject while an independent lifecycle transaction holds a
+    /// lock on the user row. It cannot reserve a new identifier here: an insert
+    /// would need a foreign-key KEY SHARE lock and deadlock behind that row.
+    /// The tenant salt is immutable, so a first-use derivation is identical
+    /// to the identifier a later issuance will reserve.
+    pub async fn subject_for_notification(
+        &self,
+        user: UserId,
+        sector: &SectorIdentifier,
+    ) -> Result<SubjectId, DomainError> {
+        let stored: Option<String> = sqlx::query_scalar(
+            "select subject from subject_identifiers
+             where tenant_id = $1 and user_id = $2 and sector_identifier = $3",
+        )
+        .bind(self.tenant.as_str())
+        .bind(user.as_uuid())
+        .bind(sector.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+        if let Some(stored) = stored {
+            return Ok(SubjectId::new(stored));
+        }
+        let salt = salts::read(&self.pool, &self.tenant, self.kek.as_ref()).await?;
+        let derived = salt.derive_subject(sector, user);
+        self.refuse_a_retired_subject(user, sector, &derived)
+            .await?;
+        Ok(derived)
+    }
+
     /// Refuses a derivation that landed on a `sub` this tenant has already
     /// retired — OIDC Core §8's "never reassigned" (`ast-2vk.12`).
     ///
