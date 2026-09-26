@@ -1057,14 +1057,15 @@ fn rewrap_kek(path: &std::path::Path, new_kek: Option<&KekSource>) -> Result<(),
                         || pass.ciba_ping_envelopes > 0
                         || pass.claims_provider_sources > 0
                         || pass.claims_provider_pkce > 0
+                        || pass.claims_provider_tokens > 0
                     {
                         println!(
-                            "{}: SSF push credentials {}, CIBA ping envelopes {}, Claims Provider sources {}, pending PKCE {}",
+                            "{}: SSF push credentials {}, CIBA ping envelopes {}, Claims Provider sources {}, pending PKCE {}, CP token envelopes {}",
                             tenant.id,
                             pass.ssf_push_credentials,
                             pass.ciba_ping_envelopes,
                             pass.claims_provider_sources
-                            ,pass.claims_provider_pkce
+                            ,pass.claims_provider_pkce, pass.claims_provider_tokens
                         );
                     }
                 }

@@ -75,6 +75,29 @@ impl PgAggregatedClaims {
         verified: &VerifiedClaimSet,
         now: OffsetDateTime,
     ) -> Result<(), DomainError> {
+        self.replace_guarded(user, verified, None, now).await
+    }
+
+    /// Recollect only while the exact credential revision is still connected.
+    /// The row lock serializes this write with account revoke.
+    pub async fn replace_for_connection(
+        &self,
+        user: UserId,
+        verified: &VerifiedClaimSet,
+        revision: i64,
+        now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        self.replace_guarded(user, verified, Some(revision), now)
+            .await
+    }
+
+    async fn replace_guarded(
+        &self,
+        user: UserId,
+        verified: &VerifiedClaimSet,
+        revision: Option<i64>,
+        now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
         let provider_issuer = verified.issuer();
         let provider_subject = verified.subject();
         if verified.expires_at() <= now
@@ -112,6 +135,29 @@ impl PgAggregatedClaims {
         .map_err(to_domain_error)?;
         if present.is_none() {
             return Err(DomainError::NotFound);
+        }
+        if let Some(revision) = revision {
+            let connected: Option<i64> = sqlx::query_scalar(
+                "select revision from claims_provider_oauth_connections
+                 where tenant_id=$1 and user_id=$2 and provider_issuer=$3
+                   and provider_subject=$4 and revision=$5
+                   and (access_expires_at>$6 or refresh_expires_at>$6) for update",
+            )
+            .bind(self.tenant.as_str())
+            .bind(user.as_uuid())
+            .bind(provider_issuer)
+            .bind(provider_subject)
+            .bind(revision)
+            .bind(now)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(to_domain_error)?;
+            if connected.is_none() {
+                return Err(DomainError::invalid(
+                    "aggregated_claims",
+                    "provider connection changed or was removed",
+                ));
+            }
         }
         let count: i64 = sqlx::query_scalar(
             "select count(*) from aggregated_claim_sources

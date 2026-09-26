@@ -69,6 +69,39 @@ impl ClaimsProviders {
         expected_nonce: &str,
         now: OffsetDateTime,
     ) -> Result<String, DomainError> {
+        self.verify_token_subject(
+            tenant_id,
+            issuer,
+            compact,
+            access_token,
+            Some(expected_nonce),
+            now,
+        )
+    }
+
+    /// Validate a new ID token returned by a refresh grant, if the CP sends one.
+    /// Refresh has no browser nonce, but its subject and access-token hash must
+    /// still be checked against the pinned connection by the caller.
+    pub fn verify_refreshed_id_token(
+        &self,
+        tenant_id: &str,
+        issuer: &str,
+        compact: &str,
+        access_token: &str,
+        now: OffsetDateTime,
+    ) -> Result<String, DomainError> {
+        self.verify_token_subject(tenant_id, issuer, compact, access_token, None, now)
+    }
+
+    fn verify_token_subject(
+        &self,
+        tenant_id: &str,
+        issuer: &str,
+        compact: &str,
+        access_token: &str,
+        expected_nonce: Option<&str>,
+        now: OffsetDateTime,
+    ) -> Result<String, DomainError> {
         let provider = self
             .0
             .get(tenant_id)
@@ -89,7 +122,8 @@ impl ClaimsProviders {
         let claims = verified.claims.as_object().ok_or_else(|| {
             DomainError::invalid("claims_provider.id_token", "claims are not an object")
         })?;
-        if claims.get("nonce").and_then(Value::as_str) != Some(expected_nonce)
+        if expected_nonce
+            .is_some_and(|nonce| claims.get("nonce").and_then(Value::as_str) != Some(nonce))
             || claims.get("aud").and_then(Value::as_str) != Some(client_id)
             || claims
                 .get("azp")

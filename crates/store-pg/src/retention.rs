@@ -106,6 +106,37 @@ pub const MAX_BATCHES: usize = 100;
 /// `0001_baseline.sql` is a straight comparison.
 pub const POLICY: &[Retention] = &[
     Retention {
+        table: "claims_provider_oauth_pending",
+        rule: Rule::Sweep {
+            statement: "delete from claims_provider_oauth_pending where ctid = any (array(
+                            select ctid from claims_provider_oauth_pending
+                             where tenant_id = $1 and expires_at <= $2 limit $3))",
+            grace: Duration::ZERO,
+        },
+    },
+    Retention {
+        table: "claims_provider_oauth_connections",
+        rule: Rule::Sweep {
+            statement: "delete from claims_provider_oauth_connections where ctid = any (array(
+                            select ctid from claims_provider_oauth_connections
+                             where tenant_id = $1 and access_expires_at <= $2
+                               and (refresh_expires_at is null or refresh_expires_at <= $2)
+                             limit $3))",
+            grace: Duration::ZERO,
+        },
+    },
+    Retention {
+        table: "aggregated_claim_sources",
+        rule: Rule::Sweep {
+            statement: "delete from aggregated_claim_sources where ctid = any (array(
+                            select ctid from aggregated_claim_sources
+                             where tenant_id = $1 and ciphertext is not null
+                               and (expires_at <= $2 or revoked_at is not null)
+                             limit $3))",
+            grace: Duration::ZERO,
+        },
+    },
+    Retention {
         table: "tenants",
         rule: Rule::Kept(
             "the root of every cascade; removing a tenant is an operator action \
