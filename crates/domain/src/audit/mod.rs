@@ -165,7 +165,7 @@ impl EventType {
     pub const CODE_REPLAYED: Self = Self("code.replayed");
     /// A token was issued.
     pub const TOKEN_ISSUED: Self = Self("token.issued");
-    /// A wallet received a signed, holder-bound identity VC (OpenID4VCI).
+    /// A wallet received a signed, holder-bound identity VC (`OpenID4VCI`).
     pub const VC_ISSUED: Self = Self("vc.issued");
     /// A token request was refused.
     pub const TOKEN_REFUSED: Self = Self("token.refused");
@@ -574,7 +574,7 @@ impl EventType {
     pub const SAML_SP_PROVISIONED: Self = Self("saml.sp_provisioned");
     /// An administrator removed an exact SAML SP trust entry.
     pub const SAML_SP_REMOVED: Self = Self("saml.sp_removed");
-    /// An administrator imported a tenant SAML IdP signing key/certificate.
+    /// An administrator imported a tenant SAML `IdP` signing key/certificate.
     pub const SAML_IDP_KEY_PROVISIONED: Self = Self("saml.idp_key_provisioned");
     /// A staged tenant SAML certificate became the signing key.
     pub const SAML_IDP_KEY_ACTIVATED: Self = Self("saml.idp_key_activated");

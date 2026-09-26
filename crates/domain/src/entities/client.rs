@@ -1192,6 +1192,9 @@ pub struct ClientMetadata {
 /// client), the algorithms are on ADR-0003's list, and the access tokens are
 /// bound to something.
 #[derive(Debug, Clone, PartialEq, Eq)]
+// The independent booleans are registered protocol switches with stable public field names;
+// grouping them would change the client-registration API across storage and HTTP layers.
+#[allow(clippy::struct_excessive_bools)]
 pub struct ClientRegistration {
     /// Which protocol-security profile is enforced for this client.
     pub compliance_profile: ClientComplianceProfile,
@@ -1600,26 +1603,6 @@ impl ClientRegistration {
                 "CIMD documents cannot contain shared-secret credentials",
             ));
         }
-        fn has_private_key_material(value: &serde_json::Value) -> bool {
-            match value {
-                serde_json::Value::Object(object) => object.iter().any(|(name, member)| {
-                    matches!(
-                        name.as_str(),
-                        "d" | "p"
-                            | "q"
-                            | "dp"
-                            | "dq"
-                            | "qi"
-                            | "oth"
-                            | "k"
-                            | "private_key"
-                            | "private_key_pem"
-                    ) || has_private_key_material(member)
-                }),
-                serde_json::Value::Array(values) => values.iter().any(has_private_key_material),
-                _ => false,
-            }
-        }
         if has_private_key_material(&value) {
             return Err(ClientMetadataError::rejected(
                 "jwks",
@@ -1812,6 +1795,27 @@ impl ClientRegistration {
     }
 }
 
+fn has_private_key_material(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Object(object) => object.iter().any(|(name, member)| {
+            matches!(
+                name.as_str(),
+                "d" | "p"
+                    | "q"
+                    | "dp"
+                    | "dq"
+                    | "qi"
+                    | "oth"
+                    | "k"
+                    | "private_key"
+                    | "private_key_pem"
+            ) || has_private_key_material(member)
+        }),
+        serde_json::Value::Array(values) => values.iter().any(has_private_key_material),
+        _ => false,
+    }
+}
+
 impl ClientMetadata {
     /// Writes a registered subject back into the document it came from.
     ///
@@ -1848,6 +1852,9 @@ impl ClientMetadata {
     }
 
     /// Validates metadata under the profile selected by tenant administration.
+    // Validation order is part of the registration error contract: each clause reports the
+    // first rejected metadata field, and splitting the sequence would obscure that order.
+    #[allow(clippy::too_many_lines)]
     pub fn validate_for_profile(
         &self,
         capabilities: Capabilities,
@@ -2681,7 +2688,7 @@ impl ClientMetadata {
                 FIELD,
                 "is not meaningful for an ephemeral subject",
             )),
-            (SubjectType::Ephemeral, None) => Ok((subject_type, None)),
+            (SubjectType::Ephemeral | SubjectType::Public, None) => Ok((subject_type, None)),
             (SubjectType::Public, Some(_)) => {
                 // The sector identifier is only consulted when computing a
                 // pairwise `sub` (OIDC Core §8.1). Stored against a public
@@ -2692,7 +2699,6 @@ impl ClientMetadata {
                     "is only meaningful when subject_type is pairwise",
                 ))
             }
-            (SubjectType::Public, None) => Ok((subject_type, None)),
             (SubjectType::Pairwise, Some(uri)) => {
                 // The document itself is fetched and checked against the
                 // registered redirect URIs by

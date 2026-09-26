@@ -1,4 +1,4 @@
-//! Tenant policy for one OpenID4VCI credential configuration.
+//! Tenant policy for one `OpenID4VCI` credential configuration.
 
 use serde_json::{Value, json};
 use std::collections::BTreeSet;

@@ -196,7 +196,7 @@ pub enum FirstPartyDestination {
     AccountClaimsProviders,
     /// Return to the account owner's ID-JAG approval page after sign-in.
     AccountIdJagConsent,
-    /// Resume one replay-reserved SAML AuthnRequest after first-party sign-in.
+    /// Resume one replay-reserved SAML `AuthnRequest` after first-party sign-in.
     /// The request and ACS are held in a separate tenant-scoped one-use row.
     SamlSso,
 }
