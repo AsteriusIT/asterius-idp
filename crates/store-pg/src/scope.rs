@@ -222,6 +222,12 @@ impl<'a> TenantScope<'a> {
         crate::PgSsfReceiver::new(self.pool.clone(), self.tenant.clone())
     }
 
+    /// Durable identities of explicitly established upstream SSF streams.
+    #[must_use]
+    pub fn ssf_upstream_streams(&self) -> crate::PgSsfUpstreamStreams {
+        crate::PgSsfUpstreamStreams::new(self.pool.clone(), self.tenant.clone())
+    }
+
     /// The subjects this tenant's streams carry events about (SSF 1.0 §8.1.3,
     /// `ast-0ju.4`).
     #[must_use]
