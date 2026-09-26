@@ -29,6 +29,7 @@ import type { JSX } from 'react';
 import { mutate, read, type Session } from './api';
 import { toast } from './components/ui/toast';
 import { SsfReceiverSubjects } from './ssf-receiver';
+import { SsfUpstreamPeers } from './ssf-upstream';
 import {
   Actions,
   Badge,
@@ -257,6 +258,7 @@ export function SharedSignals({ session }: Readonly<{ session: Session }>): JSX.
       </Panel>
 
       <SsfReceiverSubjects session={session} />
+      <SsfUpstreamPeers session={session} />
 
       {mayReadLetters && (
         <Panel
