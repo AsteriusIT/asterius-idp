@@ -63,7 +63,8 @@ pub struct Verification {
     #[serde(with = "time::serde::rfc3339")]
     time: OffsetDateTime,
     #[serde(skip_serializing_if = "Option::is_none")]
-    verification_process: Option<String>,
+    #[serde(rename = "verification_process")]
+    process: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     evidence: Vec<Value>,
 }
@@ -147,7 +148,7 @@ impl VerifiedClaims {
                 trust_framework: framework.to_owned(),
                 verifier: verifier.as_str().to_owned(),
                 time,
-                verification_process: None,
+                process: None,
                 evidence: Vec::new(),
             },
             claims,
@@ -192,7 +193,7 @@ impl VerifiedClaims {
         {
             return Err(VerifiedClaimsError::Evidence);
         }
-        self.verification.verification_process = process.map(ToOwned::to_owned);
+        self.verification.process = process.map(ToOwned::to_owned);
         self.verification.evidence = evidence;
         Ok(self)
     }
@@ -227,7 +228,7 @@ impl Verification {
     /// Issuer that asserted the verification.
     #[must_use]
     pub fn verification_process(&self) -> Option<&str> {
-        self.verification_process.as_deref()
+        self.process.as_deref()
     }
 
     /// Retained evidence descriptors, never released without explicit policy.

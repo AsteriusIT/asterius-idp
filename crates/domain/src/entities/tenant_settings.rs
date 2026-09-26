@@ -732,6 +732,9 @@ impl TenantSettings {
     /// [`TenantSettingsError`] when the stored object is not one this server
     /// wrote.
     // fuzz-target: tenant_settings
+    // Stored settings are parsed in field order so a malformed row has a stable first error;
+    // preserving the migration defaults beside each field makes that contract auditable.
+    #[allow(clippy::too_many_lines)]
     pub fn from_json(value: Option<&serde_json::Value>) -> Result<Self, TenantSettingsError> {
         let Some(value) = value else {
             return Ok(Self::default());
