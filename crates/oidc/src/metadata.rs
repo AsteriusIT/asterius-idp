@@ -493,34 +493,13 @@ pub(crate) const ID_TOKEN_CLAIMS: &[&str] = &[
     "sid",
 ];
 
-/// Builds the provider metadata document for one tenant.
-///
-/// `acr` is the tenant's authentication-context ladder, and it is a parameter
-/// rather than a constant for the same reason `capabilities` is: RFC 8414 §2
-/// requires the document to reflect actual behaviour, and the only thing that
-/// knows which `acr` values this deployment can actually produce is the policy
-/// the authorization endpoint consults.
-///
-/// `authorization_details_types` is the same argument again, for RFC 9396 §9.1:
-/// the types a tenant has registered are rows in a table, and a document that
-/// advertised a type nothing had registered would be telling clients to send a
-/// value the pushed request endpoint refuses. An empty slice contributes no
-/// member at all rather than an empty array — a client that sees the member
-/// present treats rich authorization requests as available.
-///
-/// The same document serves OIDC Discovery §3 and RFC 8414 §2 — §5 of RFC 8414
-/// says the two are compatible, and serving one set of bytes at both locations
-/// is the only way they cannot drift.
-#[must_use]
-pub fn provider_metadata(
+fn base_provider_metadata(
     issuer: &Issuer,
     capabilities: &Capabilities,
     acr: &asterius_domain::AcrPolicy,
-    authorization_details_types: &[String],
-    grant_management: crate::grant_management::Policy,
     allow_non_fapi_clients: bool,
 ) -> Value {
-    let mut document = json!({
+    json!({
         // OIDC Discovery §4.3: a client checks that this is identical to the
         // URL it used. It is the canonical form and nothing may reformat it.
         "issuer": issuer.as_str(),
@@ -635,7 +614,37 @@ pub fn provider_metadata(
         // session management iframe (ast-o4u.4).
         "backchannel_logout_supported": true,
         "backchannel_logout_session_supported": true,
-    });
+    })
+}
+
+/// Builds the provider metadata document for one tenant.
+///
+/// `acr` is the tenant's authentication-context ladder, and it is a parameter
+/// rather than a constant for the same reason `capabilities` is: RFC 8414 §2
+/// requires the document to reflect actual behaviour, and the only thing that
+/// knows which `acr` values this deployment can actually produce is the policy
+/// the authorization endpoint consults.
+///
+/// `authorization_details_types` is the same argument again, for RFC 9396 §9.1:
+/// the types a tenant has registered are rows in a table, and a document that
+/// advertised a type nothing had registered would be telling clients to send a
+/// value the pushed request endpoint refuses. An empty slice contributes no
+/// member at all rather than an empty array — a client that sees the member
+/// present treats rich authorization requests as available.
+///
+/// The same document serves OIDC Discovery §3 and RFC 8414 §2 — §5 of RFC 8414
+/// says the two are compatible, and serving one set of bytes at both locations
+/// is the only way they cannot drift.
+#[must_use]
+pub fn provider_metadata(
+    issuer: &Issuer,
+    capabilities: &Capabilities,
+    acr: &asterius_domain::AcrPolicy,
+    authorization_details_types: &[String],
+    grant_management: crate::grant_management::Policy,
+    allow_non_fapi_clients: bool,
+) -> Value {
+    let mut document = base_provider_metadata(issuer, capabilities, acr, allow_non_fapi_clients);
 
     let object = document
         .as_object_mut()

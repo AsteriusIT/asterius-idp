@@ -748,13 +748,13 @@ pub fn project_verified_claims(
     {
         verification.remove("evidence");
         verification.remove("verification_process");
-        if request.verification_process() {
-            if let Some(process) = bundle.verification().verification_process() {
-                verification.insert(
-                    "verification_process".to_owned(),
-                    Value::String(process.to_owned()),
-                );
-            }
+        if request.verification_process()
+            && let Some(process) = bundle.verification().verification_process()
+        {
+            verification.insert(
+                "verification_process".to_owned(),
+                Value::String(process.to_owned()),
+            );
         }
         if !request.evidence_types().is_empty() {
             let evidence: Vec<Value> = bundle

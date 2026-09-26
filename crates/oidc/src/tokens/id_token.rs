@@ -60,6 +60,47 @@ use sha2::{Digest as _, Sha256, Sha512};
 use std::collections::BTreeSet;
 use time::{Duration, OffsetDateTime};
 
+fn validated_released_claims(
+    released: Map<String, Value>,
+) -> Result<Map<String, Value>, IssuanceError> {
+    let aggregate_allowed = valid_aggregated_pair(&released);
+    let mut claims = Map::new();
+    for (name, value) in released {
+        if matches!(name.as_str(), "_claim_names" | "_claim_sources") {
+            if !aggregate_allowed {
+                return Err(IssuanceError::UnreleasableClaim);
+            }
+            claims.insert(name, value);
+            continue;
+        }
+        // Directory membership is server-resolved. A user claim with the
+        // same spelling is never allowed to shadow it, even when release
+        // is disabled for this client.
+        if name == "group_ids" {
+            continue;
+        }
+        if let Some(reserved) = ClaimName::SERVER_ISSUED
+            .iter()
+            .find(|reserved| **reserved == name.as_str())
+        {
+            return Err(IssuanceError::ServerIssuedClaim(reserved));
+        }
+        // And a name that is not releasable at all: `ClaimName::parse`'s
+        // rules — length, control and bidirectional formatting characters,
+        // a `#` suffix that is not a language tag — plus the names a token
+        // issuer computes although a bag may store them, which are the
+        // role claims and `authorization_details` (`ast-8ft2`). `resolve`
+        // cannot produce one, because its output is keyed by
+        // `ReleasableClaim`; this is the check that the map actually came
+        // from there.
+        if ReleasableClaim::parse(&name).is_none() {
+            return Err(IssuanceError::UnreleasableClaim);
+        }
+        claims.insert(name, value);
+    }
+    Ok(claims)
+}
+
 /// The explicit type header of an ID token.
 ///
 /// OIDC Core defines no `typ` for an ID token and no media type was ever
@@ -445,41 +486,7 @@ impl<'a> IdToken<'a> {
         // follows makes the overwrite unreachable; writing them in this order
         // means that removing the guard would still not produce a token whose
         // `sub` came from a user record.
-        let aggregate_allowed = valid_aggregated_pair(&self.released);
-        let mut claims = Map::new();
-        for (name, value) in self.released {
-            if matches!(name.as_str(), "_claim_names" | "_claim_sources") {
-                if !aggregate_allowed {
-                    return Err(IssuanceError::UnreleasableClaim);
-                }
-                claims.insert(name, value);
-                continue;
-            }
-            // Directory membership is server-resolved. A user claim with the
-            // same spelling is never allowed to shadow it, even when release
-            // is disabled for this client.
-            if name == "group_ids" {
-                continue;
-            }
-            if let Some(reserved) = ClaimName::SERVER_ISSUED
-                .iter()
-                .find(|reserved| **reserved == name.as_str())
-            {
-                return Err(IssuanceError::ServerIssuedClaim(reserved));
-            }
-            // And a name that is not releasable at all: `ClaimName::parse`'s
-            // rules — length, control and bidirectional formatting characters,
-            // a `#` suffix that is not a language tag — plus the names a token
-            // issuer computes although a bag may store them, which are the
-            // role claims and `authorization_details` (`ast-8ft2`). `resolve`
-            // cannot produce one, because its output is keyed by
-            // `ReleasableClaim`; this is the check that the map actually came
-            // from there.
-            if ReleasableClaim::parse(&name).is_none() {
-                return Err(IssuanceError::UnreleasableClaim);
-            }
-            claims.insert(name, value);
-        }
+        let mut claims = validated_released_claims(self.released)?;
         if !self.managed_groups.is_empty() {
             claims.insert(
                 "group_ids".to_owned(),

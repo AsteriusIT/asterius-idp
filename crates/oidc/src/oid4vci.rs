@@ -1,4 +1,4 @@
-//! OpenID4VCI 1.0 issuer metadata and offer values.
+//! `OpenID4VCI` 1.0 issuer metadata and offer values.
 //!
 //! Documents and claim sets are built from an explicit tenant configuration.
 //! The HTTP layer publishes them only where authorization, nonce, proof, and
@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 /// The well-known suffix inserted before an issuer's tenant path.
 pub const WELL_KNOWN: &str = "/.well-known/openid-credential-issuer";
-/// The selected credential format from OpenID4VCI 1.0 Appendix A.1.1.
+/// The selected credential format from `OpenID4VCI` 1.0 Appendix A.1.1.
 pub const FORMAT: &str = "jwt_vc_json";
 /// A JWT proof with an embedded public JWK, per Appendix F.1.
 pub const PROOF_ALGORITHM: &str = "ES256";
@@ -84,7 +84,7 @@ pub fn credential_claims(
 
 /// The canonical metadata URL for a tenant issuer.
 ///
-/// OpenID4VCI §12.2.2 inserts the well-known segment between the authority
+/// `OpenID4VCI` §12.2.2 inserts the well-known segment between the authority
 /// and the issuer path, unlike the path-appended OIDC discovery alias.
 #[must_use]
 pub fn metadata_url(issuer: &Issuer) -> String {
@@ -144,7 +144,7 @@ pub fn authorization_code_offer(issuer: &Issuer, configuration: &CredentialConfi
 }
 
 /// One credential instance and one JWT wallet proof. Unknown request members
-/// are ignored as OpenID4VCI §8.2 requires; the selected fields stay bounded.
+/// are ignored as `OpenID4VCI` §8.2 requires; the selected fields stay bounded.
 #[derive(Debug, Deserialize)]
 pub struct CredentialRequest {
     pub credential_configuration_id: String,
@@ -172,7 +172,7 @@ where
     ))
 }
 
-/// The supported proof envelope from OpenID4VCI §8.2.
+/// The supported proof envelope from `OpenID4VCI` §8.2.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct JwtProofs {

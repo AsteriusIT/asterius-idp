@@ -74,6 +74,82 @@ fn scalar(value: &Value) -> bool {
     value.is_string() || value.is_boolean() || value.is_number()
 }
 
+fn parse_definitions(
+    raw: Option<&Value>,
+) -> Result<BTreeMap<String, Definition>, ClaimsRequestError> {
+    let mut definitions = BTreeMap::new();
+    if let Some(raw) = raw {
+        let values = raw.as_object().ok_or_else(invalid)?;
+        if values.is_empty() || values.len() > MAX_COUNT {
+            return Err(invalid());
+        }
+        for (alias, raw) in values {
+            if alias.is_empty()
+                || alias.len() > 64
+                || !alias
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            {
+                return Err(invalid());
+            }
+            let definition = raw.as_object().ok_or_else(invalid)?;
+            if definition.len() != 2
+                || !definition.contains_key("claim")
+                || !definition.contains_key("fn")
+            {
+                return Err(invalid());
+            }
+            let base = definition
+                .get("claim")
+                .and_then(Value::as_str)
+                .and_then(ReleasableClaim::parse)
+                .ok_or_else(invalid)?;
+            let functions = definition
+                .get("fn")
+                .and_then(Value::as_array)
+                .ok_or_else(invalid)?;
+            if functions.is_empty() || functions.len() > MAX_DEPTH {
+                return Err(invalid());
+            }
+            let mut parsed = Vec::with_capacity(functions.len());
+            for (index, function) in functions.iter().enumerate() {
+                let call = function.as_array().ok_or_else(invalid)?;
+                if call.len() != 2 {
+                    return Err(invalid());
+                }
+                let name = call[0].as_str().ok_or_else(invalid)?;
+                let argument = &call[1];
+                let valid = match name {
+                    "eq" => scalar(argument),
+                    "contains" | "starts_with" | "ends_with" => argument.is_string(),
+                    "gt" | "gte" | "lt" | "lte" => argument.is_number(),
+                    _ => false,
+                };
+                if !valid {
+                    return Err(invalid());
+                }
+                // Every supported function returns a boolean. A second
+                // function can therefore only compare that boolean.
+                if index > 0 && (name != "eq" || !argument.is_boolean()) {
+                    return Err(invalid());
+                }
+                parsed.push(Function {
+                    name: name.to_owned(),
+                    argument: argument.clone(),
+                });
+            }
+            definitions.insert(
+                alias.clone(),
+                Definition {
+                    base,
+                    functions: parsed,
+                },
+            );
+        }
+    }
+    Ok(definitions)
+}
+
 impl AscRequest {
     pub(super) fn parse(root: &Map<String, Value>) -> Result<Option<Self>, ClaimsRequestError> {
         let aliases_present = ["id_token", "userinfo"].into_iter().any(|section| {
@@ -96,76 +172,7 @@ impl AscRequest {
         {
             return Err(invalid());
         }
-        let mut definitions = BTreeMap::new();
-        if let Some(raw) = asc.get("transformed_claims") {
-            let values = raw.as_object().ok_or_else(invalid)?;
-            if values.is_empty() || values.len() > MAX_COUNT {
-                return Err(invalid());
-            }
-            for (alias, raw) in values {
-                if alias.is_empty()
-                    || alias.len() > 64
-                    || !alias
-                        .bytes()
-                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-                {
-                    return Err(invalid());
-                }
-                let definition = raw.as_object().ok_or_else(invalid)?;
-                if definition.len() != 2
-                    || !definition.contains_key("claim")
-                    || !definition.contains_key("fn")
-                {
-                    return Err(invalid());
-                }
-                let base = definition
-                    .get("claim")
-                    .and_then(Value::as_str)
-                    .and_then(ReleasableClaim::parse)
-                    .ok_or_else(invalid)?;
-                let functions = definition
-                    .get("fn")
-                    .and_then(Value::as_array)
-                    .ok_or_else(invalid)?;
-                if functions.is_empty() || functions.len() > MAX_DEPTH {
-                    return Err(invalid());
-                }
-                let mut parsed = Vec::with_capacity(functions.len());
-                for (index, function) in functions.iter().enumerate() {
-                    let call = function.as_array().ok_or_else(invalid)?;
-                    if call.len() != 2 {
-                        return Err(invalid());
-                    }
-                    let name = call[0].as_str().ok_or_else(invalid)?;
-                    let argument = &call[1];
-                    let valid = match name {
-                        "eq" => scalar(argument),
-                        "contains" | "starts_with" | "ends_with" => argument.is_string(),
-                        "gt" | "gte" | "lt" | "lte" => argument.is_number(),
-                        _ => false,
-                    };
-                    if !valid {
-                        return Err(invalid());
-                    }
-                    // Every supported function returns a boolean. A second
-                    // function can therefore only compare that boolean.
-                    if index > 0 && (name != "eq" || !argument.is_boolean()) {
-                        return Err(invalid());
-                    }
-                    parsed.push(Function {
-                        name: name.to_owned(),
-                        argument: argument.clone(),
-                    });
-                }
-                definitions.insert(
-                    alias.clone(),
-                    Definition {
-                        base,
-                        functions: parsed,
-                    },
-                );
-            }
-        }
+        let definitions = parse_definitions(asc.get("transformed_claims"))?;
         let id_token = parse_aliases(root, "id_token", &definitions)?;
         let userinfo = parse_aliases(root, "userinfo", &definitions)?;
         let (id_rules, user_rules) = match asc.get("sao") {
