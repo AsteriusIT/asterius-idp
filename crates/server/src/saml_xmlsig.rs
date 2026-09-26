@@ -1,11 +1,11 @@
-//! Narrow SAML AuthnRequest XML Signature verification for HTTP-POST.
+//! Narrow SAML `AuthnRequest` XML Signature verification for HTTP-POST.
 //!
-//! This is deliberately one profile, not a general XMLDSig engine:
+//! This is deliberately one profile, not a general `XMLDSig` engine:
 //! one direct-child enveloped `ds:Signature` after `saml:Issuer`, one
 //! `Reference URI="#request-ID"`, enveloped then Exclusive C14N 1.0
 //! transforms, SHA-256 digest and RSA-SHA256 signature. The only signed
 //! object is the document root from which that one Signature node is removed.
-//! No arbitrary ID lookup, XPath, external URI, DTD, KeyInfo, extra reference
+//! No arbitrary ID lookup, XPath, external URI, DTD, `KeyInfo`, extra reference
 //! or second signature can influence what is accepted. Unsupported documents
 //! fail closed. C14N comes from xml-sec's pure XML-only feature; cryptography
 //! remains in aws-lc-rs (ADR-0004).
@@ -49,7 +49,7 @@ impl ParsedSignedPost {
         &self.request
     }
 
-    /// Verifies SignedInfo with the pinned RSA key after the reference digest
+    /// Verifies `SignedInfo` with the pinned RSA key after the reference digest
     /// has been checked over exactly the unsigned root. Returns the request
     /// only after both checks pass.
     pub fn verify(
@@ -64,7 +64,7 @@ impl ParsedSignedPost {
 }
 
 /// Parses the strict signature shape and verifies its digest over the exact
-/// root AuthnRequest. The caller still has to use `ParsedSignedPost::verify`
+/// root `AuthnRequest`. The caller still has to use `ParsedSignedPost::verify`
 /// with an operator-pinned key before considering any request field trusted.
 pub fn parse_signed_post(xml: &[u8]) -> Result<ParsedSignedPost, UntrustedSaml> {
     if xml.is_empty() || xml.len() > MAX_XML_BYTES {
@@ -104,7 +104,7 @@ fn signature_span(xml: &[u8]) -> Result<(usize, usize, bool), UntrustedSaml> {
     let mut signature_end = None;
     let mut root_declares_ds = false;
     loop {
-        let before = reader.buffer_position() as usize;
+        let before = usize::try_from(reader.buffer_position()).map_err(|_| UntrustedSaml)?;
         match reader.read_event().map_err(|_| UntrustedSaml)? {
             Event::Start(e) => {
                 depth += 1;
@@ -147,7 +147,8 @@ fn signature_span(xml: &[u8]) -> Result<(usize, usize, bool), UntrustedSaml> {
                     issuer_ended = true;
                 }
                 if depth == 2 && e.name().as_ref() == "ds:Signature" {
-                    signature_end = Some(reader.buffer_position() as usize);
+                    signature_end =
+                        Some(usize::try_from(reader.buffer_position()).map_err(|_| UntrustedSaml)?);
                 }
                 depth -= 1;
             }
@@ -160,7 +161,7 @@ fn signature_span(xml: &[u8]) -> Result<(usize, usize, bool), UntrustedSaml> {
             | Event::CData(_)
             | Event::GeneralRef(_) => return Err(UntrustedSaml),
         }
-        if reader.buffer_position() as usize >= xml.len() {
+        if usize::try_from(reader.buffer_position()).map_err(|_| UntrustedSaml)? >= xml.len() {
             break;
         }
     }
@@ -204,63 +205,7 @@ fn parse_signature(
     request_id: &str,
     root_declares_ds: bool,
 ) -> Result<SignatureDetails, UntrustedSaml> {
-    let mut reader = Reader::from_reader(xml);
-    reader.config_mut().check_end_names = true;
-    let mut tokens = Vec::new();
-    let mut depth = 0usize;
-    let mut info_start = None;
-    let mut info_end = None;
-    loop {
-        let before = reader.buffer_position() as usize;
-        match reader.read_event().map_err(|_| UntrustedSaml)? {
-            Event::Start(e) => {
-                depth += 1;
-                if depth > 8 {
-                    return Err(UntrustedSaml);
-                }
-                let name = e.name().as_ref().to_owned();
-                if name == "ds:SignedInfo" && depth == 2 {
-                    if info_start.replace(before).is_some() {
-                        return Err(UntrustedSaml);
-                    }
-                }
-                tokens.push(Token::Start(name, attributes(&e)?));
-            }
-            Event::Empty(e) => {
-                let name = e.name().as_ref().to_owned();
-                tokens.push(Token::Start(name.clone(), attributes(&e)?));
-                tokens.push(Token::End(name));
-            }
-            Event::End(e) => {
-                let name = e.name().as_ref().to_owned();
-                if name == "ds:SignedInfo" && depth == 2 {
-                    info_end = Some(reader.buffer_position() as usize);
-                }
-                tokens.push(Token::End(name));
-                depth = depth.checked_sub(1).ok_or(UntrustedSaml)?;
-            }
-            Event::Text(e) => {
-                let content = e.xml10_content();
-                let value = quick_xml::escape::unescape(&content).map_err(|_| UntrustedSaml)?;
-                if !value.trim().is_empty() {
-                    tokens.push(Token::Text(value.into_owned()));
-                }
-            }
-            Event::Eof => break,
-            Event::Decl(_)
-            | Event::DocType(_)
-            | Event::PI(_)
-            | Event::Comment(_)
-            | Event::CData(_)
-            | Event::GeneralRef(_) => return Err(UntrustedSaml),
-        }
-        if tokens.len() > 40 {
-            return Err(UntrustedSaml);
-        }
-    }
-    if depth != 0 {
-        return Err(UntrustedSaml);
-    }
+    let (tokens, info_start, info_end) = scan_signature_tokens(xml)?;
     let mut cursor = tokens.iter();
     match cursor.next() {
         Some(Token::Start(name, attrs))
@@ -312,9 +257,7 @@ fn parse_signature(
         return Err(UntrustedSaml);
     }
     let digest: [u8; 32] = digest.try_into().map_err(|_| UntrustedSaml)?;
-    let start = info_start.ok_or(UntrustedSaml)?;
-    let end = info_end.ok_or(UntrustedSaml)?;
-    let fragment = xml.get(start..end).ok_or(UntrustedSaml)?;
+    let fragment = xml.get(info_start..info_end).ok_or(UntrustedSaml)?;
     let open_end = fragment
         .iter()
         .position(|byte| *byte == b'>')
@@ -331,6 +274,70 @@ fn parse_signature(
         signature,
         signed_info_xml,
     })
+}
+
+fn scan_signature_tokens(xml: &[u8]) -> Result<(Vec<Token>, usize, usize), UntrustedSaml> {
+    let mut reader = Reader::from_reader(xml);
+    reader.config_mut().check_end_names = true;
+    let mut tokens = Vec::new();
+    let mut depth = 0usize;
+    let mut info_start = None;
+    let mut info_end = None;
+    loop {
+        let before = usize::try_from(reader.buffer_position()).map_err(|_| UntrustedSaml)?;
+        match reader.read_event().map_err(|_| UntrustedSaml)? {
+            Event::Start(e) => {
+                depth += 1;
+                if depth > 8 {
+                    return Err(UntrustedSaml);
+                }
+                let name = e.name().as_ref().to_owned();
+                if name == "ds:SignedInfo" && depth == 2 && info_start.replace(before).is_some() {
+                    return Err(UntrustedSaml);
+                }
+                tokens.push(Token::Start(name, attributes(&e)?));
+            }
+            Event::Empty(e) => {
+                let name = e.name().as_ref().to_owned();
+                tokens.push(Token::Start(name.clone(), attributes(&e)?));
+                tokens.push(Token::End(name));
+            }
+            Event::End(e) => {
+                let name = e.name().as_ref().to_owned();
+                if name == "ds:SignedInfo" && depth == 2 {
+                    info_end =
+                        Some(usize::try_from(reader.buffer_position()).map_err(|_| UntrustedSaml)?);
+                }
+                tokens.push(Token::End(name));
+                depth = depth.checked_sub(1).ok_or(UntrustedSaml)?;
+            }
+            Event::Text(e) => {
+                let content = e.xml10_content();
+                let value = quick_xml::escape::unescape(&content).map_err(|_| UntrustedSaml)?;
+                if !value.trim().is_empty() {
+                    tokens.push(Token::Text(value.into_owned()));
+                }
+            }
+            Event::Eof => break,
+            Event::Decl(_)
+            | Event::DocType(_)
+            | Event::PI(_)
+            | Event::Comment(_)
+            | Event::CData(_)
+            | Event::GeneralRef(_) => return Err(UntrustedSaml),
+        }
+        if tokens.len() > 40 {
+            return Err(UntrustedSaml);
+        }
+    }
+    if depth != 0 {
+        return Err(UntrustedSaml);
+    }
+    Ok((
+        tokens,
+        info_start.ok_or(UntrustedSaml)?,
+        info_end.ok_or(UntrustedSaml)?,
+    ))
 }
 
 fn attributes(

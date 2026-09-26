@@ -1,4 +1,4 @@
-//! Internal SAML AuthnRequest validation boundary.
+//! Internal SAML `AuthnRequest` validation boundary.
 //!
 //! This service validates requests before a browser SSO response is issued.
 //! The bounded unsigned XML parser rejects XML Signature elements. HTTP-
@@ -129,7 +129,7 @@ impl SamlRequestValidator {
 
     /// Decodes and verifies a signed HTTP-Redirect query against the exact
     /// RSA-SHA256 key pinned for the parsed issuer in the routed tenant.
-    /// Signed query octets include the original encoded RelayState when
+    /// Signed query octets include the original encoded `RelayState` when
     /// present. A key in XML, a URL, or another tenant is never consulted.
     pub async fn validate_redirect(
         &self,
@@ -165,7 +165,7 @@ impl SamlRequestValidator {
     }
 
     /// Validates the strict HTTP-POST binding profile with an enveloped
-    /// XML Signature over the exact AuthnRequest root. The parsed issuer
+    /// XML Signature over the exact `AuthnRequest` root. The parsed issuer
     /// selects only a candidate SP within the routed tenant; the request is
     /// accepted only after its digest and RSA signature verify against that
     /// SP's operator-pinned key and its ID is atomically reserved.
@@ -180,24 +180,20 @@ impl SamlRequestValidator {
         now: OffsetDateTime,
     ) -> Result<ValidatedAuthnRequest, ValidationError> {
         let form = parse_post_form(content_type, body).map_err(|_| ValidationError::Refused)?;
-        let signed = match parse_signed_post(&form.xml) {
-            Ok(signed) => signed,
-            Err(_) => {
-                let request =
-                    parse_authn_request(&form.xml).map_err(|_| ValidationError::Refused)?;
-                let (trust, sp) = self.check_routed(tenant, &request, now).await?;
-                if !sp.allow_unsigned_requests {
-                    return Err(ValidationError::Refused);
-                }
-                let reserved = trust
-                    .reserve_unsigned_request(&sp.entity_id, &sp.acs_url, &request.id)
-                    .await
-                    .map_err(ValidationError::Store)?;
-                if !reserved {
-                    return Err(ValidationError::Refused);
-                }
-                return Ok(Self::accepted(tenant, sp, request, form.relay_state, None));
+        let Ok(signed) = parse_signed_post(&form.xml) else {
+            let request = parse_authn_request(&form.xml).map_err(|_| ValidationError::Refused)?;
+            let (trust, sp) = self.check_routed(tenant, &request, now).await?;
+            if !sp.allow_unsigned_requests {
+                return Err(ValidationError::Refused);
             }
+            let reserved = trust
+                .reserve_unsigned_request(&sp.entity_id, &sp.acs_url, &request.id)
+                .await
+                .map_err(ValidationError::Store)?;
+            if !reserved {
+                return Err(ValidationError::Refused);
+            }
+            return Ok(Self::accepted(tenant, sp, request, form.relay_state, None));
         };
         let (trust, sp) = self
             .check_routed(tenant, signed.unverified_request(), now)

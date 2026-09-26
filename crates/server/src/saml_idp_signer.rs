@@ -1,4 +1,4 @@
-//! Internal tenant SAML IdP signing-key boundary.
+//! Internal tenant SAML `IdP` signing-key boundary.
 //!
 //! Provisioning validates that the X.509 certificate contains the public half
 //! of the imported RSA key. Issuance opens the same KEK-wrapped row, checks
@@ -23,6 +23,7 @@ pub(crate) fn validate_key_pair(
     certificate_der: &[u8],
     private_key_pkcs8: &[u8],
 ) -> Result<(), DomainError> {
+    const CHALLENGE: &[u8] = b"asterius SAML IdP certificate and key match v1";
     let invalid = || DomainError::invalid("saml.idp_key", "invalid SAML IdP certificate or key");
     let (remaining, certificate) =
         x509_parser::parse_x509_certificate(certificate_der).map_err(|_| invalid())?;
@@ -43,7 +44,6 @@ pub(crate) fn validate_key_pair(
     if !(256..=1024).contains(&key.public_modulus_len()) {
         return Err(invalid());
     }
-    const CHALLENGE: &[u8] = b"asterius SAML IdP certificate and key match v1";
     let mut signature = vec![0_u8; key.public_modulus_len()];
     key.sign(
         &RSA_PKCS1_SHA256,
@@ -60,7 +60,7 @@ pub(crate) fn validate_key_pair(
     .map_err(|_| invalid())
 }
 
-/// Signs with this tenant's stable, provisioned SAML IdP key only.
+/// Signs with this tenant's stable, provisioned SAML `IdP` key only.
 #[derive(Debug, Clone)]
 pub struct SamlIdpSigner {
     store: Store,
