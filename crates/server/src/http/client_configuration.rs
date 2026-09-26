@@ -474,6 +474,8 @@ impl NotTheirs {
 /// What the handlers need to answer a management request.
 #[derive(Debug)]
 pub struct ConfigurationContext<'a> {
+    /// Loaded ID-JAG issuer/client pins for exact grant-type updates.
+    pub id_jag_trusts: Option<&'a crate::id_jag_trust::IdJagTrusts>,
     /// The tenant the request arrived at. Its issuer is what
     /// `registration_client_uri` is rebuilt from.
     pub tenant: &'a Tenant,
@@ -668,6 +670,29 @@ async fn unacceptable(
     managed: &ManagedClient,
     registration: &ClientRegistration,
 ) -> Option<Response> {
+    if registration
+        .grant_types
+        .contains(&asterius_domain::entities::client::GrantType::JwtBearer)
+        && !context.id_jag_trusts.is_some_and(|pins| {
+            pins.supports_client(context.tenant.id.as_str(), client_id.as_str())
+        })
+    {
+        record(
+            context,
+            now,
+            EventType::CLIENT_UPDATED,
+            Outcome::Failure,
+            client_id,
+            Some("invalid_client_metadata"),
+            None,
+        )
+        .await;
+        return Some(crate::http::register::error(
+            StatusCode::BAD_REQUEST,
+            "invalid_client_metadata",
+            "JWT bearer ID-JAG requires an exact operator-pinned client",
+        ));
+    }
     // `ast-lh3.1`, first, because it is the only one of these rules that reads
     // a row this request has already loaded: no fetch, no key lookup.
     if let Some(refusal) =

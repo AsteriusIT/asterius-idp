@@ -410,6 +410,8 @@ pub enum GrantType {
     ClientCredentials,
     /// RFC 8693 §2.1.
     TokenExchange,
+    /// RFC 7523 JWT bearer grant, restricted to the pinned ID-JAG profile.
+    JwtBearer,
     /// RFC 8628 §3.4.
     DeviceCode,
     /// CIBA Core 1.0 §10.1.
@@ -418,11 +420,12 @@ pub enum GrantType {
 
 impl GrantType {
     /// Every permitted grant type.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::AuthorizationCode,
         Self::RefreshToken,
         Self::ClientCredentials,
         Self::TokenExchange,
+        Self::JwtBearer,
         Self::DeviceCode,
         Self::Ciba,
     ];
@@ -438,6 +441,7 @@ impl GrantType {
             Self::RefreshToken => "refresh_token",
             Self::ClientCredentials => "client_credentials",
             Self::TokenExchange => "urn:ietf:params:oauth:grant-type:token-exchange",
+            Self::JwtBearer => "urn:ietf:params:oauth:grant-type:jwt-bearer",
             Self::DeviceCode => "urn:ietf:params:oauth:grant-type:device_code",
             Self::Ciba => "urn:openid:params:grant-type:ciba",
         }
@@ -461,6 +465,7 @@ impl GrantType {
         match self {
             Self::AuthorizationCode | Self::RefreshToken | Self::ClientCredentials => None,
             Self::TokenExchange => Some(Feature::TokenExchange),
+            Self::JwtBearer => Some(Feature::IdJag),
             Self::DeviceCode => Some(Feature::DeviceFlow),
             Self::Ciba => Some(Feature::Ciba),
         }
@@ -1825,6 +1830,14 @@ impl ClientMetadata {
             ));
         }
         let token_binding = self.token_binding(capabilities, compliance_profile)?;
+        if grant_types.contains(&GrantType::JwtBearer)
+            && (subject_type != SubjectType::Pairwise || token_binding != TokenBinding::Dpop)
+        {
+            return Err(ClientMetadataError::rejected(
+                "grant_types",
+                "JWT bearer ID-JAG requires pairwise subjects and DPoP-bound tokens",
+            ));
+        }
         let scopes = self.scopes()?;
         if scopes.contains("device_sso")
             && (application_type != ApplicationType::Native
@@ -2210,7 +2223,7 @@ impl ClientMetadata {
                     FIELD,
                     "contains a grant type this server does not implement; the set is \
                      authorization_code, refresh_token, client_credentials, token-exchange, \
-                     device_code and ciba",
+                     device_code, ciba and jwt-bearer ID-JAG",
                 )
             })?;
             if let Some(feature) = grant.required_feature()

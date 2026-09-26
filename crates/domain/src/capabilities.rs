@@ -25,6 +25,8 @@ pub enum Feature {
     DeviceFlow,
     /// Token Exchange (RFC 8693) with delegation chains.
     TokenExchange,
+    /// Pinned ID-JAG JWT bearer redemption, derived from loaded trust pins.
+    IdJag,
     /// Shared Signals Framework transmitter and CAEP/RISC events.
     Ssf,
     /// AuthZEN Authorization API 1.0 policy decision point.
@@ -79,13 +81,14 @@ pub enum Feature {
 
 impl Feature {
     /// Every flag, in a stable order. `/readyz` and the admin API iterate this.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Mtls,
         Self::GrantManagement,
         Self::AdvancedClaims,
         Self::Ciba,
         Self::DeviceFlow,
         Self::TokenExchange,
+        Self::IdJag,
         Self::Ssf,
         Self::Authzen,
         Self::AuthzenSearch,
@@ -105,6 +108,7 @@ impl Feature {
             Self::Ciba => "ciba",
             Self::DeviceFlow => "device_flow",
             Self::TokenExchange => "token_exchange",
+            Self::IdJag => "id_jag",
             Self::Ssf => "ssf",
             Self::Authzen => "authzen",
             Self::AuthzenSearch => "authzen_search",
@@ -128,7 +132,7 @@ impl Feature {
     #[must_use]
     pub const fn is_derived(self) -> bool {
         match self {
-            Self::DynamicClientRegistration | Self::AuthzenSearch => true,
+            Self::DynamicClientRegistration | Self::AuthzenSearch | Self::IdJag => true,
             Self::Mtls
             | Self::GrantManagement
             | Self::AdvancedClaims
@@ -192,6 +196,9 @@ pub struct Capabilities {
     pub device_flow: bool,
     /// Token Exchange (RFC 8693) with delegation chains.
     pub token_exchange: bool,
+    /// Derived from loaded tenant trust pins and Token Exchange availability.
+    #[serde(skip_deserializing)]
+    pub id_jag: bool,
     /// Shared Signals Framework transmitter and CAEP/RISC events.
     pub ssf: bool,
     /// AuthZEN Authorization API 1.0 policy decision point.
@@ -237,6 +244,7 @@ impl Capabilities {
             Feature::Ciba => self.ciba,
             Feature::DeviceFlow => self.device_flow,
             Feature::TokenExchange => self.token_exchange,
+            Feature::IdJag => self.id_jag,
             Feature::Ssf => self.ssf,
             Feature::Authzen => self.authzen,
             Feature::AuthzenSearch => self.authzen_search,
@@ -261,6 +269,7 @@ impl Capabilities {
             Feature::Ciba => self.ciba = false,
             Feature::DeviceFlow => self.device_flow = false,
             Feature::TokenExchange => self.token_exchange = false,
+            Feature::IdJag => self.id_jag = false,
             Feature::Ssf => self.ssf = false,
             Feature::Authzen => self.authzen = false,
             Feature::AuthzenSearch => self.authzen_search = false,

@@ -2065,6 +2065,15 @@ impl Handling<'_> {
         )
         .map_err(|failure| clients::refusal(&failure))?;
 
+        if registration
+            .grant_types
+            .contains(&asterius_domain::entities::client::GrantType::JwtBearer)
+        {
+            return Err(AdminError::Invalid(
+                "JWT bearer ID-JAG requires an existing operator-pinned client".to_owned(),
+            ));
+        }
+
         self.check_client_is_serviceable(&registration, crate::CLIENT_CREATE_ID)
             .await?;
 
@@ -2154,6 +2163,19 @@ impl Handling<'_> {
             profile,
         )
         .map_err(|failure| clients::refusal(&failure))?;
+        if registration
+            .grant_types
+            .contains(&asterius_domain::entities::client::GrantType::JwtBearer)
+            && !self
+                .state
+                .backend
+                .clients()
+                .id_jag_pinned(&self.tenant.id, &id)
+        {
+            return Err(AdminError::Invalid(
+                "JWT bearer ID-JAG requires an exact operator-pinned client".to_owned(),
+            ));
+        }
         // The parser intentionally ignores `resources`: it is not RFC 7591
         // metadata. Preserve the administrator-owned policy explicitly so a
         // fake or future store cannot accidentally rely on PostgreSQL's

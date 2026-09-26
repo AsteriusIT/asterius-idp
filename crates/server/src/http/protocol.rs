@@ -1162,7 +1162,14 @@ async fn discovery(
             return unavailable();
         }
     };
-    let capabilities = settings.effective_capabilities(state.capabilities);
+    let mut deployment = state.capabilities;
+    deployment.id_jag = deployment.token_exchange
+        && state
+            .clients
+            .as_ref()
+            .is_some_and(|endpoints| endpoints.id_jag_trusts.supports_tenant(tenant.id.as_str()));
+    let mut capabilities = settings.effective_capabilities(deployment);
+    capabilities.id_jag &= capabilities.token_exchange;
 
     // `acr_values_supported` comes from the same ladder `/authorize` consults,
     // for the reason RFC 8414 §2 gives: a document that advertised a class this
@@ -3916,10 +3923,17 @@ async fn dispatch_grants(
         ida_frameworks,
     } = issuing;
 
-    let clients = scope.clients(endpoints.capabilities);
+    let capabilities = match capabilities_for(endpoints, tenant).await {
+        Ok(capabilities) => capabilities,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
+    let clients = scope.clients(capabilities);
     let authenticator = Arc::clone(&endpoints.authenticator);
     let tenant_for_auth = Arc::clone(tenant);
-    let clients_for_auth = scope.clients(endpoints.capabilities);
+    let clients_for_auth = scope.clients(capabilities);
 
     // The grant handler is built here, per request, rather than held on
     // `ClientEndpoints`. Two of the things it needs are facts about *this*
@@ -3931,6 +3945,7 @@ async fn dispatch_grants(
     let refresh_tokens = scope.refresh_tokens();
     let native_sso =
         asterius_store_pg::PgNativeSso::new(endpoints.store.pool().clone(), tenant.id.clone());
+    let id_jag_redemption = scope.id_jag_redemption();
     let native_sso_approvals = if endpoints.capabilities.token_exchange {
         endpoints
             .native_sso_approvals
@@ -4037,14 +4052,26 @@ async fn dispatch_grants(
         &authorization_code,
         &ciba_requests,
         endpoints.audit.as_ref(),
-        agent_policy,
+        agent_policy.clone(),
     );
+    let id_jag_grant = crate::http::id_jag_grant::IdJagGrant {
+        trusts: endpoints.id_jag_trusts.as_ref(),
+        redemption: &id_jag_redemption,
+        users: &users,
+        resource_servers: &resource_servers,
+        signer: endpoints.signer.as_ref(),
+        agent_policy,
+        constraint,
+        lifetimes,
+        grant_id_claim,
+        now,
+    };
 
     let response = token::token(
         TokenContext {
             tenant,
             clients: &clients,
-            capabilities: endpoints.capabilities,
+            capabilities,
             grants: &[
                 &authorization_code,
                 &refresh_token,
@@ -4052,6 +4079,7 @@ async fn dispatch_grants(
                 &device_code,
                 &token_exchange,
                 &ciba_grant,
+                &id_jag_grant,
             ],
             certificate,
         },
@@ -4141,7 +4169,7 @@ async fn client_registration_inner(
         }
     };
     let scope = endpoints.store.scope(tenant.id.clone());
-    let clients = scope.clients(endpoints.capabilities);
+    let clients = scope.clients(capabilities);
     register::register(
         RegisterContext {
             tenant,
@@ -4175,6 +4203,7 @@ fn configuration_context<'a>(
     capabilities: Capabilities,
 ) -> ConfigurationContext<'a> {
     ConfigurationContext {
+        id_jag_trusts: Some(endpoints.id_jag_trusts.as_ref()),
         tenant,
         tenant_policy,
         clients,
@@ -4852,13 +4881,18 @@ async fn capabilities_for(
     endpoints: &ClientEndpoints,
     tenant: &Tenant,
 ) -> Result<Capabilities, DomainError> {
-    match &endpoints.tenant_settings {
-        None => Ok(endpoints.capabilities),
-        Some(directory) => Ok(directory
+    let mut deployment = endpoints.capabilities;
+    deployment.id_jag =
+        deployment.token_exchange && endpoints.id_jag_trusts.supports_tenant(tenant.id.as_str());
+    let mut effective = match &endpoints.tenant_settings {
+        None => deployment,
+        Some(directory) => directory
             .for_tenant(&tenant.id)
             .await?
-            .effective_capabilities(endpoints.capabilities)),
-    }
+            .effective_capabilities(deployment),
+    };
+    effective.id_jag &= effective.token_exchange;
+    Ok(effective)
 }
 
 /// Whether this tenant refuses to finish a sign-in for an unproved address

@@ -25,6 +25,7 @@ use time::{Duration, OffsetDateTime};
 
 use super::agent_issuance::AgentPolicy;
 use super::issuance::{self, ImplicitResources, SenderConstraint};
+use super::token::GrantHandler;
 use super::token::{not_issued, refused};
 
 const INVALID: &str = "the ID-JAG assertion cannot be redeemed";
@@ -206,7 +207,9 @@ impl IdJagGrant<'_> {
             issuance::TargetingError::InvalidTarget => Failure::Client("invalid_target", INVALID),
             issuance::TargetingError::Storage(error) => Failure::Server(error),
         })?;
-        if targeting.scopes != verified.scopes {
+        if targeting.scopes != verified.scopes
+            || targeting.audience.values().collect::<Vec<_>>() != [verified.resource.as_str()]
+        {
             return Err(Failure::Client("invalid_scope", INVALID));
         }
         self.agent_policy
@@ -215,7 +218,7 @@ impl IdJagGrant<'_> {
                 client,
                 &grant,
                 &targets,
-                GrantType::TokenExchange,
+                GrantType::JwtBearer,
                 self.now,
             )
             .await
@@ -304,6 +307,17 @@ impl IdJagGrant<'_> {
             })),
         )
             .into_response())
+    }
+}
+
+#[async_trait::async_trait]
+impl GrantHandler for IdJagGrant<'_> {
+    fn grant(&self) -> GrantType {
+        GrantType::JwtBearer
+    }
+
+    async fn handle(&self, tenant: &Tenant, client: &Client, params: &Parameters) -> Response {
+        self.redeem(tenant, client, params).await
     }
 }
 

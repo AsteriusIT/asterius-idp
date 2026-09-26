@@ -115,7 +115,7 @@ impl IssuanceAction {
     #[must_use]
     pub const fn of(grant: GrantType) -> Self {
         match grant {
-            GrantType::TokenExchange => Self::ExchangeToken,
+            GrantType::TokenExchange | GrantType::JwtBearer => Self::ExchangeToken,
             GrantType::AuthorizationCode
             | GrantType::RefreshToken
             | GrantType::ClientCredentials

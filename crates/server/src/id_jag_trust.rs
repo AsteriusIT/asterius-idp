@@ -44,6 +44,20 @@ pub struct IdJagConsentOption {
 }
 
 impl IdJagTrusts {
+    /// Whether a tenant has at least one loaded issuer/client pin.
+    #[must_use]
+    pub fn supports_tenant(&self, tenant_id: &str) -> bool {
+        self.0.get(tenant_id).is_some_and(|pins| !pins.is_empty())
+    }
+
+    /// Whether this exact downstream client has an operator-pinned issuer.
+    #[must_use]
+    pub fn supports_client(&self, tenant_id: &str, client_id: &str) -> bool {
+        self.0.get(tenant_id).is_some_and(|pins| {
+            pins.keys()
+                .any(|(_, configured_client)| configured_client == client_id)
+        })
+    }
     /// Whether an operator configured this upstream issuer for at least one
     /// downstream client in the routed tenant.
     #[must_use]
