@@ -620,46 +620,49 @@ impl PgKekRewrap {
         from: &dyn Kek,
         to: &dyn Kek,
     ) -> Result<u64, DomainError> {
-        let row = sqlx::query(
+        let rows = sqlx::query(
             "select certificate_sha256, private_key_ciphertext, private_key_nonce, kek_id
                from saml_idp_signing_keys where tenant_id = $1 and kek_id = $2 for update",
         )
         .bind(tenant.as_str())
         .bind(from.id())
-        .fetch_optional(&mut **transaction)
+        .fetch_all(&mut **transaction)
         .await
         .map_err(to_domain_error)?;
-        let Some(row) = row else { return Ok(0) };
-        let fingerprint: Vec<u8> =
-            sqlx::Row::try_get(&row, "certificate_sha256").map_err(to_domain_error)?;
-        let fingerprint_hex = hex::encode(fingerprint);
-        let wrapped = WrappedKey::from_parts(
-            sqlx::Row::try_get::<String, _>(&row, "kek_id").map_err(to_domain_error)?,
-            sqlx::Row::try_get(&row, "private_key_nonce").map_err(to_domain_error)?,
-            sqlx::Row::try_get(&row, "private_key_ciphertext").map_err(to_domain_error)?,
-        )
-        .map_err(storage_error)?;
-        let binding =
-            KeyBinding::row_secret(tenant, RowSecret::SamlIdpSigningKey, &fingerprint_hex);
-        let plaintext = from
-            .unwrap(binding, &wrapped)
-            .await
+        let mut moved = 0;
+        for row in rows {
+            let fingerprint: Vec<u8> =
+                sqlx::Row::try_get(&row, "certificate_sha256").map_err(to_domain_error)?;
+            let fingerprint_hex = hex::encode(&fingerprint);
+            let wrapped = WrappedKey::from_parts(
+                sqlx::Row::try_get::<String, _>(&row, "kek_id").map_err(to_domain_error)?,
+                sqlx::Row::try_get(&row, "private_key_nonce").map_err(to_domain_error)?,
+                sqlx::Row::try_get(&row, "private_key_ciphertext").map_err(to_domain_error)?,
+            )
             .map_err(storage_error)?;
-        let resealed = to.wrap(binding, &plaintext).await.map_err(storage_error)?;
-        let moved = sqlx::query(
-            "update saml_idp_signing_keys
+            let binding =
+                KeyBinding::row_secret(tenant, RowSecret::SamlIdpSigningKey, &fingerprint_hex);
+            let plaintext = from
+                .unwrap(binding, &wrapped)
+                .await
+                .map_err(storage_error)?;
+            let resealed = to.wrap(binding, &plaintext).await.map_err(storage_error)?;
+            moved += sqlx::query(
+                "update saml_idp_signing_keys
                 set private_key_ciphertext = $1, private_key_nonce = $2, kek_id = $3
-              where tenant_id = $4 and kek_id = $5",
-        )
-        .bind(resealed.ciphertext())
-        .bind(resealed.nonce())
-        .bind(resealed.kek_id())
-        .bind(tenant.as_str())
-        .bind(from.id())
-        .execute(&mut **transaction)
-        .await
-        .map_err(to_domain_error)?
-        .rows_affected();
+              where tenant_id = $4 and certificate_sha256 = $5 and kek_id = $6",
+            )
+            .bind(resealed.ciphertext())
+            .bind(resealed.nonce())
+            .bind(resealed.kek_id())
+            .bind(tenant.as_str())
+            .bind(&fingerprint)
+            .bind(from.id())
+            .execute(&mut **transaction)
+            .await
+            .map_err(to_domain_error)?
+            .rows_affected();
+        }
         Ok(moved)
     }
 

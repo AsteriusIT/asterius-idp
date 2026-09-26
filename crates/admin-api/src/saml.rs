@@ -17,6 +17,8 @@ use zeroize::{Zeroize as _, Zeroizing};
 pub const MAX_BODY_BYTES: usize = 4 * 1024;
 /// A certificate and RSA PKCS#8 key can each be 16 KiB before base64.
 pub const MAX_IDP_KEY_BODY_BYTES: usize = 48 * 1024;
+/// A SHA-256 fingerprint in a small JSON management action.
+pub const MAX_IDP_KEY_ACTION_BYTES: usize = 128;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -48,8 +50,8 @@ impl std::fmt::Debug for NewIdpKey {
 /// Only public material is returned by the administration port.
 #[derive(Debug, Clone, Serialize)]
 pub struct IdpKeySummary {
-    /// A provisioned key is usable internally but does not enable SSO.
-    pub state: &'static str,
+    /// `pending`, `active`, or `retiring`; none enables browser SSO.
+    pub state: String,
     pub certificate_sha256: String,
     pub certificate_der_base64: String,
     pub created_at: OffsetDateTime,
@@ -88,8 +90,72 @@ pub fn parse_idp_key(body: &[u8]) -> Result<NewIdpKey, crate::error::AdminError>
 
 #[async_trait::async_trait]
 pub trait IdpKeyAdministration: Send + Sync {
-    async fn inspect(&self, tenant: &TenantId) -> Result<Option<IdpKeySummary>, DomainError>;
+    async fn inspect(&self, tenant: &TenantId) -> Result<Vec<IdpKeySummary>, DomainError>;
     async fn provision(&self, tenant: &TenantId, key: &NewIdpKey) -> Result<bool, DomainError>;
+    async fn activate(
+        &self,
+        tenant: &TenantId,
+        certificate_sha256: &str,
+    ) -> Result<bool, DomainError>;
+    async fn retire(
+        &self,
+        tenant: &TenantId,
+        certificate_sha256: &str,
+    ) -> Result<bool, DomainError>;
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawKeyAction {
+    certificate_sha256: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawRetirementAction {
+    certificate_sha256: String,
+    rollover_confirmed: bool,
+}
+
+/// One canonical lowercase SHA-256 certificate fingerprint.
+pub fn parse_key_action(body: &[u8]) -> Result<String, crate::error::AdminError> {
+    if body.is_empty() || body.len() > MAX_IDP_KEY_ACTION_BYTES {
+        return Err(crate::error::AdminError::Invalid(
+            "invalid SAML key action".to_owned(),
+        ));
+    }
+    let raw: RawKeyAction = serde_json::from_slice(body)
+        .map_err(|_| crate::error::AdminError::Invalid("invalid SAML key action".to_owned()))?;
+    valid_fingerprint(raw.certificate_sha256)
+}
+
+/// Requires an affirmative operator statement that SP rollover is complete.
+pub fn parse_retirement_action(body: &[u8]) -> Result<String, crate::error::AdminError> {
+    if body.is_empty() || body.len() > MAX_IDP_KEY_ACTION_BYTES {
+        return Err(crate::error::AdminError::Invalid(
+            "invalid SAML key retirement".to_owned(),
+        ));
+    }
+    let raw: RawRetirementAction = serde_json::from_slice(body)
+        .map_err(|_| crate::error::AdminError::Invalid("invalid SAML key retirement".to_owned()))?;
+    if !raw.rollover_confirmed {
+        return Err(crate::error::AdminError::Invalid(
+            "SP rollover must be confirmed".to_owned(),
+        ));
+    }
+    valid_fingerprint(raw.certificate_sha256)
+}
+
+fn valid_fingerprint(value: String) -> Result<String, crate::error::AdminError> {
+    if value.len() != 64
+        || hex::decode(&value).is_err()
+        || value.bytes().any(|byte| byte.is_ascii_uppercase())
+    {
+        return Err(crate::error::AdminError::Invalid(
+            "invalid SAML key action".to_owned(),
+        ));
+    }
+    Ok(value)
 }
 
 #[derive(Debug, Clone, Deserialize)]
