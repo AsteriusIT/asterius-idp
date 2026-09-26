@@ -20,6 +20,7 @@ export interface ClientDocument {
   /** `ast-mqt`: whether this client's ID tokens carry the role claims. */
   readonly roles_in_id_token: boolean;
   readonly managed_groups_claim: boolean;
+  readonly command_endpoint?: string;
   readonly jwks?: unknown;
   readonly jwks_uri?: string;
   readonly sector_identifier_uri?: string;
@@ -84,6 +85,7 @@ export interface Draft {
   readonly status: string;
   readonly roles_in_id_token: boolean;
   readonly managed_groups_claim: boolean;
+  readonly command_endpoint: string;
 }
 
 /** One URI per line, which is how the textareas hold a list. */
@@ -126,6 +128,7 @@ export function draftOf(document: ClientDocument): Draft {
     status: document.status,
     roles_in_id_token: document.roles_in_id_token === true,
     managed_groups_claim: document.managed_groups_claim === true,
+    command_endpoint: document.command_endpoint ?? '',
   };
 }
 
@@ -155,6 +158,7 @@ export function emptyDraft(): Draft {
     status: 'active',
     roles_in_id_token: false,
     managed_groups_claim: false,
+    command_endpoint: '',
   };
 }
 
@@ -288,6 +292,9 @@ export function documentFrom(draft: Draft): Record<string, unknown> {
   }
   if (draft.sector_identifier_uri.trim() !== '') {
     document.sector_identifier_uri = draft.sector_identifier_uri.trim();
+  }
+  if (draft.command_endpoint.trim() !== '') {
+    document.command_endpoint = draft.command_endpoint.trim();
   }
   if (draft.token_endpoint_auth_method !== 'client_secret_basic' && draft.jwks.trim() !== '') {
     document.jwks = JSON.parse(draft.jwks) as unknown;

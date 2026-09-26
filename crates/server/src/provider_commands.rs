@@ -2,8 +2,9 @@
 //!
 //! This module sends a *fresh* command token for each delivery attempt. A
 //! pre-signed token in the outbox would expire before an ordinary retry, so
-//! callers must retain the command intent and re-enter this sender. Endpoint
-//! registration and lifecycle-event wiring are separate integration points.
+//! callers must retain the command intent and re-enter this sender. RP
+//! registration stores the endpoint, and the outbox worker resolves it for
+//! account lifecycle intents before calling this sender.
 //!
 //! OpenID Provider Commands 1.0 draft 02 §§3–6 requires an explicitly typed
 //! JWT, an endpoint-bound audience, and a form POST. The endpoint is checked

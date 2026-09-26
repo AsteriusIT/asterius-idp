@@ -906,6 +906,17 @@ function Editor({
               />
             )}
           </Field>
+          <Field label="Provider Commands endpoint" hint="HTTPS endpoint that accepts signed account invalidate and delete commands." error={clientFieldError(refusal, 'command_endpoint')}>
+            {(props) => (
+              <input
+                {...props}
+                name="command_endpoint"
+                type="url"
+                value={draft.command_endpoint}
+                onChange={(event) => onChange({ ...draft, command_endpoint: event.target.value })}
+              />
+            )}
+          </Field>
         </fieldset></TabsContent>
 
         <TabsContent value="grants"><fieldset disabled={busy || !canWrite}>

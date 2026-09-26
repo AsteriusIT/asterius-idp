@@ -1155,6 +1155,8 @@ pub struct ClientMetadata {
     /// a session this client took part in ends. Absent means the client is
     /// never notified.
     pub backchannel_logout_uri: Option<String>,
+    /// OpenID Provider Commands draft 02: RP endpoint for signed account commands.
+    pub command_endpoint: Option<String>,
     /// OIDC Back-Channel Logout 1.0 §2.2. Whether the logout token this client
     /// receives must carry a `sid`. "If omitted, the default value is false."
     pub backchannel_logout_session_required: Option<bool>,
@@ -1288,6 +1290,8 @@ pub struct ClientRegistration {
     /// `127.0.0.1` is this deployment's own loopback, which is the SSRF target
     /// `crate::ports::ClientUrlFetcher` exists to refuse.
     pub backchannel_logout_uri: Option<RedirectUri>,
+    /// RP-pinned endpoint for signed account commands.
+    pub command_endpoint: Option<RedirectUri>,
     /// OIDC Back-Channel Logout 1.0 §2.2 `backchannel_logout_session_required`.
     ///
     /// `false` unless the client registered `true`, which is §2.2's stated
@@ -1815,6 +1819,12 @@ impl ClientMetadata {
             }
         }
         let (subject_type, sector_identifier_uri) = self.subject(&redirect_uris)?;
+        if self.command_endpoint.is_some() && subject_type == SubjectType::Ephemeral {
+            return Err(ClientMetadataError::rejected(
+                "command_endpoint",
+                "requires a stable public or pairwise subject",
+            ));
+        }
         if subject_type == SubjectType::Ephemeral
             && (compliance_profile != ClientComplianceProfile::Public
                 || grant_types.iter().any(|grant| {
@@ -1918,6 +1928,7 @@ impl ClientMetadata {
             backchannel_user_code_parameter: backchannel.user_code_parameter,
             agent,
             backchannel_logout_uri: self.backchannel_logout_uri()?,
+            command_endpoint: self.command_endpoint()?,
             // §2.2: "If omitted, the default value is false."
             backchannel_logout_session_required: self
                 .backchannel_logout_session_required
@@ -2422,6 +2433,22 @@ impl ClientMetadata {
             return Err(ClientMetadataError::rejected(
                 FIELD,
                 "must not be empty".to_owned(),
+            ));
+        }
+        let uri = RedirectUri::parse(raw, ApplicationType::Web)
+            .map_err(|error| ClientMetadataError::rejected(FIELD, error.to_string()))?;
+        Ok(Some(uri))
+    }
+
+    fn command_endpoint(&self) -> Result<Option<RedirectUri>, ClientMetadataError> {
+        const FIELD: &str = "command_endpoint";
+        let Some(raw) = self.command_endpoint.as_deref() else {
+            return Ok(None);
+        };
+        if raw.is_empty() || raw.len() > 2048 {
+            return Err(ClientMetadataError::rejected(
+                FIELD,
+                "must be a bounded HTTPS URL",
             ));
         }
         let uri = RedirectUri::parse(raw, ApplicationType::Web)
