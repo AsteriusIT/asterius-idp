@@ -237,6 +237,14 @@ fn client_authenticator(
 #[expect(clippy::too_many_lines, reason = "the composition root, in boot order")]
 fn serve_forever(path: &std::path::Path) -> Result<(), String> {
     let config = Config::load(path).map_err(|e| e.to_string())?;
+    if !config.features.request_object
+        && config
+            .tenants
+            .iter()
+            .any(|tenant| !tenant.fapi_message_signing_clients.is_empty())
+    {
+        return Err("fapi_message_signing_client requires the request_object feature".to_owned());
+    }
 
     observability::init(config.log_format);
     let metrics = Metrics::install().map_err(|e| format!("cannot install metrics: {e}"))?;
@@ -381,6 +389,22 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
             tenant_settings: Some(settings.clone()),
             signed_metadata: pdp_metadata_signer(&config, &keys),
             clients: Some(Arc::new(ClientEndpoints {
+                fapi_message_signing_clients: Arc::new(
+                    config
+                        .tenants
+                        .iter()
+                        .map(|tenant| {
+                            (
+                                tenant.id.as_str().to_owned(),
+                                tenant
+                                    .fapi_message_signing_clients
+                                    .iter()
+                                    .cloned()
+                                    .collect(),
+                            )
+                        })
+                        .collect(),
+                ),
                 ssf_metadata_cache: Arc::new(
                     asterius_server::http::ssf_receiver::UpstreamMetadataCache::new(),
                 ),

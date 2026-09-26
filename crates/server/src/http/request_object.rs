@@ -113,6 +113,7 @@ pub async fn parameters(
     client: &Client,
     outer: &Parameters,
     now: OffsetDateTime,
+    fapi_message_signing: bool,
 ) -> Result<Parameters, Refusal> {
     let object = outer
         .get("request")
@@ -160,12 +161,22 @@ pub async fn parameters(
         return Err(Refusal::ClientIdMismatch);
     }
 
-    Ok(asterius_oidc::request_object::parameters(
-        &verified.claims,
-        client.id.as_str(),
-        tenant.issuer.as_str(),
-        now,
-    )?)
+    let mapped = if fapi_message_signing {
+        asterius_oidc::request_object::fapi_parameters(
+            &verified.claims,
+            client.id.as_str(),
+            tenant.issuer.as_str(),
+            now,
+        )?
+    } else {
+        asterius_oidc::request_object::parameters(
+            &verified.claims,
+            client.id.as_str(),
+            tenant.issuer.as_str(),
+            now,
+        )?
+    };
+    Ok(mapped)
 }
 
 #[cfg(test)]

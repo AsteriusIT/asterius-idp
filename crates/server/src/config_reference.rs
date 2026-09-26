@@ -1106,6 +1106,12 @@ fn tenant() -> Section {
                 "absent (LDAP synchronization disabled)".to_owned(),
                 "An explicit per-tenant LDAPS source. The URL must be an LDAPS origin without embedded credentials; bind_password_file is an absolute operator-managed secret path. Filters are static and contain no substitutions. All four group fields must be supplied together. The group member attribute must contain user DNs. Only approved profile fields, managed group names, and memberships are mapped; privileged roles and credentials have no mapping. Run `asterius ldap-sync <tenant>` explicitly to read a bounded directory snapshot and apply only LDAP-owned resources; no background worker starts from this configuration.",
             ),
+            key(
+                "fapi_message_signing_client",
+                "array of client ID strings",
+                "empty (signed JAR at PAR optional)".to_owned(),
+                "Explicit tenant client IDs for the FAPI 2.0 Message Signing signed-authorization-request profile. Each listed client must use a verified JAR at PAR with the required aud, nbf and exp window. This setting does not enable JARM enforcement or claim full Message Signing conformance.",
+            ),
         ],
     }
 }
