@@ -512,9 +512,16 @@ async fn refuse(
         tracing::error!(tenant = %context.tenant.id, "a stored request has no redirect_uri");
         return error_page(context, StatusCode::INTERNAL_SERVER_ERROR);
     };
-    let mode = string("response_mode")
-        .map(|raw| ResponseMode::parse(&raw).unwrap_or_default())
-        .unwrap_or_default();
+    let mode = match string("response_mode") {
+        Some(raw) => match ResponseMode::parse(&raw) {
+            Ok(mode) => mode,
+            Err(_) => {
+                tracing::error!(tenant = %context.tenant.id, "stored request has an invalid response_mode");
+                return error_page(context, StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        },
+        None => ResponseMode::Query,
+    };
 
     tracing::info!(
         tenant = %context.tenant.id,
@@ -530,7 +537,10 @@ async fn refuse(
         // including this one, so a client can tell which server answered.
         issuer: context.tenant.issuer.as_str().to_owned(),
     };
-    let signed = if matches!(mode, ResponseMode::QueryJwt | ResponseMode::FormPostJwt) {
+    let signed = if matches!(
+        mode,
+        ResponseMode::QueryJwt | ResponseMode::Jwt | ResponseMode::FormPostJwt
+    ) {
         let Some(signer) = context.signer else {
             return error_page(context, StatusCode::SERVICE_UNAVAILABLE);
         };

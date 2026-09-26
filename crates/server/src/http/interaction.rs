@@ -1718,17 +1718,22 @@ async fn complete(
     // which is what it was when it was pushed.
     let mode = match string("response_mode") {
         None => ResponseMode::Query,
-        Some(raw) => ResponseMode::parse(&raw).unwrap_or_else(|_| {
-            // Unreachable: `authorize::validate` refused every other spelling
-            // before this row existed. A query response is the safe reading —
-            // the parameters are the same either way, and the client's own
-            // `redirect_uri` is where they go.
-            tracing::error!(
-                tenant = %context.tenant.id,
-                "a stored request names a response_mode this server does not have"
-            );
-            ResponseMode::Query
-        }),
+        Some(raw) => match ResponseMode::parse(&raw) {
+            Ok(mode) => mode,
+            Err(_) => {
+                // Unreachable for requests validated by this server. Refuse an
+                // invalid stored mode rather than downgrade a signed response.
+                tracing::error!(
+                    tenant = %context.tenant.id,
+                    "a stored request names a response_mode this server does not have"
+                );
+                return error_page(
+                    context,
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    InteractionError::NotAvailable,
+                );
+            }
+        },
     };
 
     match mode {
@@ -1737,7 +1742,7 @@ async fn complete(
         // `response` is already either a code or an error, so an error reaches
         // the client the way the client asked to be answered.
         ResponseMode::FormPost => form_post(context, &response, &redirect_uri),
-        ResponseMode::QueryJwt | ResponseMode::FormPostJwt => {
+        ResponseMode::QueryJwt | ResponseMode::Jwt | ResponseMode::FormPostJwt => {
             signed_delivery(
                 context,
                 mode,

@@ -484,6 +484,8 @@ pub enum ResponseMode {
     FormPost,
     /// A signed JARM response in the callback URI's query.
     QueryJwt,
+    /// JARM's default signed delivery for `response_type=code`: query.
+    Jwt,
     /// A signed JARM response posted by the browser.
     FormPostJwt,
 }
@@ -495,10 +497,11 @@ impl ResponseMode {
     /// this rather than written out a second time (`ast-iko`): what the server
     /// advertises and what [`Self::parse`] accepts are then the same list by
     /// construction.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Query,
         Self::FormPost,
         Self::QueryJwt,
+        Self::Jwt,
         Self::FormPostJwt,
     ];
 
@@ -509,6 +512,7 @@ impl ResponseMode {
             Self::Query => "query",
             Self::FormPost => "form_post",
             Self::QueryJwt => "query.jwt",
+            Self::Jwt => "jwt",
             Self::FormPostJwt => "form_post.jwt",
         }
     }
@@ -531,6 +535,7 @@ impl ResponseMode {
             "query" => Ok(Self::Query),
             "form_post" => Ok(Self::FormPost),
             "query.jwt" => Ok(Self::QueryJwt),
+            "jwt" => Ok(Self::Jwt),
             "form_post.jwt" => Ok(Self::FormPostJwt),
             _ => Err(UnsupportedResponseMode),
         }

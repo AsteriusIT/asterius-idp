@@ -213,6 +213,20 @@ pub async fn push(
         }
     };
 
+    // FAPI 2.0 Message Signing Final §5.4.2 names the literal `jwt` mode.
+    // Enforce it while the authenticated client can still receive a PAR error.
+    if context
+        .fapi_message_signing_clients
+        .is_some_and(|clients| clients.contains(client.id.as_str()))
+        && request.response_mode != authorize::ResponseMode::Jwt
+    {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "this client must request response_mode=jwt",
+        );
+    }
+
     // OIDC Core §3.1.2.1: an `id_token_hint` "MUST be validated". Here, while
     // the client that sent it is still on the connection — the browser that
     // arrives at `/authorize` later has no way to be told, and would meet a
