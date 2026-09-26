@@ -138,11 +138,9 @@ impl Action {
     ///
     /// # Errors
     ///
-    /// [`MergeRefused`] when the union would exceed a bound a grant row must
-    /// hold to. Only `merge` can reach it — `replace` cannot grow anything —
-    /// and only through `authorization_details`, whose elements accumulate
-    /// across merges where scopes and resources are drawn from the client's own
-    /// bounded registration and so cannot.
+    /// [`MergeRefused`] when a union exceeds a grant or claims-request bound,
+    /// or when two ASC expressions cannot be combined without changing the
+    /// consented rules. Only `merge` can reach this error.
     pub fn apply(
         self,
         existing: &mut Grant,
@@ -161,13 +159,17 @@ impl Action {
                 existing.claims_locales.clone_from(&granted.claims_locales);
             }
             Self::Merge => {
-                existing.scopes = union(&existing.scopes, &granted.scopes);
-                existing.resources = union(&existing.resources, &granted.resources);
-                existing.authorization_details = merged_details(
+                // Validate both unions before changing any part of the grant.
+                // A refusal must leave the caller's in-memory grant intact.
+                let details = merged_details(
                     &existing.authorization_details,
                     &granted.authorization_details,
                 )?;
-                existing.claims = merged_claims(&existing.claims, &granted.claims);
+                let claims = merged_claims(&existing.claims, &granted.claims)?;
+                existing.scopes = union(&existing.scopes, &granted.scopes);
+                existing.resources = union(&existing.resources, &granted.resources);
+                existing.authorization_details = details;
+                existing.claims = claims;
                 existing.claims_locales =
                     merged_locales(&existing.claims_locales, &granted.claims_locales);
             }
@@ -189,12 +191,9 @@ impl std::fmt::Display for Action {
     }
 }
 
-/// A `merge` that would produce a grant this server cannot store.
+/// A `merge` that would produce an invalid or ambiguous grant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error(
-    "merging would exceed the {} authorization_details elements a grant may hold",
-    asterius_domain::entities::authorization_details::MAX_ELEMENTS
-)]
+#[error("the requested grant cannot be merged safely")]
 #[non_exhaustive]
 pub struct MergeRefused;
 
@@ -613,12 +612,26 @@ fn merged_details(
 /// request's entry: it is the one the person was just shown and approved, and
 /// the older one was approved under a decision this request is amending.
 ///
-/// A non-object on either side is left alone rather than guessed at. Both come
-/// from `ClaimsRequest::to_json`, which produces an object, so this is a
-/// defensive branch and not a case.
-fn merged_claims(existing: &serde_json::Value, granted: &serde_json::Value) -> serde_json::Value {
+/// ASC definitions and ordered rules are a single consented expression. Two
+/// distinct expressions cannot be combined by this object-level union: doing
+/// so could rebind an alias or silently drop a rule. Accept an ASC-bearing
+/// merge only when both expressions are identical, or just one side has ASC.
+/// Then reparse the whole result to catch bounds and dangling aliases before
+/// the grant row is mutated.
+fn merged_claims(
+    existing: &serde_json::Value,
+    granted: &serde_json::Value,
+) -> Result<serde_json::Value, MergeRefused> {
+    let held_request =
+        crate::claims::ClaimsRequest::from_json(existing).map_err(|_| MergeRefused)?;
+    let new_request = crate::claims::ClaimsRequest::from_json(granted).map_err(|_| MergeRefused)?;
+    let held_asc = held_request.advanced_claims_consent_surface();
+    let new_asc = new_request.advanced_claims_consent_surface();
+    if held_asc.is_some() && new_asc.is_some() && held_asc != new_asc {
+        return Err(MergeRefused);
+    }
     let (Some(existing), Some(granted)) = (existing.as_object(), granted.as_object()) else {
-        return granted.clone();
+        return Err(MergeRefused);
     };
     let mut merged = existing.clone();
     for (target, requested) in granted {
@@ -633,7 +646,12 @@ fn merged_claims(existing: &serde_json::Value, granted: &serde_json::Value) -> s
             }
         }
     }
-    serde_json::Value::Object(merged)
+    let merged = serde_json::Value::Object(merged);
+    let parsed = crate::claims::ClaimsRequest::from_json(&merged).map_err(|_| MergeRefused)?;
+    if parsed.advanced_claims_consent_surface() != held_asc.or(new_asc) {
+        return Err(MergeRefused);
+    }
+    Ok(merged)
 }
 
 /// The union of two `claims_locales` preferences, most preferred first.
@@ -1065,6 +1083,57 @@ mod tests {
             json!({"userinfo": {"email": null, "name": null}, "id_token": {"acr": null}})
         );
         assert_eq!(existing.claims_locales, ["fr-CA", "en"]);
+    }
+
+    #[test]
+    fn merge_refuses_different_asc_alias_bindings_before_mutating_grant() {
+        let mut existing = grant();
+        existing.scopes.insert("profile".to_owned());
+        existing.claims = json!({
+            "_asc": {"transformed_claims": {
+                "corporate": {"claim": "email", "fn": [["ends_with", "@example.com"]]}
+            }},
+            "userinfo": {":corporate": null}
+        });
+        let before = existing.clone();
+        let mut granted = grant();
+        granted.scopes.insert("email".to_owned());
+        granted.claims = json!({
+            "_asc": {"transformed_claims": {
+                "corporate": {"claim": "email", "fn": [["ends_with", "@another.example"]]}
+            }},
+            "userinfo": {":corporate": null}
+        });
+
+        assert_eq!(
+            Action::Merge.apply(&mut existing, &granted, now()),
+            Err(MergeRefused)
+        );
+        assert_eq!(existing, before);
+    }
+
+    #[test]
+    fn merge_keeps_one_consented_asc_expression_with_ordinary_claims() {
+        let mut existing = grant();
+        existing.claims = json!({
+            "_asc": {"transformed_claims": {
+                "corporate": {"claim": "email", "fn": [["ends_with", "@example.com"]]}
+            }},
+            "userinfo": {":corporate": null}
+        });
+        let held_surface = crate::claims::ClaimsRequest::from_json(&existing.claims)
+            .expect("valid ASC request")
+            .advanced_claims_consent_surface();
+        let mut granted = grant();
+        granted.claims = json!({"userinfo": {"name": null}});
+
+        Action::Merge
+            .apply(&mut existing, &granted, now())
+            .expect("compatible merge");
+        let merged = crate::claims::ClaimsRequest::from_json(&existing.claims)
+            .expect("merged request reparses");
+        assert_eq!(merged.advanced_claims_consent_surface(), held_surface);
+        assert!(existing.claims["userinfo"].get("name").is_some());
     }
 
     /// The authentication on the grant is this authorization's, because the
