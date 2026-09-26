@@ -1554,7 +1554,10 @@ fn fapi_jar_request(overrides: &Value) -> String {
         if value.is_null() {
             claims.as_object_mut().expect("claims").remove(name);
         } else {
-            claims.as_object_mut().expect("claims").insert(name.clone(), value.clone());
+            claims
+                .as_object_mut()
+                .expect("claims")
+                .insert(name.clone(), value.clone());
         }
     }
     signed(&claims, "oauth-authz-req+jwt", jar_key())
@@ -1563,8 +1566,7 @@ fn fapi_jar_request(overrides: &Value) -> String {
 #[tokio::test]
 async fn fapi_message_signing_rejects_plain_par_and_non_fapi_profile() {
     let ordinary = jar_client();
-    let (status, body, store) =
-        pushed_with_jar_profile(&valid_pairs(), &ordinary, true).await;
+    let (status, body, store) = pushed_with_jar_profile(&valid_pairs(), &ordinary, true).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["error"], "invalid_request");
     assert!(store.0.lock().expect("lock").is_empty());
@@ -1588,15 +1590,16 @@ async fn fapi_message_signing_requires_window_jarm_mode_and_registered_algorithm
         (json!({"response_mode": "query"}), "invalid_request"),
     ] {
         let pairs = jar_form(&fapi_jar_request(&overrides));
-        let (status, body, store) =
-            pushed_with_jar_profile(&borrowed(&pairs), &client, true).await;
+        let (status, body, store) = pushed_with_jar_profile(&borrowed(&pairs), &client, true).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
         assert_eq!(body["error"], expected_error, "{body}");
         assert!(store.0.lock().expect("lock").is_empty());
     }
 
     let mut missing_algorithm = client.clone();
-    missing_algorithm.registration.authorization_signed_response_alg = None;
+    missing_algorithm
+        .registration
+        .authorization_signed_response_alg = None;
     let pairs = jar_form(&fapi_jar_request(&json!({})));
     let (status, body, store) =
         pushed_with_jar_profile(&borrowed(&pairs), &missing_algorithm, true).await;
@@ -1604,8 +1607,7 @@ async fn fapi_message_signing_requires_window_jarm_mode_and_registered_algorithm
     assert_eq!(body["error"], "invalid_request", "{body}");
     assert!(store.0.lock().expect("lock").is_empty());
 
-    let (status, body, store) =
-        pushed_with_jar_profile(&borrowed(&pairs), &client, true).await;
+    let (status, body, store) = pushed_with_jar_profile(&borrowed(&pairs), &client, true).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     let stored = store.0.lock().expect("lock");
     assert_eq!(stored.len(), 1);
