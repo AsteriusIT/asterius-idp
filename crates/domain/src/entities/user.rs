@@ -293,6 +293,9 @@ const SERVER_ISSUED: &[&str] = &[
     "nonce",
     "s_hash",
     "scope",
+    // OpenID Connect Enterprise Extensions owns this RP session deadline.
+    // Migration 0128 archives legacy user attributes before reserving it.
+    "session_expiry",
     "sid",
     "sub",
     "verified_claims",
