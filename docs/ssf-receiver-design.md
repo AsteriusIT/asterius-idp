@@ -113,11 +113,24 @@ an empty list permits local removal. While deletion is pending, new polls are
 refused and peer summaries expose `deletion_pending`. The admin operation is
 `POST /ssf/upstream/delete` with the configured `peer_client_id` and
 `admin.ssf:write` authority.
+`POST /ssf/upstream/request-verification` first checks the pinned stream,
+stores a 15-minute hash of a random correlation state, then asks the
+transmitter to send an asynchronous verification SET. The one-shot poll checks
+the signed event's opaque stream subject and state before recording health and
+ACKing; duplicate JTIs remain ACKable for the seven-day replay window.
+`last_verified_at` records any valid verification SET. A transmitter may send
+one without a `state`; that proves liveness but leaves a receiver challenge
+pending. Only a matching state advances `last_challenge_verified_at`, which is
+also visible in the peer summary. An incorrect state is reported as
+`invalid_state`, without a user lifecycle effect.
 Pending intents and established stream identities survive local client
 deletion, so re-registering the same issuer cannot erase the evidence of a
 remote stream that may still exist.
 The token file is re-read for each operation but has no automatic OAuth refresh;
-operators must rotate it before expiry. Neither inbound `ssf.receive` scope nor
+operators must rotate it before expiry and retain the upstream peer config,
+its active `ssf.receive` client registration, and the credential until the
+remote stream is deleted. A removed peer cannot safely
+authorize or validate cleanup from the retained tombstone alone. Neither inbound `ssf.receive` scope nor
 a peer's registered signing key authorizes outbound management. Explicit
 subject enrollment and the complete CAEP event vocabulary remain incomplete.
 Local lifecycle,
@@ -313,5 +326,5 @@ claiming CAEP Interoperability Profile conformance.
   explicitly allow upstream `default_subjects: ALL`; `NONE` still needs
   external enrollment. Outbound subject enrollment remains absent. The static bearer
   file is re-read per operator request, but access-token acquisition and
-  automatic refresh are absent. `ast-s36.26.4.9` owns these lifecycle gaps and
-  interoperability evidence.
+  automatic refresh are outside this explicit operator-managed peer profile.
+  No cross-implementation verification or delivery evidence has been recorded.

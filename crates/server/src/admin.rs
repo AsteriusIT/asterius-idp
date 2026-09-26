@@ -921,6 +921,14 @@ impl asterius_admin_api::ssf::SsfAdministration for DeploymentSsf {
                     .as_ref()
                     .and_then(|stream| stream.last_polled_at)
                     .and_then(|time| time.format(&Rfc3339).ok()),
+                last_verified_at: established
+                    .as_ref()
+                    .and_then(|stream| stream.last_verified_at)
+                    .and_then(|time| time.format(&Rfc3339).ok()),
+                last_challenge_verified_at: established
+                    .as_ref()
+                    .and_then(|stream| stream.last_challenge_verified_at)
+                    .and_then(|time| time.format(&Rfc3339).ok()),
             });
         }
         Ok(items)
@@ -1021,6 +1029,32 @@ impl asterius_admin_api::ssf::SsfAdministration for DeploymentSsf {
             .map_err(|_| Error::Unavailable)?
             .ok_or(Error::Peer)?;
         crate::ssf_upstream::delete_recorded_stream(
+            &runtime.endpoints,
+            &tenant_entity,
+            config,
+            &runtime.poster,
+            now,
+        )
+        .await
+        .map_err(upstream_setup_error)
+    }
+
+    async fn upstream_request_verification(
+        &self,
+        tenant: &TenantId,
+        peer: &ClientId,
+        now: time::OffsetDateTime,
+    ) -> Result<(), asterius_admin_api::ssf::UpstreamOperationError> {
+        use asterius_admin_api::ssf::UpstreamOperationError as Error;
+        let runtime = self.upstream.as_ref().ok_or(Error::Unavailable)?;
+        let config = runtime.peer(tenant, peer).ok_or(Error::Peer)?;
+        let tenant_entity = self
+            .tenants
+            .find_by_id(tenant)
+            .await
+            .map_err(|_| Error::Unavailable)?
+            .ok_or(Error::Peer)?;
+        crate::ssf_upstream::request_stream_verification(
             &runtime.endpoints,
             &tenant_entity,
             config,

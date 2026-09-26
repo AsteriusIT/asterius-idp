@@ -9,7 +9,9 @@ use crate::http::ssf_receiver;
 use crate::outbound::{HttpsPoster, PostRequest, PostResponse};
 use asterius_domain::{ClientId, Tenant};
 use asterius_ssf::{caep, stream};
+use base64::Engine as _;
 use serde_json::{Value, json};
+use sha2::{Digest as _, Sha256};
 use std::io::Read as _;
 use time::OffsetDateTime;
 use zeroize::Zeroizing;
@@ -75,6 +77,9 @@ pub async fn verify_recorded_stream(
         .await
         .map_err(|_| SetupError::Storage)?
         .ok_or(SetupError::Peer)?;
+    if recorded.deletion_started_at.is_some() {
+        return Err(SetupError::PendingReview);
+    }
     let expected_audience = format!("{}{}", tenant.issuer.as_str(), ssf_receiver::RECEIVER_PATH);
     if recorded.peer_client_id != peer.as_str()
         || recorded.issuer != issuer.as_str()
@@ -122,6 +127,73 @@ pub async fn verify_recorded_stream(
         .await
         .map_err(|_| SetupError::Transport)?;
     validate_status(&status, &recorded.stream_id)
+}
+
+/// Ask the transmitter to send a stream-scoped verification SET. The random
+/// state is held only in the outbound request; its hash and expiry are stored
+/// before the POST, so asynchronous poll delivery can prove correlation.
+pub async fn request_stream_verification(
+    endpoints: &ClientEndpoints,
+    tenant: &Tenant,
+    config: &SsfUpstreamPeerConfig,
+    poster: &HttpsPoster,
+    now: OffsetDateTime,
+) -> Result<(), SetupError> {
+    verify_recorded_stream(endpoints, tenant, config, poster, now).await?;
+    let peer = ClientId::new(config.issuer.as_str());
+    let (_issuer, _jwks, _scopes, metadata) =
+        ssf_receiver::configured_peer(endpoints, tenant, &peer)
+            .await
+            .map_err(|_| SetupError::Peer)?;
+    same_origin_management_endpoint(&metadata.verification_endpoint, &config.issuer)?;
+    let repository = endpoints
+        .store
+        .scope(tenant.id.clone())
+        .ssf_upstream_streams();
+    let recorded = repository
+        .find(peer.as_str())
+        .await
+        .map_err(|_| SetupError::Storage)?
+        .ok_or(SetupError::Peer)?;
+    let mut nonce = [0_u8; 32];
+    getrandom::fill(&mut nonce).map_err(|_| SetupError::Credential)?;
+    let state = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(nonce);
+    let state_hash = Sha256::digest(state.as_bytes());
+    let expires_at = now
+        .checked_add(time::Duration::minutes(15))
+        .ok_or(SetupError::Response)?;
+    if !repository
+        .begin_verification(
+            peer.as_str(),
+            &recorded.stream_id,
+            &state_hash,
+            expires_at,
+            now,
+        )
+        .await
+        .map_err(|_| SetupError::Storage)?
+    {
+        return Err(SetupError::PendingReview);
+    }
+    let token = read_bearer_file(&config.bearer_token_file)?;
+    let authorization = Zeroizing::new(format!("Bearer {}", token.as_str()));
+    let body = serde_json::to_vec(&json!({
+        "stream_id": &recorded.stream_id,
+        "state": &state,
+    }))
+    .map_err(|_| SetupError::Response)?;
+    let response = poster
+        .post_with_response(
+            &metadata.verification_endpoint,
+            PostRequest::of("application/json").authorized_by(Some(&authorization)),
+            &body,
+        )
+        .await
+        .map_err(|_| SetupError::Transport)?;
+    if response.status != 204 || response.truncated || !response.body.is_empty() {
+        return Err(SetupError::Response);
+    }
+    Ok(())
 }
 
 /// Delete one recorded remote poll stream. A durable marker precedes the
@@ -312,6 +384,73 @@ pub async fn poll_once(
     .await;
     let event = match event {
         Ok(event) => event,
+        // A verification SET need not carry CAEP's txn/event_timestamp, so
+        // the lifecycle parser may reject its profile before seeing its URI.
+        Err(
+            ssf_receiver::ReceiverError::UnsupportedEvent | ssf_receiver::ReceiverError::Profile,
+        ) => {
+            let control = ssf_receiver::verify_polled_stream_verification(
+                endpoints,
+                tenant,
+                &peer,
+                &established.audience,
+                &established.stream_id,
+                &set,
+                now,
+            )
+            .await;
+            let control = match control {
+                Ok(control) => control,
+                Err(error) => {
+                    let (code, description) = invalid_set_error(error).ok_or(SetupError::Event)?;
+                    report_invalid_set(poster, poll_url, &authorization, &jti, code, description)
+                        .await?;
+                    return mark_poll_outcome(&repository, &peer, &established.stream_id, now)
+                        .await;
+                }
+            };
+            if control.peer != peer || control.jti != jti {
+                report_invalid_set(
+                    poster,
+                    poll_url,
+                    &authorization,
+                    &jti,
+                    "invalid_request",
+                    "The SET identifier does not match the poll response",
+                )
+                .await?;
+                return mark_poll_outcome(&repository, &peer, &established.stream_id, now).await;
+            }
+            let state_hash = control
+                .state
+                .as_deref()
+                .map(|state| Sha256::digest(state.as_bytes()));
+            let accepted = repository
+                .complete_verification(
+                    peer.as_str(),
+                    &established.stream_id,
+                    &jti,
+                    state_hash.as_deref(),
+                    control.replay_until,
+                    now,
+                )
+                .await
+                .map_err(|_| SetupError::Storage)?;
+            if !accepted {
+                report_invalid_set(
+                    poster,
+                    poll_url,
+                    &authorization,
+                    &jti,
+                    "invalid_state",
+                    "The verification state does not match the pending request",
+                )
+                .await?;
+                return mark_poll_outcome(&repository, &peer, &established.stream_id, now).await;
+            }
+            acknowledge_polled_set(poster, poll_url, &authorization, &jti).await?;
+            return mark_poll_outcome(&repository, &peer, &established.stream_id, now).await;
+        }
         Err(error) => {
             let (code, description) = invalid_set_error(error).ok_or(SetupError::Event)?;
             report_invalid_set(poster, poll_url, &authorization, &jti, code, description).await?;
@@ -378,6 +517,40 @@ pub async fn poll_once(
     ssf_receiver::apply_verified_event(endpoints, tenant, &event, now)
         .await
         .map_err(|_| SetupError::Event)?;
+    acknowledge_polled_set(poster, poll_url, &authorization, &jti).await?;
+    if !repository
+        .mark_polled(peer.as_str(), &established.stream_id, now)
+        .await
+        .map_err(|_| SetupError::Storage)?
+    {
+        return Err(SetupError::Peer);
+    }
+    Ok(true)
+}
+
+async fn mark_poll_outcome(
+    repository: &asterius_store_pg::PgSsfUpstreamStreams,
+    peer: &ClientId,
+    stream_id: &str,
+    now: OffsetDateTime,
+) -> Result<bool, SetupError> {
+    if repository
+        .mark_polled(peer.as_str(), stream_id, now)
+        .await
+        .map_err(|_| SetupError::Storage)?
+    {
+        Ok(false)
+    } else {
+        Err(SetupError::Peer)
+    }
+}
+
+async fn acknowledge_polled_set(
+    poster: &HttpsPoster,
+    poll_url: &str,
+    authorization: &str,
+    jti: &str,
+) -> Result<(), SetupError> {
     let acknowledgement = serde_json::to_vec(&json!({
         "maxEvents": 0,
         "returnImmediately": true,
@@ -397,14 +570,7 @@ pub async fn poll_once(
     if parse_polled_set(&response)?.is_some() {
         return Err(SetupError::Response);
     }
-    if !repository
-        .mark_polled(peer.as_str(), &established.stream_id, now)
-        .await
-        .map_err(|_| SetupError::Storage)?
-    {
-        return Err(SetupError::Peer);
-    }
-    Ok(true)
+    Ok(())
 }
 
 /// Only deterministic SET validation failures are reported. A missing key,

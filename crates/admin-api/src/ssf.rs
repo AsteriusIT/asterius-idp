@@ -74,6 +74,10 @@ pub struct UpstreamPeerSummary {
     pub pending_since: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_polled_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_verified_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_challenge_verified_at: Option<String>,
 }
 
 /// Closed refusal categories for a guarded upstream operation. No upstream
@@ -166,6 +170,17 @@ pub trait SsfAdministration: Debug + Send + Sync {
     /// Deletes the exact recorded remote stream after durable intent and
     /// authenticated readback. An interrupted delete remains pending review.
     async fn upstream_delete(
+        &self,
+        _tenant: &TenantId,
+        _peer: &ClientId,
+        _now: OffsetDateTime,
+    ) -> Result<(), UpstreamOperationError> {
+        Err(UpstreamOperationError::Unavailable)
+    }
+
+    /// Requests an asynchronous verification SET with a server-generated
+    /// correlation state; completion is observed by an explicit poll.
+    async fn upstream_request_verification(
         &self,
         _tenant: &TenantId,
         _peer: &ClientId,
