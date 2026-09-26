@@ -476,6 +476,42 @@ pub fn sign_assertion(
     sign_enveloped(&unsigned, insertion, &format!("#{id}"), private_key_pkcs8)
 }
 
+/// Builds a SAML HTTP-POST success Response containing one signed bearer
+/// assertion. Its envelope is derived exclusively from that assertion: the
+/// response and assertion carry the same issuer, request ID and ACS URL.
+/// No caller-supplied unsigned envelope field can redirect a signed assertion
+/// to a different SP. The Response itself is unsigned; the assertion is the
+/// integrity-protected object required for the POST binding.
+///
+/// This is an internal serializer, not authorization to issue an assertion.
+/// A future SSO route must establish an authenticated session, check the
+/// original validated request and trusted SP, and provision a dedicated IdP
+/// signing key before it calls this function.
+pub fn build_post_response(
+    response_id: &str,
+    assertion: &Assertion<'_>,
+    private_key_pkcs8: &[u8],
+) -> Result<String, MetadataError> {
+    if !valid_xml_id(response_id)
+        || response_id == assertion.id
+        || response_id == assertion.in_response_to
+    {
+        return Err(MetadataError::InvalidInput);
+    }
+    let signed_assertion = sign_assertion(assertion, private_key_pkcs8)?;
+    let issued = assertion
+        .issued_at
+        .format(&Rfc3339)
+        .map_err(|_| MetadataError::InvalidInput)?;
+    let id = escape_attr(response_id);
+    let request = escape_attr(assertion.in_response_to);
+    let destination = escape_attr(assertion.recipient);
+    let issuer = escape_text(assertion.issuer);
+    Ok(format!(
+        "<samlp:Response xmlns:samlp=\"{PROTOCOL_NS}\" ID=\"{id}\" InResponseTo=\"{request}\" Version=\"2.0\" IssueInstant=\"{issued}\" Destination=\"{destination}\"><saml:Issuer xmlns:saml=\"{ASSERTION_NS}\">{issuer}</saml:Issuer><samlp:Status><samlp:StatusCode Value=\"urn:oasis:names:tc:SAML:2.0:status:Success\"></samlp:StatusCode></samlp:Status>{signed_assertion}</samlp:Response>"
+    ))
+}
+
 fn https_url(value: &str) -> bool {
     Url::parse(value).is_ok_and(|url| {
         url.scheme() == "https"
