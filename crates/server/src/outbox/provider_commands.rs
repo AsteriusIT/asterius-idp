@@ -123,9 +123,11 @@ impl Deliverer for ProviderCommandDeliverer {
         .map_err(|error| {
             let permanent = match &error {
                 DeliveryError::Post(post) => post.is_permanent(),
+                DeliveryError::UnsupportedStatus(status) => {
+                    *status != 429 && !(500..=599).contains(status)
+                }
                 DeliveryError::Subject
                 | DeliveryError::Time
-                | DeliveryError::UnsupportedStatus(_)
                 | DeliveryError::InvalidResponse(_) => true,
                 DeliveryError::Signing(_) | DeliveryError::Audit(_) => false,
             };

@@ -229,6 +229,7 @@ fn validate_response(
     if response.status != 200 && response.status != 204 {
         return Err(DeliveryError::UnsupportedStatus(response.status));
     }
+    // Draft 02 §4 requires no-store even for a bodyless 204 response.
     if !response.cache_control.as_deref().is_some_and(|header| {
         header
             .split(',')
