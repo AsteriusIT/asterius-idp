@@ -1,8 +1,9 @@
 //! Offline validation of a pinned ID-JAG before a downstream policy decision.
 //!
 //! This module cannot authorize redemption. The ID-JAG draft -04 leaves actor
-//! token validation and actor-chain meaning to a future profile. Until that
-//! profile exists, grants with `act` or `may_act` fail closed here.
+//! token validation and actor-chain meaning to a future profile. This local
+//! profile accepts only one operator-pinned actor identity, with no nested
+//! chain or `may_act`; the caller must still make every stateful decision.
 
 use crate::{ClientKeySet, Policy, TypRule, VerificationError, verify};
 use asterius_domain::SigningAlgorithm;
@@ -24,6 +25,9 @@ pub struct IdJagPolicy {
     pub audience: String,
     /// Authenticated downstream client ID.
     pub client_id: String,
+    /// Operator-pinned upstream actor client ID. This is independent of the
+    /// authenticated downstream client and is never inferred from `act`.
+    pub actor_client_id: String,
     /// Thumbprint of the authenticated client's DPoP proof key.
     pub dpop_jkt: String,
     /// Operator-approved resource identifiers.
@@ -40,6 +44,8 @@ pub struct IdJagPolicy {
 pub struct ValidatedIdJag {
     /// User subject asserted by the trusted issuer.
     pub subject: String,
+    /// Verified actor identity matching the operator's explicit pin.
+    pub actor_client_id: String,
     /// JTI to reserve atomically before any future token issuance.
     pub jti: String,
     /// Approved target resource.
@@ -62,8 +68,8 @@ pub enum IdJagError {
     /// A required ID-JAG claim is missing, malformed, or unauthorized.
     #[error("ID-JAG is invalid: {0}")]
     Invalid(&'static str),
-    /// The draft has not defined sufficient rules to accept this actor chain.
-    #[error("ID-JAG actor semantics require a defined downstream profile")]
+    /// Actor differs from the configured single-hop local profile.
+    #[error("ID-JAG actor does not match the configured single-hop profile")]
     UnsupportedActor,
 }
 
@@ -76,7 +82,7 @@ pub enum IdJagError {
 /// # Errors
 ///
 /// Rejects incomplete policy, failed signature/standard claims, unsupported
-/// actor claims, or any ID-JAG claim outside the explicit policy.
+/// actor chains, or any ID-JAG claim outside the explicit policy.
 pub fn validate(
     token: &str,
     policy: &IdJagPolicy,
@@ -85,6 +91,7 @@ pub fn validate(
     if policy.issuer.is_empty()
         || policy.audience.is_empty()
         || policy.client_id.is_empty()
+        || policy.actor_client_id.is_empty()
         || policy.dpop_jkt.is_empty()
         || policy.resources.is_empty()
         || policy.scopes.is_empty()
@@ -101,11 +108,26 @@ pub fn validate(
     let verified = verify(token, &jwt_policy, &policy.issuer_keys, now)?;
     let claims = &verified.claims;
 
-    if claims.get("act").is_some() || claims.get("may_act").is_some() {
+    if claims.get("may_act").is_some() {
         return Err(IdJagError::UnsupportedActor);
     }
+    // Draft -04 §4.4.1 says client_id continuity does not authenticate act.
+    // The verified signature establishes the configured issuer; this exact
+    // actor pin is a separate operator decision. Nested chains and extra actor
+    // attributes have no authorization semantics in this local profile.
+    let actor = claims
+        .get("act")
+        .and_then(Value::as_object)
+        .filter(|value| value.len() == 1)
+        .and_then(|value| value.get("client_id"))
+        .and_then(Value::as_str)
+        .filter(|value| *value == policy.actor_client_id.as_str())
+        .ok_or(IdJagError::UnsupportedActor)?;
     if claims.get("authorization_details").is_some() {
         return Err(IdJagError::Invalid("authorization_details is unsupported"));
+    }
+    if claims.get("sub_id").is_some() {
+        return Err(IdJagError::Invalid("sub_id subject mapping is unsupported"));
     }
     let sole_audience = match claims.get("aud") {
         Some(Value::String(value)) => value == &policy.audience,
@@ -126,6 +148,9 @@ pub fn validate(
     }
     let subject = nonempty_string(claims, "sub")?;
     let jti = nonempty_string(claims, "jti")?;
+    if jti.len() > 255 {
+        return Err(IdJagError::Invalid("jti exceeds replay-key bound"));
+    }
     let issued_at = claims
         .get("iat")
         .and_then(Value::as_i64)
@@ -166,6 +191,7 @@ pub fn validate(
 
     Ok(ValidatedIdJag {
         subject: subject.to_owned(),
+        actor_client_id: actor.to_owned(),
         jti: jti.to_owned(),
         resource: resource.to_owned(),
         scopes,
