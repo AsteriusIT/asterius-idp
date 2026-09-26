@@ -806,6 +806,8 @@ fn grant_management_resource(
 /// which the request's claims could be passed instead.
 #[derive(Debug)]
 pub struct IdTokenParts<'a> {
+    /// A listed IPSIE candidate must release a validated ACR and IANA AMR.
+    pub require_ipsie_assurance: bool,
     /// Operator policy for the RP session created by this ID token, in seconds.
     pub rp_session_lifetime_seconds: Option<u32>,
     /// Current policy, including whether methods may be released.
@@ -889,6 +891,7 @@ pub async fn sign_id_token(
     now: time::OffsetDateTime,
 ) -> Result<String, DomainError> {
     let IdTokenParts {
+        require_ipsie_assurance,
         rp_session_lifetime_seconds,
         acr_policy,
         claimed,
@@ -900,6 +903,14 @@ pub async fn sign_id_token(
         released,
     } = parts;
     let authentication = authentication_under(&session.authentication, acr_policy);
+    if require_ipsie_assurance && (authentication.acr.is_none() || authentication.amr.is_empty()) {
+        // The policy may withhold AMR, or a stored proof may no longer meet
+        // its named ACR. Neither is a license to invent assurance evidence.
+        return Err(DomainError::invalid(
+            "id_token",
+            "IPSIE candidate requires a validated acr and IANA amr",
+        ));
+    }
     let mut builder = IdToken::new(
         &tenant.issuer,
         claimed,

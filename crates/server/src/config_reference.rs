@@ -1122,7 +1122,7 @@ fn tenant() -> Section {
                 "ipsie_identity_only_client",
                 "array of client ID strings",
                 "empty (ordinary audience rules)".to_owned(),
-                "For each listed client, permit only authorization-code and optional refresh grants, OIDC identity scopes (openid, profile, email, address, phone, offline_access), and the tenant issuer as its sole access-token audience. The issuer must be registered as a resource server and assigned to the client; missing setup fails closed. PAR, registration writes, and token issuance enforce this boundary. This does not claim full IPSIE SL1 conformance.",
+                "For each listed client, permit only authorization-code and optional refresh grants, OIDC identity scopes (openid, profile, email, address, phone, offline_access), and the tenant issuer as its sole access-token audience. The issuer must be registered as a resource server and assigned to the client; missing setup fails closed. PAR, registration writes, and token issuance enforce this boundary. Code and refresh ID tokens also require a current tenant-ladder ACR and nonempty evidence-backed IANA AMR release; missing evidence or disabled AMR release fails issuance. This does not claim full IPSIE SL1 conformance.",
             ),
             key(
                 "ipsie_rp_session",
