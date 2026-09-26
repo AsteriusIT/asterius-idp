@@ -666,23 +666,11 @@ pub struct AuthorizationRequest {
     pub grant_management: Option<GrantManagement>,
 }
 
-/// Validates a pushed authorization request.
-///
-/// `client_id` is the *authenticated* client, from client authentication —
-/// never from the `client_id` form parameter. The parameter is checked against
-/// it, but it is not the source of truth: a request is executed as whoever
-/// proved they were, not as whoever the form says.
-///
-/// # Errors
-///
-/// Returns the first [`AuthorizationError`] that applies.
-// fuzz-target: par_form
-pub fn validate(
+/// Checks request identity and required response type before parsing other fields.
+fn validate_request_identity(
     params: &Parameters,
     client_id: &str,
-    registration: &ClientRegistration,
-    policy: AuthorizationPolicy,
-) -> Result<AuthorizationRequest, AuthorizationError> {
+) -> Result<(), AuthorizationError> {
     // RFC 9126 §2.1: "The `request_uri` authorization request parameter is one
     // exception, and it MUST NOT be provided." A pushed request that carries
     // one is trying to chain a reference this server issued into a new push.
@@ -715,6 +703,28 @@ pub fn validate(
         Some(_) => return Err(AuthorizationError::UnsupportedResponseType),
         None => return Err(AuthorizationError::Missing("response_type")),
     }
+
+    Ok(())
+}
+
+/// Validates a pushed authorization request.
+///
+/// `client_id` is the *authenticated* client, from client authentication —
+/// never from the `client_id` form parameter. The parameter is checked against
+/// it, but it is not the source of truth: a request is executed as whoever
+/// proved they were, not as whoever the form says.
+///
+/// # Errors
+///
+/// Returns the first [`AuthorizationError`] that applies.
+// fuzz-target: par_form
+pub fn validate(
+    params: &Parameters,
+    client_id: &str,
+    registration: &ClientRegistration,
+    policy: AuthorizationPolicy,
+) -> Result<AuthorizationRequest, AuthorizationError> {
+    validate_request_identity(params, client_id)?;
 
     // OAuth 2.0 Multiple Response Type Encoding Practices §2.1. Absent means
     // `query`, which is what §2.1 defines as the default for this
