@@ -119,9 +119,10 @@ pub const DEFAULT_MAX_DELEGATION_DEPTH: u8 = 1;
 /// `refresh_token` is absent too — a refresh token is a long-lived credential
 /// held by a process nobody is watching, and an agent that needs a new token
 /// can authenticate again with the key it already has.
-pub const AGENT_GRANT_TYPES: [GrantType; 4] = [
+pub const AGENT_GRANT_TYPES: [GrantType; 5] = [
     GrantType::ClientCredentials,
     GrantType::TokenExchange,
+    GrantType::JwtBearer,
     GrantType::DeviceCode,
     GrantType::Ciba,
 ];

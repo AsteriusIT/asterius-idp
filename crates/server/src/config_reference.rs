@@ -1281,6 +1281,9 @@ fn features() -> Vec<Key> {
                     }
                     Feature::DeviceFlow => "Device Authorization Grant (RFC 8628).",
                     Feature::TokenExchange => "Token Exchange (RFC 8693) with delegation chains.",
+                    Feature::IdJag => {
+                        "Pinned ID-JAG JWT bearer redemption (derived from trusted issuers)."
+                    }
                     Feature::Ssf => "Shared Signals Framework transmitter and CAEP/RISC events.",
                     Feature::Authzen => "AuthZEN Authorization API 1.0 policy decision point.",
                     Feature::DpopNonce => "Server-issued DPoP nonces (RFC 9449 §8).",

@@ -343,6 +343,9 @@ pub fn grant_types(capabilities: &Capabilities) -> Vec<&'static str> {
     if capabilities.token_exchange {
         grants.push("urn:ietf:params:oauth:grant-type:token-exchange");
     }
+    if capabilities.id_jag {
+        grants.push("urn:ietf:params:oauth:grant-type:jwt-bearer");
+    }
     if capabilities.device_flow {
         grants.push("urn:ietf:params:oauth:grant-type:device_code");
     }

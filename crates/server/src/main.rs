@@ -251,6 +251,15 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
         let id_jag_trusts = Arc::new(asterius_server::id_jag_trust::IdJagTrusts::load(
             &config.tenants,
         )?);
+        // Storage revalidates registered clients against deployment support.
+        // Routed discovery and dispatch narrow this further to each tenant's
+        // own loaded pins and settings.
+        let mut runtime_features = config.features;
+        runtime_features.id_jag = config.features.token_exchange
+            && config
+                .tenants
+                .iter()
+                .any(|tenant| id_jag_trusts.supports_tenant(tenant.id.as_str()));
         let http_signature_peers = Arc::new(asterius_server::http_signatures::PeerKeys::load(
             &config.tenants,
         )?);
@@ -304,7 +313,8 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
         // and the admin API's dead-letter screen reads through it, so the
         // screen reports the schedule the worker is enforcing (`ast-0ju.9`).
         let outbox = outbox_handle(&store, config.outbox);
-        let admin_context = AdminContext::of(&config, &outbound, &outbox, &kek, &id_jag_trusts);
+        let mut admin_context = AdminContext::of(&config, &outbound, &outbox, &kek, &id_jag_trusts);
+        admin_context.capabilities = runtime_features;
         let client_keys = client_key_cache(&outbound, &store);
         let replay = Arc::new(PgReplayGuard::new(store.pool().clone()));
         let authenticator = client_authenticator(client_keys, &replay, &store, trust_anchors)?;
@@ -317,7 +327,7 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
         let routes = protocol::routes(ProtocolState {
             keys: Arc::clone(&keys) as Arc<dyn asterius_domain::KeyStore>,
             federation,
-            capabilities: config.features,
+            capabilities: runtime_features,
             tenant_settings: Some(settings.clone()),
             signed_metadata: pdp_metadata_signer(&config, &keys),
             clients: Some(Arc::new(ClientEndpoints {
@@ -356,7 +366,7 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
                 authenticator,
                 store: store.clone(),
                 keys: Arc::clone(&keys) as Arc<dyn asterius_domain::KeyStore>,
-                capabilities: config.features,
+                capabilities: runtime_features,
                 par_lifetime: par::clamp_lifetime(par::DEFAULT_LIFETIME),
                 // What a tenant with no opinion of its own issues under; one
                 // that has an opinion overrides it, read through `settings`

@@ -1053,6 +1053,7 @@ struct DeploymentClients {
     store: Store,
     capabilities: Capabilities,
     outbound: Arc<dyn ClientUrlFetcher>,
+    id_jag_trusts: Arc<crate::id_jag_trust::IdJagTrusts>,
 }
 
 impl std::fmt::Debug for DeploymentClients {
@@ -1063,6 +1064,11 @@ impl std::fmt::Debug for DeploymentClients {
 
 #[async_trait::async_trait]
 impl ClientAdministration for DeploymentClients {
+    fn id_jag_pinned(&self, tenant: &TenantId, client_id: &ClientId) -> bool {
+        self.id_jag_trusts
+            .supports_client(tenant.as_str(), client_id.as_str())
+    }
+
     async fn list(&self, tenant: &TenantId) -> Result<Vec<Client>, DomainError> {
         self.store
             .scope(tenant.clone())
@@ -2496,6 +2502,7 @@ impl AdminBackend for Deployment {
             store: self.store.clone(),
             capabilities: self.capabilities,
             outbound: Arc::clone(&self.outbound),
+            id_jag_trusts: Arc::clone(&self.id_jag_trusts),
         })
     }
 

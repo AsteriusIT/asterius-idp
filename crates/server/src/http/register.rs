@@ -775,6 +775,28 @@ async fn unacceptable(
     now: OffsetDateTime,
     registration: &ClientRegistration,
 ) -> Option<Response> {
+    // Client IDs are minted after this point. A new client cannot already be
+    // named by an operator's exact issuer/client pin. Register it under an
+    // ordinary grant first, then add JWT bearer after its pin is configured.
+    if registration
+        .grant_types
+        .contains(&asterius_domain::entities::client::GrantType::JwtBearer)
+    {
+        record(
+            context,
+            now,
+            Outcome::Failure,
+            None,
+            Some("invalid_client_metadata"),
+            None,
+        )
+        .await;
+        return Some(error(
+            StatusCode::BAD_REQUEST,
+            "invalid_client_metadata",
+            "JWT bearer ID-JAG requires an existing operator-pinned client",
+        ));
+    }
     // The tenant's own rules, on the document as it will be stored — after the
     // software statement has had its say, so a statement is subject to the
     // policy rather than an escape from it. `ast-f7m.5`'s admin API reaches the

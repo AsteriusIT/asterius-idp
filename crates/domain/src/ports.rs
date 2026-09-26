@@ -923,6 +923,12 @@ pub trait ClientConfiguration: Debug + Send + Sync {
 /// that name it attached to something that still exists.
 #[async_trait::async_trait]
 pub trait ClientAdministration: Debug + Send + Sync {
+    /// Whether an existing client is named by a tenant's loaded ID-JAG pin.
+    /// Defaults to refusal for adapters without that operator-owned trust.
+    fn id_jag_pinned(&self, _tenant: &TenantId, _client_id: &ClientId) -> bool {
+        false
+    }
+
     /// Every client in `tenant`, ordered by `client_id`.
     ///
     /// # Errors
