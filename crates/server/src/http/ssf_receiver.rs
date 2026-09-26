@@ -639,8 +639,9 @@ impl UpstreamMetadata {
     }
 }
 
-/// Parses a transmitter's successful management response before a stream is
-/// persisted. The response is never a source of trust: it must echo the exact
+/// Parses a transmitter's successful creation response or authenticated list
+/// entry before a stream is persisted. The response is never a source of
+/// trust: it must echo the exact
 /// configured issuer, chosen audience, requested event set and delivery mode.
 /// A poll URL is accepted only as an HTTPS URL; the outbound transport must
 /// still apply its DNS/IP SSRF guard when it is eventually used.
@@ -652,11 +653,13 @@ pub fn validated_upstream_stream(
     delivery_method: &str,
     push_endpoint: Option<&str>,
     status: u16,
+    expected_status: u16,
     content_type: Option<&str>,
     document: &[u8],
     now: OffsetDateTime,
 ) -> Result<asterius_store_pg::UpstreamStream, ReceiverError> {
-    if status != 201
+    if !matches!(expected_status, 200 | 201)
+        || status != expected_status
         || !content_type.is_some_and(|value| value.split(';').next().is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("application/json")))
         || document.is_empty()
         || document.len() > 8 * 1024

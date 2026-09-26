@@ -138,7 +138,7 @@ pub use ssf_streams::{
     Subscription, VerificationClaim,
 };
 pub use ssf_subjects::{Added, MAX_SUBJECTS, PgSsfSubjects};
-pub use ssf_upstream_streams::{PgSsfUpstreamStreams, UpstreamStream};
+pub use ssf_upstream_streams::{PgSsfUpstreamStreams, UpstreamSetupIntent, UpstreamStream};
 pub use store::{MIGRATOR, Store};
 pub use tenant_settings::PgTenantSettings;
 pub use tenants::PgTenantRepository;
