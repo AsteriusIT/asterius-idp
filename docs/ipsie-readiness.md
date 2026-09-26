@@ -64,9 +64,12 @@ proof of OP support. No conformance suite has been run for this profile.
 ## Adjacent drafts
 
 [Provider Commands](https://openid.net/specs/openid-provider-commands-1_0.html)
-is separate from SSF/CAEP. There is no Provider Commands endpoint, command
-token, callback or synchronous RP account operation. Existing SSF delivery
-cannot be described as Provider Commands support.
+is separate from SSF/CAEP. This OP can send signed invalidate/delete Account
+Commands to an RP's explicitly registered HTTPS command endpoint when a
+supported account lifecycle action occurs. Delivery uses a durable intent,
+fresh token signing, guarded transport and outcome audit. This does not make
+this deployment an RP command receiver, establish IPSIE SL1 conformance, or
+provide interoperability evidence against an independent RP.
 
 [OpenID Connect Enterprise Extensions](https://openid.net/specs/openid-connect-enterprise-extensions-1_0.html)
 defines `session_expiry`, `tenant`, `aud_sub` and request hints. The tenant-per-
