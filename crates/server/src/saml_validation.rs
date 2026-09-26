@@ -2,9 +2,9 @@
 //!
 //! This service does not route a browser request or issue a response. The
 //! bounded XML parser deliberately rejects XML Signature elements. HTTP-
-//! Redirect query signatures are verified using a tenant-scoped pinned SP
-//! key before replay reservation. Raw unsigned XML passes only when the SP
-//! explicitly opts in; the default persisted policy refuses it.
+//! Redirect query and POST XML signatures are verified using a tenant-scoped
+//! pinned SP key before replay reservation. Raw unsigned XML passes only
+//! when the SP explicitly opts in; the default persisted policy refuses it.
 
 use asterius_domain::{DomainError, Tenant};
 use asterius_store_pg::{PgSamlTrust, SamlSp, Store};
@@ -12,7 +12,9 @@ use aws_lc_rs::signature::{RSA_PKCS1_2048_8192_SHA256, UnparsedPublicKey};
 use time::{Duration, OffsetDateTime};
 
 use crate::saml::{UntrustedAuthnRequest, parse_authn_request};
+use crate::saml_post::parse_post_form;
 use crate::saml_redirect::parse_redirect_query;
+use crate::saml_xmlsig::parse_signed_post;
 
 /// Refusal is uniform so XML, trust and replay distinctions cannot become a
 /// browser-facing oracle when this service is eventually wired to a route.
@@ -132,6 +134,39 @@ impl SamlRequestValidator {
             return Err(ValidationError::Refused);
         }
         Ok(Self::accepted(tenant, sp, request, redirect.relay_state))
+    }
+
+    /// Validates the strict HTTP-POST binding profile with an enveloped
+    /// XML Signature over the exact AuthnRequest root. The parsed issuer
+    /// selects only a candidate SP within the routed tenant; the request is
+    /// accepted only after its digest and RSA signature verify against that
+    /// SP's operator-pinned key and its ID is atomically reserved.
+    /// No browser route currently calls this method.
+    pub async fn validate_post(
+        &self,
+        tenant: &Tenant,
+        content_type: &str,
+        body: &[u8],
+        now: OffsetDateTime,
+    ) -> Result<ValidatedAuthnRequest, ValidationError> {
+        let form = parse_post_form(content_type, body).map_err(|_| ValidationError::Refused)?;
+        let signed = parse_signed_post(&form.xml).map_err(|_| ValidationError::Refused)?;
+        let (trust, sp) = self
+            .check_routed(tenant, signed.unverified_request(), now)
+            .await?;
+        let key = sp
+            .redirect_signing_public_key_der
+            .as_deref()
+            .ok_or(ValidationError::Refused)?;
+        let request = signed.verify(key).map_err(|_| ValidationError::Refused)?;
+        let reserved = trust
+            .reserve_signed_request(&sp.entity_id, &sp.acs_url, key, &request.id)
+            .await
+            .map_err(ValidationError::Store)?;
+        if !reserved {
+            return Err(ValidationError::Refused);
+        }
+        Ok(Self::accepted(tenant, sp, request, form.relay_state))
     }
 
     async fn check_routed(

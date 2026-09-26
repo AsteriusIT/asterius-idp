@@ -2,8 +2,7 @@
 //!
 //! Output is explicitly untrusted XML. This module does not parse or verify
 //! XML Signature, resolve an ID, select an SP, or reserve a request ID. The
-//! current SAML validator has no POST acceptance method: a caller cannot
-//! mistake form decoding for signature verification.
+//! validator separately performs those checks before accepting a POST.
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 
