@@ -206,6 +206,16 @@ pub fn document(client: &Client) -> Value {
         .as_object_mut()
         .expect("the document above is a JSON object");
 
+    optional_registration_metadata(object, registration);
+
+    rendered
+}
+
+/// Add optional RFC 7591 metadata only when the stored registration has it.
+fn optional_registration_metadata(
+    object: &mut serde_json::Map<String, Value>,
+    registration: &ClientRegistration,
+) {
     // RFC 7591 §2: `jwks` and `jwks_uri` must never both appear. A stored
     // registration can hold only one, so this reproduces that rather than
     // deciding it again.
@@ -281,8 +291,6 @@ pub fn document(client: &Client) -> Value {
     if registration.backchannel_user_code_parameter {
         object.insert("backchannel_user_code_parameter".to_owned(), json!(true));
     }
-
-    rendered
 }
 
 /// The profile an administrator explicitly selected. Absence lets creation
