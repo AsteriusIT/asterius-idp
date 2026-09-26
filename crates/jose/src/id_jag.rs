@@ -42,6 +42,8 @@ pub struct IdJagPolicy {
 /// This type is a preflight result, not a grant of access or replay decision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidatedIdJag {
+    /// Configured issuer whose pinned key verified the assertion.
+    pub issuer: String,
     /// User subject asserted by the trusted issuer.
     pub subject: String,
     /// Verified actor identity matching the operator's explicit pin.
@@ -190,6 +192,7 @@ pub fn validate(
     }
 
     Ok(ValidatedIdJag {
+        issuer: policy.issuer.clone(),
         subject: subject.to_owned(),
         actor_client_id: actor.to_owned(),
         jti: jti.to_owned(),
