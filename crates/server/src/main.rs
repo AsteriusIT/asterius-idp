@@ -43,7 +43,8 @@ const DEFAULT_CONFIG_PATH: &str = "asterius.toml";
 const USAGE: &str = "usage: asterius [--config <path>] [--config-reference] [--admin-openapi]\n       \
                      asterius mail-test <recipient> [--config <path>]\n       \
                      asterius federation-rotate <tenant> [--config <path>]\n       \
-                     asterius ldap-sync <tenant> [--config <path>]\n       \
+                     asterius ldap-sync <tenant> [--config <path>] \
+                     [--apply-absence-policy <days>:<user-cap>:<group-cap>]\n       \
                      asterius rewrap-kek [--new-kek-file <path> | --new-kek-env <var>] \
                      [--config <path>]";
 
@@ -67,7 +68,7 @@ fn run() -> Result<(), String> {
         Command::RewrapKek(new_kek) => rewrap_kek(&invocation.config, new_kek.as_ref()),
         Command::MailTest(recipient) => mail_test(&invocation.config, &recipient),
         Command::FederationRotate(tenant) => federation_rotate(&invocation.config, &tenant),
-        Command::LdapSync(tenant) => ldap_sync(&invocation.config, &tenant),
+        Command::LdapSync(tenant, policy) => ldap_sync(&invocation.config, &tenant, policy),
     }
 }
 
@@ -88,7 +89,11 @@ fn mail_test(path: &std::path::Path, recipient: &str) -> Result<(), String> {
 
 /// The only LDAP trigger: an operator explicitly invokes this command for a
 /// configured tenant. The directory is read in full before persistence begins.
-fn ldap_sync(path: &std::path::Path, tenant: &str) -> Result<(), String> {
+fn ldap_sync(
+    path: &std::path::Path,
+    tenant: &str,
+    policy: asterius_store_pg::LdapAbsencePolicy,
+) -> Result<(), String> {
     let config = Config::load(path).map_err(|error| error.to_string())?;
     let tenant_id = asterius_domain::TenantId::parse(tenant).map_err(|error| error.to_string())?;
     let source = config
@@ -118,16 +123,20 @@ fn ldap_sync(path: &std::path::Path, tenant: &str) -> Result<(), String> {
         .map_err(|error| format!("cannot connect to the database: {error}"))?;
         store.migrate().await.map_err(|error| format!("cannot apply migrations: {error}"))?;
         let result = asterius_store_pg::PgLdapSync::new(store.pool().clone())
-            .apply(&tenant_id, &source_key, &snapshot)
+            .apply(&tenant_id, &source_key, &snapshot, policy)
             .await
             .map_err(|error| format!("LDAP synchronization refused: {error}"))?;
         println!(
-            "LDAP sync for {tenant}: {} users created, {} updated; {} groups created, {} updated; {} memberships changed",
+            "LDAP sync for {tenant}: {} users created, {} updated; {} groups created, {} updated; {} memberships changed; {} users and {} groups marked missing; {} users disabled; {} groups deleted",
             result.users_created,
             result.users_updated,
             result.groups_created,
             result.groups_updated,
             result.memberships_changed,
+            result.users_marked_missing,
+            result.groups_marked_missing,
+            result.users_disabled,
+            result.groups_deleted,
         );
         Ok(())
     })
@@ -1272,7 +1281,7 @@ enum Command {
     /// Publish a successor key before it becomes an active signer.
     FederationRotate(String),
     /// Fetch and apply one LDAPS snapshot for a configured tenant.
-    LdapSync(String),
+    LdapSync(String, asterius_store_pg::LdapAbsencePolicy),
     /// Re-seal everything under the KEK named on the command line, and exit.
     ///
     /// `None` means "the destination is in the configuration": the deployment
@@ -1296,6 +1305,7 @@ impl Invocation {
         let mut command = Command::Serve;
         let mut new_kek_file: Option<PathBuf> = None;
         let mut new_kek_env: Option<String> = None;
+        let mut ldap_absence_spec: Option<String> = None;
 
         while let Some(argument) = arguments.next() {
             match argument.to_str() {
@@ -1349,6 +1359,19 @@ impl Invocation {
                         value
                             .into_string()
                             .map_err(|_| "ldap-sync needs a UTF-8 tenant")?,
+                        asterius_store_pg::LdapAbsencePolicy::MarkOnly,
+                    );
+                }
+                Some("--apply-absence-policy") => {
+                    if ldap_absence_spec.is_some() {
+                        return Err("--apply-absence-policy may appear only once".to_owned());
+                    }
+                    ldap_absence_spec = Some(
+                        arguments
+                            .next()
+                            .ok_or("--apply-absence-policy needs days:user-cap:group-cap")?
+                            .into_string()
+                            .map_err(|_| "absence policy must be UTF-8")?,
                     );
                 }
                 Some("--new-kek-file") => {
@@ -1395,11 +1418,11 @@ impl Invocation {
             (Command::Serve, None, None) => Command::Serve,
             (Command::MailTest(recipient), None, None) => Command::MailTest(recipient),
             (Command::FederationRotate(tenant), None, None) => Command::FederationRotate(tenant),
-            (Command::LdapSync(tenant), None, None) => Command::LdapSync(tenant),
+            (Command::LdapSync(tenant, policy), None, None) => Command::LdapSync(tenant, policy),
             (
                 Command::MailTest(_)
                 | Command::FederationRotate(_)
-                | Command::LdapSync(_)
+                | Command::LdapSync(_, _)
                 | Command::Serve,
                 _,
                 _,
@@ -1410,6 +1433,16 @@ impl Invocation {
             }
         };
 
+        let command = match (command, ldap_absence_spec) {
+            (Command::LdapSync(tenant, _), Some(spec)) => {
+                Command::LdapSync(tenant, parse_ldap_absence_policy(&spec)?)
+            }
+            (command, None) => command,
+            (_, Some(_)) => {
+                return Err("--apply-absence-policy belongs to ldap-sync".to_owned());
+            }
+        };
+
         Ok(Self {
             config: path
                 .or_else(|| std::env::var_os("ASTERIUS_CONFIG").map(PathBuf::from))
@@ -1417,6 +1450,36 @@ impl Invocation {
             command,
         })
     }
+}
+
+fn parse_ldap_absence_policy(value: &str) -> Result<asterius_store_pg::LdapAbsencePolicy, String> {
+    let parts = value.split(':').collect::<Vec<_>>();
+    if parts.len() != 3 {
+        return Err("absence policy must be <days>:<user-cap>:<group-cap>".to_owned());
+    }
+    let grace_days = parts[0]
+        .parse::<u16>()
+        .map_err(|_| "absence grace days must be a number")?;
+    let max_users = parts[1]
+        .parse::<u16>()
+        .map_err(|_| "absence user cap must be a number")?;
+    let max_groups = parts[2]
+        .parse::<u16>()
+        .map_err(|_| "absence group cap must be a number")?;
+    if !(7..=365).contains(&grace_days)
+        || max_users > 10
+        || max_groups > 10
+        || (max_users == 0 && max_groups == 0)
+    {
+        return Err(
+            "absence policy requires 7–365 grace days, caps up to 10, and a nonzero cap".to_owned(),
+        );
+    }
+    Ok(asterius_store_pg::LdapAbsencePolicy::DeactivateAndPrune {
+        grace_days,
+        max_users,
+        max_groups,
+    })
 }
 
 /// Writes the tenants declared in the configuration into the database.
