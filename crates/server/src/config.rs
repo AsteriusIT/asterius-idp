@@ -327,6 +327,15 @@ pub struct HttpSignaturePeerConfig {
     pub client_id: String,
     pub keyid: String,
     pub public_key_file: PathBuf,
+    /// Local Ed25519 key used to sign responses to this peer, when required.
+    pub response_signing: Option<HttpResponseSigningConfig>,
+}
+
+/// Explicit response-signing policy for a configured HTTP signature peer.
+#[derive(Debug, Clone)]
+pub struct HttpResponseSigningConfig {
+    pub keyid: String,
+    pub private_key_file: PathBuf,
 }
 
 /// Static CP registration and trust profile. The OAuth setup flow owns the
@@ -790,6 +799,8 @@ struct RawHttpSignaturePeer {
     client_id: String,
     keyid: String,
     public_key_file: PathBuf,
+    response_signing_keyid: Option<String>,
+    response_private_key_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2149,10 +2160,36 @@ fn validate_http_signature_peers(
                 errors.problem(format!("{path}.keyid"), "invalid RFC 9421 key identifier");
                 return None;
             }
+            let response_signing = match (
+                entry.response_signing_keyid,
+                entry.response_private_key_file,
+            ) {
+                (None, None) => None,
+                (Some(keyid), Some(private_key_file))
+                    if !keyid.is_empty()
+                        && keyid.len() <= 128
+                        && keyid.bytes().all(|byte| {
+                            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')
+                        }) =>
+                {
+                    Some(HttpResponseSigningConfig {
+                        keyid,
+                        private_key_file,
+                    })
+                }
+                _ => {
+                    errors.problem(
+                        format!("{path}.response_signing_keyid"),
+                        "response_signing_keyid and response_private_key_file must both be set, with a valid key identifier",
+                    );
+                    return None;
+                }
+            };
             Some(HttpSignaturePeerConfig {
                 client_id: entry.client_id,
                 keyid: entry.keyid,
                 public_key_file: entry.public_key_file,
+                response_signing,
             })
         })
         .collect()
