@@ -126,6 +126,15 @@ pub const POLICY: &[Retention] = &[
         },
     },
     Retention {
+        table: "claims_provider_oauth_revocations",
+        rule: Rule::Sweep {
+            statement: "delete from claims_provider_oauth_revocations where ctid = any (array(
+                            select ctid from claims_provider_oauth_revocations
+                             where tenant_id = $1 and revoked_at <= $2 limit $3))",
+            grace: Duration::days(1),
+        },
+    },
+    Retention {
         table: "aggregated_claim_sources",
         rule: Rule::Sweep {
             statement: "delete from aggregated_claim_sources where ctid = any (array(

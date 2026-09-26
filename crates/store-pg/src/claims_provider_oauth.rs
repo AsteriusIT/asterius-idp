@@ -56,6 +56,7 @@ pub struct CpPending {
     pub provider_issuer: String,
     pub provider_nonce: String,
     pub code_verifier: String,
+    pub created_at: OffsetDateTime,
 }
 
 impl Drop for CpPending {
@@ -145,6 +146,7 @@ impl PgCpOAuth {
         &self,
         user: UserId,
         connection: &CpConnection,
+        started_at: OffsetDateTime,
         now: OffsetDateTime,
     ) -> Result<i64, DomainError> {
         self.validate(connection, now)?;
@@ -168,6 +170,44 @@ impl PgCpOAuth {
             ),
             None => None,
         };
+        let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
+        let present: Option<Uuid> = sqlx::query_scalar(
+            "select user_id from users where tenant_id=$1 and user_id=$2 for update",
+        )
+        .bind(self.tenant.as_str())
+        .bind(user.as_uuid())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(to_domain_error)?;
+        if present.is_none() {
+            return Err(DomainError::NotFound);
+        }
+        let db_now: OffsetDateTime = sqlx::query_scalar("select clock_timestamp()")
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(to_domain_error)?;
+        if started_at > db_now || started_at < db_now - time::Duration::minutes(15) {
+            return Err(DomainError::invalid(
+                "claims_provider.oauth",
+                "setup window expired",
+            ));
+        }
+        let revoked_at: Option<OffsetDateTime> = sqlx::query_scalar(
+            "select revoked_at from claims_provider_oauth_revocations
+            where tenant_id=$1 and user_id=$2 and provider_issuer=$3",
+        )
+        .bind(self.tenant.as_str())
+        .bind(user.as_uuid())
+        .bind(&connection.provider_issuer)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(to_domain_error)?;
+        if revoked_at.is_some_and(|revoked| revoked >= started_at) {
+            return Err(DomainError::invalid(
+                "claims_provider.oauth",
+                "setup was revoked",
+            ));
+        }
         let result = sqlx::query("insert into claims_provider_oauth_connections
             (tenant_id,user_id,provider_issuer,provider_subject,granted_scope,access_ciphertext,access_nonce,access_kek_id,access_expires_at,
              refresh_ciphertext,refresh_nonce,refresh_kek_id,refresh_expires_at,updated_at)
@@ -185,14 +225,16 @@ impl PgCpOAuth {
             .bind(access.ciphertext()).bind(access.nonce()).bind(access.kek_id()).bind(connection.access_expires_at)
             .bind(refresh.as_ref().map(WrappedKey::ciphertext)).bind(refresh.as_ref().map(WrappedKey::nonce))
             .bind(refresh.as_ref().map(WrappedKey::kek_id)).bind(connection.refresh_expires_at).bind(now)
-            .fetch_optional(&self.pool).await.map_err(to_domain_error)?;
+            .fetch_optional(&mut *tx).await.map_err(to_domain_error)?;
         let Some(result) = result else {
             return Err(DomainError::invalid(
                 "claims_provider.oauth",
                 "provider subject changed",
             ));
         };
-        result.try_get("revision").map_err(to_domain_error)
+        let revision = result.try_get("revision").map_err(to_domain_error)?;
+        tx.commit().await.map_err(to_domain_error)?;
+        Ok(revision)
     }
 
     fn validate(&self, connection: &CpConnection, now: OffsetDateTime) -> Result<(), DomainError> {
@@ -357,6 +399,29 @@ impl PgCpOAuth {
         now: OffsetDateTime,
     ) -> Result<(), DomainError> {
         let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
+        let present: Option<Uuid> = sqlx::query_scalar(
+            "select user_id from users where tenant_id=$1 and user_id=$2 for update",
+        )
+        .bind(self.tenant.as_str())
+        .bind(user.as_uuid())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(to_domain_error)?;
+        if present.is_none() {
+            return Err(DomainError::NotFound);
+        }
+        let revoked_at: OffsetDateTime = sqlx::query_scalar("select clock_timestamp()")
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(to_domain_error)?;
+        sqlx::query("insert into claims_provider_oauth_revocations (tenant_id,user_id,provider_issuer,revoked_at)
+            values ($1,$2,$3,$4) on conflict (tenant_id,user_id,provider_issuer)
+            do update set revoked_at=greatest(claims_provider_oauth_revocations.revoked_at,excluded.revoked_at)")
+            .bind(self.tenant.as_str()).bind(user.as_uuid()).bind(issuer).bind(revoked_at)
+            .execute(&mut *tx).await.map_err(to_domain_error)?;
+        sqlx::query("delete from claims_provider_oauth_pending where tenant_id=$1 and user_id=$2 and provider_issuer=$3")
+            .bind(self.tenant.as_str()).bind(user.as_uuid()).bind(issuer)
+            .execute(&mut *tx).await.map_err(to_domain_error)?;
         let deleted=sqlx::query("delete from claims_provider_oauth_connections where tenant_id=$1 and user_id=$2 and provider_issuer=$3")
             .bind(self.tenant.as_str()).bind(user.as_uuid()).bind(issuer).execute(&mut *tx).await.map_err(to_domain_error)?;
         let revoked=sqlx::query("update aggregated_claim_sources set revoked_at=$4 where tenant_id=$1 and user_id=$2 and provider_issuer=$3 and revoked_at is null")
@@ -407,7 +472,6 @@ impl PgCpOAuth {
         provider_issuer: &str,
         provider_nonce: &str,
         code_verifier: &str,
-        expires_at: OffsetDateTime,
     ) -> Result<(), DomainError> {
         if state_hash.len() != 64
             || session_digest.len() != 64
@@ -430,6 +494,22 @@ impl PgCpOAuth {
             .await
             .map_err(|error| DomainError::Storage(Box::new(error)))?;
         let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
+        let present: Option<Uuid> = sqlx::query_scalar(
+            "select user_id from users where tenant_id=$1 and user_id=$2 for update",
+        )
+        .bind(self.tenant.as_str())
+        .bind(user_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(to_domain_error)?;
+        if present.is_none() {
+            return Err(DomainError::NotFound);
+        }
+        let created_at: OffsetDateTime = sqlx::query_scalar("select clock_timestamp()")
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(to_domain_error)?;
+        let expires_at = created_at + time::Duration::minutes(10);
         sqlx::query(
             "delete from claims_provider_oauth_pending
              where tenant_id = $1 and (expires_at <= now() or (user_id = $2 and provider_issuer = $3))",
@@ -439,8 +519,8 @@ impl PgCpOAuth {
         sqlx::query(
             "insert into claims_provider_oauth_pending
              (tenant_id, state_hash, user_id, session_digest, provider_issuer,
-              provider_nonce, verifier_ciphertext, verifier_nonce, verifier_kek_id, expires_at)
-             values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+              provider_nonce, verifier_ciphertext, verifier_nonce, verifier_kek_id, created_at, expires_at)
+             values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
         )
         .bind(self.tenant.as_str())
         .bind(state_hash)
@@ -451,6 +531,7 @@ impl PgCpOAuth {
         .bind(wrapped.ciphertext())
         .bind(wrapped.nonce())
         .bind(wrapped.kek_id())
+        .bind(created_at)
         .bind(expires_at)
         .execute(&mut *tx)
         .await
@@ -465,18 +546,16 @@ impl PgCpOAuth {
         &self,
         state_hash: &str,
         session_digest: &str,
-        now: OffsetDateTime,
     ) -> Result<Option<CpPending>, DomainError> {
         let row = sqlx::query(
             "delete from claims_provider_oauth_pending
-             where tenant_id = $1 and state_hash = $2 and session_digest = $3 and expires_at > $4
+             where tenant_id = $1 and state_hash = $2 and session_digest = $3 and expires_at > clock_timestamp()
              returning user_id, provider_issuer, provider_nonce,
-                       verifier_ciphertext, verifier_nonce, verifier_kek_id",
+                       verifier_ciphertext, verifier_nonce, verifier_kek_id, created_at",
         )
         .bind(self.tenant.as_str())
         .bind(state_hash)
         .bind(session_digest)
-        .bind(now)
         .fetch_optional(&self.pool)
         .await
         .map_err(to_domain_error)?;
@@ -507,6 +586,7 @@ impl PgCpOAuth {
             provider_issuer: row.try_get("provider_issuer").map_err(to_domain_error)?,
             provider_nonce: row.try_get("provider_nonce").map_err(to_domain_error)?,
             code_verifier,
+            created_at: row.try_get("created_at").map_err(to_domain_error)?,
         }))
     }
 }

@@ -40,6 +40,9 @@ struct Provider {
     authorization_endpoint: Option<String>,
     token_endpoint: Option<String>,
     scope: Option<String>,
+    userinfo_signed_response_alg: Option<asterius_domain::SigningAlgorithm>,
+    policy_url: Option<String>,
+    revocation_endpoint: Option<String>,
 }
 
 /// Operator-pinned public-client registration for one Claims Provider.
@@ -50,6 +53,8 @@ pub struct OAuthRegistration {
     pub authorization_endpoint: String,
     pub token_endpoint: String,
     pub scope: String,
+    pub revocation_endpoint: Option<String>,
+    pub policy_url: String,
     pub allowed_claims: BTreeSet<String>,
 }
 
@@ -254,9 +259,62 @@ impl ClaimsProviders {
             op_client_id: audience.to_owned(),
             provider_subject: provider_subject.to_owned(),
             approved_claims: approved_claims.clone(),
+            userinfo_algorithm: provider.userinfo_signed_response_alg,
         };
         verify_signed_userinfo(&compact, &policy, now)
             .map_err(|error| DomainError::invalid("claims_provider", error.to_string()))
+    }
+
+    /// Reverify a stored source before showing its values to its account owner.
+    /// The signed JWT itself is never rendered into the account page.
+    pub fn stored_values(
+        &self,
+        tenant: &Tenant,
+        row: &StoredClaimSource,
+        now: OffsetDateTime,
+    ) -> Result<Option<Vec<(String, Value)>>, DomainError> {
+        let Some(provider) = self
+            .0
+            .get(tenant.id.as_str())
+            .and_then(|providers| providers.get(&row.provider_issuer))
+        else {
+            return Ok(None);
+        };
+        let Some(client_id) = provider.client_id.as_deref() else {
+            return Ok(None);
+        };
+        let approved_claims: BTreeSet<String> = row.claim_names.iter().cloned().collect();
+        if approved_claims.len() != row.claim_names.len()
+            || !approved_claims.is_subset(&provider.allowed_claims)
+        {
+            return Err(DomainError::invalid(
+                "claims_provider",
+                "stored claim names are invalid",
+            ));
+        }
+        let policy = ClaimsProviderPolicy {
+            issuer: provider.issuer.clone(),
+            keys: provider.keys.clone(),
+            op_client_id: client_id.to_owned(),
+            provider_subject: row.provider_subject.clone(),
+            approved_claims: approved_claims.clone(),
+            userinfo_algorithm: provider.userinfo_signed_response_alg,
+        };
+        let verified = verify_signed_userinfo(&row.signed_userinfo, &policy, now)
+            .map_err(|error| DomainError::invalid("claims_provider", error.to_string()))?;
+        if verified.names() != &approved_claims || verified.expires_at() != row.expires_at {
+            return Err(DomainError::invalid(
+                "claims_provider",
+                "stored source differs from signed JWT",
+            ));
+        }
+        Ok(Some(
+            verified
+                .values()
+                .iter()
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect(),
+        ))
     }
 
     /// Compose OIDC Core §5.6.2's aggregated response members from live rows.
@@ -325,6 +383,7 @@ impl ClaimsProviders {
                     .to_owned(),
                 provider_subject: row.provider_subject.clone(),
                 approved_claims: stored.clone(),
+                userinfo_algorithm: provider.userinfo_signed_response_alg,
             };
             let verified = verify_signed_userinfo(&row.signed_userinfo, &policy, now)
                 .map_err(|error| DomainError::invalid("claims_aggregation", error.to_string()))?;
@@ -358,6 +417,8 @@ impl Provider {
             authorization_endpoint: self.authorization_endpoint.clone()?,
             token_endpoint: self.token_endpoint.clone()?,
             scope: self.scope.clone()?,
+            revocation_endpoint: self.revocation_endpoint.clone(),
+            policy_url: self.policy_url.clone()?,
             allowed_claims: self.allowed_claims.clone(),
         })
     }
@@ -394,6 +455,15 @@ fn load_provider(entry: &ClaimsProviderConfig) -> Result<Provider, String> {
             path.display()
         ));
     }
+    if entry
+        .userinfo_signed_response_alg
+        .is_some_and(|algorithm| !keys.keys().iter().any(|key| key.algorithm() == algorithm))
+    {
+        return Err(format!(
+            "Claims Provider JWKS {} has no key for the registered signed UserInfo algorithm",
+            path.display()
+        ));
+    }
     Ok(Provider {
         issuer: entry.issuer.as_str().to_owned(),
         keys,
@@ -403,5 +473,8 @@ fn load_provider(entry: &ClaimsProviderConfig) -> Result<Provider, String> {
         authorization_endpoint: entry.authorization_endpoint.clone(),
         token_endpoint: entry.token_endpoint.clone(),
         scope: entry.scope.clone(),
+        userinfo_signed_response_alg: entry.userinfo_signed_response_alg,
+        policy_url: entry.policy_url.clone(),
+        revocation_endpoint: entry.revocation_endpoint.clone(),
     })
 }

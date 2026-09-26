@@ -16,15 +16,15 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::Deserialize;
+use serde_json::Value;
 use sha2::{Digest as _, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use time::{Duration, OffsetDateTime};
 use zeroize::{Zeroize, Zeroizing};
 
 pub const PAGE_PATH: &str = "/account/claims-providers";
 pub const CALLBACK_PATH: &str = "/account/claims-providers/callback";
 const CSRF_SEPARATOR: &str = "account-claims-providers-csrf";
-const PENDING_LIFETIME: Duration = Duration::minutes(10);
 
 pub struct Context<'a> {
     pub account: AccountContext<'a>,
@@ -109,19 +109,43 @@ pub async fn submit(
         .await;
     }
     match action.as_str() {
-        "connect" => connect(context, &session, &issuer, now).await,
+        "connect" => connect(context, &session, &issuer).await,
         "refresh" => refresh(context, &session, &issuer, now).await,
         "revoke" => {
+            let registration = context
+                .providers
+                .oauth_registration(context.account.tenant.id.as_str(), &issuer);
+            let loaded = context
+                .pending
+                .load(UserId::new(session.user), &issuer, now)
+                .await;
             match context
                 .pending
                 .revoke(UserId::new(session.user), &issuer, now)
                 .await
             {
                 Ok(_) => {
+                    // Local erasure and the callback fence commit before any
+                    // slow outbound revocation attempt.
+                    let remote = match (registration, loaded) {
+                        (Some(registration), Ok(Some(connection)))
+                            if registration.revocation_endpoint.is_some() =>
+                        {
+                            Some(revoke_remote(&registration, &connection).await)
+                        }
+                        (_, Err(_)) => Some(false),
+                        _ => None,
+                    };
                     render_current(
                         context,
                         &session,
-                        Some("Provider connection and claims removed."),
+                        Some(if remote == Some(true) {
+                            "Provider connection and claims removed; provider token revocation confirmed."
+                        } else if remote == Some(false) {
+                            "Local connection and claims removed. Provider token revocation could not be confirmed."
+                        } else {
+                            "Local connection and claims removed. No provider revocation endpoint is configured."
+                        }),
                         StatusCode::OK,
                         now,
                     )
@@ -146,12 +170,67 @@ pub async fn submit(
     }
 }
 
-async fn connect(
-    context: &Context<'_>,
-    session: &Session,
-    issuer: &str,
-    now: OffsetDateTime,
-) -> Response {
+/// RFC 7009 revocation is best effort; local erasure still runs if the CP is
+/// unavailable. Each POST uses the same HTTPS SSRF guard as token exchange.
+async fn revoke_remote(
+    registration: &crate::claims_provider::OAuthRegistration,
+    connection: &CpConnection,
+) -> bool {
+    let Some(endpoint) = registration.revocation_endpoint.as_deref() else {
+        return false;
+    };
+    let Ok(poster) = HttpsPoster::new() else {
+        return false;
+    };
+    let mut confirmed = true;
+    if let Some(refresh) = &connection.refresh_token {
+        confirmed &= revoke_one(
+            &poster,
+            endpoint,
+            &registration.client_id,
+            refresh,
+            "refresh_token",
+        )
+        .await;
+    }
+    if connection.access_expires_at > OffsetDateTime::now_utc() {
+        confirmed &= revoke_one(
+            &poster,
+            endpoint,
+            &registration.client_id,
+            &connection.access_token,
+            "access_token",
+        )
+        .await;
+    }
+    confirmed
+}
+
+async fn revoke_one(
+    poster: &HttpsPoster,
+    endpoint: &str,
+    client_id: &str,
+    token: &str,
+    hint: &str,
+) -> bool {
+    let body = Zeroizing::new(
+        url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("client_id", client_id)
+            .append_pair("token", token)
+            .append_pair("token_type_hint", hint)
+            .finish(),
+    );
+    poster
+        .post_with_response(
+            endpoint,
+            PostRequest::of("application/x-www-form-urlencoded"),
+            body.as_bytes(),
+        )
+        .await
+        .is_ok_and(|response| response.status == 200 && !response.truncated)
+}
+
+async fn connect(context: &Context<'_>, session: &Session, issuer: &str) -> Response {
     let Some(registration) = context
         .providers
         .oauth_registration(context.account.tenant.id.as_str(), issuer)
@@ -172,7 +251,6 @@ async fn connect(
             issuer,
             &nonce,
             &verifier,
-            now + PENDING_LIFETIME,
         )
         .await
     {
@@ -233,7 +311,7 @@ pub async fn callback(
     let code = Zeroizing::new(code);
     let pending = match context
         .pending
-        .consume(&sha256_hex(state.as_bytes()), &session.id_digest, now)
+        .consume(&sha256_hex(state.as_bytes()), &session.id_digest)
         .await
     {
         Ok(Some(pending)) if pending.user_id == session.user => pending,
@@ -368,7 +446,11 @@ pub async fn callback(
     // account-visible credential without deliverable claims, which the user
     // can refresh or remove. The guarded source write serializes with revoke.
     let user = UserId::new(session.user);
-    let revision = match context.pending.save(user, &connection, now).await {
+    let revision = match context
+        .pending
+        .save(user, &connection, pending.created_at, now)
+        .await
+    {
         Ok(revision) => revision,
         Err(error) => {
             tracing::error!(%error, tenant = %context.account.tenant.id, "cannot save Claims Provider connection");
@@ -761,7 +843,31 @@ async fn render_current(
             return error_page(&context.account, StatusCode::SERVICE_UNAVAILABLE);
         }
     };
-    render(context, session, &sources, &connections, message, status)
+    let mut stored_values = HashMap::new();
+    for source in &sources {
+        match context
+            .providers
+            .stored_values(context.account.tenant, source, now)
+        {
+            Ok(Some(values)) => {
+                stored_values.insert(source.provider_issuer.clone(), values);
+            }
+            Ok(None) => {}
+            Err(_) => {
+                tracing::warn!(tenant = %context.account.tenant.id, "stored Claims Provider values failed verification");
+                return error_page(&context.account, StatusCode::SERVICE_UNAVAILABLE);
+            }
+        }
+    }
+    render(
+        context,
+        session,
+        &sources,
+        &connections,
+        &stored_values,
+        message,
+        status,
+    )
 }
 
 fn render(
@@ -769,6 +875,7 @@ fn render(
     session: &Session,
     sources: &[StoredClaimSource],
     connections: &[CpConnectionSummary],
+    stored_values: &HashMap<String, Vec<(String, Value)>>,
     message: Option<&str>,
     status: StatusCode,
 ) -> Response {
@@ -798,6 +905,20 @@ fn render(
                 )
             },
         );
+        let values = stored_values
+            .get(&registration.issuer)
+            .map_or_else(String::new, |pairs| {
+                let mut list = String::from("<dl aria-label=\"Verified stored claims\">");
+                for (name, value) in pairs {
+                    list.push_str(&format!(
+                        "<dt>{}</dt><dd>{}</dd>",
+                        escape_html(name),
+                        escape_html(&value.to_string())
+                    ));
+                }
+                list.push_str("</dl>");
+                list
+            });
         let buttons = if credential.is_some() {
             "<button name=\"action\" value=\"refresh\">Refresh signed claims</button> <button name=\"action\" value=\"revoke\">Remove local connection and claims</button>"
         } else if connected.is_some() {
@@ -814,9 +935,9 @@ fn render(
             )
         });
         items.push_str(&format!(
-            "<li><h2>{}</h2><p>{}</p><p>{details}</p>{credential_details}<form method=\"post\" action=\"{}\"><input type=\"hidden\" name=\"csrf\" value=\"{csrf}\"><input type=\"hidden\" name=\"issuer\" value=\"{}\">{buttons}</form></li>",
+            "<li><h2>{}</h2><p>{}</p><p><a href=\"{}\" rel=\"noreferrer\">Connection policy</a></p><p>{details}</p>{values}{credential_details}<form method=\"post\" action=\"{}\"><input type=\"hidden\" name=\"csrf\" value=\"{csrf}\"><input type=\"hidden\" name=\"issuer\" value=\"{}\">{buttons}</form></li>",
             escape_html(&registration.issuer), escape_html(&registration.allowed_claims.into_iter().collect::<Vec<_>>().join(", ")),
-            escape_html(&action), escape_html(&registration.issuer),
+            escape_html(&registration.policy_url), escape_html(&action), escape_html(&registration.issuer),
         ));
     }
     // A provider removed from operator configuration still has locally held
@@ -840,7 +961,7 @@ fn render(
     });
     let document = Document::render(context.account.nonce, |_nonce| {
         format!(
-            "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"referrer\" content=\"no-referrer\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Claims Providers</title></head><body><main><h1>Claims Providers</h1><p>Connect a provider to collect signed claims. Recollect them when they expire. Each relying party needs your separate approval before receiving them. Removing a connection erases credentials here; it does not revoke them at the provider.</p>{notice}<ul>{items}</ul><p><a href=\"{}\">Back to account</a></p></main></body></html>",
+            "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"referrer\" content=\"no-referrer\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Claims Providers</title></head><body><main><h1>Claims Providers</h1><p>Connect a provider to collect signed claims. Recollect them when they expire. Each relying party needs your separate approval before receiving them. Removing a connection erases credentials here and contacts the provider revocation endpoint when configured.</p>{notice}<ul>{items}</ul><p><a href=\"{}\">Back to account</a></p></main></body></html>",
             escape_html(&account)
         )
     });

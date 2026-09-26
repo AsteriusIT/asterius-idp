@@ -20,7 +20,7 @@ use crate::http::register::{
 use crate::observability::LogFormat;
 use asterius_domain::{
     Capabilities, EndpointLimit, EndpointLimits, Issuer, LoginLimits, RateLimit, RefreshPolicy,
-    Rotation, Secret, TenantId,
+    Rotation, Secret, SigningAlgorithm, TenantId,
 };
 use ipnet::IpNet;
 use serde::Deserialize;
@@ -355,6 +355,12 @@ pub struct ClaimsProviderConfig {
     pub authorization_endpoint: Option<String>,
     pub token_endpoint: Option<String>,
     pub scope: Option<String>,
+    /// Signed UserInfo algorithm registered at this Claims Provider.
+    pub userinfo_signed_response_alg: Option<SigningAlgorithm>,
+    /// Policy URL supplied to the CP at out-of-band client registration.
+    pub policy_url: Option<String>,
+    /// Optional RFC 7009 revocation endpoint, pinned by the operator.
+    pub revocation_endpoint: Option<String>,
 }
 
 /// Operator-pinned OID4VP verifier and credential trust policy.
@@ -836,6 +842,9 @@ struct RawClaimsProvider {
     authorization_endpoint: Option<String>,
     token_endpoint: Option<String>,
     scope: Option<String>,
+    userinfo_signed_response_alg: Option<String>,
+    policy_url: Option<String>,
+    revocation_endpoint: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2653,22 +2662,32 @@ fn validate_claims_providers(
                     return None;
                 }
             };
-            let (authorization_endpoint, token_endpoint, scope) =
-                match (entry.authorization_endpoint, entry.token_endpoint, entry.scope) {
-                    (None, None, None) => (None, None, None),
-                    (Some(authorization), Some(token), Some(scope))
+            let (authorization_endpoint, token_endpoint, scope, userinfo_signed_response_alg, policy_url) =
+                match (entry.authorization_endpoint, entry.token_endpoint, entry.scope, entry.userinfo_signed_response_alg, entry.policy_url) {
+                    (None, None, None, None, None) => (None, None, None, None, None),
+                    (Some(authorization), Some(token), Some(scope), Some(alg), Some(policy_url))
                         if userinfo_endpoint.is_some()
                             && valid_claims_provider_endpoint(&authorization)
                             && valid_claims_provider_endpoint(&token)
-                            && valid_claims_provider_scope(&scope) =>
+                            && valid_claims_provider_scope(&scope)
+                            && SigningAlgorithm::parse(&alg).is_some()
+                            && valid_claims_provider_endpoint(&policy_url) =>
                     {
-                        (Some(authorization), Some(token), Some(scope))
+                        (Some(authorization), Some(token), Some(scope), SigningAlgorithm::parse(&alg), Some(policy_url))
                     }
                     _ => {
-                        errors.problem(path, "authorization_endpoint, token_endpoint and scope must all be set for a public Claims Provider OAuth client");
+                        errors.problem(path, "authorization_endpoint, token_endpoint, scope, policy_url and a supported userinfo_signed_response_alg must all be set for a public Claims Provider OAuth client");
                         return None;
                     }
                 };
+            let revocation_endpoint = match entry.revocation_endpoint {
+                None => None,
+                Some(value) if token_endpoint.is_some() && valid_claims_provider_endpoint(&value) => Some(value),
+                _ => {
+                    errors.problem(path, "revocation_endpoint must be a canonical HTTPS URL on a complete OAuth profile");
+                    return None;
+                }
+            };
             Some(ClaimsProviderConfig {
                 issuer,
                 jwks_file: entry.jwks_file,
@@ -2678,6 +2697,9 @@ fn validate_claims_providers(
                 authorization_endpoint,
                 token_endpoint,
                 scope,
+                userinfo_signed_response_alg,
+                policy_url,
+                revocation_endpoint,
             })
         })
         .collect()
