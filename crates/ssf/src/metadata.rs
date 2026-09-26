@@ -1,12 +1,10 @@
 //! The transmitter configuration document (SSF 1.0 §7).
 //!
 //! A receiver bootstraps from this document: it learns who the transmitter
-//! claims to be, which keys sign the tokens it will get, and — once the
-//! management API exists — where to configure a stream. SSF 1.0 §7.2 puts it
-//! at `/.well-known/ssf-configuration`, and §7.2.4 makes the check a receiver
-//! runs on it exactly one comparison: the `issuer` in the document must be
-//! identical to the URL it fetched the document from, and to the `iss` of
-//! every SET that arrives afterwards.
+//! claims to be, which keys sign the tokens it will get, and where to
+//! configure a stream. SSF 1.0 §7.2 defines the well-known discovery path;
+//! §7.2.4 requires the returned `issuer` to equal the trusted issuer used for
+//! discovery and the `iss` of every SET that arrives afterwards.
 //!
 //! ## The transmitter's keys are the tenant's keys
 //!
@@ -22,35 +20,15 @@
 //! the signer is one port with one key, because the two sets would be the same
 //! bytes and the separation would be a URL. See `docs/threat-model.md`.
 //!
-//! ## This document is deliberately incomplete
+//! ## Endpoint parity
 //!
-//! SSF 1.0 §7.1 makes `configuration_endpoint`, `status_endpoint`,
-//! `add_subject_endpoint`, `remove_subject_endpoint`, `verification_endpoint`
-//! and `delivery_methods_supported` REQUIRED for a transmitter that supports
-//! stream configuration. Of those, five routes exist and are named here
-//! exactly when they are mounted: `configuration_endpoint` (`ast-0ju.3`), the
-//! status and subject endpoints (`ast-0ju.4`) and `verification_endpoint`
-//! (`ast-0ju.5`). `delivery_methods_supported` is named by none of this.
-//!
-//! A strict reading of §7.1 calls that incomplete, and it is the honest
-//! incompleteness: the alternative is advertising URLs that answer 404, which
-//! is what RFC 8414 §2's rule against documents that do not describe actual
-//! behaviour exists to stop, and which would let a receiver believe it had
-//! configured a stream it had not.
-//!
-//! `delivery_methods_supported` is absent for the same reason and is the case
-//! worth spelling out, because a stream *can* now be configured for either
-//! method. Configuring a delivery is not delivering one: nothing pushes
-//! (`ast-0ju.6`) and nothing answers a poll (`ast-0ju.7`) yet, so a document
-//! advertising a delivery method would be telling a receiver its signals are
-//! on their way. The stream a receiver creates says what it will get —
-//! `events_delivered`, which is empty until an emitter lands — and that is the
-//! member §8.1.1 makes it rely on.
-//!
-//! Each of those stories adds its own member with its own route, and the
-//! parity test in `crates/server/tests/ssf_configuration.rs` holds in every
-//! state.
+//! The management endpoints and delivery methods are advertised together only
+//! when the deployment mounts the stream management API. Push (RFC 8935) and
+//! poll (RFC 8936) both have delivery paths; a deployment without that API
+//! cannot establish a stream and does not claim either method. The parity test
+//! in `crates/server/tests/ssf_configuration.rs` covers that deployment state.
 
+use crate::stream::{DELIVERY_POLL, DELIVERY_PUSH};
 use asterius_domain::Issuer;
 use serde_json::{Value, json};
 
@@ -64,9 +42,9 @@ pub const SPEC_VERSION: &str = "1_0";
 
 /// The management endpoints a deployment mounts (SSF 1.0 §7.1).
 ///
-/// One struct rather than four `Option`s, because the four are mounted
+/// One struct rather than five `Option`s, because the routes are mounted
 /// together or not at all — they are the same feature flag and the same
-/// database wiring — and four independent options would be four ways to
+/// database wiring — and independent options would be ways to
 /// advertise a URL that answers 404.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ManagementEndpoints<'a> {
@@ -96,9 +74,8 @@ pub struct ManagementEndpoints<'a> {
 /// `management` is `Some` exactly when this deployment mounts the management
 /// API — the stream configuration endpoint (`ast-0ju.3`) and the status and
 /// subject endpoints (`ast-0ju.4`) — which is a deployment with the database
-/// wiring those endpoints need, since a stream is a row. `None` omits the
-/// members rather than naming URLs that answer 404: the parity rule this
-/// module exists for.
+/// wiring those endpoints need, since a stream is a row. `None` omits those
+/// members and the delivery methods rather than claiming an inoperable stream.
 #[must_use]
 pub fn transmitter_metadata(
     issuer: &Issuer,
@@ -146,6 +123,10 @@ pub fn transmitter_metadata(
     if let Some(endpoints) = management
         && let Some(object) = document.as_object_mut()
     {
+        object.insert(
+            "delivery_methods_supported".to_owned(),
+            json!([DELIVERY_PUSH, DELIVERY_POLL]),
+        );
         object.insert(
             "configuration_endpoint".to_owned(),
             json!(endpoints.configuration),
@@ -304,15 +285,13 @@ mod tests {
         assert_eq!(document()["verification_endpoint"], json!(VERIFICATION));
     }
 
-    /// The parity rule for what is still unbuilt. A story that adds a member
-    /// here adds a route with it, and updates this test as it does.
+    /// §7.1: list both operational delivery methods.
     #[test]
-    fn no_unbuilt_management_endpoint_is_advertised() {
+    fn implemented_delivery_methods_are_advertised() {
         let document = document();
-        let object = document.as_object().expect("an object");
-        assert!(
-            object.get("delivery_methods_supported").is_none(),
-            "a delivery method is advertised before `ast-0ju.6` delivers one"
+        assert_eq!(
+            document["delivery_methods_supported"],
+            json!([DELIVERY_PUSH, DELIVERY_POLL])
         );
     }
 }
