@@ -8,14 +8,17 @@
 //! recording and lifecycle application happen only after it returns a
 //! [`VerifiedEvent`].
 
-use asterius_domain::{ClientId, Issuer, JwksSource, SigningAlgorithm, Tenant};
+use asterius_domain::{
+    ClientId, Issuer, JwksSource, ReplayCheck, ReplayPurpose, SigningAlgorithm, Tenant,
+};
 use asterius_jose::client_keys::ClientKeyCache;
+use asterius_jose::http_signatures::{RequestTarget, SignedFields, verify_request};
 use asterius_jose::verify::{self, Policy, TypRule, Verified};
 use asterius_ssf::{SET_TYP, Subject};
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Extension, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use serde_json::Value;
@@ -54,6 +57,7 @@ pub fn routes(endpoints: std::sync::Arc<crate::http::protocol::ClientEndpoints>)
 async fn receive(
     State(endpoints): State<std::sync::Arc<crate::http::protocol::ClientEndpoints>>,
     Extension(tenant): Extension<Tenant>,
+    uri: Uri,
     headers: HeaderMap,
     token: Bytes,
 ) -> Response {
@@ -97,6 +101,49 @@ async fn receive(
     else {
         return response(StatusCode::BAD_REQUEST);
     };
+    if let Some(pinned) = endpoints
+        .http_signature_peers
+        .find(tenant.id.as_str(), event.peer.as_str())
+    {
+        // The SET signature has established the peer before its HTTP key is
+        // selected. A configured peer cannot fall back to unsigned delivery.
+        let Some(fields) = signed_fields(&headers) else {
+            return response(StatusCode::UNAUTHORIZED);
+        };
+        if uri.query().is_some() || uri.path() != RECEIVER_PATH {
+            return response(StatusCode::UNAUTHORIZED);
+        }
+        let target_uri = format!("{}{}", tenant.issuer.as_str().trim_end_matches('/'), uri);
+        let Ok(verified) = verify_request(
+            RequestTarget {
+                method: "POST",
+                target_uri: &target_uri,
+            },
+            token.as_bytes(),
+            &fields,
+            &pinned.keyid,
+            &pinned.key,
+            now,
+        ) else {
+            return response(StatusCode::UNAUTHORIZED);
+        };
+        let subject = format!("{}:{}", event.peer.as_str(), verified.keyid);
+        match endpoints
+            .http_signature_replay
+            .claim(
+                &tenant.id,
+                ReplayPurpose::HttpSignature,
+                &subject,
+                &verified.nonce,
+                verified.expires_at,
+            )
+            .await
+        {
+            Ok(ReplayCheck::FirstUse) => {}
+            Ok(ReplayCheck::Replay) => return response(StatusCode::UNAUTHORIZED),
+            Err(_) => return response(StatusCode::SERVICE_UNAVAILABLE),
+        }
+    }
     let action = match event.event_type {
         LifecycleEventType::SessionRevoked => asterius_store_pg::ReceiverAction::SessionRevoked,
         LifecycleEventType::AccountDisabled => asterius_store_pg::ReceiverAction::AccountDisabled,
@@ -159,6 +206,19 @@ async fn receive(
         Err(asterius_domain::DomainError::Invalid { .. }) => response(StatusCode::BAD_REQUEST),
         Err(_) => response(StatusCode::INTERNAL_SERVER_ERROR),
     }
+}
+
+fn signed_fields(headers: &HeaderMap) -> Option<SignedFields> {
+    fn one(headers: &HeaderMap, name: &str) -> Option<String> {
+        let mut values = headers.get_all(name).iter();
+        let first = values.next()?.to_str().ok()?.to_owned();
+        values.next().is_none().then_some(first)
+    }
+    Some(SignedFields {
+        content_digest: one(headers, "content-digest")?,
+        signature_input: one(headers, "signature-input")?,
+        signature: one(headers, "signature")?,
+    })
 }
 
 fn response(status: StatusCode) -> Response {

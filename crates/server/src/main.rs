@@ -248,6 +248,9 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
         let claims_providers = Arc::new(asterius_server::claims_provider::ClaimsProviders::load(
             &config.tenants,
         )?);
+        let http_signature_peers = Arc::new(asterius_server::http_signatures::PeerKeys::load(
+            &config.tenants,
+        )?);
         let federation_for_sweep = federation.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
@@ -315,6 +318,8 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
             tenant_settings: Some(settings.clone()),
             signed_metadata: pdp_metadata_signer(&config, &keys),
             clients: Some(Arc::new(ClientEndpoints {
+                http_signature_peers,
+                http_signature_replay: Arc::clone(&replay) as Arc<dyn ReplayGuard>,
                 oid4vp_verifiers,
                 claims_providers,
                 id_jag_approvals: Arc::new(

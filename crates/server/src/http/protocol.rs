@@ -119,6 +119,10 @@ pub struct ProtocolState {
 /// Separate from [`ProtocolState`] so that the discovery and JWKS handlers —
 /// which need none of it — can be tested without a database.
 pub struct ClientEndpoints {
+    /// Pinned request-signature keys for configured SSF transmitters.
+    pub http_signature_peers: Arc<crate::http_signatures::PeerKeys>,
+    /// Shared atomic replay guard for signed request nonces.
+    pub http_signature_replay: Arc<dyn asterius_domain::ReplayGuard>,
     /// Operator-pinned OpenID4VP verifier policies, absent unless configured.
     pub oid4vp_verifiers: Arc<crate::oid4vp::Oid4vpVerifiers>,
     /// Operator-pinned Claims Provider trust profiles.

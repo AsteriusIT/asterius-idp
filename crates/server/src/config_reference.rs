@@ -1082,6 +1082,12 @@ fn tenant() -> Section {
                 "empty (aggregated delivery disabled)".to_owned(),
                 "Pins Claims Provider issuer, local public JWKS and approved attribute names for signed UserInfo aggregation. Up to four providers, each with up to sixteen attributes. OAuth user setup and collection are separately tracked.",
             ),
+            key(
+                "http_signature_peer",
+                "array of { client_id, keyid, public_key_file } tables",
+                "empty (HTTP signatures optional)".to_owned(),
+                "For each listed SSF transmitter, require a canonical RFC 9421 Ed25519 signature over POST, the tenant issuer's /ssf/receiver URL, and the RFC 9530 SHA-256 body digest. public_key_file contains the base64-encoded raw 32-byte Ed25519 public key. Signatures expire within five minutes and their nonces are consumed atomically across replicas. A listed peer cannot fall back to unsigned delivery.",
+            ),
         ],
     }
 }
