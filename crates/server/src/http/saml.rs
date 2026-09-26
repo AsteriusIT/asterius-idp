@@ -1,25 +1,31 @@
-//! Tenant-routed SAML browser SSO for an already authenticated browser.
+//! Tenant-routed SAML browser SSO.
 //!
-//! The SP's signed AuthnRequest is verified against operator-pinned trust,
-//! and its ID is reserved only after the browser session and account are
-//! usable. A browser without a session receives a local refusal and can
-//! authenticate before the SP retries; no untrusted request is carried through
-//! a login redirect. Unsupported request controls such as ForceAuthn,
+//! The SP's AuthnRequest is verified against operator-pinned trust and its ID
+//! is reserved before any login. A browser without a session enters the
+//! existing first-party login; a one-use pending row is bound to that login's
+//! resulting session and rechecks SP trust at resume. No raw XML or arbitrary
+//! ACS is carried through the browser. Unsupported ForceAuthn,
 //! IsPassive and RequestedAuthnContext are rejected by the bounded parser.
 //! The response can only post to the trusted ACS.
 
 use crate::http::protocol::ClientEndpoints;
+use crate::http::redirect::SeeOther;
 use crate::saml::{Assertion, IdpMetadata, sign_metadata};
 use crate::saml_idp_signer::{SamlIdpSigner, validate_key_pair};
-use crate::saml_validation::{SamlRequestValidator, ValidationError};
-use asterius_domain::{SessionRepository as _, Tenant, UserId, UserStatus};
+use crate::saml_validation::{SamlRequestValidator, ValidatedAuthnRequest, ValidationError};
+use asterius_domain::{
+    FirstPartyDestination, InteractionRepository as _, Session, SessionRepository as _, Tenant,
+    UserId, UserStatus,
+};
+use asterius_store_pg::NewPendingSamlLogin;
 use asterius_web::Brand;
+use asterius_web::interaction::InteractionId;
 use asterius_web::pages::{FormPostPage, ResponseField, nonce_attribute};
 use asterius_web::{Document, csp::Nonce};
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{Extension, State};
-use axum::http::{HeaderMap, StatusCode, Uri, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -29,11 +35,13 @@ use url::Url;
 
 /// Tenant-relative metadata, mounted only alongside the live SSO route.
 pub const METADATA_PATH: &str = "/saml/metadata";
+const PENDING_COOKIE: &str = "__Host-asterius_saml_pending";
 
 /// Only these two bindings have live request verification and response paths.
 pub fn routes(endpoints: Arc<ClientEndpoints>) -> Router {
     Router::new()
         .route("/saml/sso", get(redirect).post(post_form))
+        .route("/saml/sso/resume", get(resume))
         .route(METADATA_PATH, get(metadata))
         .with_state(endpoints)
 }
@@ -162,6 +170,42 @@ enum Input {
     Post(String, Vec<u8>),
 }
 
+async fn resume(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<Nonce>,
+    mount: Option<Extension<crate::tenancy::MountPrefix>>,
+    headers: HeaderMap,
+) -> Response {
+    let now = OffsetDateTime::now_utc();
+    let cookies = crate::http::cookies(&headers);
+    let Some(presented) = asterius_web::interaction::cookie_value(&cookies, PENDING_COOKIE) else {
+        return refused(StatusCode::BAD_REQUEST);
+    };
+    let token_digest = asterius_domain::sha256_hex(presented.as_bytes());
+    let session = match browser_session(&endpoints, &tenant, &headers, now).await {
+        Ok(Some(session)) => session,
+        Ok(None) => return refused(StatusCode::UNAUTHORIZED),
+        Err(response) => return response,
+    };
+    let pending = match endpoints
+        .store
+        .scope(tenant.id.clone())
+        .saml_pending()
+        .consume(&token_digest, &session.id_digest, now)
+        .await
+    {
+        Ok(Some(pending)) => pending,
+        Ok(None) => return clear_pending(refused(StatusCode::BAD_REQUEST)),
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot consume SAML login continuation");
+            return refused(StatusCode::SERVICE_UNAVAILABLE);
+        }
+    };
+    let request = ValidatedAuthnRequest::from_consumed(&tenant, pending);
+    clear_pending(deliver(&endpoints, &tenant, &nonce, mount, &session, &request, now).await)
+}
+
 async fn issue(
     endpoints: Arc<ClientEndpoints>,
     tenant: Arc<Tenant>,
@@ -171,41 +215,10 @@ async fn issue(
     input: Input,
 ) -> Response {
     let now = OffsetDateTime::now_utc();
-    let scope = endpoints.store.scope(tenant.id.clone());
-    let cookies = crate::http::cookies(&headers);
-    let Some(cookie) = asterius_web::interaction::cookie_value(
-        &cookies,
-        asterius_domain::entities::session::COOKIE_NAME,
-    ) else {
-        return refused(StatusCode::UNAUTHORIZED);
+    let session = match browser_session(&endpoints, &tenant, &headers, now).await {
+        Ok(session) => session,
+        Err(response) => return response,
     };
-    let digest = asterius_domain::sha256_hex(cookie.as_bytes());
-    let session = match scope.sessions().find_for_browser(&digest, now).await {
-        Ok(Some(session)) if session.tenant == tenant.id && session.status(now).is_usable() => {
-            session
-        }
-        Ok(_) => return refused(StatusCode::UNAUTHORIZED),
-        Err(error) => {
-            tracing::error!(%error, tenant = %tenant.id, "cannot read SAML browser session");
-            return refused(StatusCode::SERVICE_UNAVAILABLE);
-        }
-    };
-    let user = match scope
-        .users(Arc::clone(&endpoints.kek))
-        .find(UserId::new(session.user))
-        .await
-    {
-        Ok(Some(user)) if user.status == UserStatus::Active => user,
-        Ok(_) => return refused(StatusCode::UNAUTHORIZED),
-        Err(error) => {
-            tracing::error!(%error, tenant = %tenant.id, "cannot read SAML account");
-            return refused(StatusCode::SERVICE_UNAVAILABLE);
-        }
-    };
-    if session.authenticated_at > now || session.amr.is_empty() {
-        return refused(StatusCode::UNAUTHORIZED);
-    }
-
     let validator = SamlRequestValidator::new(endpoints.store.clone());
     let request = match input {
         Input::Redirect(query) => validator.validate_redirect(&tenant, &query, now).await,
@@ -223,6 +236,141 @@ async fn issue(
             return refused(StatusCode::SERVICE_UNAVAILABLE);
         }
     };
+    match session {
+        Some(session) => deliver(&endpoints, &tenant, &nonce, mount, &session, &request, now).await,
+        None => begin_login(&endpoints, &tenant, &request, now).await,
+    }
+}
+
+async fn browser_session(
+    endpoints: &ClientEndpoints,
+    tenant: &Tenant,
+    headers: &HeaderMap,
+    now: OffsetDateTime,
+) -> Result<Option<Session>, Response> {
+    let cookies = crate::http::cookies(headers);
+    let Some(cookie) = asterius_web::interaction::cookie_value(
+        &cookies,
+        asterius_domain::entities::session::COOKIE_NAME,
+    ) else {
+        return Ok(None);
+    };
+    let digest = asterius_domain::sha256_hex(cookie.as_bytes());
+    match endpoints
+        .store
+        .scope(tenant.id.clone())
+        .sessions()
+        .find_for_browser(&digest, now)
+        .await
+    {
+        Ok(Some(session)) if session.tenant == tenant.id && session.status(now).is_usable() => {
+            Ok(Some(session))
+        }
+        Ok(_) => Ok(None),
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read SAML browser session");
+            Err(refused(StatusCode::SERVICE_UNAVAILABLE))
+        }
+    }
+}
+
+async fn begin_login(
+    endpoints: &ClientEndpoints,
+    tenant: &Tenant,
+    request: &ValidatedAuthnRequest,
+    now: OffsetDateTime,
+) -> Response {
+    let interaction = InteractionId::generate();
+    let pending = InteractionId::generate();
+    // Freshness was checked before replay reservation. The person now has the
+    // same ten minutes as other first-party logins to prove a credential;
+    // the request ID tombstone outlives this continuation.
+    let expires_at = now + crate::http::console::ENTRY_LIFETIME;
+    let scope = endpoints.store.scope(tenant.id.clone());
+    if let Err(error) = scope
+        .auth_requests()
+        .begin_first_party_interaction(
+            &interaction.digest(),
+            FirstPartyDestination::SamlSso,
+            expires_at,
+            now,
+        )
+        .await
+    {
+        tracing::error!(%error, tenant = %tenant.id, "cannot begin SAML first-party login");
+        return refused(StatusCode::SERVICE_UNAVAILABLE);
+    }
+    let saved = scope
+        .saml_pending()
+        .begin(&NewPendingSamlLogin {
+            token_digest: &pending.digest(),
+            interaction_digest: &interaction.digest(),
+            sp_entity_id: request.sp_entity_id(),
+            acs_url: request.acs_url(),
+            request_id: request.request_id(),
+            issued_at: request.issued_at(),
+            relay_state: request.relay_state(),
+            signing_key_der: request.signing_key_der(),
+            expires_at,
+        })
+        .await;
+    if let Err(error) = saved {
+        tracing::error!(%error, tenant = %tenant.id, "cannot retain verified SAML request for login");
+        return refused(StatusCode::SERVICE_UNAVAILABLE);
+    }
+    let Ok(location) = SeeOther::to(&format!("../interaction/{}", interaction.expose())) else {
+        return refused(StatusCode::SERVICE_UNAVAILABLE);
+    };
+    let mut response = location.into_response();
+    if let Ok(value) = asterius_web::interaction::set_cookie(&interaction).parse() {
+        response.headers_mut().append(header::SET_COOKIE, value);
+    }
+    let cookie = format!(
+        "{PENDING_COOKIE}={}; Path=/; Max-Age=600; Secure; HttpOnly; SameSite=Lax",
+        pending.expose()
+    );
+    if let Ok(value) = cookie.parse() {
+        response.headers_mut().append(header::SET_COOKIE, value);
+    }
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+fn clear_pending(mut response: Response) -> Response {
+    let cookie = format!("{PENDING_COOKIE}=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax");
+    if let Ok(value) = cookie.parse() {
+        response.headers_mut().append(header::SET_COOKIE, value);
+    }
+    response
+}
+
+async fn deliver(
+    endpoints: &ClientEndpoints,
+    tenant: &Tenant,
+    nonce: &Nonce,
+    mount: Option<Extension<crate::tenancy::MountPrefix>>,
+    session: &Session,
+    request: &ValidatedAuthnRequest,
+    now: OffsetDateTime,
+) -> Response {
+    let scope = endpoints.store.scope(tenant.id.clone());
+    let user = match scope
+        .users(Arc::clone(&endpoints.kek))
+        .find(UserId::new(session.user))
+        .await
+    {
+        Ok(Some(user)) if user.status == UserStatus::Active => user,
+        Ok(_) => return refused(StatusCode::UNAUTHORIZED),
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read SAML account");
+            return refused(StatusCode::SERVICE_UNAVAILABLE);
+        }
+    };
+    if session.authenticated_at > now || session.amr.is_empty() {
+        return refused(StatusCode::UNAUTHORIZED);
+    }
 
     let expires_at = (now + Duration::minutes(5))
         .min(session.expires_at)

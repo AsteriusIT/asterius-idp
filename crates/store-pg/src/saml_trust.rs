@@ -1,8 +1,8 @@
 //! Tenant-scoped SAML SP trust and durable AuthnRequest ID reservations.
 //!
-//! Provisioning does not enable browser SSO. A later handler must validate
-//! destination, time, signature policy and response issuance before using
-//! these records. No inbound XML or caller-provided ACS is written here.
+//! Provisioning alone grants no browser SSO: the routed handler validates
+//! destination, time, signature policy and replay before using these records.
+//! No inbound XML or caller-provided ACS is written here.
 
 use crate::error::to_domain_error;
 use asterius_domain::{DomainError, TenantId};

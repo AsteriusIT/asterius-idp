@@ -172,8 +172,8 @@ impl PgSamlIdpKeys {
             .collect()
     }
 
-    /// Public certificates eligible for future metadata publication after an
-    /// SSO route exists. Retired keys are omitted. At most two rows are
+    /// Public certificates eligible for live metadata publication. Retired
+    /// keys are omitted. At most two rows are
     /// returned because another key cannot be staged during retirement.
     pub async fn published(&self) -> Result<Vec<SamlIdpKeySummary>, DomainError> {
         Ok(self

@@ -7,7 +7,7 @@
 //! when the SP explicitly opts in; the default persisted policy refuses it.
 
 use asterius_domain::{DomainError, Tenant};
-use asterius_store_pg::{PgSamlTrust, SamlSp, Store};
+use asterius_store_pg::{ConsumedPendingSamlLogin, PgSamlTrust, SamlSp, Store};
 use aws_lc_rs::signature::{RSA_PKCS1_2048_8192_SHA256, UnparsedPublicKey};
 use time::{Duration, OffsetDateTime};
 
@@ -37,6 +37,7 @@ pub struct ValidatedAuthnRequest {
     request_id: String,
     issued_at: OffsetDateTime,
     relay_state: Option<Vec<u8>>,
+    signing_key_der: Option<Vec<u8>>,
 }
 
 impl ValidatedAuthnRequest {
@@ -63,6 +64,26 @@ impl ValidatedAuthnRequest {
     #[must_use]
     pub fn relay_state(&self) -> Option<&[u8]> {
         self.relay_state.as_deref()
+    }
+    /// The exact SP key that verified the request, or none for an explicitly
+    /// permitted unsigned request. A pending login pins this across sign-in.
+    #[must_use]
+    pub fn signing_key_der(&self) -> Option<&[u8]> {
+        self.signing_key_der.as_deref()
+    }
+
+    /// Restores only a one-use continuation whose store consume checked the
+    /// first-party login session and current exact SP trust in one statement.
+    pub(crate) fn from_consumed(tenant: &Tenant, pending: ConsumedPendingSamlLogin) -> Self {
+        Self {
+            tenant_id: tenant.id.as_str().to_owned(),
+            sp_entity_id: pending.sp_entity_id,
+            acs_url: pending.acs_url,
+            request_id: pending.request_id,
+            issued_at: pending.issued_at,
+            relay_state: pending.relay_state,
+            signing_key_der: None,
+        }
     }
 }
 
@@ -103,7 +124,7 @@ impl SamlRequestValidator {
         if !reserved {
             return Err(ValidationError::Refused);
         }
-        Ok(Self::accepted(tenant, sp, request, None))
+        Ok(Self::accepted(tenant, sp, request, None, None))
     }
 
     /// Decodes and verifies a signed HTTP-Redirect query against the exact
@@ -133,7 +154,14 @@ impl SamlRequestValidator {
         if !reserved {
             return Err(ValidationError::Refused);
         }
-        Ok(Self::accepted(tenant, sp, request, redirect.relay_state))
+        let signing_key_der = key.to_vec();
+        Ok(Self::accepted(
+            tenant,
+            sp,
+            request,
+            redirect.relay_state,
+            Some(signing_key_der),
+        ))
     }
 
     /// Validates the strict HTTP-POST binding profile with an enveloped
@@ -168,7 +196,7 @@ impl SamlRequestValidator {
                 if !reserved {
                     return Err(ValidationError::Refused);
                 }
-                return Ok(Self::accepted(tenant, sp, request, form.relay_state));
+                return Ok(Self::accepted(tenant, sp, request, form.relay_state, None));
             }
         };
         let (trust, sp) = self
@@ -186,7 +214,14 @@ impl SamlRequestValidator {
         if !reserved {
             return Err(ValidationError::Refused);
         }
-        Ok(Self::accepted(tenant, sp, request, form.relay_state))
+        let signing_key_der = key.to_vec();
+        Ok(Self::accepted(
+            tenant,
+            sp,
+            request,
+            form.relay_state,
+            Some(signing_key_der),
+        ))
     }
 
     async fn check_routed(
@@ -226,6 +261,7 @@ impl SamlRequestValidator {
         sp: SamlSp,
         request: UntrustedAuthnRequest,
         relay_state: Option<Vec<u8>>,
+        signing_key_der: Option<Vec<u8>>,
     ) -> ValidatedAuthnRequest {
         ValidatedAuthnRequest {
             tenant_id: tenant.id.as_str().to_owned(),
@@ -234,6 +270,7 @@ impl SamlRequestValidator {
             request_id: request.id,
             issued_at: request.issued_at,
             relay_state,
+            signing_key_der,
         }
     }
 }

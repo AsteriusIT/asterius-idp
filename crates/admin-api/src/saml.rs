@@ -1,7 +1,7 @@
 //! Operator-only, tenant-scoped SAML SP trust provisioning.
 //!
 //! These operations do not expose browser SSO. Exact entity IDs and ACS URLs
-//! are stored for a later SSO implementation; no submitted XML is trusted.
+//! are used by the routed SSO verifier; no submitted XML is trusted.
 //! `allow_unsigned_requests` must be supplied explicitly. It defaults to
 //! false in storage. HTTP-Redirect signatures require a separate pinned key;
 //! XML Signature verification is handled by the server's strict POST profile.
