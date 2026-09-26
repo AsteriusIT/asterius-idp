@@ -5,19 +5,17 @@
 //! runs with nobody present: the browser is gone, the consent screen was weeks
 //! ago, and what stands in their place is this file.
 //!
-//! # Two things must be true, and a third a tenant may ask for
+//! # Two things must be true, and a third depends on client type
 //!
-//! FAPI 2.0 SP §5.3.2.1 requires the client to authenticate *and* the request
-//! to carry a DPoP proof, so a stolen refresh token is worth nothing without
-//! the client's credentials. That is RFC 9700 §4.14's "sender-constrained or
-//! rotation" answered with the first option, which is the one that does not
-//! break a client that loses a response.
+//! A confidential FAPI client authenticates and presents a sender constraint
+//! on the request. A public client has no credential to authenticate with, so
+//! its refresh token must instead be bound to the DPoP key used at issuance.
+//! Both paths satisfy RFC 9700 §4.14's sender-constraint requirement without
+//! depending on rotation.
 //!
-//! The third — pinning the token to the DPoP key it was *issued* to — is the
-//! tenant's `bind_to_dpop_key`, and it is off by default because RFC 9449 §5
-//! says a refresh token issued to a confidential client is not bound to the
-//! proof key, every client here being confidential. `check_key_binding` below
-//! is that rule and the option that overrides it.
+//! The third — pinning the token to the DPoP key it was *issued* to — is
+//! mandatory for a public client under RFC 9449 §5. For confidential clients
+//! the tenant's `bind_to_dpop_key` setting chooses whether to pin it.
 //!
 //! # Why the token does not rotate
 //!
@@ -320,7 +318,7 @@ impl RefreshToken<'_> {
             return Err(invalid_grant());
         }
 
-        self.check_binding(&policy, &record)?;
+        self.check_binding(client, &policy, &record)?;
 
         let grant = self
             .grants
@@ -595,9 +593,9 @@ impl RefreshToken<'_> {
     /// §5 binds a refresh token to the proof key when it is issued to a
     /// *public* client, and says that tokens "issued to confidential clients
     /// are not bound to the DPoP proof public key because they are already
-    /// sender-constrained with a different existing mechanism". Every client
-    /// here is confidential — `TokenEndpointAuthMethod` has no `none` — so the
-    /// default is off and this check does not run: the client authenticated,
+    /// sender-constrained with a different existing mechanism". Thus a public
+    /// client's token is always pinned, regardless of the tenant setting.
+    /// For a confidential client with the default off, the client authenticated
     /// and the key it proves is the key its *new* access token is bound to.
     ///
     /// That is what lets a client roll its DPoP key without losing its
@@ -621,12 +619,14 @@ impl RefreshToken<'_> {
     /// its clients by DPoP instead.
     fn check_binding(
         &self,
+        client: &Client,
         policy: &RefreshPolicy,
         record: &RefreshTokenRecord,
     ) -> Result<(), Failure> {
+        let public = client.registration.compliance_profile.is_public();
         match &record.binding {
             RefreshBinding::Dpop(jkt) => {
-                if !policy.bind_to_dpop_key {
+                if !public && !policy.bind_to_dpop_key {
                     return Ok(());
                 }
                 if self.constraint.proof_key.map(Kid::as_str) != Some(jkt.as_str()) {
@@ -635,11 +635,15 @@ impl RefreshToken<'_> {
                 Ok(())
             }
             RefreshBinding::Certificate(thumbprint) => {
+                if public {
+                    return Err(invalid_grant());
+                }
                 if !self.constraint.presents(thumbprint) {
                     return Err(invalid_grant());
                 }
                 Ok(())
             }
+            RefreshBinding::Bearer if public => Err(invalid_grant()),
             RefreshBinding::Bearer => Ok(()),
         }
     }

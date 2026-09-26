@@ -1,80 +1,85 @@
-# IPSIE and OpenID enterprise draft readiness
+# IPSIE SL1 OpenID Provider readiness
 
-This is a tracking note, not a conformance statement. It records the seams and
-known gaps that are cheap to preserve while the specifications are working
-documents. It must be re-audited clause by clause when the IPSIE Common
-Requirements and SL1 profile become OpenID Implementer's Drafts; until then,
-changes in either draft do not create v1 product requirements.
+This is an OP-role gap matrix, not an IPSIE conformance statement. The
+[SL1 OpenID Connect draft](https://openid.github.io/ipsie-openid-sl1/draft-openid-ipsie-sl1-profile.html)
+(2 September 2025) incorporates the
+[Common Requirements draft](https://openid.github.io/ipsie-common-requirements-profile/draft-ipsie-common-requirements-profile.html)
+(20 August 2025). Both `latest` pages were checked on 26 September 2026. Both
+Internet-Draft snapshots have expired, and neither page is an Implementer's
+Draft. Clauses and interpretation may change. No metadata or console control
+claims an IPSIE profile today.
 
-Status was checked against OpenID Foundation publications on 2026-09-19.
+“Implemented” below means the named code path has the stated behavior, not
+that deployment or interoperability evidence has been collected. Relying-party
+requirements are excluded unless they constrain something this OP offers.
 
-## Maturity checkpoint
+## SL1 §3.2.1: OP obligations
 
-| Work | Revision checked | Status and consequence |
-|---|---|---|
-| [IPSIE Common Requirements](https://openid.github.io/ipsie-common-requirements-profile/draft-ipsie-common-requirements-profile.html) | `latest`, published 2025-08-20 | Working document predating an Implementer's Draft. It still contains editorial removal notes and an unfinished security section, and its Internet-Draft snapshot has expired. Keep the matrix below provisional. |
-| [IPSIE SL1 OpenID Connect Profile](https://openid.github.io/ipsie-openid-sl1/draft-openid-ipsie-sl1-profile.html) | `latest`, published 2025-09-02 | Working document predating an Implementer's Draft whose Internet-Draft snapshot has expired. It incorporates the Common Requirements by reference. Do not claim SL1 support. |
-| [OpenID Provider Commands 1.0](https://openid.net/specs/openid-provider-commands-1_0.html) | draft 02, 2025-09-25 | Working draft. No command endpoint, command token, callback, synchronous account operation or streaming tenant operation is implemented. |
-| [OpenID Connect Enterprise Extensions 1.0](https://openid.net/specs/openid-connect-enterprise-extensions-1_0.html) | draft 01, 2025-09-25 | Working draft defining optional `session_expiry`, `tenant` and `aud_sub` ID-token claims and `domain_hint`/`tenant` request hints. None is advertised or emitted as an Enterprise Extensions feature. |
+| Draft obligation | Current OP path and result |
+|---|---|
+| Discovery metadata | Implemented by `crates/oidc/src/metadata.rs` and `crates/server/src/http/protocol.rs`. Metadata is tenant-specific. |
+| Reject resource-owner password grant | Implemented by the token endpoint's grant-type dispatch; no password grant handler. |
+| Support public clients | Implemented in `crates/domain/src/entities/client.rs` and client authentication. Tenant administration must explicitly select the `public` client compliance profile; dynamic registration uses FAPI. A deployment must verify this registration path before claiming this row. |
+| No open redirector; preregistered, exact redirect URI | Implemented in client registration and `crates/oidc/src/authorize.rs`. Native loopback-port variation is allowed by the general product and is a separate SL1 conflict below. |
+| Client assertion `aud` is the issuer string only | Implemented by client authentication validation; recheck all accepted assertion methods when defining an IPSIE profile. |
+| Authorization code lifetime at most 60 seconds | `crates/domain/src/entities/tenant_settings.rs` caps the configured lifetime at 60 seconds; the authorization path uses that tenant value. |
+| Preregister clients; no unauthenticated dynamic registration | Default registration policy is closed in `crates/server/src/http/register.rs`, but tenant configuration can enable other policies. An SL1 deployment must keep registration closed or protected and audit every registration channel. This is not an enforced IPSIE profile invariant. |
+| Access tokens used by the RP only for identity claims at the OP | General clients can request resource-server audiences. No SL1 client boundary constrains audiences and scopes to UserInfo. Open gap. |
+| Sender-constrained access tokens with DPoP | This is a SHOULD in the OP subsection. Public clients require DPoP-bound access tokens; refresh redemption now requires their original DPoP key even when tenant optional pinning is off for confidential clients (`crates/server/src/http/refresh.rs`). Other client profiles may use different sender constraints. |
+| ID-token `aud` is one string | `crates/oidc/src/tokens/id_token.rs` emits the registered client ID as a single JSON string. |
+| ID-token `auth_time` | The builder always emits the actual authentication time. Session and grant snapshot logic in `crates/server/src/http/issuance.rs` preserves it across refresh. |
+| ID-token `acr` and `amr` | Both are omitted when no supported authentication context or method is known; `acr` is also revalidated against current policy. An SL1 profile must require a meaningful configured ACR and IANA-registered AMR mapping. Never fill these with invented values. Open gap. |
+| ID-token integer `session_expiry` | Not server-emitted. Browser session expiry is not automatically an RP session expiry, and offline refresh can outlive a browser session. A historical user claim with this name can exist, so introducing a server-owned reservation requires a data migration before changing `ClaimName::SERVER_ISSUED`; issuer logic must never trust the user claim as an RP-session deadline. Open gap. |
 
-The trigger for turning this note into a maintained compliance gap list is an
-OpenID Implementer's Draft of both IPSIE documents. Finalization of Provider
-Commands or Enterprise Extensions is a separate trigger and does not by itself
-authorize implementation.
+## SL1 §3.2.1: authorization-code obligations
 
-## Provisional IPSIE gap map
+| Draft obligation | Current OP path and result |
+|---|---|
+| `response_type=code`, PKCE S256, one-use codes | Implemented by `crates/oidc/src/authorize.rs` and code redemption. |
+| Exact registered redirect URI | Implemented for ordinary HTTPS URIs. RFC 8252 native loopback redirects allow a varying port; SL1 separately forbids *all* HTTP redirects. An SL1 client profile must reject loopback HTTP registrations without changing general native-client support. Open gap. |
+| Authorization response `iss` | Emitted by the authorization response path (RFC 9207). |
+| No credential-bearing 307 redirect; prefer 303 | Browser redirect helper in `crates/server/src/http/redirect.rs` uses 303. |
+| `nonce` values through 64 characters | `crates/oidc/src/authorize.rs` accepts up to 256 bytes and the ID-token builder echoes the value. |
+| `max_age` reauthentication | Authorization decision uses session `authenticated_at`; stale authentication requires an active step-up. |
 
-The unit of comparison is Asterius acting as an OpenID Provider. Requirements
-placed only on relying parties are outside the product role. “Aligned” means an
-existing invariant happens to agree with the current draft; it does not mean
-the project has passed an IPSIE conformance suite.
+## Common Requirements §§3.2–3.4: OP-relevant obligations
 
-| Current draft area | Asterius today | Disposition |
-|---|---|---|
-| Common Requirements: TLS, HSTS, no CORS on the authorization endpoint, BCP 195, RFC 9525 | The FAPI baseline already owns these transport rules. | Aligned without IPSIE-specific code. Preserve the common HTTP/TLS path. |
-| Common Requirements: RFC 8725; PS256, ES256 or Ed25519; key-size floors; no `none`; 128-bit credentials | The JOSE allow-list and credential types are FAPI invariants. | Aligned without IPSIE-specific code. |
-| Common Requirements: minimize disclosed attributes and offer pairwise subject identifiers | Claims are consent/grant bounded, and clients may register for pairwise subjects. | Aligned in shape; a future audit must verify every disclosure path against the stabilized wording. |
-| Common Requirements: offer encryption for back-channel assertions | ID tokens and JWT UserInfo responses are signed, but JWE response encryption is not implemented. | Gap. Do not add JWE solely for this draft. Revisit at Implementer's Draft together with key registration, algorithm metadata and nested-JWT rules. |
-| Common Requirements: front-channel assertions must be encrypted | The only supported authorization response carries a short-lived code, not an identity assertion. | Not applicable to the current code-only flow. Reassess if a front-channel assertion response is ever added. |
-| Common Requirements: security-control program, break-glass handling and provisioning-driven disablement | These include operator and relying-party obligations, not only protocol behavior. Asterius has no IPSIE deployment profile that evaluates them. | Operational/profile gap. They need certification evidence and deployment guidance, not a hidden protocol flag. |
-| SL1: discovery, no ROPC/open redirector, exact preregistered redirects, issuer-only assertion audience, code lifetime at most 60 seconds | These are existing OIDC/FAPI invariants. Authorization responses include RFC 9207 `iss`. | Aligned without a separate mode. |
-| SL1: no `http` redirect URI | The FAPI baseline permits RFC 8252 loopback `http` redirects for native clients. | Profile gap. An SL1 profile would have to refuse that otherwise-valid registration without changing the FAPI baseline. |
-| SL1: authorization code only, PKCE `S256`, one-use codes, 303 rather than 307, `nonce` through 64 characters, and `max_age` | The authorization path enforces these rules. | Aligned without IPSIE-specific code. |
-| SL1: public clients | ADR-0002 and ADR-0012 deliberately allow confidential clients only. | Intentional incompatibility. Supporting SL1 requires a new tenant-scoped profile and ADR; it must not weaken the FAPI profile globally. |
-| SL1: clients preregistered and no unauthenticated dynamic registration | Asterius can require pre-registration or protected registration, but registration policy is deployment configurable. | Profile gap. A future SL1 mode must make the closed/protected policy mandatory. |
-| SL1: access tokens used only to retrieve identity claims at the OP | Asterius also issues audience-bound tokens for registered resource servers and administration protocols. | Profile gap. A future SL1 client/profile boundary must constrain token audiences without narrowing the general product. |
-| SL1: DPoP sender constraint | The FAPI path already binds access tokens to DPoP; server-provided nonces are feature gated. The current SL1 text makes DPoP optional for the OP. | Stronger default, but a future profile must decide whether its RP-facing metadata promises nonce support. |
-| SL1: ID-token `aud` is one string; `acr`, `amr`, `auth_time` and `session_expiry` are always present | `aud` is one string and `auth_time` is always present. `acr` and `amr` are omitted when no authentication policy/method value exists; `session_expiry` is absent. | Gap. Stabilized semantics are needed for a default `acr`, method registry mapping and RP-session expiry before changing token claims. |
+| Draft obligation | Current OP path and result |
+|---|---|
+| TLS 1.2+, BCP 195 ciphers, HSTS, DNSSEC SHOULD, certificate verification | Deployment controls. The app's HTTPS issuer and transport assumptions do not prove the edge proxy's TLS settings, certificate checks, preload status or DNSSEC. Collect deployment evidence; do not claim these from code alone. |
+| No CORS on authorization endpoint | The server has no CORS layer (`crates/server/src/http/server.rs`). Recheck the deployment proxy. |
+| RFC 8725, allowed JWT algorithms, key sizes, no `none`, 128-bit credential entropy | JOSE and credential code constrain these values for their respective paths. A profile audit must enumerate every JWT type and key-import path; the current matrix is not that audit. |
+| Minimize account-attribute disclosure | Claims resolution and grant/consent paths narrow ordinary releases. An enterprise deployment still has to configure scopes, audiences and claims providers for minimum disclosure. |
+| Offer pairwise subject identifiers | Pairwise client sectors exist in `crates/domain/src/entities/user.rs`; public-client registration uses its own sector behavior. Availability for each RP needs registration evidence. |
+| Offer encrypted back-channel assertions | Signed ID tokens and JWT UserInfo exist; nested JWE response encryption, RP encryption-key registration and associated metadata do not. Open gap. |
+| Encrypt front-channel assertions | Current authorization-code response contains no identity assertion; a future JARM or other front-channel assertion must be assessed separately. This is not evidence for a claim of universal front-channel encryption. |
+| Alternative/break-glass authentication rules | The draft places these on *applications* (RPs). They are not OP implementation obligations, though an OP deployment may impose its own operational controls. |
+| Security-control program | Common §3.1 explicitly labels its text non-normative. Operator documentation and independent evidence would still be needed before any assurance claim. |
 
-## Adjacent drafts and compatibility seams
+The Common Requirements draft's RP-only account-linking and cross-tenant
+subject-keying instructions do not become OP requirements. Likewise, the
+SL1 draft's third-party-initiated-login and DPoP-nonce RP requirements are not
+proof of OP support. No conformance suite has been run for this profile.
 
-Provider Commands is not SSF or CAEP. The existing SSF transmitter delivers
-asynchronous security-event tokens; it does not give an OP authority to invoke
-synchronous account lifecycle, migration or audit procedures at an RP. Reuse
-of signing keys, the outbox or subject mapping may be considered in a future
-design, but no current endpoint or metadata may be described as Provider
-Commands support.
+## Adjacent drafts
 
-Enterprise Extensions draft 01 currently gives the `session_expiry` claim a
-direct relationship to the SL1 gap above. The other draft members must remain
-unclaimed: Asterius's tenant-per-issuer model is not automatically the draft's
-`tenant` claim, `login_hint` is not `domain_hint`, and a local subject mapping
-is not the RP-owned `aud_sub`. The claims model is extensible enough to add
-server-issued claims later, but those reserved claims require explicit issuer
-logic and must never be copied from the user claim bag.
+[Provider Commands](https://openid.net/specs/openid-provider-commands-1_0.html)
+is separate from SSF/CAEP. There is no Provider Commands endpoint, command
+token, callback or synchronous RP account operation. Existing SSF delivery
+cannot be described as Provider Commands support.
 
-## Re-audit checklist
+[OpenID Connect Enterprise Extensions](https://openid.net/specs/openid-connect-enterprise-extensions-1_0.html)
+defines `session_expiry`, `tenant`, `aud_sub` and request hints. The tenant-per-
+issuer model is not automatically that draft's `tenant` claim, and a local
+subject mapping is not RP-owned `aud_sub`. None is advertised as Enterprise
+Extensions support. `session_expiry` must come from explicit OP policy rather
+than a user claim or an unexamined browser-session timestamp.
 
-At the Implementer's-Draft trigger:
+## Before claiming SL1 support
 
-1. Pin the approved versions and replace this grouped snapshot with a
-   clause-by-clause matrix for the OP role and the Common Requirements.
-2. Separate code behavior, deployment obligations and relying-party-only
-   requirements; attach tests or operational evidence to every applicable
-   normative clause.
-3. Resolve the public-client conflict and the access-token audience boundary
-   through an ADR before adding a profile switch.
-4. Design JWE response encryption and mandatory ID-token claims from the
-   stabilized Enterprise Extensions dependency.
-5. Run the relevant OpenID conformance plan before making any IPSIE readiness
-   or support claim.
+Pin an approved revision, define a tenant/client profile boundary, enforce
+HTTPS-only redirects and identity-only token audiences for those clients, make
+registration policy non-bypassable, issue truthful mandatory ID-token claims,
+implement back-channel JWE, collect TLS/operator evidence, and run the
+relevant OpenID interoperability and conformance plans. Until those gaps are
+closed, this matrix remains a readiness record only.
