@@ -233,6 +233,18 @@ pub fn document(client: &Client) -> Value {
             json!(alg.as_str()),
         );
     }
+    for (enabled, prefix) in [
+        (registration.encrypt_id_token, "id_token"),
+        (registration.encrypt_userinfo, "userinfo"),
+    ] {
+        if enabled {
+            object.insert(
+                format!("{prefix}_encrypted_response_alg"),
+                json!("RSA-OAEP-256"),
+            );
+            object.insert(format!("{prefix}_encrypted_response_enc"), json!("A256GCM"));
+        }
+    }
     if let Some(alg) = registration.introspection_signed_response_alg {
         object.insert(
             "introspection_signed_response_alg".to_owned(),

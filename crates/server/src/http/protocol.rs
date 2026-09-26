@@ -3765,20 +3765,34 @@ impl userinfo::UserInfoSource for StoredClaims {
 
     /// OIDC Core §5.3.2, from the client's own registration (`ast-e89`).
     ///
-    /// A client that is gone signs nothing: its grants outlive the row only
-    /// until the next revocation sweep, and answering `application/jwt` for a
-    /// registration this server can no longer read would assert a shape
-    /// nobody registered. An unreadable row is an error and not a `None`, so
-    /// the signature is never dropped by a failing database.
-    async fn signed_response_alg(
+    /// A client that is gone gets no UserInfo response: the server cannot know
+    /// whether its missing registration previously required encryption. An
+    /// unreadable row is likewise an error, never a plaintext fallback.
+    async fn response_policy(
         &self,
         client: &asterius_domain::ClientId,
-    ) -> Result<Option<asterius_domain::keys::SigningAlgorithm>, asterius_domain::DomainError> {
-        Ok(self
+    ) -> Result<userinfo::UserInfoResponsePolicy, asterius_domain::DomainError> {
+        let registration = self
             .clients
             .find(client)
             .await?
-            .and_then(|client| client.registration.userinfo_signed_response_alg))
+            .ok_or(asterius_domain::DomainError::NotFound)?
+            .registration;
+        let encryption_jwks = if registration.encrypt_userinfo {
+            let asterius_domain::JwksSource::Inline(document) = &registration.jwks else {
+                return Err(asterius_domain::DomainError::invalid(
+                    "userinfo",
+                    "registered encryption key is unavailable",
+                ));
+            };
+            Some(document.clone())
+        } else {
+            None
+        };
+        Ok(userinfo::UserInfoResponsePolicy {
+            signing_algorithm: registration.userinfo_signed_response_alg,
+            encryption_jwks,
+        })
     }
 
     async fn access_tokens_revoked_before(

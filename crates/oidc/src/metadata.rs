@@ -546,6 +546,10 @@ pub fn provider_metadata(
         "authorization_signing_alg_values_supported": algorithms(),
         "introspection_signing_alg_values_supported": algorithms(),
         "userinfo_signing_alg_values_supported": algorithms(),
+        "id_token_encryption_alg_values_supported": ["RSA-OAEP-256"],
+        "id_token_encryption_enc_values_supported": ["A256GCM"],
+        "userinfo_encryption_alg_values_supported": ["RSA-OAEP-256"],
+        "userinfo_encryption_enc_values_supported": ["A256GCM"],
         "dpop_signing_alg_values_supported": algorithms(),
 
         "token_endpoint_auth_methods_supported": token_endpoint_auth_methods(capabilities, allow_non_fapi_clients),

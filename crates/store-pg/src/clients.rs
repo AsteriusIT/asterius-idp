@@ -44,6 +44,34 @@ use sqlx::postgres::PgPool;
 use std::collections::BTreeSet;
 use time::OffsetDateTime;
 
+// These client statements include the encryption columns added by migration
+// 0139. Bind every value in order while keeping each statement atomic; the
+// local SQLx cache was prepared before those columns existed.
+macro_rules! bind_all {
+    ($query:expr $(,)?) => { $query };
+    ($query:expr, $value:expr $(, $rest:expr)* $(,)?) => {
+        bind_all!($query.bind($value) $(, $rest)*)
+    };
+}
+
+fn check_response_encryption(registration: &ClientRegistration) -> Result<(), DomainError> {
+    if !registration.encrypt_id_token && !registration.encrypt_userinfo {
+        return Ok(());
+    }
+    let JwksSource::Inline(document) = &registration.jwks else {
+        return Err(DomainError::invalid(
+            "jwks",
+            "response encryption needs inline keys",
+        ));
+    };
+    let encoded = serde_json::to_vec(document)
+        .map_err(|_| DomainError::invalid("jwks", "cannot encode encryption keys"))?;
+    asterius_jose::jwe::Recipient::from_jwks(&encoded, None).map_err(|_| {
+        DomainError::invalid("jwks", "requires one usable RSA-OAEP-256 encryption key")
+    })?;
+    Ok(())
+}
+
 /// The client repository for one tenant.
 ///
 /// Constructed from a [`TenantScope`], so the tenant is a precondition of
@@ -228,16 +256,15 @@ impl PgClientRepository {
     /// Returns [`DomainError::Invalid`] if the stored row no longer describes a
     /// client this profile accepts, or a storage error.
     pub async fn find(&self, client_id: &ClientId) -> Result<Option<Client>, DomainError> {
-        let row = sqlx::query_as!(
-            Row,
+        let row = bind_all!(sqlx::query_as::<_, Row>(
             "select client_id, client_name, compliance_profile, token_endpoint_auth_method, redirect_uris,
                     post_logout_redirect_uris, grant_types, response_types, scopes, resources, jwks, jwks_uri,
-                    id_token_signed_response_alg, application_type, subject_type, sector_identifier_uri,
+                    id_token_signed_response_alg, encrypt_id_token, application_type, subject_type, sector_identifier_uri,
                     request_object_signing_alg, backchannel_authentication_request_signing_alg,
                     dpop_bound_access_tokens, tls_client_certificate_bound_access_tokens,
                     authorization_details_types, use_mtls_endpoint_aliases,
                     tls_client_auth_field, tls_client_auth_value,
-                    userinfo_signed_response_alg, introspection_signed_response_alg,
+                    userinfo_signed_response_alg, encrypt_userinfo, introspection_signed_response_alg,
                     backchannel_token_delivery_mode, backchannel_client_notification_endpoint,
                     backchannel_user_code_parameter,
                     is_agent, agent_owner_user_id, agent_policy,
@@ -245,7 +272,7 @@ impl PgClientRepository {
                     roles_in_id_token, managed_groups_claim, command_endpoint,
                     status, created_at, updated_at
              from clients
-             where tenant_id = $1 and client_id = $2",
+             where tenant_id = $1 and client_id = $2"),
             self.tenant.as_str(),
             client_id.as_str()
         )
@@ -284,16 +311,15 @@ impl PgClientRepository {
     /// Returns [`DomainError::Invalid`] if any stored row no longer describes a
     /// client this profile accepts, or a storage error.
     pub async fn list(&self) -> Result<Vec<Client>, DomainError> {
-        sqlx::query_as!(
-            Row,
+        bind_all!(sqlx::query_as::<_, Row>(
             "select client_id, client_name, compliance_profile, token_endpoint_auth_method, redirect_uris,
                     post_logout_redirect_uris, grant_types, response_types, scopes, resources, jwks, jwks_uri,
-                    id_token_signed_response_alg, application_type, subject_type, sector_identifier_uri,
+                    id_token_signed_response_alg, encrypt_id_token, application_type, subject_type, sector_identifier_uri,
                     request_object_signing_alg, backchannel_authentication_request_signing_alg,
                     dpop_bound_access_tokens, tls_client_certificate_bound_access_tokens,
                     authorization_details_types, use_mtls_endpoint_aliases,
                     tls_client_auth_field, tls_client_auth_value,
-                    userinfo_signed_response_alg, introspection_signed_response_alg,
+                    userinfo_signed_response_alg, encrypt_userinfo, introspection_signed_response_alg,
                     backchannel_token_delivery_mode, backchannel_client_notification_endpoint,
                     backchannel_user_code_parameter,
                     is_agent, agent_owner_user_id, agent_policy,
@@ -302,7 +328,7 @@ impl PgClientRepository {
                     status, created_at, updated_at
              from clients
              where tenant_id = $1
-             order by client_id",
+             order by client_id"),
             self.tenant.as_str()
         )
         .fetch_all(&self.pool)
@@ -353,6 +379,7 @@ impl PgClientRepository {
             ));
         }
         let registration = &client.registration;
+        check_response_encryption(registration)?;
         let lists = ListColumns::of(registration);
         let (jwks, jwks_uri) = key_columns(registration);
         let (tls_field, tls_value) = subject_columns(registration);
@@ -360,8 +387,9 @@ impl PgClientRepository {
             backchannel_logout_columns(registration);
         let (agent, agent_policy) = agent_columns(registration);
 
-        sqlx::query!(
-            "insert into clients (tenant_id, client_id, client_name, compliance_profile,
+        bind_all!(
+            sqlx::query(
+                "insert into clients (tenant_id, client_id, client_name, compliance_profile,
                                   token_endpoint_auth_method, redirect_uris, grant_types,
                                   response_types, scopes, resources, jwks, jwks_uri,
                                   id_token_signed_response_alg, application_type, subject_type,
@@ -379,10 +407,11 @@ impl PgClientRepository {
                                   is_agent, agent_owner_user_id, agent_policy,
                                   backchannel_logout_uri, backchannel_logout_session_required,
                                   roles_in_id_token, managed_groups_claim, client_secret_hash,
-                                  introspection_signed_response_alg, command_endpoint)
+                                  introspection_signed_response_alg, command_endpoint,
+                                  encrypt_id_token, encrypt_userinfo)
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
                      $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31,
-                     $32, $33, $34, $35, $36, $37, $38, $39, $40)
+                     $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42)
              on conflict (tenant_id, client_id) do update
              set client_name = excluded.client_name,
                  compliance_profile = excluded.compliance_profile,
@@ -424,10 +453,13 @@ impl PgClientRepository {
                      excluded.backchannel_logout_session_required,
                  roles_in_id_token = excluded.roles_in_id_token,
                  managed_groups_claim = excluded.managed_groups_claim,
-                 command_endpoint = excluded.command_endpoint",
+                 command_endpoint = excluded.command_endpoint,
+                 encrypt_id_token = excluded.encrypt_id_token,
+                 encrypt_userinfo = excluded.encrypt_userinfo"
+            ),
             self.tenant.as_str(),
             client.id.as_str(),
-            registration.client_name,
+            registration.client_name.as_str(),
             registration.compliance_profile.as_str(),
             registration.token_endpoint_auth_method.as_str(),
             &lists.redirect_uris,
@@ -472,6 +504,8 @@ impl PgClientRepository {
                 .command_endpoint
                 .as_ref()
                 .map(asterius_domain::RedirectUri::as_str),
+            registration.encrypt_id_token,
+            registration.encrypt_userinfo,
         )
         .execute(&self.pool)
         .await
@@ -541,6 +575,7 @@ impl PgClientRepository {
                 "the registration record belongs to another tenant",
             ));
         }
+        check_response_encryption(&client.registration)?;
         let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
         let connection = transaction.acquire().await.map_err(to_domain_error)?;
 
@@ -576,8 +611,7 @@ impl PgClientRepository {
             backchannel_logout_columns(registration);
         let (agent, agent_policy) = agent_columns(registration);
 
-        sqlx::query_as!(
-            Row,
+        bind_all!(sqlx::query_as::<_, Row>(
             "insert into clients (tenant_id, client_id, client_name,
                                   token_endpoint_auth_method, redirect_uris, grant_types,
                                   response_types, scopes, resources, jwks, jwks_uri,
@@ -596,28 +630,29 @@ impl PgClientRepository {
                                   is_agent, agent_owner_user_id, agent_policy,
                                   backchannel_logout_uri, backchannel_logout_session_required,
                                   roles_in_id_token, managed_groups_claim,
-                                  introspection_signed_response_alg, command_endpoint)
+                                  introspection_signed_response_alg, command_endpoint,
+                                  encrypt_id_token, encrypt_userinfo)
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
                      $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31,
-                     $32, $33, $34, $35, $36, $37, $38, $39)
+                     $32, $33, $34, $35, $36, $37, $38, $39, $40, $41)
              returning client_id, client_name, compliance_profile, token_endpoint_auth_method, redirect_uris,
                        post_logout_redirect_uris, grant_types, response_types, scopes, resources, jwks, jwks_uri,
-                       id_token_signed_response_alg, application_type, subject_type,
+                       id_token_signed_response_alg, encrypt_id_token, application_type, subject_type,
                        sector_identifier_uri, request_object_signing_alg,
                        backchannel_authentication_request_signing_alg,
                        dpop_bound_access_tokens, tls_client_certificate_bound_access_tokens,
                        authorization_details_types, use_mtls_endpoint_aliases,
                        tls_client_auth_field, tls_client_auth_value,
-                       userinfo_signed_response_alg, introspection_signed_response_alg,
+                       userinfo_signed_response_alg, encrypt_userinfo, introspection_signed_response_alg,
                        backchannel_token_delivery_mode, backchannel_client_notification_endpoint,
                        backchannel_user_code_parameter,
                        is_agent, agent_owner_user_id, agent_policy,
                        backchannel_logout_uri, backchannel_logout_session_required,
                        roles_in_id_token, managed_groups_claim, command_endpoint,
-                       status, created_at, updated_at",
+                       status, created_at, updated_at"),
             tenant.as_str(),
             client.id.as_str(),
-            registration.client_name,
+            registration.client_name.as_str(),
             registration.token_endpoint_auth_method.as_str(),
             &lists.redirect_uris,
             &lists.grant_types,
@@ -656,6 +691,8 @@ impl PgClientRepository {
             registration.managed_groups_claim.is_issued(),
             algorithm_column(registration.introspection_signed_response_alg),
             registration.command_endpoint.as_ref().map(asterius_domain::RedirectUri::as_str),
+            registration.encrypt_id_token,
+            registration.encrypt_userinfo,
         )
         .fetch_one(&mut *connection)
         .await
@@ -807,6 +844,7 @@ impl PgClientRepository {
                 "does not match the tenant this repository is scoped to",
             ));
         }
+        check_response_encryption(&client.registration)?;
         let registration = &client.registration;
         let lists = ListColumns::of(registration);
         let (jwks, jwks_uri) = key_columns(registration);
@@ -821,8 +859,7 @@ impl PgClientRepository {
         // committed.
         self.check_agent_limits(&client.id, registration).await?;
 
-        let row = sqlx::query_as!(
-            Row,
+        let row = bind_all!(sqlx::query_as::<_, Row>(
             "update clients
              set client_name = $3,
                  token_endpoint_auth_method = $4,
@@ -856,26 +893,28 @@ impl PgClientRepository {
                  managed_groups_claim = $31,
                  compliance_profile = $32,
                  client_secret_hash = case when $33 then $34 else client_secret_hash end,
-                 command_endpoint = $36
+                 command_endpoint = $36,
+                 encrypt_id_token = $37,
+                 encrypt_userinfo = $38
              where tenant_id = $1 and client_id = $2
              returning client_id, client_name, compliance_profile, token_endpoint_auth_method, redirect_uris,
                        post_logout_redirect_uris, grant_types, response_types, scopes, resources, jwks, jwks_uri,
-                       id_token_signed_response_alg, application_type, subject_type,
+                       id_token_signed_response_alg, encrypt_id_token, application_type, subject_type,
                        sector_identifier_uri, request_object_signing_alg,
                        backchannel_authentication_request_signing_alg,
                        dpop_bound_access_tokens, tls_client_certificate_bound_access_tokens,
                        authorization_details_types, use_mtls_endpoint_aliases,
                        tls_client_auth_field, tls_client_auth_value,
-                       userinfo_signed_response_alg, introspection_signed_response_alg,
+                       userinfo_signed_response_alg, encrypt_userinfo, introspection_signed_response_alg,
                        backchannel_token_delivery_mode, backchannel_client_notification_endpoint,
                        backchannel_user_code_parameter,
                        is_agent, agent_owner_user_id, agent_policy,
                        backchannel_logout_uri, backchannel_logout_session_required,
                        roles_in_id_token, managed_groups_claim, command_endpoint,
-                       status, created_at, updated_at",
+                       status, created_at, updated_at"),
             self.tenant.as_str(),
             client.id.as_str(),
-            registration.client_name,
+            registration.client_name.as_str(),
             registration.token_endpoint_auth_method.as_str(),
             &lists.redirect_uris,
             &lists.grant_types,
@@ -914,6 +953,8 @@ impl PgClientRepository {
             },
             algorithm_column(registration.introspection_signed_response_alg),
             registration.command_endpoint.as_ref().map(asterius_domain::RedirectUri::as_str),
+            registration.encrypt_id_token,
+            registration.encrypt_userinfo,
         )
         .fetch_optional(&self.pool)
         .await
@@ -1385,6 +1426,7 @@ fn agent_columns(
     clippy::struct_excessive_bools,
     reason = "a row mirrors its table, and five of these columns are booleans in it"
 )]
+#[derive(sqlx::FromRow)]
 struct Row {
     client_id: String,
     client_name: String,
@@ -1399,6 +1441,7 @@ struct Row {
     jwks: Option<serde_json::Value>,
     jwks_uri: Option<String>,
     id_token_signed_response_alg: String,
+    encrypt_id_token: bool,
     application_type: String,
     subject_type: String,
     sector_identifier_uri: Option<String>,
@@ -1411,6 +1454,7 @@ struct Row {
     tls_client_auth_field: Option<String>,
     tls_client_auth_value: Option<String>,
     userinfo_signed_response_alg: Option<String>,
+    encrypt_userinfo: bool,
     introspection_signed_response_alg: Option<String>,
     backchannel_token_delivery_mode: Option<String>,
     backchannel_client_notification_endpoint: Option<String>,
@@ -1490,6 +1534,21 @@ impl Row {
             command_endpoint: self.command_endpoint,
             ..ClientMetadata::default()
         };
+        for (enabled, prefix) in [
+            (self.encrypt_id_token, "id_token"),
+            (self.encrypt_userinfo, "userinfo"),
+        ] {
+            if enabled {
+                metadata.additional_metadata.insert(
+                    format!("{prefix}_encrypted_response_alg"),
+                    serde_json::json!("RSA-OAEP-256"),
+                );
+                metadata.additional_metadata.insert(
+                    format!("{prefix}_encrypted_response_enc"),
+                    serde_json::json!("A256GCM"),
+                );
+            }
+        }
         // RFC 8705 §2.1.2's subject, put back under the one member of the five
         // the row names. A field name the schema's check constraint permits but
         // this build does not know is dropped here, and the document then fails
@@ -1517,6 +1576,7 @@ impl Row {
                     format!("stored row is not a valid registration: {error}"),
                 )
             })?;
+        check_response_encryption(&registration)?;
         // Not part of the registration document: the per-client resource
         // allow-list is policy (`ast-m9c.6`), so it is restored from the column
         // rather than validated out of a document that never carried it.

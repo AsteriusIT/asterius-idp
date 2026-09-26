@@ -971,6 +971,23 @@ pub async fn sign_id_token(
             unsigned.claims(),
         )
         .await?;
+    if client.registration.encrypt_id_token {
+        let asterius_domain::JwksSource::Inline(document) = &client.registration.jwks else {
+            return Err(DomainError::invalid(
+                "id_token",
+                "registered encryption key is unavailable",
+            ));
+        };
+        let encoded = serde_json::to_vec(document).map_err(|_| {
+            DomainError::invalid("id_token", "registered encryption key is invalid")
+        })?;
+        let recipient = asterius_jose::jwe::Recipient::from_jwks(&encoded, None).map_err(|_| {
+            DomainError::invalid("id_token", "registered encryption key is invalid")
+        })?;
+        return recipient
+            .encrypt_signed_jwt(token.as_str())
+            .map_err(|_| DomainError::invalid("id_token", "encryption failed"));
+    }
     Ok(token.as_str().to_owned())
 }
 
