@@ -24,7 +24,7 @@ requirements are excluded unless they constrain something this OP offers.
 | Client assertion `aud` is the issuer string only | Implemented by client authentication validation; recheck all accepted assertion methods when defining an IPSIE profile. |
 | Authorization code lifetime at most 60 seconds | `crates/domain/src/entities/tenant_settings.rs` caps the configured lifetime at 60 seconds; the authorization path uses that tenant value. |
 | Preregister clients; no unauthenticated dynamic registration | Default registration policy is closed in `crates/server/src/http/register.rs`, but tenant configuration can enable other policies. An SL1 deployment must keep registration closed or protected and audit every registration channel. This is not an enforced IPSIE profile invariant. |
-| Access tokens used by the RP only for identity claims at the OP | General clients can request resource-server audiences. No SL1 client boundary constrains audiences and scopes to UserInfo. Open gap. |
+| Access tokens used by the RP only for identity claims at the OP | General clients can request resource-server audiences. An operator may list candidates in `ipsie_identity_only_client`, independently of the HTTPS callback list. For those clients, registration writes require authorization-code and optional refresh grants, `openid` plus only `profile`, `email`, `address`, `phone`, or `offline_access` scopes, no authorization details or agent profile, and exactly the tenant issuer in the client resource allow-list. PAR/direct authorization reject external resources and nonidentity requests; token dispatch refuses other grants, and code/refresh issuance rejects any resolved audience other than the issuer. The tenant issuer must be registered as a resource server and assigned to the client; missing setup fails closed. UserInfo accepts this issuer-audienced access token. Access tokens minted before this setting was enabled remain valid until expiration or revocation. This constrains what the OP issues; the OP cannot establish where an RP actually presents the token. No IPSIE conformance claim. |
 | Sender-constrained access tokens with DPoP | This is a SHOULD in the OP subsection. Public clients require DPoP-bound access tokens; refresh redemption now requires their original DPoP key even when tenant optional pinning is off for confidential clients (`crates/server/src/http/refresh.rs`). Other client profiles may use different sender constraints. |
 | ID-token `aud` is one string | `crates/oidc/src/tokens/id_token.rs` emits the registered client ID as a single JSON string. |
 | ID-token `auth_time` | The builder always emits the actual authentication time. Session and grant snapshot logic in `crates/server/src/http/issuance.rs` preserves it across refresh. |
@@ -81,7 +81,7 @@ than a user claim or an unexamined browser-session timestamp.
 ## Before claiming SL1 support
 
 Pin an approved revision, define a complete tenant/client profile boundary,
-enforce identity-only token audiences for those clients, make
+make
 registration policy non-bypassable, issue truthful mandatory ID-token claims,
 implement back-channel JWE, collect TLS/operator evidence, and run the
 relevant OpenID interoperability and conformance plans. Until those gaps are

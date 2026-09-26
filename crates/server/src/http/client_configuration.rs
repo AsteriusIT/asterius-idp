@@ -481,6 +481,8 @@ pub struct ConfigurationContext<'a> {
     pub tenant: &'a Tenant,
     /// Client IDs selected for HTTPS-only authorization redirects.
     pub ipsie_https_only_clients: Option<&'a std::collections::BTreeSet<String>>,
+    /// Client IDs restricted to identity scopes and issuer audience.
+    pub ipsie_identity_only_clients: Option<&'a std::collections::BTreeSet<String>>,
     /// Reads a client's registration, for the document a read returns.
     ///
     /// The narrow read port, held separately from [`Self::configuration`]
@@ -817,6 +819,28 @@ pub async fn update(
             StatusCode::BAD_REQUEST,
             "invalid_redirect_uri",
             "this client requires HTTPS redirect_uris",
+        );
+    }
+
+    if context
+        .ipsie_identity_only_clients
+        .is_some_and(|clients| clients.contains(client_id.as_str()))
+        && !registration.is_identity_only_for(context.tenant.issuer.as_str())
+    {
+        record(
+            context,
+            now,
+            EventType::CLIENT_UPDATED,
+            Outcome::Failure,
+            &client_id,
+            Some("invalid_client_metadata"),
+            None,
+        )
+        .await;
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_client_metadata",
+            "this client requires identity scopes and the tenant issuer as its only resource",
         );
     }
 

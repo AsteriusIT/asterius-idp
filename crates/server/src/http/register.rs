@@ -391,6 +391,8 @@ pub struct RegisterContext<'a> {
     pub tenant: &'a Tenant,
     /// Client IDs selected for HTTPS-only authorization redirects.
     pub ipsie_https_only_clients: Option<&'a std::collections::BTreeSet<String>>,
+    /// Client IDs restricted to identity scopes and issuer audience.
+    pub ipsie_identity_only_clients: Option<&'a std::collections::BTreeSet<String>>,
     /// Where the new client is written.
     pub clients: &'a dyn ClientRegistry,
     /// The tenant's keys, consulted for one question only: whether the
@@ -540,6 +542,26 @@ async fn registered(
     // Minted after document validation. A selected-ID HTTPS policy must run
     // after minting, because the client identifier cannot be caller-chosen.
     let client_id = ClientId::mint();
+    if context
+        .ipsie_identity_only_clients
+        .is_some_and(|clients| clients.contains(client_id.as_str()))
+        && !registration.is_identity_only_for(context.tenant.issuer.as_str())
+    {
+        record(
+            context,
+            now,
+            Outcome::Failure,
+            Some(client_id),
+            Some("invalid_client_metadata"),
+            None,
+        )
+        .await;
+        return error(
+            StatusCode::BAD_REQUEST,
+            "invalid_client_metadata",
+            "this client requires identity scopes and the tenant issuer as its only resource",
+        );
+    }
     if context
         .ipsie_https_only_clients
         .is_some_and(|clients| clients.contains(client_id.as_str()))

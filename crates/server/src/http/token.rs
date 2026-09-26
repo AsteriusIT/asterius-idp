@@ -64,6 +64,8 @@ pub trait GrantHandler: Send + Sync {
 pub struct TokenContext<'a> {
     /// The tenant the request arrived at.
     pub tenant: &'a Tenant,
+    /// Client IDs restricted to identity-only code and refresh issuance.
+    pub ipsie_identity_only_clients: Option<&'a std::collections::BTreeSet<String>>,
     /// This tenant's clients.
     pub clients: &'a dyn ClientRepository,
     /// What this deployment offers.
@@ -162,6 +164,24 @@ pub async fn token(
             return render(&failure, description_for(&failure));
         }
     };
+
+    if context
+        .ipsie_identity_only_clients
+        .is_some_and(|clients| clients.contains(client.id.as_str()))
+        && (!client
+            .registration
+            .is_identity_only_for(context.tenant.issuer.as_str())
+            || !matches!(
+                dispatch.grant(),
+                GrantType::AuthorizationCode | GrantType::RefreshToken
+            ))
+    {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "unauthorized_client",
+            "this client may request only OP identity tokens",
+        );
+    }
 
     let Some(handler) = context
         .grants

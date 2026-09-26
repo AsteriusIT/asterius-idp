@@ -537,6 +537,23 @@ pub struct Targeting {
     pub scopes: std::collections::BTreeSet<String>,
 }
 
+impl Targeting {
+    /// Whether an access token can be used only for OIDC claims at this OP.
+    #[must_use]
+    pub fn is_identity_only_for(&self, issuer: &str) -> bool {
+        let mut audiences = self.audience.values();
+        audiences.next() == Some(issuer)
+            && audiences.next().is_none()
+            && self.scopes.contains("openid")
+            && self.scopes.iter().all(|scope| {
+                matches!(
+                    scope.as_str(),
+                    "openid" | "profile" | "email" | "address" | "phone" | "offline_access"
+                )
+            })
+    }
+}
+
 /// Why a request could not be turned into an audience.
 #[derive(Debug)]
 pub enum TargetingError {
