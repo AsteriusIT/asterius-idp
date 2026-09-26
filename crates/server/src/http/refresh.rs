@@ -561,6 +561,9 @@ impl RefreshToken<'_> {
         // code applies, it is the only thing it can produce.
         let id_token = if effective.contains("openid") {
             let parts = issuance::IdTokenParts {
+                require_ipsie_assurance: self
+                    .ipsie_identity_only_clients
+                    .is_some_and(|clients| clients.contains(client.id.as_str())),
                 rp_session_lifetime_seconds: self
                     .ipsie_rp_session_lifetimes
                     .and_then(|lifetimes| lifetimes.get(client.id.as_str()).copied()),
