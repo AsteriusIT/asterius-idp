@@ -89,14 +89,14 @@ db_test! {
         let beta = store.scope(TenantId::new("saml-beta")).saml_trust();
         let sp = "https://sp.example/metadata";
         let acs = "https://sp.example/saml/acs";
-        let key = b"operator-pinned-sp-key";
+        let key = include_bytes!("../../server/tests/fixtures/saml_sp/public.der");
         assert!(alpha.provision(sp, acs, false, Some(key)).await.expect("provision alpha"));
         assert!(beta.provision(sp, acs, false, Some(key)).await.expect("provision beta"));
 
         assert!(alpha.reserve_signed_request(sp, acs, key, "_request-one").await.expect("first reservation"));
         assert!(!alpha.reserve_signed_request(sp, acs, key, "_request-one").await.expect("replay"));
         assert!(!alpha.reserve_signed_request(sp, "https://attacker.example/acs", key, "_request-two").await.expect("wrong ACS"));
-        assert!(!alpha.reserve_signed_request(sp, acs, b"substituted-key", "_request-two").await.expect("wrong key"));
+        assert!(!alpha.reserve_signed_request(sp, acs, include_bytes!("../../server/tests/fixtures/saml_idp/public.der"), "_request-two").await.expect("wrong key"));
         assert!(beta.reserve_signed_request(sp, acs, key, "_request-one").await.expect("other tenant reservation"));
 
         assert!(alpha.remove(sp).await.expect("remove alpha trust"));
@@ -116,7 +116,7 @@ db_test! {
         let pending = alpha_scope.saml_pending();
         let sp = "https://sp.example/metadata";
         let acs = "https://sp.example/saml/acs";
-        let key = b"operator-pinned-sp-key";
+        let key = include_bytes!("../../server/tests/fixtures/saml_sp/public.der");
         assert!(trust.provision(sp, acs, false, Some(key)).await.expect("provision SP"));
         let now = OffsetDateTime::now_utc();
         let expires = now + Duration::minutes(10);
@@ -161,7 +161,7 @@ db_test! {
         assert!(pending.consume(&first, "session-one", now).await.expect("second consume").is_none());
 
         assert!(trust.remove(sp).await.expect("remove pinned trust"));
-        assert!(trust.provision(sp, acs, false, Some(b"rotated-key")).await.expect("replace with new key"));
+        assert!(trust.provision(sp, acs, false, Some(include_bytes!("../../server/tests/fixtures/saml_idp/public.der"))).await.expect("replace with new key"));
         let revoked = asterius_domain::sha256_hex(b"pending-revoked");
         assert!(pending.consume(&revoked, "session-one", now).await.expect("revoked key").is_none());
     }
