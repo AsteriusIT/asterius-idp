@@ -23,6 +23,7 @@ pub mod outbox;
 pub mod provider_commands;
 pub mod retention;
 pub mod rotation;
+pub mod saml;
 pub mod signing;
 pub mod ssf;
 pub mod ssf_upstream;
