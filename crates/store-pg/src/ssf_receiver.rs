@@ -209,8 +209,8 @@ impl PgSsfReceiver {
                 "the event subject is not configured for this peer",
             ));
         };
-        // Serialize signals arriving through different peer mappings for the
-        // same account, not merely duplicate signals on one mapping row.
+        // Serialize lifecycle effects across mappings for the same account.
+        // Event ordering itself is scoped to the locked peer/subject mapping.
         let status: Option<String> = sqlx::query_scalar(
             "select status from users where tenant_id = $1 and user_id = $2 for update",
         )
@@ -221,12 +221,16 @@ impl PgSsfReceiver {
         .map_err(to_domain_error)?;
         let account_was_active = status.as_deref() == Some("active");
         let latest: Option<OffsetDateTime> = sqlx::query_scalar(
-            "select max(event_timestamp) from ssf_receiver_events
-             where tenant_id = $1 and user_id = $2",
+            "select latest_event_timestamp from ssf_receiver_subject_order
+             where tenant_id = $1 and peer_client_id = $2 and subject_key = $3
+               and user_id = $4
+             for update",
         )
         .bind(self.tenant.as_str())
+        .bind(peer_client_id)
+        .bind(subject_key)
         .bind(user_id)
-        .fetch_one(&mut *transaction)
+        .fetch_optional(&mut *transaction)
         .await
         .map_err(to_domain_error)?;
         let stale = latest.is_some_and(|latest| event_at <= latest);
@@ -404,6 +408,25 @@ impl PgSsfReceiver {
             poll.enqueue(&mut transaction, &stream, &set.jti, &set.jws, now)
                 .await?;
         }
+        // Only an applied event advances ordering. The mapping row was locked
+        // before the comparison, so a concurrent rebind/remove cannot race
+        // this update. Rebinding to a new user resets the old user's mark.
+        sqlx::query(
+            "insert into ssf_receiver_subject_order
+                (tenant_id, peer_client_id, subject_key, user_id, latest_event_timestamp)
+             values ($1, $2, $3, $4, $5)
+             on conflict (tenant_id, peer_client_id, subject_key)
+             do update set user_id = excluded.user_id,
+                           latest_event_timestamp = excluded.latest_event_timestamp",
+        )
+        .bind(self.tenant.as_str())
+        .bind(peer_client_id)
+        .bind(subject_key)
+        .bind(user_id)
+        .bind(event_at)
+        .execute(&mut *transaction)
+        .await
+        .map_err(to_domain_error)?;
         transaction.commit().await.map_err(to_domain_error)?;
         Ok(ReceiverOutcome::Applied)
     }
