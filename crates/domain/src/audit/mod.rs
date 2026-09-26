@@ -570,12 +570,16 @@ impl EventType {
     pub const ID_JAG_SUBJECT_BOUND: Self = Self("id_jag.subject_bound");
     /// An operator removed an upstream ID-JAG subject binding.
     pub const ID_JAG_SUBJECT_UNBOUND: Self = Self("id_jag.subject_unbound");
+    /// An administrator provisioned an exact SAML SP trust entry.
+    pub const SAML_SP_PROVISIONED: Self = Self("saml.sp_provisioned");
+    /// An administrator removed an exact SAML SP trust entry.
+    pub const SAML_SP_REMOVED: Self = Self("saml.sp_removed");
     /// An OP sent, or failed to send, an account lifecycle command to an RP.
     pub const PROVIDER_COMMAND_DELIVERED: Self = Self("provider_command.delivered");
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 86] = [
+    pub const ALL: [Self; 88] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -658,6 +662,8 @@ impl EventType {
         Self::SSF_SUBJECT_REMOVED,
         Self::ID_JAG_SUBJECT_BOUND,
         Self::ID_JAG_SUBJECT_UNBOUND,
+        Self::SAML_SP_PROVISIONED,
+        Self::SAML_SP_REMOVED,
         Self::PROVIDER_COMMAND_DELIVERED,
         Self::SSF_VERIFICATION_REQUESTED,
         Self::OUTBOX_RETRIED,

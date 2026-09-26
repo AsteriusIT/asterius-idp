@@ -33,6 +33,12 @@ impl<'a> TenantScope<'a> {
         Self { pool, tenant }
     }
 
+    /// Explicit SAML SP trust and AuthnRequest replay reservations.
+    #[must_use]
+    pub fn saml_trust(&self) -> crate::PgSamlTrust {
+        crate::PgSamlTrust::new(self.pool.clone(), self.tenant.clone())
+    }
+
     /// Invitations to create accounts in this tenant.
     #[must_use]
     pub fn invitations(&self) -> crate::PgInvitations {

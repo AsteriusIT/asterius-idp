@@ -53,7 +53,7 @@ use crate::operations::{Method, Operation};
 use crate::pagination::{Cursor, Page, PageRequest};
 use crate::{
     audit, authorization_details_types, clients, csrf, groups, initial_access_tokens, keys,
-    openapi, outbox, policies, resource_servers, scim, scim_groups, ssf, throttle, users,
+    openapi, outbox, policies, resource_servers, saml, scim, scim_groups, ssf, throttle, users,
 };
 
 /// The client address, as this crate sees it.
@@ -391,6 +391,9 @@ async fn route_standard(
         crate::SSF_RECEIVER_SUBJECT_REMOVE_ID => context.remove_receiver_subject(body).await,
         crate::ID_JAG_SUBJECT_BIND_ID => context.bind_id_jag_subject(body).await,
         crate::ID_JAG_SUBJECT_REMOVE_ID => context.remove_id_jag_subject(body).await,
+        crate::SAML_SP_LIST_ID => context.list_saml_sp_trust().await,
+        crate::SAML_SP_PROVISION_ID => context.provision_saml_sp(body).await,
+        crate::SAML_SP_REMOVE_ID => context.remove_saml_sp(body).await,
         crate::AUDIT_EVENTS_LIST_ID => context.list_audit_events().await,
         crate::AUDIT_EVENTS_EXPORT_ID => context.export_audit_events(),
         crate::USERS_LIST_ID => context.list_users().await,
@@ -3101,6 +3104,96 @@ impl Handling<'_> {
         Ok(json_no_store(
             StatusCode::OK,
             &serde_json::json!({"issuer": binding.issuer.as_str(), "user_id": binding.user, "removed": true}),
+        ))
+    }
+
+    /// `GET /saml/sp-trusts` — exact trust visible only to this tenant.
+    async fn list_saml_sp_trust(&self) -> Result<Response, AdminError> {
+        let administration = self
+            .state
+            .backend
+            .saml_sp_trust()
+            .ok_or(AdminError::NotFound)?;
+        let entries = administration
+            .list(&self.tenant.id)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::SAML_SP_LIST_ID, &error))?;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({ "service_providers": entries }),
+        ))
+    }
+
+    /// `PUT /saml/sp-trusts` — an exact entity ID and HTTPS ACS.
+    async fn provision_saml_sp(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let bytes = axum::body::to_bytes(body, saml::MAX_BODY_BYTES)
+            .await
+            .map_err(|_| AdminError::Invalid("the request body is too large".to_owned()))?;
+        let sp = saml::parse_sp(&bytes)?;
+        let administration = self
+            .state
+            .backend
+            .saml_sp_trust()
+            .ok_or(AdminError::NotFound)?;
+        let inserted = administration
+            .provision(&self.tenant.id, &sp)
+            .await
+            .map_err(|error| match error {
+                DomainError::Invalid { .. } => {
+                    AdminError::Invalid("invalid SAML SP trust".to_owned())
+                }
+                other => AdminError::from_storage(crate::SAML_SP_PROVISION_ID, &other),
+            })?;
+        if !inserted {
+            return Err(AdminError::Conflict(
+                "the SP entity ID is already trusted".to_owned(),
+            ));
+        }
+        self.record(
+            EventType::SAML_SP_PROVISIONED,
+            Detail::new()
+                .label("operation", crate::SAML_SP_PROVISION_ID)
+                .credential("entity_id", &sp.entity_id),
+        )
+        .await;
+        Ok(json_no_store(
+            StatusCode::CREATED,
+            &serde_json::json!({
+                "entity_id": sp.entity_id, "acs_url": sp.acs_url
+            }),
+        ))
+    }
+
+    /// `DELETE /saml/sp-trusts` — replay tombstones survive removal.
+    async fn remove_saml_sp(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let bytes = axum::body::to_bytes(body, saml::MAX_BODY_BYTES)
+            .await
+            .map_err(|_| AdminError::Invalid("the request body is too large".to_owned()))?;
+        let entity_id = saml::parse_entity(&bytes)?;
+        let administration = self
+            .state
+            .backend
+            .saml_sp_trust()
+            .ok_or(AdminError::NotFound)?;
+        let removed = administration
+            .remove(&self.tenant.id, &entity_id)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::SAML_SP_REMOVE_ID, &error))?;
+        if !removed {
+            return Err(AdminError::NotFound);
+        }
+        self.record(
+            EventType::SAML_SP_REMOVED,
+            Detail::new()
+                .label("operation", crate::SAML_SP_REMOVE_ID)
+                .credential("entity_id", &entity_id),
+        )
+        .await;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({
+                "entity_id": entity_id, "removed": true
+            }),
         ))
     }
 
