@@ -183,6 +183,9 @@ pub const SSF_STREAMS_LIST_ID: &str = "ssf.streams.list";
 pub const SSF_STREAM_STATUS_UPDATE_ID: &str = "ssf.streams.status.update";
 /// The `operationId` of [`SSF_STREAM_VERIFY`].
 pub const SSF_STREAM_VERIFY_ID: &str = "ssf.streams.verify";
+pub const SSF_UPSTREAM_PEERS_LIST_ID: &str = "ssf.upstream.peers.list";
+pub const SSF_UPSTREAM_SETUP_ID: &str = "ssf.upstream.setup";
+pub const SSF_UPSTREAM_POLL_ID: &str = "ssf.upstream.poll";
 /// The `operationId` of creating/updating a trusted SSF subject binding.
 pub const SSF_RECEIVER_SUBJECT_BIND_ID: &str = "ssf.receiver.subject.bind";
 /// The `operationId` of removing a trusted SSF subject binding.
@@ -924,6 +927,34 @@ pub const SSF_STREAM_VERIFY: Operation = Operation::mutation(
     M::Post,
     A::new(R::Tenant, "admin.ssf:write"),
     "Queues an SSF verification event on the stream, with an optional state",
+);
+
+/// Shows configured receiver-side peers and durable setup review state.
+pub const SSF_UPSTREAM_PEERS_LIST: Operation = Operation::read(
+    SSF_UPSTREAM_PEERS_LIST_ID,
+    "/ssf/upstream/peers",
+    S::Get,
+    A::new(R::Tenant, "admin.ssf:read"),
+    "Lists configured upstream SSF peers and setup state",
+);
+
+/// Starts or reconciles one guarded upstream poll stream. `POST` requires an
+/// Idempotency-Key; the database intent independently prevents duplicate POST.
+pub const SSF_UPSTREAM_SETUP: Operation = Operation::mutation(
+    SSF_UPSTREAM_SETUP_ID,
+    "/ssf/upstream/setup",
+    M::Post,
+    A::new(R::Tenant, "admin.ssf:write"),
+    "Starts or reconciles an upstream SSF poll stream",
+);
+
+/// Polls and acknowledges at most one upstream SET on explicit request.
+pub const SSF_UPSTREAM_POLL: Operation = Operation::mutation(
+    SSF_UPSTREAM_POLL_ID,
+    "/ssf/upstream/poll",
+    M::Post,
+    A::new(R::Tenant, "admin.ssf:write"),
+    "Polls one signed upstream security event",
 );
 
 /// Creates or replaces a per-peer, tenant-scoped subject mapping for inbound
@@ -1738,7 +1769,7 @@ pub const SCIM_BULK: Operation = Operation::mutation(
     "SCIM Bulk is unsupported by this service",
 );
 
-static REGISTRY: [Operation; 125] = [
+static REGISTRY: [Operation; 128] = [
     SESSION_READ,
     SESSION_END,
     OVERVIEW_USERS,
@@ -1790,6 +1821,9 @@ static REGISTRY: [Operation; 125] = [
     SSF_STREAMS_LIST,
     SSF_STREAM_STATUS_UPDATE,
     SSF_STREAM_VERIFY,
+    SSF_UPSTREAM_PEERS_LIST,
+    SSF_UPSTREAM_SETUP,
+    SSF_UPSTREAM_POLL,
     SSF_RECEIVER_SUBJECT_BIND,
     SSF_RECEIVER_SUBJECT_REMOVE,
     ID_JAG_SUBJECT_BIND,

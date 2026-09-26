@@ -65,6 +65,54 @@ pub const MAX_REASON_LEN: usize = 256;
 /// what stops a caller sending a megabyte for the parser to reject.
 pub const MAX_BODY_BYTES: usize = 4 * 1024;
 
+/// Token-free view of one explicitly configured upstream transmitter.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct UpstreamPeerSummary {
+    pub peer_client_id: String,
+    pub state: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_since: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_polled_at: Option<String>,
+}
+
+/// Closed refusal categories for a guarded upstream operation. No upstream
+/// URL, bearer, response body, or secret file path reaches this API.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpstreamOperationError {
+    Peer,
+    PendingReview,
+    AlreadyConfigured,
+    Unavailable,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RequestedUpstreamPeer {
+    peer_client_id: String,
+}
+
+/// Accepts exactly one configured peer identity, never an arbitrary endpoint.
+pub fn parse_upstream_peer(body: &[u8]) -> Result<ClientId, AdminError> {
+    if body.is_empty() || body.len() > MAX_BODY_BYTES {
+        return Err(AdminError::Invalid(
+            "the request body is empty or too large".to_owned(),
+        ));
+    }
+    let requested: RequestedUpstreamPeer = serde_json::from_slice(body)
+        .map_err(|_| AdminError::Invalid("the upstream peer document is invalid".to_owned()))?;
+    let peer = requested.peer_client_id;
+    if peer.is_empty()
+        || peer.len() > 255
+        || peer.trim() != peer
+        || peer.chars().any(char::is_control)
+        || asterius_domain::Issuer::parse(&peer).is_err()
+    {
+        return Err(AdminError::Invalid("peer_client_id is invalid".to_owned()));
+    }
+    Ok(ClientId::new(peer))
+}
+
 /// What the admin API needs from the deployment's SSF side.
 ///
 /// A port in this crate rather than a method on the streams repository,
@@ -75,6 +123,35 @@ pub const MAX_BODY_BYTES: usize = 4 * 1024;
 /// `asterius_server::admin::Deployment`.
 #[async_trait::async_trait]
 pub trait SsfAdministration: Debug + Send + Sync {
+    /// Configured upstream peers and durable setup state for this tenant.
+    async fn upstream_peers(
+        &self,
+        _tenant: &TenantId,
+    ) -> Result<Vec<UpstreamPeerSummary>, UpstreamOperationError> {
+        Err(UpstreamOperationError::Unavailable)
+    }
+
+    /// Reconciles or starts one outbound poll stream. Durable intent forbids
+    /// another remote POST after an interrupted first attempt.
+    async fn upstream_setup(
+        &self,
+        _tenant: &TenantId,
+        _peer: &ClientId,
+        _now: OffsetDateTime,
+    ) -> Result<(), UpstreamOperationError> {
+        Err(UpstreamOperationError::Unavailable)
+    }
+
+    /// Polls at most one signed SET and acknowledges only after local apply.
+    async fn upstream_poll_once(
+        &self,
+        _tenant: &TenantId,
+        _peer: &ClientId,
+        _now: OffsetDateTime,
+    ) -> Result<bool, UpstreamOperationError> {
+        Err(UpstreamOperationError::Unavailable)
+    }
+
     /// Every stream of the tenant, oldest first.
     ///
     /// # Errors

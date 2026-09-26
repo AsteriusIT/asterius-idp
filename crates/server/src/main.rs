@@ -374,6 +374,8 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
         // is how that is spelt here.
         let outbound: Arc<dyn asterius_domain::ports::ClientUrlFetcher> =
             Arc::new(outbound_https.clone());
+        let ssf_upstream_poster =
+            asterius_server::outbound::HttpsPoster::over(outbound_https.clone());
         let cimd_documents: Arc<dyn asterius_domain::ports::ClientMetadataDocumentFetcher> =
             Arc::new(outbound_https);
         // One `PgOutbox` for the process: the delivery worker claims through it
@@ -391,111 +393,123 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
             &config,
         )?);
 
+        let client_endpoints = Arc::new(ClientEndpoints {
+            fapi_message_signing_clients: Arc::new(
+                config
+                    .tenants
+                    .iter()
+                    .map(|tenant| {
+                        (
+                            tenant.id.as_str().to_owned(),
+                            tenant
+                                .fapi_message_signing_clients
+                                .iter()
+                                .cloned()
+                                .collect(),
+                        )
+                    })
+                    .collect(),
+            ),
+            ssf_metadata_cache: Arc::new(
+                asterius_server::http::ssf_receiver::UpstreamMetadataCache::new(),
+            ),
+            http_signature_peers,
+            http_signature_replay: Arc::clone(&replay) as Arc<dyn ReplayGuard>,
+            oid4vp_verifiers,
+            claims_providers,
+            id_jag_trusts,
+            id_jag_approvals: Arc::new(
+                config
+                    .tenants
+                    .iter()
+                    .map(|tenant| {
+                        (
+                            tenant.id.as_str().to_owned(),
+                            tenant.id_jag_approvals.clone(),
+                        )
+                    })
+                    .collect(),
+            ),
+            native_sso_approvals: Arc::new(
+                config
+                    .tenants
+                    .iter()
+                    .map(|tenant| {
+                        (
+                            tenant.id.as_str().to_owned(),
+                            tenant.native_sso_approvals.clone(),
+                        )
+                    })
+                    .collect(),
+            ),
+            authenticator,
+            store: store.clone(),
+            keys: Arc::clone(&keys) as Arc<dyn asterius_domain::KeyStore>,
+            capabilities: runtime_features,
+            par_lifetime: par::clamp_lifetime(par::DEFAULT_LIFETIME),
+            // What a tenant with no opinion of its own issues under; one
+            // that has an opinion overrides it, read through `settings`
+            // (`ast-ndk.2`, `ast-5c6`).
+            lifetimes: TokenLifetimes::default(),
+            tenant_settings: Some(settings.clone()),
+            kek: Arc::clone(&kek),
+            registration: config.registration.clone(),
+            // What a tenant that gates itself registers on (`ast-cu3`).
+            // Always wired here: the deployment has a pool, so there is no
+            // reason for a tenant's own credentials to be unreadable.
+            initial_access_tokens: Some(Arc::new(PgInitialAccessTokens::new(store.pool().clone()))),
+            outbound,
+            cimd_documents,
+            audit: Arc::new(PgAuditSink::new(store.pool().clone())),
+            session_lifetimes: Lifetimes::default().clamped(),
+            // Passwords are the legacy path and passkeys are primary, but
+            // the parameters are checked here rather than at first login:
+            // a deployment configured below the OWASP floor should fail
+            // while somebody is watching, not store weak hashes quietly.
+            // `ast-2vk.15` makes these configurable; the default is the
+            // floor.
+            argon2: Some(Argon2Parameters::default()),
+            // What bounds online guessing (`ast-2vk.9`). Validated at
+            // load, so the handlers get numbers rather than opinions.
+            login_limits: config.login,
+            // What bounds abuse of the endpoints a client talks to
+            // (`ast-p2l.3`). Validated at load, like the login limits.
+            endpoint_limits: config.limits,
+            signer: prepare_signer(&keys),
+            dpop: Arc::clone(&dpop),
+            // The same `PgOutbox` the delivery worker claims through, so a
+            // back-channel logout token queued at the end-session endpoint
+            // is picked up by the worker in this process under the
+            // schedule this deployment configured (`ast-o4u.2`).
+            // `ast-lh3.10`: the decision cache and the posture, wired
+            // only where this deployment has a policy decision point.
+            // With `[features] authzen` off there is nothing to ask, and
+            // an agent is bounded by its registration as before.
+            issuance: admin_context.issuance.clone(),
+            outbox: Some(Arc::new(outbox.clone()) as Arc<dyn asterius_domain::outbox::OutboxQueue>),
+        });
+        admin_context.ssf_upstream =
+            Some(Arc::new(asterius_server::admin::SsfUpstreamRuntime::new(
+                Arc::clone(&client_endpoints),
+                config
+                    .tenants
+                    .iter()
+                    .map(|tenant| {
+                        (
+                            tenant.id.as_str().to_owned(),
+                            tenant.ssf_upstream_peers.clone(),
+                        )
+                    })
+                    .collect(),
+                ssf_upstream_poster,
+            )));
         let routes = protocol::routes(ProtocolState {
             keys: Arc::clone(&keys) as Arc<dyn asterius_domain::KeyStore>,
             federation,
             capabilities: runtime_features,
             tenant_settings: Some(settings.clone()),
             signed_metadata: pdp_metadata_signer(&config, &keys),
-            clients: Some(Arc::new(ClientEndpoints {
-                fapi_message_signing_clients: Arc::new(
-                    config
-                        .tenants
-                        .iter()
-                        .map(|tenant| {
-                            (
-                                tenant.id.as_str().to_owned(),
-                                tenant
-                                    .fapi_message_signing_clients
-                                    .iter()
-                                    .cloned()
-                                    .collect(),
-                            )
-                        })
-                        .collect(),
-                ),
-                ssf_metadata_cache: Arc::new(
-                    asterius_server::http::ssf_receiver::UpstreamMetadataCache::new(),
-                ),
-                http_signature_peers,
-                http_signature_replay: Arc::clone(&replay) as Arc<dyn ReplayGuard>,
-                oid4vp_verifiers,
-                claims_providers,
-                id_jag_trusts,
-                id_jag_approvals: Arc::new(
-                    config
-                        .tenants
-                        .iter()
-                        .map(|tenant| {
-                            (
-                                tenant.id.as_str().to_owned(),
-                                tenant.id_jag_approvals.clone(),
-                            )
-                        })
-                        .collect(),
-                ),
-                native_sso_approvals: Arc::new(
-                    config
-                        .tenants
-                        .iter()
-                        .map(|tenant| {
-                            (
-                                tenant.id.as_str().to_owned(),
-                                tenant.native_sso_approvals.clone(),
-                            )
-                        })
-                        .collect(),
-                ),
-                authenticator,
-                store: store.clone(),
-                keys: Arc::clone(&keys) as Arc<dyn asterius_domain::KeyStore>,
-                capabilities: runtime_features,
-                par_lifetime: par::clamp_lifetime(par::DEFAULT_LIFETIME),
-                // What a tenant with no opinion of its own issues under; one
-                // that has an opinion overrides it, read through `settings`
-                // (`ast-ndk.2`, `ast-5c6`).
-                lifetimes: TokenLifetimes::default(),
-                tenant_settings: Some(settings.clone()),
-                kek: Arc::clone(&kek),
-                registration: config.registration.clone(),
-                // What a tenant that gates itself registers on (`ast-cu3`).
-                // Always wired here: the deployment has a pool, so there is no
-                // reason for a tenant's own credentials to be unreadable.
-                initial_access_tokens: Some(Arc::new(PgInitialAccessTokens::new(
-                    store.pool().clone(),
-                ))),
-                outbound,
-                cimd_documents,
-                audit: Arc::new(PgAuditSink::new(store.pool().clone())),
-                session_lifetimes: Lifetimes::default().clamped(),
-                // Passwords are the legacy path and passkeys are primary, but
-                // the parameters are checked here rather than at first login:
-                // a deployment configured below the OWASP floor should fail
-                // while somebody is watching, not store weak hashes quietly.
-                // `ast-2vk.15` makes these configurable; the default is the
-                // floor.
-                argon2: Some(Argon2Parameters::default()),
-                // What bounds online guessing (`ast-2vk.9`). Validated at
-                // load, so the handlers get numbers rather than opinions.
-                login_limits: config.login,
-                // What bounds abuse of the endpoints a client talks to
-                // (`ast-p2l.3`). Validated at load, like the login limits.
-                endpoint_limits: config.limits,
-                signer: prepare_signer(&keys),
-                dpop: Arc::clone(&dpop),
-                // The same `PgOutbox` the delivery worker claims through, so a
-                // back-channel logout token queued at the end-session endpoint
-                // is picked up by the worker in this process under the
-                // schedule this deployment configured (`ast-o4u.2`).
-                // `ast-lh3.10`: the decision cache and the posture, wired
-                // only where this deployment has a policy decision point.
-                // With `[features] authzen` off there is nothing to ask, and
-                // an agent is bounded by its registration as before.
-                issuance: admin_context.issuance.clone(),
-                outbox: Some(
-                    Arc::new(outbox.clone()) as Arc<dyn asterius_domain::outbox::OutboxQueue>
-                ),
-            })),
+            clients: Some(client_endpoints),
         });
 
         let reserved_tenant = admin_context.reserved_tenant.clone();
@@ -589,6 +603,7 @@ fn operational_routes(store: &Store, config: &Config, metrics: Metrics) -> Opera
 /// client is.
 struct AdminContext {
     id_jag_trusts: Arc<asterius_server::id_jag_trust::IdJagTrusts>,
+    ssf_upstream: Option<Arc<asterius_server::admin::SsfUpstreamRuntime>>,
     rate_limit_policy: (
         asterius_domain::LoginLimits,
         asterius_domain::EndpointLimits,
@@ -640,6 +655,7 @@ impl AdminContext {
     ) -> Self {
         Self {
             id_jag_trusts: Arc::clone(id_jag_trusts),
+            ssf_upstream: None,
             rate_limit_policy: (config.login, config.limits),
             issuance: issuance_guard(config),
             capabilities: config.features,
@@ -706,6 +722,7 @@ fn admin_routes(
             asterius_server::admin::Deployment::new(asterius_server::admin::DeploymentParts {
                 store: store.clone(),
                 id_jag_trusts: context.id_jag_trusts,
+                ssf_upstream: context.ssf_upstream,
                 tenants: Arc::clone(tenants),
                 keys: Arc::clone(keys) as Arc<dyn asterius_domain::KeyAdministration>,
                 directory,

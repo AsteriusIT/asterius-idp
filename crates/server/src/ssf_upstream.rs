@@ -1,7 +1,7 @@
 //! Explicit outbound SSF management. Inbound `ssf.receive` registration only
 //! identifies a transmitter; it cannot supply an OAuth management credential.
-//! No HTTP route calls this service until pending-review operations, subject
-//! enrollment, and poll delivery are ready.
+//! Only explicit authenticated admin operations call this service. Durable
+//! pending-review state and subject enrollment remain separate operator steps.
 
 use crate::config::SsfUpstreamPeerConfig;
 use crate::http::protocol::ClientEndpoints;
@@ -199,8 +199,7 @@ fn parse_polled_set(response: &PostResponse) -> Result<Option<(String, String)>,
 /// and status endpoints through the guarded HTTPS transport. It is never
 /// stored, logged or included in an error.
 ///
-/// This service intentionally has no route or automatic startup caller. The
-/// durable intent blocks a second POST after a crash. A retry reads the
+/// The durable intent blocks a second POST after a crash. A retry reads the
 /// authenticated transmitter list and may adopt one exact match; zero or
 /// multiple matches require operator review and never trigger another POST.
 pub async fn create_poll_stream(
