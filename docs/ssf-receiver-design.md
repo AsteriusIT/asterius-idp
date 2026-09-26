@@ -1,22 +1,21 @@
 # Post-v1 SSF receiver design
 
-Status: initial, bounded push receiver implementation in `ast-s36.26`. This is
-not a claim of full SSF or CAEP Interoperability Profile conformance. The
-implementation accepts configured OAuth client peers, three CAEP event types,
-and operator-provisioned per-peer subject mappings. Complete
-stream-establishment, metadata-validation and delivery-profile work below
-remains future scope.
+Status: bounded push receiver and explicit operator-triggered upstream poll
+stream setup in `ast-s36.26`. This is not a claim of full SSF or CAEP
+Interoperability Profile conformance. The implementation accepts configured
+OAuth client peers, three lifecycle event types, and operator-provisioned
+per-peer subject mappings. Upstream subject enrollment, automatic polling,
+and interoperability evidence remain outstanding.
 
 ## Specification baseline
 
 The full receiver must be designed against the
-[OpenID Shared Signals Framework 1.0](https://openid.net/specs/openid-sharedsignals-framework-1_0.html)
+[OpenID Shared Signals Framework 1.0 Final](https://openid.net/specs/openid-sharedsignals-framework-1_0-final.html)
 and the
 [CAEP Interoperability Profile 1.0](https://openid.net/specs/openid-caep-interoperability-profile-1_0.html).
-The interoperability profile has an approved Implementer's Draft 1. Its latest
-published text is Draft 01; its proposed Final review was restarted in
-September 2026 so that further changes could be made. The implementation must
-therefore re-read the then-current text before work begins.
+The interoperability profile's latest published text is Draft 01 (21 July
+2026). It still requires RS256 signatures, while ADR-0003 excludes RS256.
+Re-read the then-current text before claiming interoperability conformance.
 
 The first supported use case should be an upstream identity provider sending
 `session-revoked` or `credential-change`. A verified signal may revoke local
@@ -69,10 +68,10 @@ through `PUT` or `DELETE /admin/ssf/receiver/subjects`, under
 without local credential mutation, while revoke/delete revokes sessions only.
 The upstream credential identifier is never treated as a local credential
 identifier. Events require a valid CAEP `event_timestamp`; older events are
-durably marked stale and acknowledged without applying an action. User-row
-locking serializes order even when signals arrive through separate peer
-mappings. A timestamp more than ten seconds ahead of the receiver clock is
-rejected before it can become the subject's ordering high-water mark. For each
+durably marked stale and acknowledged without applying an action. Ordering is
+tracked per tenant, peer and canonical subject binding, independently of
+bounded replay tombstones. A timestamp more than ten seconds ahead of the
+receiver clock is rejected before it can become the subject's ordering high-water mark. For each
 of the ten standard CAEP credential types, `create` and `update` are observe-only;
 `revoke` and `delete` revoke local sessions. Unknown type and change values are
 rejected, and no inbound event writes local credential records. These verified
@@ -97,16 +96,20 @@ remote POST. A retry reads the authenticated configuration list and adopts
 only a single stream whose issuer, audience, event set and poll delivery match
 the intent; it never sends a second POST. Ambiguous or empty retry lists leave
 the intent pending for operator review. Stream persistence and intent removal
-commit in one local transaction. This remains unexposed until an admin flow
-can surface pending review and the receiver can enroll subjects and poll.
+commit in one local transaction. Authenticated admin operations now expose
+configured peers, pending review, setup and an explicit one-shot poll. Polling
+validates at most one bounded SET, applies it before ACK, and reports
+classifiable invalid SETs with RFC 8936 `setErrs`. Queued SETs have a local
+seven-day age limit; push keeps five minutes. There is no automatic poll worker
+or outbound subject-enrollment call.
 Pending intents and established stream identities survive local client
 deletion, so re-registering the same issuer cannot erase the evidence of a
 remote stream that may still exist.
-The token file has no automatic refresh;
+The token file is re-read for each operation but has no automatic OAuth refresh;
 operators must rotate it before expiry. Neither inbound `ssf.receive` scope nor
-a peer's registered signing key authorizes outbound management. Poll delivery,
-acknowledgements, explicit subject enrollment,
-and the complete CAEP event vocabulary remain incomplete. Local lifecycle,
+a peer's registered signing key authorizes outbound management. Explicit
+subject enrollment and the complete CAEP event vocabulary remain incomplete.
+Local lifecycle,
 audit, and resulting outbound notifications now commit atomically. The CAEP
 Interoperability Profile's RS256 requirement remains unresolved against
 ADR-0003; this receiver accepts only EdDSA and ES256 and makes no profile
@@ -148,9 +151,12 @@ requires a receiver to:
 - initiate stream verification and process the returned verification event;
 - accept `email` and `iss_sub` subjects, plus `opaque` for verification.
 
-The profile currently assumes subjects are implicitly included in a stream.
-That differs from Asterius's transmitter choice of `default_subjects: NONE` and
-is another reason not to reuse transmitter stream rows for receiver state.
+Draft 01 requires Receivers to assume every subject is implicitly in the
+stream, without Add Subject calls (§2.4.4). Asterius currently requires an
+upstream `default_subjects: NONE` and makes no outbound Add Subject call. A
+new stream may therefore produce no user events. This setup policy is
+incompatible with the draft's implicit-subject expectation and needs an
+explicit decision before any interoperability claim.
 
 ### SET verification before effects
 
@@ -268,5 +274,27 @@ smaller operable first slice. Then require tests for:
 - verification-event `state` matching and stream health; and
 - atomic local mutation plus existing outbox enqueueing.
 
-Until those gates and the algorithm decision are complete, Asterius must
-continue to describe itself as an SSF transmitter only.
+Until those gates and the algorithm decision are complete, describe Asterius as
+an SSF transmitter with a bounded, operator-controlled receiver slice, without
+claiming CAEP Interoperability Profile conformance.
+
+## Conformance audit, 26 September 2026
+
+- The transmitter's `spec_version: 1_0`, issuer, JWKS URL, OAuth scheme and
+  operational push/poll endpoint advertisement are generated from mounted
+  routes. Empty `critical_subject_members` is omitted as required by
+  [SSF 1.0 Final §7.2.3](https://openid.net/specs/openid-sharedsignals-framework-1_0-final.html).
+- Receiver setup validates pinned issuer and JWKS, then creates and checks one
+  poll stream through guarded HTTPS. The validator currently requires upstream
+  push support and several metadata fields that SSF Final does not universally
+  require, so it supports a narrower peer profile. No cross-implementation
+  setup or delivery result has been recorded.
+- [CAEP Interoperability Profile Draft 01 §2.6](https://openid.net/specs/openid-caep-interoperability-profile-1_0.html)
+  requires RS256. ADR-0003 excludes it, and incoming SET verification accepts
+  EdDSA and ES256 only. `ast-s36.26.4.8` owns the explicit policy decision.
+- Draft 01 §2.4.4 assumes implicit inclusion of all subjects, while our
+  receiver-managed stream requires `default_subjects: NONE`. Outbound stream
+  verification, deletion and subject enrollment are absent. The static bearer
+  file is re-read per operator request, but access-token acquisition and
+  automatic refresh are absent. `ast-s36.26.4.9` owns these lifecycle gaps and
+  interoperability evidence.

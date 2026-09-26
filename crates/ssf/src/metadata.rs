@@ -107,14 +107,10 @@ pub fn transmitter_metadata(
         // seen, which is precisely the correlation handle this crate's threat
         // model refuses to hand out.
         "default_subjects": "NONE",
-
-        // §7.1: the subject members a receiver must understand to interpret
-        // this transmitter's events. Empty is a claim, not a placeholder — it
-        // says no member beyond the base format is required — and it is true
-        // because every subject this crate builds is a plain RFC 9493 format
-        // with no member a receiver may skip.
-        "critical_subject_members": [],
     });
+
+    // No transmitter-specific subject member is critical. SSF 1.0 §7.2.3
+    // requires array-valued claims with zero members to be omitted.
 
     // §7.1: where a receiver creates, reads, updates and deletes a stream
     // (§8.1.1). Inserted rather than written above, so that the document a
@@ -225,7 +221,7 @@ mod tests {
 
     #[test]
     fn no_subject_member_is_critical() {
-        assert_eq!(document()["critical_subject_members"], json!([]));
+        assert!(document().get("critical_subject_members").is_none());
     }
 
     /// SSF 1.0 §7.1 requires every URL in this document to be https. The
