@@ -932,6 +932,32 @@ impl asterius_admin_api::ssf::SsfAdministration for DeploymentSsf {
         .map_err(upstream_setup_error)
     }
 
+    async fn upstream_verify(
+        &self,
+        tenant: &TenantId,
+        peer: &ClientId,
+        now: time::OffsetDateTime,
+    ) -> Result<(), asterius_admin_api::ssf::UpstreamOperationError> {
+        use asterius_admin_api::ssf::UpstreamOperationError as Error;
+        let runtime = self.upstream.as_ref().ok_or(Error::Unavailable)?;
+        let config = runtime.peer(tenant, peer).ok_or(Error::Peer)?;
+        let tenant_entity = self
+            .tenants
+            .find_by_id(tenant)
+            .await
+            .map_err(|_| Error::Unavailable)?
+            .ok_or(Error::Peer)?;
+        crate::ssf_upstream::verify_recorded_stream(
+            &runtime.endpoints,
+            &tenant_entity,
+            config,
+            &runtime.poster,
+            now,
+        )
+        .await
+        .map_err(upstream_setup_error)
+    }
+
     async fn streams(
         &self,
         tenant: &TenantId,

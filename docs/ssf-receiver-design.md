@@ -289,13 +289,17 @@ claiming CAEP Interoperability Profile conformance.
   advertise push; push delivery from that peer is refused. The validator still
   requires several metadata fields that SSF Final does not universally
   require, so it supports a narrower peer profile. No cross-implementation
-  setup or delivery result has been recorded.
+  setup or delivery result has been recorded. An authenticated operator can
+  read back a recorded upstream poll stream, requiring the exact pinned
+  metadata, stream identity, delivery endpoint, audience, event set and status
+  ID. The check is read-only and currently refuses transmitter lists with
+  more than one stream for that receiver.
 - [CAEP Interoperability Profile Draft 01 §2.6](https://openid.net/specs/openid-caep-interoperability-profile-1_0.html)
   requires RS256. ADR-0003 excludes it, and incoming SET verification accepts
   EdDSA and ES256 only. `ast-s36.26.4.8` owns the explicit policy decision.
 - Draft 01 §2.4.4 assumes implicit inclusion of all subjects, while our
   receiver-managed stream requires `default_subjects: NONE`. Outbound stream
-  verification, deletion and subject enrollment are absent. The static bearer
+  deletion and subject enrollment are absent. The static bearer
   file is re-read per operator request, but access-token acquisition and
   automatic refresh are absent. `ast-s36.26.4.9` owns these lifecycle gaps and
   interoperability evidence.

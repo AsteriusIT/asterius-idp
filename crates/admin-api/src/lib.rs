@@ -186,6 +186,7 @@ pub const SSF_STREAM_VERIFY_ID: &str = "ssf.streams.verify";
 pub const SSF_UPSTREAM_PEERS_LIST_ID: &str = "ssf.upstream.peers.list";
 pub const SSF_UPSTREAM_SETUP_ID: &str = "ssf.upstream.setup";
 pub const SSF_UPSTREAM_POLL_ID: &str = "ssf.upstream.poll";
+pub const SSF_UPSTREAM_VERIFY_ID: &str = "ssf.upstream.verify";
 /// The `operationId` of creating/updating a trusted SSF subject binding.
 pub const SSF_RECEIVER_SUBJECT_BIND_ID: &str = "ssf.receiver.subject.bind";
 /// The `operationId` of removing a trusted SSF subject binding.
@@ -957,6 +958,15 @@ pub const SSF_UPSTREAM_POLL: Operation = Operation::mutation(
     M::Post,
     A::new(R::Tenant, "admin.ssf:write"),
     "Polls one signed upstream security event",
+);
+
+/// Authenticated operator check of exact remote stream identity and status.
+pub const SSF_UPSTREAM_VERIFY: Operation = Operation::mutation(
+    SSF_UPSTREAM_VERIFY_ID,
+    "/ssf/upstream/verify",
+    M::Post,
+    A::new(R::Tenant, "admin.ssf:write"),
+    "Verifies a recorded upstream SSF stream",
 );
 
 /// Creates or replaces a per-peer, tenant-scoped subject mapping for inbound
@@ -1789,7 +1799,7 @@ pub const SCIM_BULK: Operation = Operation::mutation(
     "SCIM Bulk is unsupported by this service",
 );
 
-static REGISTRY: [Operation; 130] = [
+static REGISTRY: [Operation; 131] = [
     SESSION_READ,
     SESSION_END,
     OVERVIEW_USERS,
@@ -1844,6 +1854,7 @@ static REGISTRY: [Operation; 130] = [
     SSF_UPSTREAM_PEERS_LIST,
     SSF_UPSTREAM_SETUP,
     SSF_UPSTREAM_POLL,
+    SSF_UPSTREAM_VERIFY,
     SSF_RECEIVER_SUBJECT_BIND,
     SSF_RECEIVER_SUBJECT_REMOVE,
     ID_JAG_SUBJECT_BIND,
