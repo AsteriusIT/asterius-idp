@@ -18,6 +18,7 @@ pub mod observability;
 pub mod oid4vp;
 pub mod outbound;
 pub mod outbox;
+pub mod provider_commands;
 pub mod retention;
 pub mod rotation;
 pub mod signing;
