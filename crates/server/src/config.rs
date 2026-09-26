@@ -309,7 +309,7 @@ pub struct TenantConfig {
     pub federation_authority_hints: Vec<Issuer>,
     /// Operator-pinned Federation trust anchors for validating remote RPs.
     pub federation_trust_anchors: Vec<FederationTrustAnchorConfig>,
-    /// Explicit cross-domain grants this IdP may issue for managed agents.
+    /// Explicit cross-domain grants this `IdP` may issue for managed agents.
     pub id_jag_approvals: Vec<IdJagApproval>,
     /// Trusted upstream ID-JAG issuers for future downstream redemption.
     pub id_jag_trusts: Vec<IdJagTrustConfig>,
@@ -2148,6 +2148,9 @@ fn validate_registration(
     }
 }
 
+// Tenant validation is ordered so duplicate IDs and issuers are diagnosed
+// before their dependent settings; keep that order visible in one function.
+#[allow(clippy::too_many_lines)]
 fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantConfig> {
     let mut tenants = Vec::with_capacity(raw.len());
     // Two tenants sharing an issuer would make `iss` ambiguous, and two sharing
@@ -2328,6 +2331,8 @@ fn validate_ssf_upstream_peers(
         .collect()
 }
 
+// Each LDAP source field contributes to one accumulated configuration error.
+#[allow(clippy::too_many_lines)]
 fn validate_ldap_source(
     tenant_index: usize,
     raw: RawLdapSource,
@@ -2400,20 +2405,20 @@ fn validate_ldap_source(
         );
         valid = false;
     }
-    if let Some(value) = &raw.group_base_dn {
-        if !valid_ldap_dn(value) {
-            errors.problem(format!("{path}.group_base_dn"), "invalid LDAP DN");
-            valid = false;
-        }
+    if let Some(value) = &raw.group_base_dn
+        && !valid_ldap_dn(value)
+    {
+        errors.problem(format!("{path}.group_base_dn"), "invalid LDAP DN");
+        valid = false;
     }
-    if let Some(value) = &raw.group_filter {
-        if !valid_static_ldap_filter(value) {
-            errors.problem(
-                format!("{path}.group_filter"),
-                "must be a bounded static LDAP filter without substitutions",
-            );
-            valid = false;
-        }
+    if let Some(value) = &raw.group_filter
+        && !valid_static_ldap_filter(value)
+    {
+        errors.problem(
+            format!("{path}.group_filter"),
+            "must be a bounded static LDAP filter without substitutions",
+        );
+        valid = false;
     }
     for (name, attribute) in [
         ("group_name_attribute", &raw.group_name_attribute),

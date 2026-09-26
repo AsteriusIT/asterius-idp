@@ -22,6 +22,9 @@ pub async fn read(source: &LdapSourceConfig) -> Result<LdapSnapshot, String> {
         .map_err(|_| "LDAP synchronization timed out".to_owned())?
 }
 
+// The bind and both bounded directory reads form one snapshot transaction;
+// retain their fail-closed ordering here.
+#[allow(clippy::too_many_lines)]
 async fn read_inner(source: &LdapSourceConfig) -> Result<LdapSnapshot, String> {
     if !source.url.starts_with("ldaps://") {
         return Err("LDAP source must use LDAPS".to_owned());
@@ -139,9 +142,11 @@ async fn search_bounded(
     attrs: Vec<&str>,
     limit: usize,
 ) -> Result<Vec<SearchEntry>, String> {
+    let search_limit = i32::try_from(limit + 1)
+        .map_err(|_| "LDAP search bound exceeds protocol limit".to_owned())?;
     ldap.with_search_options(
         SearchOptions::new()
-            .sizelimit((limit + 1) as i32)
+            .sizelimit(search_limit)
             .timelimit(SEARCH_LIMIT_SECS),
     );
     let mut stream = ldap

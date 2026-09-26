@@ -1006,6 +1006,9 @@ fn limits() -> Section {
 }
 
 /// `[[tenant]]`: the tenants that exist at boot.
+// The generated reference mirrors the many tenant configuration fields, and
+// keeping them in one section preserves their documented order.
+#[allow(clippy::too_many_lines)]
 fn tenant() -> Section {
     Section {
         table: "tenant",

@@ -296,8 +296,7 @@ impl RevokedBy {
     #[must_use]
     pub const fn message(self) -> MessageKey {
         match self {
-            Self::ReceiverSignal => MessageKey::SessionRevokedByAdmin,
-            Self::Administrator => MessageKey::SessionRevokedByAdmin,
+            Self::ReceiverSignal | Self::Administrator => MessageKey::SessionRevokedByAdmin,
             Self::AccountDisabled => MessageKey::SessionRevokedAccountDisabled,
             Self::PasswordReset => MessageKey::SessionRevokedPasswordReset,
             Self::PasswordRecovery => MessageKey::SessionRevokedPasswordRecovered,
