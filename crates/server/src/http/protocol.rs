@@ -129,6 +129,8 @@ pub struct ClientEndpoints {
     pub claims_providers: Arc<crate::claims_provider::ClaimsProviders>,
     /// Operator-approved cross-domain ID-JAG relationships, keyed by tenant.
     pub id_jag_approvals: Arc<std::collections::HashMap<String, Vec<crate::config::IdJagApproval>>>,
+    /// Loaded issuer/actor pins for ID-JAG redemption, not yet dispatched.
+    pub id_jag_trusts: Arc<crate::id_jag_trust::IdJagTrusts>,
     /// Operator-approved native app sharing pairs, keyed by tenant.
     pub native_sso_approvals:
         Arc<std::collections::HashMap<String, Vec<crate::config::NativeSsoApproval>>>,

@@ -311,6 +311,8 @@ pub struct TenantConfig {
     pub federation_trust_anchors: Vec<FederationTrustAnchorConfig>,
     /// Explicit cross-domain grants this IdP may issue for managed agents.
     pub id_jag_approvals: Vec<IdJagApproval>,
+    /// Trusted upstream ID-JAG issuers for future downstream redemption.
+    pub id_jag_trusts: Vec<IdJagTrustConfig>,
     /// Explicit native mobile clients allowed to share an authentication.
     pub native_sso_approvals: Vec<NativeSsoApproval>,
     /// Narrow OID4VP verifier profiles explicitly enabled for this tenant.
@@ -371,6 +373,17 @@ pub struct IdJagApproval {
     pub audience: Issuer,
     pub downstream_client_id: String,
     pub subject_sector: asterius_domain::SectorIdentifier,
+    pub resources: BTreeSet<String>,
+    pub scopes: BTreeSet<String>,
+}
+
+/// Operator-pinned upstream ID-JAG issuer and single-hop actor policy.
+#[derive(Debug, Clone)]
+pub struct IdJagTrustConfig {
+    pub issuer: Issuer,
+    pub jwks_file: PathBuf,
+    pub actor_client_id: String,
+    pub client_id: String,
     pub resources: BTreeSet<String>,
     pub scopes: BTreeSet<String>,
 }
@@ -787,6 +800,7 @@ struct RawTenant {
     federation_authority_hints: Option<Vec<String>>,
     federation_trust_anchors: Option<Vec<RawFederationTrustAnchor>>,
     id_jag_approval: Option<Vec<RawIdJagApproval>>,
+    id_jag_trust: Option<Vec<RawIdJagTrust>>,
     native_sso_approval: Option<Vec<RawNativeSsoApproval>>,
     oid4vp_verifier: Option<Vec<RawOid4vpVerifier>>,
     claims_provider: Option<Vec<RawClaimsProvider>>,
@@ -836,6 +850,17 @@ struct RawIdJagApproval {
     audience: String,
     downstream_client_id: String,
     subject_sector_uri: String,
+    resources: Vec<String>,
+    scopes: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawIdJagTrust {
+    issuer: String,
+    jwks_file: PathBuf,
+    actor_client_id: String,
+    client_id: String,
     resources: Vec<String>,
     scopes: Vec<String>,
 }
@@ -2094,6 +2119,7 @@ fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantCo
         let federation_trust_anchors =
             validate_federation_anchors(index, tenant.federation_trust_anchors, errors);
         let id_jag_approvals = validate_id_jag_approvals(index, tenant.id_jag_approval, errors);
+        let id_jag_trusts = validate_id_jag_trusts(index, tenant.id_jag_trust, errors);
         let native_sso_approvals =
             validate_native_sso_approvals(index, tenant.native_sso_approval, errors);
         let oid4vp_verifiers =
@@ -2114,6 +2140,7 @@ fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantCo
                 federation_authority_hints,
                 federation_trust_anchors,
                 id_jag_approvals,
+                id_jag_trusts,
                 native_sso_approvals,
                 oid4vp_verifiers,
                 claims_providers,
@@ -2405,6 +2432,78 @@ fn validate_id_jag_approvals(
                 audience,
                 downstream_client_id: raw.downstream_client_id,
                 subject_sector,
+                resources,
+                scopes,
+            })
+        })
+        .collect()
+}
+
+fn validate_id_jag_trusts(
+    tenant_index: usize,
+    raw: Option<Vec<RawIdJagTrust>>,
+    errors: &mut Collector,
+) -> Vec<IdJagTrustConfig> {
+    let mut seen = BTreeSet::new();
+    raw.unwrap_or_default()
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, raw)| {
+            let path = format!("tenant[{tenant_index}].id_jag_trust[{index}]");
+            let issuer = match Issuer::parse(&raw.issuer) {
+                Ok(value) if value.as_str() == raw.issuer => value,
+                _ => {
+                    errors.problem(path, "issuer must be a canonical HTTPS issuer");
+                    return None;
+                }
+            };
+            if raw.actor_client_id.is_empty()
+                || raw.actor_client_id.len() > 512
+                || raw.client_id.is_empty()
+                || raw.client_id.len() > 512
+            {
+                errors.problem(
+                    path,
+                    "actor and downstream client IDs must be nonempty and at most 512 bytes",
+                );
+                return None;
+            }
+            let resources: BTreeSet<String> = raw.resources.into_iter().collect();
+            if resources.is_empty()
+                || resources.len() > 8
+                || resources.iter().any(|resource| {
+                    !resource.starts_with("https://")
+                        || asterius_domain::ResourceIdentifier::parse(resource).is_err()
+                })
+            {
+                errors.problem(path, "resources must contain 1-8 HTTPS identifiers");
+                return None;
+            }
+            let scopes: BTreeSet<String> = raw.scopes.into_iter().collect();
+            if scopes.is_empty()
+                || scopes.len() > 32
+                || scopes.iter().any(|scope| {
+                    scope.len() > 128
+                        || scope.is_empty()
+                        || scope == "openid"
+                        || scope == "offline_access"
+                        || scope.bytes().any(|byte| {
+                            !(0x21..=0x7e).contains(&byte) || byte == b'"' || byte == b'\\'
+                        })
+                })
+            {
+                errors.problem(path, "scopes must contain 1-32 safe non-OIDC tokens");
+                return None;
+            }
+            if !seen.insert((issuer.as_str().to_owned(), raw.client_id.clone())) {
+                errors.problem(path, "duplicate issuer and downstream client trust");
+                return None;
+            }
+            Some(IdJagTrustConfig {
+                issuer,
+                jwks_file: raw.jwks_file,
+                actor_client_id: raw.actor_client_id,
+                client_id: raw.client_id,
                 resources,
                 scopes,
             })

@@ -43,6 +43,13 @@ details, multi-hop actor chains, and downstream redemption remain separate
 work. The issuer advertises ID-JAG only for a tenant with at least one
 configured approval and Token Exchange enabled.
 
+The staged `tenant.id_jag_trust` configuration now pins an upstream issuer,
+local JWKS file, actor client ID, downstream client ID, resource and scope
+allow-lists. Startup refuses an unreadable or keyless JWKS. It constructs a
+validation policy with the routed tenant's issuer as audience and the request's
+proven DPoP thumbprint. No token endpoint handler reads this policy yet, so
+adding a trust entry alone cannot redeem an ID-JAG.
+
 ## Consequences
 
 A deployment can authorize a managed agent's cross-app access with a bounded,

@@ -248,6 +248,9 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
         let claims_providers = Arc::new(asterius_server::claims_provider::ClaimsProviders::load(
             &config.tenants,
         )?);
+        let id_jag_trusts = Arc::new(asterius_server::id_jag_trust::IdJagTrusts::load(
+            &config.tenants,
+        )?);
         let http_signature_peers = Arc::new(asterius_server::http_signatures::PeerKeys::load(
             &config.tenants,
         )?);
@@ -322,6 +325,7 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
                 http_signature_replay: Arc::clone(&replay) as Arc<dyn ReplayGuard>,
                 oid4vp_verifiers,
                 claims_providers,
+                id_jag_trusts,
                 id_jag_approvals: Arc::new(
                     config
                         .tenants

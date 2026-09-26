@@ -11,6 +11,7 @@ pub mod claims_provider;
 pub mod client_auth;
 pub mod config;
 pub mod config_reference;
+pub mod id_jag_trust;
 pub mod federation;
 pub mod http;
 pub mod http_signatures;
