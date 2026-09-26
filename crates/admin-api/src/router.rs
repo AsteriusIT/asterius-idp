@@ -409,6 +409,7 @@ async fn route_standard(
         crate::SSF_UPSTREAM_PEERS_LIST_ID => context.list_upstream_peers().await,
         crate::SSF_UPSTREAM_SETUP_ID => context.setup_upstream_peer(body).await,
         crate::SSF_UPSTREAM_POLL_ID => context.poll_upstream_peer(body).await,
+        crate::SSF_UPSTREAM_VERIFY_ID => context.verify_upstream_peer(body).await,
         crate::SSF_RECEIVER_SUBJECT_BIND_ID => context.bind_receiver_subject(body).await,
         crate::SSF_RECEIVER_SUBJECT_REMOVE_ID => context.remove_receiver_subject(body).await,
         crate::ID_JAG_SUBJECT_BIND_ID => context.bind_id_jag_subject(body).await,
@@ -3039,6 +3040,31 @@ impl Handling<'_> {
         Ok(json_no_store(
             StatusCode::OK,
             &serde_json::json!({ "peer_client_id": peer.as_str(), "event_applied": applied }),
+        ))
+    }
+
+    /// Reads the authenticated remote configuration and status for one saved stream.
+    async fn verify_upstream_peer(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let bytes = axum::body::to_bytes(body, ssf::MAX_BODY_BYTES)
+            .await
+            .map_err(|_| AdminError::Invalid("the request body is too large".to_owned()))?;
+        let peer = ssf::parse_upstream_peer(&bytes)?;
+        self.state
+            .backend
+            .ssf()
+            .upstream_verify(&self.tenant.id, &peer, self.now)
+            .await
+            .map_err(upstream_operation_error)?;
+        self.record(
+            EventType::ADMIN_CHANGED,
+            Detail::new()
+                .label("operation", crate::SSF_UPSTREAM_VERIFY_ID)
+                .credential("peer_client_id", peer.as_str()),
+        )
+        .await;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({ "peer_client_id": peer.as_str(), "verified": true }),
         ))
     }
 

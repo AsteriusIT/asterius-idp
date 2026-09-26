@@ -152,6 +152,17 @@ pub trait SsfAdministration: Debug + Send + Sync {
         Err(UpstreamOperationError::Unavailable)
     }
 
+    /// Reads the pinned remote stream configuration and status without
+    /// changing the local record or the remote stream.
+    async fn upstream_verify(
+        &self,
+        _tenant: &TenantId,
+        _peer: &ClientId,
+        _now: OffsetDateTime,
+    ) -> Result<(), UpstreamOperationError> {
+        Err(UpstreamOperationError::Unavailable)
+    }
+
     /// Every stream of the tenant, oldest first.
     ///
     /// # Errors

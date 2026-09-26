@@ -36,6 +36,90 @@ pub enum SetupError {
     Event,
 }
 
+/// Read back the exact stream recorded for a configured peer. This does not
+/// repair drift or change local state; an operator must investigate a mismatch.
+pub async fn verify_recorded_stream(
+    endpoints: &ClientEndpoints,
+    tenant: &Tenant,
+    config: &SsfUpstreamPeerConfig,
+    poster: &HttpsPoster,
+    now: OffsetDateTime,
+) -> Result<(), SetupError> {
+    let peer = ClientId::new(config.issuer.as_str());
+    let (issuer, _jwks, _scopes, metadata) =
+        ssf_receiver::configured_peer(endpoints, tenant, &peer)
+            .await
+            .map_err(|_| SetupError::Peer)?;
+    if issuer != config.issuer || !metadata.supports_poll {
+        return Err(SetupError::Peer);
+    }
+    same_origin_management_endpoint(&metadata.configuration_endpoint, &issuer)?;
+    same_origin_management_endpoint(&metadata.status_endpoint, &issuer)?;
+    let repository = endpoints
+        .store
+        .scope(tenant.id.clone())
+        .ssf_upstream_streams();
+    if repository
+        .pending_setup(peer.as_str())
+        .await
+        .map_err(|_| SetupError::Storage)?
+        .is_some()
+    {
+        return Err(SetupError::PendingReview);
+    }
+    let recorded = repository
+        .find(peer.as_str())
+        .await
+        .map_err(|_| SetupError::Storage)?
+        .ok_or(SetupError::Peer)?;
+    let expected_audience = format!("{}{}", tenant.issuer.as_str(), ssf_receiver::RECEIVER_PATH);
+    if recorded.peer_client_id != peer.as_str()
+        || recorded.issuer != issuer.as_str()
+        || recorded.jwks_uri != metadata.jwks_uri
+        || recorded.configuration_endpoint != metadata.configuration_endpoint
+        || recorded.status_endpoint != metadata.status_endpoint
+        || recorded.audience != expected_audience
+        || recorded.delivery_method != stream::DELIVERY_POLL
+        || recorded
+            .poll_endpoint
+            .as_deref()
+            .is_none_or(|url| same_origin_management_endpoint(url, &issuer).is_err())
+    {
+        return Err(SetupError::Peer);
+    }
+    let token = read_bearer_file(&config.bearer_token_file)?;
+    let authorization = Zeroizing::new(format!("Bearer {}", token.as_str()));
+    let listed = list_streams(poster, &metadata.configuration_endpoint, &authorization).await?;
+    let remote = reconcile_listed(
+        &listed,
+        &metadata,
+        &issuer,
+        &recorded.audience,
+        &recorded.events_requested,
+        now,
+    )?
+    .ok_or(SetupError::PendingReview)?;
+    if remote.stream_id != recorded.stream_id
+        || remote.poll_endpoint != recorded.poll_endpoint
+        || remote.peer_client_id != recorded.peer_client_id
+        || remote.issuer != recorded.issuer
+        || remote.jwks_uri != recorded.jwks_uri
+        || remote.configuration_endpoint != recorded.configuration_endpoint
+        || remote.status_endpoint != recorded.status_endpoint
+        || remote.audience != recorded.audience
+        || remote.delivery_method != recorded.delivery_method
+        || remote.events_requested != recorded.events_requested
+    {
+        return Err(SetupError::PendingReview);
+    }
+    let url = status_url(&metadata.status_endpoint, &recorded.stream_id)?;
+    let status = poster
+        .get_with_response(&url, &authorization)
+        .await
+        .map_err(|_| SetupError::Transport)?;
+    validate_status(&status, &recorded.stream_id)
+}
+
 /// Poll at most one SET from an established upstream stream, apply it through
 /// the push receiver's atomic replay/lifecycle path, then acknowledge its
 /// `jti` in a separate RFC 8936 request. A failure before acknowledgement
