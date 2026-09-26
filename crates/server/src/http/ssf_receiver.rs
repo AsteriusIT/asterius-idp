@@ -1057,6 +1057,89 @@ pub async fn verify_polled_stream_verification(
     })
 }
 
+#[cfg(test)]
+mod upstream_subject_policy_tests {
+    use super::*;
+    use serde_json::json;
+
+    const ISSUER: &str = "https://transmitter.example";
+    const AUDIENCE: &str = "https://as.example/t/demo/ssf/receiver";
+
+    fn metadata(default_subjects: &str) -> UpstreamMetadata {
+        let issuer = Issuer::parse(ISSUER).expect("test issuer");
+        let document = json!({
+            "issuer": ISSUER,
+            "spec_version": "1_0",
+            "jwks_uri": format!("{ISSUER}/jwks"),
+            "configuration_endpoint": format!("{ISSUER}/ssf/streams"),
+            "status_endpoint": format!("{ISSUER}/ssf/streams/status"),
+            "verification_endpoint": format!("{ISSUER}/ssf/streams/verification"),
+            "delivery_methods_supported": [asterius_ssf::stream::DELIVERY_POLL],
+            "authorization_schemes": [{"spec_urn": "urn:ietf:rfc:6749"}],
+            "default_subjects": default_subjects,
+        });
+        UpstreamMetadata::from_document(
+            &serde_json::to_vec(&document).expect("metadata JSON"),
+            &issuer,
+        )
+        .expect("valid poll-only transmitter metadata")
+    }
+
+    fn stream_response() -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "iss": ISSUER,
+            "aud": AUDIENCE,
+            "stream_id": "stream-1",
+            "events_requested": [asterius_ssf::caep::SESSION_REVOKED],
+            "events_delivered": [asterius_ssf::caep::SESSION_REVOKED],
+            "delivery": {
+                "method": asterius_ssf::stream::DELIVERY_POLL,
+                "endpoint_url": format!("{ISSUER}/ssf/poll"),
+            },
+        }))
+        .expect("stream JSON")
+    }
+
+    fn validate(
+        metadata: &UpstreamMetadata,
+        allow_all_subjects: bool,
+    ) -> Result<asterius_store_pg::UpstreamStream, ReceiverError> {
+        validated_upstream_stream(
+            metadata,
+            allow_all_subjects,
+            &Issuer::parse(ISSUER).expect("test issuer"),
+            AUDIENCE,
+            &[asterius_ssf::caep::SESSION_REVOKED.to_owned()],
+            asterius_ssf::stream::DELIVERY_POLL,
+            None,
+            201,
+            201,
+            Some("application/json"),
+            &stream_response(),
+            OffsetDateTime::UNIX_EPOCH,
+        )
+    }
+
+    #[test]
+    fn all_subjects_requires_explicit_opt_in_before_persisting_a_stream() {
+        let all = metadata("ALL");
+        assert!(validate(&all, false).is_err());
+        let accepted = validate(&all, true).expect("explicit ALL opt-in");
+        assert_eq!(accepted.stream_id, "stream-1");
+        assert_eq!(
+            accepted.poll_endpoint.as_deref(),
+            Some("https://transmitter.example/ssf/poll")
+        );
+    }
+
+    #[test]
+    fn none_subjects_remains_usable_without_all_subject_opt_in() {
+        let none = metadata("NONE");
+        assert!(validate(&none, false).is_ok());
+        assert!(validate(&none, true).is_ok());
+    }
+}
+
 async fn verify_for_configured_peer_mode(
     endpoints: &crate::http::protocol::ClientEndpoints,
     tenant: &Tenant,
