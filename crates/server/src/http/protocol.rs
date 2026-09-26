@@ -299,6 +299,17 @@ async fn materialize_cimd_client(
         asterius_domain::DomainError::invalid("client_metadata", "invalid CIMD document")
     })?;
     let id = asterius_domain::ClientId::new(client_id.as_str());
+    if endpoints
+        .ipsie_https_only_clients
+        .get(tenant.id.as_str())
+        .is_some_and(|clients| clients.contains(id.as_str()))
+        && !registration.has_only_https_redirect_uris()
+    {
+        return Err(asterius_domain::DomainError::invalid(
+            "redirect_uris",
+            "this client requires HTTPS redirect_uris",
+        ));
+    }
     match clients.find(&id).await? {
         Some(existing) if existing.registration == registration => {}
         Some(_) => {
@@ -4195,6 +4206,7 @@ async fn client_registration_inner(
     register::register(
         RegisterContext {
             tenant,
+            ipsie_https_only_clients: endpoints.ipsie_https_only_clients.get(tenant.id.as_str()),
             tenant_policy: &tenant_policy,
             clients: &clients,
             keys: endpoints.keys.as_ref(),
@@ -4227,6 +4239,7 @@ fn configuration_context<'a>(
     ConfigurationContext {
         id_jag_trusts: Some(endpoints.id_jag_trusts.as_ref()),
         tenant,
+        ipsie_https_only_clients: endpoints.ipsie_https_only_clients.get(tenant.id.as_str()),
         tenant_policy,
         clients,
         configuration: clients,

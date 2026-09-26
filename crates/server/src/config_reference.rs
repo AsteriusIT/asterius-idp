@@ -1116,7 +1116,7 @@ fn tenant() -> Section {
                 "ipsie_https_only_client",
                 "array of client ID strings",
                 "empty (ordinary redirect rules)".to_owned(),
-                "For each operator-selected client, reject authorization requests whose registered redirect URI is not HTTPS, including native HTTP loopback callbacks. Enforced at PAR and direct authorization; existing client registrations can retain HTTP values but cannot use them while listed. This is one IPSIE SL1 control and does not advertise or establish full profile conformance.",
+                "For each operator-selected client, require HTTPS authorization redirect URIs, including when the registration is created or replaced through the admin API, dynamic registration, client ID metadata discovery, or the client configuration endpoint. Existing client registrations may retain HTTP values until updated, but PAR and direct authorization reject them while listed. Already stored requests or interactions from before this setting was enabled may still complete. This is one IPSIE SL1 control and does not advertise or establish full profile conformance.",
             ),
         ],
     }
