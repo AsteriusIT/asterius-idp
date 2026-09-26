@@ -1084,9 +1084,9 @@ fn tenant() -> Section {
             ),
             key(
                 "claims_provider",
-                "array of { issuer, jwks_file, allowed_claims, userinfo_endpoint?, client_id?, authorization_endpoint?, token_endpoint?, scope? } tables",
+                "array of { issuer, jwks_file, allowed_claims, userinfo_endpoint?, client_id?, authorization_endpoint?, token_endpoint?, scope?, userinfo_signed_response_alg?, policy_url?, revocation_endpoint? } tables",
                 "empty (aggregated delivery disabled)".to_owned(),
-                "Pins Claims Provider issuer, local public JWKS and approved attribute names for signed UserInfo aggregation. Up to four providers, each with up to sixteen attributes. The public-client OAuth setup profile additionally needs canonical HTTPS authorization_endpoint, token_endpoint and userinfo_endpoint, a CP-registered client_id and a scope containing openid. Register this OP at the CP for authorization code with PKCE S256 and a signed UserInfo response, with redirect URI at this tenant issuer plus /account/claims-providers/callback. The access token is used only in the callback, then discarded; renewal and long-lived credential custody are not offered. Signed UserInfo must name client_id as its sole audience.",
+                "Pins Claims Provider issuer, local public JWKS and approved attribute names for signed UserInfo aggregation. Up to four providers, each with up to sixteen attributes. Static operator registration is the Discovery alternative allowed by Claims Aggregation draft-03. The OAuth profile additionally needs canonical HTTPS authorization_endpoint, token_endpoint, userinfo_endpoint and policy_url, a CP-registered client_id, a scope containing openid and the exact userinfo_signed_response_alg (EdDSA, ES256 or PS256) registered at the CP. Register this OP at the CP for authorization code with PKCE S256 and signed, unencrypted UserInfo, providing that policy_url and a redirect URI at this tenant issuer plus /account/claims-providers/callback. Optional revocation_endpoint enables guarded RFC 7009 calls; local deletion always takes place. Access and refresh tokens are encrypted with bounded lifetimes. Signed UserInfo must name client_id as its sole audience.",
             ),
             key(
                 "http_signature_peer",

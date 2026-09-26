@@ -7,7 +7,7 @@
 use crate::{ClientKeySet, Policy, TypRule, VerificationError, verify};
 use asterius_domain::SigningAlgorithm;
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use time::{Duration, OffsetDateTime};
 
 /// Maximum accepted signed UserInfo size, including JOSE envelope.
@@ -28,6 +28,8 @@ pub struct ClaimsProviderPolicy {
     pub provider_subject: String,
     /// Attributes the user approved the OP to retrieve for this RP request.
     pub approved_claims: BTreeSet<String>,
+    /// Exact JWS algorithm registered for signed UserInfo, when configured.
+    pub userinfo_algorithm: Option<SigningAlgorithm>,
 }
 
 /// A signed claim set that survived pinned trust and disclosure checks.
@@ -41,6 +43,7 @@ pub struct VerifiedClaimSet {
     jwt: String,
     /// Attribute names this exact signed JWT contains.
     names: BTreeSet<String>,
+    values: BTreeMap<String, Value>,
     /// Expiry of the signed claim set.
     expires_at: OffsetDateTime,
 }
@@ -79,6 +82,12 @@ impl VerifiedClaimSet {
     #[must_use]
     pub const fn names(&self) -> &BTreeSet<String> {
         &self.names
+    }
+
+    /// Attribute values from the verified signature and pinned provider policy.
+    #[must_use]
+    pub fn values(&self) -> &BTreeMap<String, Value> {
+        &self.values
     }
 
     /// Signed JWT expiration.
@@ -134,7 +143,9 @@ pub fn verify_signed_userinfo(
     }
     let mut verification = Policy::new(
         TypRule::OptionalOneOf(&["JWT"]),
-        SigningAlgorithm::ALL.to_vec(),
+        policy
+            .userinfo_algorithm
+            .map_or_else(|| SigningAlgorithm::ALL.to_vec(), |alg| vec![alg]),
     )
     .issued_by(&policy.issuer)
     .for_audience(&policy.op_client_id);
@@ -163,6 +174,7 @@ pub fn verify_signed_userinfo(
         ));
     }
     let mut names = BTreeSet::new();
+    let mut values = BTreeMap::new();
     for (name, value) in claims {
         if matches!(
             name.as_str(),
@@ -181,6 +193,7 @@ pub fn verify_signed_userinfo(
             return Err(AggregationError::Claims("attribute is not approved"));
         }
         names.insert(name.clone());
+        values.insert(name.clone(), value.clone());
     }
     if names.is_empty() || names.len() > MAX_AGGREGATED_CLAIMS {
         return Err(AggregationError::Claims("claim count is outside bounds"));
@@ -190,6 +203,7 @@ pub fn verify_signed_userinfo(
         subject: policy.provider_subject.clone(),
         jwt: compact.to_owned(),
         names,
+        values,
         expires_at: expiry,
     })
 }

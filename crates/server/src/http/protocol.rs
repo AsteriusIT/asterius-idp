@@ -1226,6 +1226,18 @@ async fn discovery(
         grant_management,
         settings.allows_non_fapi_clients(),
     );
+    // Claims Aggregation draft-03 requires this metadata only where a tenant
+    // has a complete registered CP profile and the live protocol store exists.
+    // Delivery in issuance and UserInfo has no additional tenant feature gate:
+    // both use this same ClientEndpoints and the tenant's pinned profiles.
+    if state.clients.as_ref().is_some_and(|endpoints| {
+        !endpoints
+            .claims_providers
+            .oauth_registrations(tenant.id.as_str())
+            .is_empty()
+    }) {
+        document["claim_types_supported"] = serde_json::json!(["normal", "aggregated"]);
+    }
     if settings.allows_ephemeral_subjects() && settings.allows_non_fapi_clients() {
         document["subject_types_supported"] =
             serde_json::json!(["public", "pairwise", "ephemeral"]);
