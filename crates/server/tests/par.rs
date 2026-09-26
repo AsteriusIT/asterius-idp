@@ -1485,10 +1485,19 @@ async fn pushed_with_jar(
     pairs: &[(&str, &str)],
     client: &Client,
 ) -> (StatusCode, Value, FakeRequests) {
+    pushed_with_jar_profile(pairs, client, false).await
+}
+
+async fn pushed_with_jar_profile(
+    pairs: &[(&str, &str)],
+    client: &Client,
+    fapi_message_signing: bool,
+) -> (StatusCode, Value, FakeRequests) {
     let tenant = tenant();
     let clients = FakeClients(Some(client.clone()));
     let requests = FakeRequests::default();
     let keys = asterius_jose::client_keys::ClientKeyCache::new(std::sync::Arc::new(NoFetch));
+    let selected = std::iter::once(CLIENT.to_owned()).collect();
 
     let response = push(
         PushContext {
@@ -1504,7 +1513,7 @@ async fn pushed_with_jar(
             lifetime: Duration::seconds(90),
             certificate: None,
             request_objects: Some(&keys),
-            fapi_message_signing_clients: None,
+            fapi_message_signing_clients: fapi_message_signing.then_some(&selected),
             grants: None,
         },
         &form_headers(),
@@ -1534,6 +1543,73 @@ fn jar_form(object: &str) -> Vec<(&'static str, String)> {
 
 fn borrowed<'a>(pairs: &'a [(&'static str, String)]) -> Vec<(&'static str, &'a str)> {
     pairs.iter().map(|(k, v)| (*k, v.as_str())).collect()
+}
+
+fn fapi_jar_request(overrides: &Value) -> String {
+    let mut claims = jar_claims(&json!({
+        "nbf": now().unix_timestamp(),
+        "response_mode": "jwt",
+    }));
+    for (name, value) in overrides.as_object().expect("claim overrides") {
+        if value.is_null() {
+            claims.as_object_mut().expect("claims").remove(name);
+        } else {
+            claims.as_object_mut().expect("claims").insert(name.clone(), value.clone());
+        }
+    }
+    signed(&claims, "oauth-authz-req+jwt", jar_key())
+}
+
+#[tokio::test]
+async fn fapi_message_signing_rejects_plain_par_and_non_fapi_profile() {
+    let ordinary = jar_client();
+    let (status, body, store) =
+        pushed_with_jar_profile(&valid_pairs(), &ordinary, true).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"], "invalid_request");
+    assert!(store.0.lock().expect("lock").is_empty());
+
+    let pairs = jar_form(&fapi_jar_request(&json!({})));
+    let (status, body, store) =
+        pushed_with_jar_profile(&borrowed(&pairs), &oidc_client(), true).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"], "unauthorized_client");
+    assert!(store.0.lock().expect("lock").is_empty());
+}
+
+#[tokio::test]
+async fn fapi_message_signing_requires_window_jarm_mode_and_registered_algorithm() {
+    let mut client = jar_client();
+    client.registration.authorization_signed_response_alg =
+        Some(asterius_domain::SigningAlgorithm::EdDsa);
+
+    for (overrides, expected_error) in [
+        (json!({"nbf": null}), "invalid_request_object"),
+        (json!({"response_mode": "query"}), "invalid_request"),
+    ] {
+        let pairs = jar_form(&fapi_jar_request(&overrides));
+        let (status, body, store) =
+            pushed_with_jar_profile(&borrowed(&pairs), &client, true).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], expected_error, "{body}");
+        assert!(store.0.lock().expect("lock").is_empty());
+    }
+
+    let mut missing_algorithm = client.clone();
+    missing_algorithm.registration.authorization_signed_response_alg = None;
+    let pairs = jar_form(&fapi_jar_request(&json!({})));
+    let (status, body, store) =
+        pushed_with_jar_profile(&borrowed(&pairs), &missing_algorithm, true).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"], "invalid_request", "{body}");
+    assert!(store.0.lock().expect("lock").is_empty());
+
+    let (status, body, store) =
+        pushed_with_jar_profile(&borrowed(&pairs), &client, true).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let stored = store.0.lock().expect("lock");
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].parameters["response_mode"], "jwt");
 }
 
 /// RFC 9126 §3 and RFC 9101 §6.1: the request is the object's claims, and the
