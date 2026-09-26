@@ -324,6 +324,28 @@ pub struct TenantConfig {
     /// Explicit outbound OAuth authorization for upstream SSF management.
     /// This is separate from a peer's inbound `ssf.receive` registration.
     pub ssf_upstream_peers: Vec<SsfUpstreamPeerConfig>,
+    /// Optional operator-pinned LDAPS source. No synchronization runs merely
+    /// because this configuration exists.
+    pub ldap_source: Option<LdapSourceConfig>,
+}
+
+/// A tenant's inactive LDAP source and explicit, non-privileged mapping.
+/// Credentials remain in a file; this object never contains the password.
+#[derive(Debug, Clone)]
+pub struct LdapSourceConfig {
+    pub url: String,
+    pub base_dn: String,
+    pub bind_dn: String,
+    pub bind_password_file: PathBuf,
+    pub user_filter: String,
+    pub external_id_attribute: String,
+    pub username_attribute: String,
+    pub email_attribute: String,
+    pub display_name_attribute: String,
+    pub group_base_dn: Option<String>,
+    pub group_filter: Option<String>,
+    pub group_name_attribute: Option<String>,
+    pub group_member_attribute: Option<String>,
 }
 
 /// Operator-provided bearer credential source for one upstream transmitter.
@@ -832,6 +854,25 @@ struct RawTenant {
     claims_provider: Option<Vec<RawClaimsProvider>>,
     http_signature_peer: Option<Vec<RawHttpSignaturePeer>>,
     ssf_upstream_peer: Option<Vec<RawSsfUpstreamPeer>>,
+    ldap_source: Option<RawLdapSource>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawLdapSource {
+    url: String,
+    base_dn: String,
+    bind_dn: String,
+    bind_password_file: PathBuf,
+    user_filter: String,
+    external_id_attribute: String,
+    username_attribute: String,
+    email_attribute: String,
+    display_name_attribute: String,
+    group_base_dn: Option<String>,
+    group_filter: Option<String>,
+    group_name_attribute: Option<String>,
+    group_member_attribute: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2171,6 +2212,9 @@ fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantCo
             validate_http_signature_peers(index, tenant.http_signature_peer, errors);
         let ssf_upstream_peers =
             validate_ssf_upstream_peers(index, tenant.ssf_upstream_peer, errors);
+        let ldap_source = tenant
+            .ldap_source
+            .and_then(|source| validate_ldap_source(index, source, errors));
 
         if let (Some(id), Some(issuer)) = (id, issuer) {
             let default_resource = default_resource.unwrap_or_else(|| issuer.as_str().to_owned());
@@ -2190,6 +2234,7 @@ fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantCo
                 claims_providers,
                 http_signature_peers,
                 ssf_upstream_peers,
+                ldap_source,
             });
         }
     }
@@ -2231,6 +2276,151 @@ fn validate_ssf_upstream_peers(
             })
         })
         .collect()
+}
+
+fn validate_ldap_source(
+    tenant_index: usize,
+    raw: RawLdapSource,
+    errors: &mut Collector,
+) -> Option<LdapSourceConfig> {
+    let path = format!("tenant[{tenant_index}].ldap_source");
+    let mut valid = true;
+    let url = match url::Url::parse(&raw.url) {
+        Ok(url)
+            if url.scheme() == "ldaps"
+                && url.host_str().is_some()
+                && url.username().is_empty()
+                && url.password().is_none()
+                && (url.path().is_empty() || url.path() == "/")
+                && url.query().is_none()
+                && url.fragment().is_none() =>
+        {
+            url.to_string()
+        }
+        _ => {
+            errors.problem(
+                format!("{path}.url"),
+                "must be an LDAPS origin without credentials, path, query or fragment",
+            );
+            valid = false;
+            String::new()
+        }
+    };
+    for (name, dn) in [("base_dn", &raw.base_dn), ("bind_dn", &raw.bind_dn)] {
+        if !valid_ldap_dn(dn) {
+            errors.problem(format!("{path}.{name}"), "invalid or empty LDAP DN");
+            valid = false;
+        }
+    }
+    if !raw.bind_password_file.is_absolute() {
+        errors.problem(
+            format!("{path}.bind_password_file"),
+            "must be an absolute path to an operator-managed secret file",
+        );
+        valid = false;
+    }
+    if !valid_static_ldap_filter(&raw.user_filter) {
+        errors.problem(
+            format!("{path}.user_filter"),
+            "must be a bounded static LDAP filter without substitutions",
+        );
+        valid = false;
+    }
+    for (name, attribute) in [
+        ("external_id_attribute", &raw.external_id_attribute),
+        ("username_attribute", &raw.username_attribute),
+        ("email_attribute", &raw.email_attribute),
+        ("display_name_attribute", &raw.display_name_attribute),
+    ] {
+        if !valid_ldap_attribute(attribute) {
+            errors.problem(format!("{path}.{name}"), "invalid LDAP attribute name");
+            valid = false;
+        }
+    }
+    let group_fields = [
+        raw.group_base_dn.is_some(),
+        raw.group_filter.is_some(),
+        raw.group_name_attribute.is_some(),
+        raw.group_member_attribute.is_some(),
+    ];
+    if group_fields.iter().any(|present| *present) && group_fields.iter().any(|present| !present) {
+        errors.problem(
+            format!("{path}.group_base_dn"),
+            "all four group mapping fields must be supplied together",
+        );
+        valid = false;
+    }
+    if let Some(value) = &raw.group_base_dn {
+        if !valid_ldap_dn(value) {
+            errors.problem(format!("{path}.group_base_dn"), "invalid LDAP DN");
+            valid = false;
+        }
+    }
+    if let Some(value) = &raw.group_filter {
+        if !valid_static_ldap_filter(value) {
+            errors.problem(
+                format!("{path}.group_filter"),
+                "must be a bounded static LDAP filter without substitutions",
+            );
+            valid = false;
+        }
+    }
+    for (name, attribute) in [
+        ("group_name_attribute", &raw.group_name_attribute),
+        ("group_member_attribute", &raw.group_member_attribute),
+    ] {
+        if attribute
+            .as_deref()
+            .is_some_and(|value| !valid_ldap_attribute(value))
+        {
+            errors.problem(format!("{path}.{name}"), "invalid LDAP attribute name");
+            valid = false;
+        }
+    }
+    valid.then_some(LdapSourceConfig {
+        url,
+        base_dn: raw.base_dn,
+        bind_dn: raw.bind_dn,
+        bind_password_file: raw.bind_password_file,
+        user_filter: raw.user_filter,
+        external_id_attribute: raw.external_id_attribute,
+        username_attribute: raw.username_attribute,
+        email_attribute: raw.email_attribute,
+        display_name_attribute: raw.display_name_attribute,
+        group_base_dn: raw.group_base_dn,
+        group_filter: raw.group_filter,
+        group_name_attribute: raw.group_name_attribute,
+        group_member_attribute: raw.group_member_attribute,
+    })
+}
+
+fn valid_ldap_dn(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 1024
+        && !value.chars().any(char::is_control)
+        && !value.contains('{')
+        && !value.contains('}')
+}
+
+fn valid_static_ldap_filter(value: &str) -> bool {
+    value.len() >= 3
+        && value.len() <= 1024
+        && value.starts_with('(')
+        && value.ends_with(')')
+        && !value.chars().any(char::is_control)
+        && !value.contains('{')
+        && !value.contains('}')
+}
+
+fn valid_ldap_attribute(value: &str) -> bool {
+    value.len() <= 64
+        && value
+            .bytes()
+            .next()
+            .is_some_and(|first| first.is_ascii_alphabetic())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
 
 fn validate_http_signature_peers(
