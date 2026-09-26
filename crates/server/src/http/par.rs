@@ -88,6 +88,8 @@ pub struct PushContext<'a> {
     /// `request_not_supported`, which is the code OIDC Core §3.1.2.6 defines
     /// for exactly that.
     pub request_objects: Option<&'a asterius_jose::client_keys::ClientKeyCache>,
+    /// Static per-tenant allow-list of clients requiring FAPI signed JAR.
+    pub fapi_message_signing_clients: Option<&'a std::collections::BTreeSet<String>>,
     /// This tenant's grants, for the `grant_id` of Grant Management ID1 §5.2.
     ///
     /// `Some` exactly when [`asterius_domain::Feature::GrantManagement`] is on
@@ -396,6 +398,16 @@ async fn unwrapped(
             "request_uri must not be present in a pushed authorization request",
         )));
     }
+    let fapi = context
+        .fapi_message_signing_clients
+        .is_some_and(|clients| clients.contains(client.id.as_str()));
+    if !parameters.present("request") && fapi {
+        return Err(Box::new(error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "this client must use a signed request object at PAR",
+        )));
+    }
     if !parameters.present("request") {
         return Ok(parameters);
     }
@@ -405,7 +417,7 @@ async fn unwrapped(
         return Ok(parameters);
     };
 
-    crate::http::request_object::parameters(keys, context.tenant, client, &parameters, now)
+    crate::http::request_object::parameters(keys, context.tenant, client, &parameters, now, fapi)
         .await
         .map_err(|refusal| {
             Box::new(error(

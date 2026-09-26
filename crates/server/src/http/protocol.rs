@@ -119,6 +119,9 @@ pub struct ProtocolState {
 /// Separate from [`ProtocolState`] so that the discovery and JWKS handlers —
 /// which need none of it — can be tested without a database.
 pub struct ClientEndpoints {
+    /// Operator-selected clients that must use signed FAPI JAR at PAR.
+    pub fapi_message_signing_clients:
+        Arc<std::collections::HashMap<String, std::collections::BTreeSet<String>>>,
     /// Bounded, fail-closed discovery cache for configured SSF transmitters.
     pub ssf_metadata_cache: Arc<crate::http::ssf_receiver::UpstreamMetadataCache>,
     /// Pinned request-signature keys for configured SSF transmitters.
@@ -1663,6 +1666,9 @@ async fn pushed_authorization_request_inner(
             lifetime: endpoints.par_lifetime,
             certificate,
             request_objects,
+            fapi_message_signing_clients: endpoints
+                .fapi_message_signing_clients
+                .get(tenant.id.as_str()),
             grants,
         },
         headers,
@@ -4596,7 +4602,25 @@ async fn direct_authorization_pairs(
     pairs: &[(String, String)],
     now: time::OffsetDateTime,
 ) -> Result<Option<Vec<(String, String)>>, Box<Response>> {
-    if pairs.iter().any(|(name, _)| name == "request_uri") || !settings.allows_non_fapi_clients() {
+    if pairs.iter().any(|(name, _)| name == "request_uri") {
+        return Ok(None);
+    }
+    if pairs.iter().any(|(name, value)| {
+        name == "client_id"
+            && endpoints
+                .fapi_message_signing_clients
+                .get(tenant.id.as_str())
+                .is_some_and(|clients| clients.contains(value))
+    }) {
+        return Err(Box::new(
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "invalid_request"})),
+            )
+                .into_response(),
+        ));
+    }
+    if !settings.allows_non_fapi_clients() {
         return Ok(None);
     }
     if let Some(client_id) = pairs
@@ -4634,6 +4658,7 @@ async fn direct_authorization_pairs(
             lifetime: endpoints.par_lifetime,
             certificate: None,
             request_objects: None,
+            fapi_message_signing_clients: None,
             grants,
         },
         pairs,

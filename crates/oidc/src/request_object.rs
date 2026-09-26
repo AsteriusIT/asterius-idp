@@ -97,6 +97,9 @@ pub enum RequestObjectError {
         MAX_LIFETIME.whole_seconds()
     )]
     LifetimeTooLong,
+    /// FAPI Message Signing requires an explicit bounded `nbf`/`exp` window.
+    #[error("the FAPI request object validity window is missing or too long")]
+    InvalidFapiWindow,
     /// A claim's JSON has no form spelling, so no parameter rule could read it.
     #[error("the request object carries a {0} this server cannot read as a parameter")]
     Unrepresentable(String),
@@ -133,6 +136,28 @@ pub fn parameters(
     issuer: &str,
     now: OffsetDateTime,
 ) -> Result<Parameters, RequestObjectError> {
+    parameters_for_profile(claims, client_id, issuer, now, false)
+}
+
+/// Maps a verified FAPI 2.0 Message Signing JAR to ordinary authorization
+/// parameters. The caller must also require a signed JAR at PAR for this
+/// client; this function only checks the profile's claim rules.
+pub fn fapi_parameters(
+    claims: &Value,
+    client_id: &str,
+    issuer: &str,
+    now: OffsetDateTime,
+) -> Result<Parameters, RequestObjectError> {
+    parameters_for_profile(claims, client_id, issuer, now, true)
+}
+
+fn parameters_for_profile(
+    claims: &Value,
+    client_id: &str,
+    issuer: &str,
+    now: OffsetDateTime,
+    fapi: bool,
+) -> Result<Parameters, RequestObjectError> {
     let object = claims.as_object().ok_or(RequestObjectError::NotAnObject)?;
 
     // OIDC Core §6.3: `iss` is the client, `aud` is the OP. Checked before
@@ -146,6 +171,13 @@ pub fn parameters(
     match object.get("aud") {
         None => return Err(RequestObjectError::Missing("aud")),
         Some(Value::String(aud)) if aud == issuer => {}
+        Some(Value::Array(audiences))
+            if fapi
+                && !audiences.is_empty()
+                && audiences.iter().all(Value::is_string)
+                && audiences
+                    .iter()
+                    .any(|audience| audience.as_str() == Some(issuer)) => {}
         Some(_) => return Err(RequestObjectError::AudienceIsNotTheIssuer),
     }
 
@@ -155,8 +187,20 @@ pub fn parameters(
         .get("exp")
         .and_then(Value::as_i64)
         .ok_or(RequestObjectError::Missing("exp"))?;
-    if expiry.saturating_sub(now.unix_timestamp()) > MAX_LIFETIME.whole_seconds() {
+    if !fapi && expiry.saturating_sub(now.unix_timestamp()) > MAX_LIFETIME.whole_seconds() {
         return Err(RequestObjectError::LifetimeTooLong);
+    }
+    if fapi {
+        let not_before = object
+            .get("nbf")
+            .and_then(Value::as_i64)
+            .ok_or(RequestObjectError::InvalidFapiWindow)?;
+        if not_before < now.unix_timestamp().saturating_sub(60 * 60)
+            || expiry <= not_before
+            || expiry.saturating_sub(not_before) > 60 * 60
+        {
+            return Err(RequestObjectError::InvalidFapiWindow);
+        }
     }
 
     let mut pairs: Vec<(String, String)> = Vec::new();
