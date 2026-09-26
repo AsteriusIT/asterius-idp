@@ -4383,6 +4383,32 @@ mod tests {
         );
     }
 
+    #[test]
+    fn encryption_registration_never_treats_null_or_incomplete_preferences_as_plaintext() {
+        for (field, value) in [
+            ("id_token_encrypted_response_alg", json!(null)),
+            ("id_token_encrypted_response_enc", json!(null)),
+            ("userinfo_encrypted_response_alg", json!(null)),
+            ("userinfo_encrypted_response_enc", json!(null)),
+            ("id_token_encrypted_response_alg", json!("RSA-OAEP-256")),
+            ("userinfo_encrypted_response_enc", json!("A256GCM")),
+        ] {
+            assert_eq!(
+                rejection(&with(field, value)).code(),
+                "invalid_client_metadata",
+                "{field} was silently downgraded",
+            );
+        }
+        let mut unsigned_userinfo = minimal();
+        unsigned_userinfo["userinfo_encrypted_response_alg"] = json!("RSA-OAEP-256");
+        unsigned_userinfo["userinfo_encrypted_response_enc"] = json!("A256GCM");
+        assert_eq!(
+            rejection(&unsigned_userinfo).field(),
+            "userinfo_signed_response_alg",
+            "encrypted UserInfo must wrap a signed JWT",
+        );
+    }
+
     /// The client does not get to choose the algorithm used to check its own
     /// credentials, and `none` is not a value that exists.
     #[test]
