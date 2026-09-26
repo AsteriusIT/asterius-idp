@@ -115,10 +115,10 @@ pub fn verify_jwt_vc_json(
         .ok_or(PresentationError::Presentation(
             "exactly one JWT VC is required",
         ))?;
-    let vc_jwt = credentials[0]
+    let credential_jwt = credentials[0]
         .as_str()
         .ok_or(PresentationError::Presentation("VC is not a JWT"))?;
-    verify_credential(vc_jwt, policy, now)
+    verify_credential(credential_jwt, policy, now)
 }
 
 fn verify_credential(
@@ -214,10 +214,7 @@ fn validate_policy(policy: &PresentationPolicy) -> Result<(), PresentationError>
         || policy.credential_issuer_keys.is_empty()
         || policy.credential_type.is_empty()
         || policy.required_claim_paths.is_empty()
-        || policy
-            .required_claim_paths
-            .iter()
-            .any(|path| path.is_empty())
+        || policy.required_claim_paths.iter().any(Vec::is_empty)
     {
         return Err(PresentationError::IncompletePolicy);
     }

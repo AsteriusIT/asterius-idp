@@ -834,12 +834,7 @@ pub fn check(
 ) -> Result<Proof, DpopError> {
     // Before anything is decoded: an oversized "proof" should cost a length
     // comparison.
-    if proof.len() > MAX_PROOF_BYTES {
-        return Err(DpopError::TooLarge {
-            size: proof.len(),
-            limit: MAX_PROOF_BYTES,
-        });
-    }
+    check_proof_size(proof)?;
 
     // §4.3 item 2, and items 4–5 by way of `jws::parse`: three segments, no
     // `crit` we do not understand, and an `alg` inside ADR-0003's set — which
@@ -984,6 +979,16 @@ pub fn check(
         replay_expires_at: issued_at + max_age,
         algorithm,
     })
+}
+
+fn check_proof_size(proof: &str) -> Result<(), DpopError> {
+    if proof.len() > MAX_PROOF_BYTES {
+        return Err(DpopError::TooLarge {
+            size: proof.len(),
+            limit: MAX_PROOF_BYTES,
+        });
+    }
+    Ok(())
 }
 
 /// The `jwk` from a proof's header, as a verifying key for `algorithm`.
