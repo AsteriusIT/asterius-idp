@@ -25,6 +25,7 @@ pub mod provider_commands;
 pub mod retention;
 pub mod rotation;
 pub mod saml;
+pub mod saml_idp_signer;
 pub mod saml_post;
 pub mod saml_redirect;
 pub mod saml_validation;

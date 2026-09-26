@@ -189,6 +189,8 @@ pub enum RowSecret {
     TotpSeed,
     /// Private key for one Federation Entity Statement signing key.
     FederationSigningKey,
+    /// RSA private key for a tenant's SAML IdP certificate fingerprint.
+    SamlIdpSigningKey,
     /// A Claims Provider signed UserInfo JWT for one user and issuer.
     ClaimsProviderUserInfo,
     /// The PKCE verifier of one pending Claims Provider authorization.
@@ -201,11 +203,12 @@ pub enum RowSecret {
 
 impl RowSecret {
     /// Every secret this enum names, so a test can be exhaustive over them.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::SsfPushAuthorization,
         Self::CibaPing,
         Self::TotpSeed,
         Self::FederationSigningKey,
+        Self::SamlIdpSigningKey,
         Self::ClaimsProviderUserInfo,
         Self::ClaimsProviderPkce,
         Self::ClaimsProviderAccessToken,
@@ -220,6 +223,7 @@ impl RowSecret {
             Self::CibaPing => "ciba-ping",
             Self::TotpSeed => "totp-seed",
             Self::FederationSigningKey => "federation-signing-key",
+            Self::SamlIdpSigningKey => "saml-idp-signing-key",
             Self::ClaimsProviderUserInfo => "claims-provider-userinfo",
             Self::ClaimsProviderPkce => "claims-provider-pkce",
             Self::ClaimsProviderAccessToken => "claims-provider-access-token",

@@ -574,12 +574,14 @@ impl EventType {
     pub const SAML_SP_PROVISIONED: Self = Self("saml.sp_provisioned");
     /// An administrator removed an exact SAML SP trust entry.
     pub const SAML_SP_REMOVED: Self = Self("saml.sp_removed");
+    /// An administrator imported a tenant SAML IdP signing key/certificate.
+    pub const SAML_IDP_KEY_PROVISIONED: Self = Self("saml.idp_key_provisioned");
     /// An OP sent, or failed to send, an account lifecycle command to an RP.
     pub const PROVIDER_COMMAND_DELIVERED: Self = Self("provider_command.delivered");
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 88] = [
+    pub const ALL: [Self; 89] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -664,6 +666,7 @@ impl EventType {
         Self::ID_JAG_SUBJECT_UNBOUND,
         Self::SAML_SP_PROVISIONED,
         Self::SAML_SP_REMOVED,
+        Self::SAML_IDP_KEY_PROVISIONED,
         Self::PROVIDER_COMMAND_DELIVERED,
         Self::SSF_VERIFICATION_REQUESTED,
         Self::OUTBOX_RETRIED,

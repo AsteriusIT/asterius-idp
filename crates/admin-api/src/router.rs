@@ -416,6 +416,8 @@ async fn route_standard(
         crate::SAML_SP_LIST_ID => context.list_saml_sp_trust().await,
         crate::SAML_SP_PROVISION_ID => context.provision_saml_sp(body).await,
         crate::SAML_SP_REMOVE_ID => context.remove_saml_sp(body).await,
+        crate::SAML_IDP_KEY_READ_ID => context.read_saml_idp_key().await,
+        crate::SAML_IDP_KEY_PROVISION_ID => context.provision_saml_idp_key(body).await,
         crate::AUDIT_EVENTS_LIST_ID => context.list_audit_events().await,
         crate::AUDIT_EVENTS_EXPORT_ID => context.export_audit_events(),
         crate::USERS_LIST_ID => context.list_users().await,
@@ -3340,6 +3342,65 @@ impl Handling<'_> {
             &serde_json::json!({
                 "entity_id": entity_id, "removed": true
             }),
+        ))
+    }
+
+    /// Only the public certificate and fingerprint leave the key repository.
+    async fn read_saml_idp_key(&self) -> Result<Response, AdminError> {
+        let administration = self
+            .state
+            .backend
+            .saml_idp_key()
+            .ok_or(AdminError::NotFound)?;
+        let summary = administration
+            .inspect(&self.tenant.id)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::SAML_IDP_KEY_READ_ID, &error))?
+            .ok_or(AdminError::NotFound)?;
+        Ok(json_no_store(StatusCode::OK, &serde_json::json!(summary)))
+    }
+
+    /// Import only when no SAML IdP key already exists for this tenant.
+    async fn provision_saml_idp_key(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let mut bytes = axum::body::to_bytes(body, saml::MAX_IDP_KEY_BODY_BYTES)
+            .await
+            .map_err(|_| AdminError::Invalid("the request body is too large".to_owned()))?
+            .to_vec();
+        let key = saml::parse_idp_key(&bytes);
+        zeroize::Zeroize::zeroize(&mut bytes);
+        let key = key?;
+        let administration = self
+            .state
+            .backend
+            .saml_idp_key()
+            .ok_or(AdminError::NotFound)?;
+        let inserted = administration
+            .provision(&self.tenant.id, &key)
+            .await
+            .map_err(|error| match error {
+                DomainError::Invalid { .. } => {
+                    AdminError::Invalid("invalid SAML IdP key".to_owned())
+                }
+                other => AdminError::from_storage(crate::SAML_IDP_KEY_PROVISION_ID, &other),
+            })?;
+        if !inserted {
+            return Err(AdminError::Conflict(
+                "this tenant already has a SAML IdP key".to_owned(),
+            ));
+        }
+        self.record(
+            EventType::SAML_IDP_KEY_PROVISIONED,
+            Detail::new().label("operation", crate::SAML_IDP_KEY_PROVISION_ID),
+        )
+        .await;
+        let summary = administration
+            .inspect(&self.tenant.id)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::SAML_IDP_KEY_READ_ID, &error))?
+            .ok_or(AdminError::NotFound)?;
+        Ok(json_no_store(
+            StatusCode::CREATED,
+            &serde_json::json!(summary),
         ))
     }
 
