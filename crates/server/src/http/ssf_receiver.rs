@@ -473,6 +473,15 @@ pub struct VerifiedEvent {
     pub event: Value,
 }
 
+/// A signed stream-verification SET. It never carries a user lifecycle action.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedStreamVerification {
+    pub peer: ClientId,
+    pub jti: String,
+    pub replay_until: OffsetDateTime,
+    pub state: Option<String>,
+}
+
 /// Why an incoming SET was refused. Error messages never include token
 /// material, identifiers, or event payloads.
 #[derive(Debug, Clone, Copy, Error)]
@@ -513,6 +522,7 @@ pub struct UpstreamMetadata {
     pub jwks_uri: String,
     pub configuration_endpoint: String,
     pub status_endpoint: String,
+    pub verification_endpoint: String,
     pub supports_push: bool,
     pub supports_poll: bool,
     pub default_subjects: Option<String>,
@@ -602,6 +612,17 @@ impl UpstreamMetadataCache {
 }
 
 impl UpstreamMetadata {
+    /// ALL is opt-in because the transmitter can send events for subjects the
+    /// receiver has never enrolled. NONE keeps the existing peer behavior;
+    /// its actual subject enrollment remains the operator's responsibility.
+    pub fn subject_policy_allowed(&self, allow_all_subjects: bool) -> bool {
+        match self.default_subjects.as_deref() {
+            Some("NONE") => true,
+            Some("ALL") => allow_all_subjects,
+            _ => false,
+        }
+    }
+
     fn from_document(document: &[u8], issuer: &Issuer) -> Result<Self, ReceiverError> {
         let value: Value = serde_json::from_slice(document).map_err(|_| ReceiverError::Metadata)?;
         let object = value.as_object().ok_or(ReceiverError::Metadata)?;
@@ -680,6 +701,11 @@ impl UpstreamMetadata {
                 .and_then(Value::as_str)
                 .ok_or(ReceiverError::Metadata)?
                 .to_owned(),
+            verification_endpoint: object
+                .get("verification_endpoint")
+                .and_then(Value::as_str)
+                .ok_or(ReceiverError::Metadata)?
+                .to_owned(),
             supports_push,
             supports_poll,
             default_subjects: default_subjects.map(str::to_owned),
@@ -695,6 +721,7 @@ impl UpstreamMetadata {
 /// still apply its DNS/IP SSRF guard when it is eventually used.
 pub fn validated_upstream_stream(
     metadata: &UpstreamMetadata,
+    allow_all_subjects: bool,
     issuer: &Issuer,
     audience: &str,
     requested_events: &[String],
@@ -711,9 +738,9 @@ pub fn validated_upstream_stream(
         || !content_type.is_some_and(|value| value.split(';').next().is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("application/json")))
         || document.is_empty()
         || document.len() > 8 * 1024
-        // A valid transmitter may default to ALL, but this receiver will not
-        // establish a stream that silently includes every subject.
-        || metadata.default_subjects.as_deref() != Some("NONE")
+        // A valid transmitter may default to ALL, but only explicit tenant
+        // policy authorizes the receiver to accept that broader stream.
+        || !metadata.subject_policy_allowed(allow_all_subjects)
         || requested_events.is_empty()
         || requested_events.len() > 16
         || requested_events.iter().collect::<BTreeSet<_>>().len() != requested_events.len()
@@ -809,6 +836,9 @@ pub fn validated_upstream_stream(
         created_at: now,
         updated_at: now,
         last_polled_at: None,
+        deletion_started_at: None,
+        last_verified_at: None,
+        last_challenge_verified_at: None,
     })
 }
 
@@ -932,6 +962,101 @@ pub async fn verify_polled_for_configured_peer(
     .await
 }
 
+/// Verifies a polled SSF verification SET against the exact stored stream ID.
+/// This uses the same peer key and JWS policy as lifecycle events, but the
+/// control event has no CAEP `event_timestamp` or mandatory `txn`.
+pub async fn verify_polled_stream_verification(
+    endpoints: &crate::http::protocol::ClientEndpoints,
+    tenant: &Tenant,
+    peer: &ClientId,
+    audience: &str,
+    stream_id: &str,
+    token: &str,
+    now: OffsetDateTime,
+) -> Result<VerifiedStreamVerification, ReceiverError> {
+    let (issuer, jwks, scopes, metadata) = configured_peer(endpoints, tenant, peer).await?;
+    if !metadata.supports_poll || !scopes.contains(RECEIVE_SCOPE) {
+        return Err(ReceiverError::Peer);
+    }
+    let verified = verify_signed_set_mode(
+        endpoints.authenticator.client_keys(),
+        tenant,
+        peer,
+        &issuer,
+        &jwks,
+        audience,
+        token,
+        now,
+    )
+    .await?;
+    let claims = &verified.claims;
+    let jti = claims
+        .get("jti")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.len() <= 255)
+        .ok_or(ReceiverError::Profile)?
+        .to_owned();
+    if claims.get("sub").is_some() || claims.get("exp").is_some() {
+        return Err(ReceiverError::Profile);
+    }
+    let issued_at = claims
+        .get("iat")
+        .and_then(Value::as_i64)
+        .and_then(|seconds| OffsetDateTime::from_unix_timestamp(seconds).ok())
+        .ok_or(ReceiverError::Profile)?;
+    let accepted_until = issued_at
+        .checked_add(MAX_POLLED_SET_AGE)
+        .ok_or(ReceiverError::Profile)?;
+    if accepted_until <= now {
+        return Err(ReceiverError::TooOld);
+    }
+    let replay_until = now
+        .checked_add(MAX_POLLED_SET_AGE)
+        .ok_or(ReceiverError::Profile)?
+        .max(accepted_until);
+    let subject = claims
+        .get("sub_id")
+        .and_then(Value::as_object)
+        .ok_or(ReceiverError::Subject)?;
+    if subject.get("format").and_then(Value::as_str) != Some("opaque")
+        || subject.get("id").and_then(Value::as_str) != Some(stream_id)
+        || subject.len() != 2
+    {
+        return Err(ReceiverError::Subject);
+    }
+    let events = claims
+        .get("events")
+        .and_then(Value::as_object)
+        .filter(|events| events.len() == 1)
+        .ok_or(ReceiverError::Profile)?;
+    let event = events
+        .get(asterius_ssf::VERIFICATION)
+        .and_then(Value::as_object)
+        .ok_or(ReceiverError::UnsupportedEvent)?;
+    if event.len() > 1 || (event.len() == 1 && !event.contains_key("state")) {
+        return Err(ReceiverError::Profile);
+    }
+    let state = event
+        .get("state")
+        .map(|value| {
+            value
+                .as_str()
+                .ok_or(ReceiverError::Profile)
+                .and_then(|state| {
+                    asterius_ssf::VerificationState::parse(state)
+                        .map_err(|_| ReceiverError::Profile)
+                })
+                .map(|state| state.as_str().to_owned())
+        })
+        .transpose()?;
+    Ok(VerifiedStreamVerification {
+        peer: peer.clone(),
+        jti,
+        replay_until,
+        state,
+    })
+}
+
 async fn verify_for_configured_peer_mode(
     endpoints: &crate::http::protocol::ClientEndpoints,
     tenant: &Tenant,
@@ -1013,6 +1138,22 @@ async fn verify_inbound_set_mode(
     now: OffsetDateTime,
     mode: DeliveryMode,
 ) -> Result<VerifiedEvent, ReceiverError> {
+    let verified =
+        verify_signed_set_mode(cache, tenant, client, issuer, jwks, audience, token, now).await?;
+    parse_verified_event(client, verified, now, mode)
+}
+
+#[allow(clippy::too_many_arguments)] // The trust pins are explicit at this boundary.
+async fn verify_signed_set_mode(
+    cache: &ClientKeyCache,
+    tenant: &Tenant,
+    client: &ClientId,
+    issuer: &Issuer,
+    jwks: &JwksSource,
+    audience: &str,
+    token: &str,
+    now: OffsetDateTime,
+) -> Result<Verified, ReceiverError> {
     let header = asterius_jose::jws::parse(token).map_err(|_| ReceiverError::Token)?;
     let raw_header: Value =
         serde_json::from_slice(header.raw_header()).map_err(|_| ReceiverError::Token)?;
@@ -1034,9 +1175,7 @@ async fn verify_inbound_set_mode(
     .issued_by(issuer.as_str())
     .for_audience(audience)
     .without_expiry();
-    let verified =
-        verify::verify(token, &policy, &key_set, now).map_err(|_| ReceiverError::Token)?;
-    parse_verified_event(client, verified, now, mode)
+    verify::verify(token, &policy, &key_set, now).map_err(|_| ReceiverError::Token)
 }
 
 fn parse_verified_event(

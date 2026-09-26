@@ -13,7 +13,7 @@ The full receiver must be designed against the
 [OpenID Shared Signals Framework 1.0 Final](https://openid.net/specs/openid-sharedsignals-framework-1_0-final.html)
 and the
 [CAEP Interoperability Profile 1.0](https://openid.net/specs/openid-caep-interoperability-profile-1_0.html).
-The interoperability profile's latest published text is Draft 01 (21 July
+The interoperability profile's latest published text is Draft 01 (1 September
 2026). It still requires RS256 signatures, while ADR-0003 excludes RS256.
 Re-read the then-current text before claiming interoperability conformance.
 
@@ -82,8 +82,13 @@ registered JWKS URI checks. The metadata cache retains the validated
 configuration/status endpoints and delivery methods. A tenant-scoped table can
 record the exact upstream stream identity and its pinned endpoints, and a
 response validator refuses a stream with a changed issuer, audience, event
-set, or delivery method. It also requires `default_subjects: NONE`, so a new
-stream cannot silently subscribe to every subject.
+set, or delivery method. By default it requires `default_subjects: NONE`.
+An operator can set `allow_all_subjects = true` on that configured peer to
+accept `default_subjects: ALL`; this expressly permits delivery for every
+subject the transmitter considers eligible. Setup, readback and polling
+recheck the discovered metadata against this policy. A `NONE` stream still
+needs separate subject enrollment at the transmitter before it can deliver
+user events.
 
 An operator may now configure `tenant.ssf_upstream_peer` with a canonical
 issuer and a bearer token file for outbound OAuth management. The credential
@@ -101,12 +106,31 @@ configured peers, pending review, setup and an explicit one-shot poll. Polling
 validates at most one bounded SET, applies it before ACK, and reports
 classifiable invalid SETs with RFC 8936 `setErrs`. Queued SETs have a local
 seven-day age limit; push keeps five minutes. There is no automatic poll worker
-or outbound subject-enrollment call.
+or outbound subject-enrollment call. Explicit upstream deletion writes a
+durable pending marker before the guarded DELETE with the exact stream ID.
+An interrupted call reads the authenticated remote stream list on retry; only
+an empty list permits local removal. While deletion is pending, new polls are
+refused and peer summaries expose `deletion_pending`. The admin operation is
+`POST /ssf/upstream/delete` with the configured `peer_client_id` and
+`admin.ssf:write` authority.
+`POST /ssf/upstream/request-verification` first checks the pinned stream,
+stores a 15-minute hash of a random correlation state, then asks the
+transmitter to send an asynchronous verification SET. The one-shot poll checks
+the signed event's opaque stream subject and state before recording health and
+ACKing; duplicate JTIs remain ACKable for the seven-day replay window.
+`last_verified_at` records any valid verification SET. A transmitter may send
+one without a `state`; that proves liveness but leaves a receiver challenge
+pending. Only a matching state advances `last_challenge_verified_at`, which is
+also visible in the peer summary. An incorrect state is reported as
+`invalid_state`, without a user lifecycle effect.
 Pending intents and established stream identities survive local client
 deletion, so re-registering the same issuer cannot erase the evidence of a
 remote stream that may still exist.
 The token file is re-read for each operation but has no automatic OAuth refresh;
-operators must rotate it before expiry. Neither inbound `ssf.receive` scope nor
+operators must rotate it before expiry and retain the upstream peer config,
+its active `ssf.receive` client registration, and the credential until the
+remote stream is deleted. A removed peer cannot safely
+authorize or validate cleanup from the retained tombstone alone. Neither inbound `ssf.receive` scope nor
 a peer's registered signing key authorizes outbound management. Explicit
 subject enrollment and the complete CAEP event vocabulary remain incomplete.
 Local lifecycle,
@@ -152,11 +176,12 @@ requires a receiver to:
 - accept `email` and `iss_sub` subjects, plus `opaque` for verification.
 
 Draft 01 requires Receivers to assume every subject is implicitly in the
-stream, without Add Subject calls (§2.4.4). Asterius currently requires an
-upstream `default_subjects: NONE` and makes no outbound Add Subject call. A
-new stream may therefore produce no user events. This setup policy is
-incompatible with the draft's implicit-subject expectation and needs an
-explicit decision before any interoperability claim.
+stream, without Add Subject calls (§2.4.4). Asterius permits upstream
+`default_subjects: ALL` only when that peer has `allow_all_subjects = true`.
+Without it, setup accepts `NONE`, for which an operator must separately enroll
+subjects at the transmitter. The receiver still makes no outbound Add Subject
+call and has no end-to-end verification evidence, so no interoperability claim
+follows from this opt-in alone.
 
 ### SET verification before effects
 
@@ -297,9 +322,9 @@ claiming CAEP Interoperability Profile conformance.
 - [CAEP Interoperability Profile Draft 01 §2.6](https://openid.net/specs/openid-caep-interoperability-profile-1_0.html)
   requires RS256. ADR-0003 excludes it, and incoming SET verification accepts
   EdDSA and ES256 only. `ast-s36.26.4.8` owns the explicit policy decision.
-- Draft 01 §2.4.4 assumes implicit inclusion of all subjects, while our
-  receiver-managed stream requires `default_subjects: NONE`. Outbound stream
-  deletion and subject enrollment are absent. The static bearer
+- Draft 01 §2.4.4 assumes implicit inclusion of all subjects. Operators may
+  explicitly allow upstream `default_subjects: ALL`; `NONE` still needs
+  external enrollment. Outbound subject enrollment remains absent. The static bearer
   file is re-read per operator request, but access-token acquisition and
-  automatic refresh are absent. `ast-s36.26.4.9` owns these lifecycle gaps and
-  interoperability evidence.
+  automatic refresh are outside this explicit operator-managed peer profile.
+  No cross-implementation verification or delivery evidence has been recorded.

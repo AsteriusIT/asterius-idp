@@ -1096,9 +1096,9 @@ fn tenant() -> Section {
             ),
             key(
                 "ssf_upstream_peer",
-                "array of { issuer, bearer_token_file } tables",
+                "array of { issuer, bearer_token_file, allow_all_subjects? } tables",
                 "empty (upstream management disabled)".to_owned(),
-                "Explicit outbound OAuth bearer source for one canonical upstream SSF issuer. The file contains only the access token, is read with an 8 KiB limit for a management call, and is never included in logs or stream state. Management calls are restricted to same-origin endpoints from verified transmitter metadata and use the guarded HTTPS transport. No automatic setup route or refresh is enabled; rotate the operator-provided token file before expiry.",
+                "Explicit outbound OAuth bearer source for one canonical upstream SSF issuer. The file contains only the access token, is read with an 8 KiB limit for a management call, and is never included in logs or stream state. Management calls are restricted to same-origin endpoints from verified transmitter metadata and use the guarded HTTPS transport. allow_all_subjects defaults to false; set it true only to accept the transmitter's default_subjects ALL policy, which may send signals for every eligible subject. NONE remains accepted but requires separate operator enrollment upstream. No automatic setup route or refresh is enabled; rotate the operator-provided token file before expiry.",
             ),
             key(
                 "ldap_source",

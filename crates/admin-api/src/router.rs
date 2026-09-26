@@ -410,6 +410,10 @@ async fn route_standard(
         crate::SSF_UPSTREAM_SETUP_ID => context.setup_upstream_peer(body).await,
         crate::SSF_UPSTREAM_POLL_ID => context.poll_upstream_peer(body).await,
         crate::SSF_UPSTREAM_VERIFY_ID => context.verify_upstream_peer(body).await,
+        crate::SSF_UPSTREAM_DELETE_ID => context.delete_upstream_peer(body).await,
+        crate::SSF_UPSTREAM_REQUEST_VERIFICATION_ID => {
+            context.request_upstream_verification(body).await
+        }
         crate::SSF_RECEIVER_SUBJECT_BIND_ID => context.bind_receiver_subject(body).await,
         crate::SSF_RECEIVER_SUBJECT_REMOVE_ID => context.remove_receiver_subject(body).await,
         crate::ID_JAG_SUBJECT_BIND_ID => context.bind_id_jag_subject(body).await,
@@ -3069,6 +3073,59 @@ impl Handling<'_> {
         Ok(json_no_store(
             StatusCode::OK,
             &serde_json::json!({ "peer_client_id": peer.as_str(), "verified": true }),
+        ))
+    }
+
+    /// Reconciles a pending remote DELETE and removes the exact saved stream.
+    async fn delete_upstream_peer(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let bytes = axum::body::to_bytes(body, ssf::MAX_BODY_BYTES)
+            .await
+            .map_err(|_| AdminError::Invalid("the request body is too large".to_owned()))?;
+        let peer = ssf::parse_upstream_peer(&bytes)?;
+        self.state
+            .backend
+            .ssf()
+            .upstream_delete(&self.tenant.id, &peer, self.now)
+            .await
+            .map_err(upstream_operation_error)?;
+        self.record(
+            EventType::ADMIN_CHANGED,
+            Detail::new()
+                .label("operation", crate::SSF_UPSTREAM_DELETE_ID)
+                .credential("peer_client_id", peer.as_str()),
+        )
+        .await;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({ "peer_client_id": peer.as_str(), "state": "deleted" }),
+        ))
+    }
+
+    /// Requests a signed verification SET; a later poll records delivery.
+    async fn request_upstream_verification(
+        &self,
+        body: axum::body::Body,
+    ) -> Result<Response, AdminError> {
+        let bytes = axum::body::to_bytes(body, ssf::MAX_BODY_BYTES)
+            .await
+            .map_err(|_| AdminError::Invalid("the request body is too large".to_owned()))?;
+        let peer = ssf::parse_upstream_peer(&bytes)?;
+        self.state
+            .backend
+            .ssf()
+            .upstream_request_verification(&self.tenant.id, &peer, self.now)
+            .await
+            .map_err(upstream_operation_error)?;
+        self.record(
+            EventType::ADMIN_CHANGED,
+            Detail::new()
+                .label("operation", crate::SSF_UPSTREAM_REQUEST_VERIFICATION_ID)
+                .credential("peer_client_id", peer.as_str()),
+        )
+        .await;
+        Ok(json_no_store(
+            StatusCode::ACCEPTED,
+            &serde_json::json!({ "peer_client_id": peer.as_str(), "state": "pending" }),
         ))
     }
 

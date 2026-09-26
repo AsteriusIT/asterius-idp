@@ -9,7 +9,9 @@ use crate::http::ssf_receiver;
 use crate::outbound::{HttpsPoster, PostRequest, PostResponse};
 use asterius_domain::{ClientId, Tenant};
 use asterius_ssf::{caep, stream};
+use base64::Engine as _;
 use serde_json::{Value, json};
+use sha2::{Digest as _, Sha256};
 use std::io::Read as _;
 use time::OffsetDateTime;
 use zeroize::Zeroizing;
@@ -50,7 +52,10 @@ pub async fn verify_recorded_stream(
         ssf_receiver::configured_peer(endpoints, tenant, &peer)
             .await
             .map_err(|_| SetupError::Peer)?;
-    if issuer != config.issuer || !metadata.supports_poll {
+    if issuer != config.issuer
+        || !metadata.supports_poll
+        || !metadata.subject_policy_allowed(config.allow_all_subjects)
+    {
         return Err(SetupError::Peer);
     }
     same_origin_management_endpoint(&metadata.configuration_endpoint, &issuer)?;
@@ -72,6 +77,9 @@ pub async fn verify_recorded_stream(
         .await
         .map_err(|_| SetupError::Storage)?
         .ok_or(SetupError::Peer)?;
+    if recorded.deletion_started_at.is_some() {
+        return Err(SetupError::PendingReview);
+    }
     let expected_audience = format!("{}{}", tenant.issuer.as_str(), ssf_receiver::RECEIVER_PATH);
     if recorded.peer_client_id != peer.as_str()
         || recorded.issuer != issuer.as_str()
@@ -93,6 +101,7 @@ pub async fn verify_recorded_stream(
     let remote = reconcile_listed(
         &listed,
         &metadata,
+        config.allow_all_subjects,
         &issuer,
         &recorded.audience,
         &recorded.events_requested,
@@ -120,6 +129,174 @@ pub async fn verify_recorded_stream(
     validate_status(&status, &recorded.stream_id)
 }
 
+/// Ask the transmitter to send a stream-scoped verification SET. The random
+/// state is held only in the outbound request; its hash and expiry are stored
+/// before the POST, so asynchronous poll delivery can prove correlation.
+pub async fn request_stream_verification(
+    endpoints: &ClientEndpoints,
+    tenant: &Tenant,
+    config: &SsfUpstreamPeerConfig,
+    poster: &HttpsPoster,
+    now: OffsetDateTime,
+) -> Result<(), SetupError> {
+    verify_recorded_stream(endpoints, tenant, config, poster, now).await?;
+    let peer = ClientId::new(config.issuer.as_str());
+    let (_issuer, _jwks, _scopes, metadata) =
+        ssf_receiver::configured_peer(endpoints, tenant, &peer)
+            .await
+            .map_err(|_| SetupError::Peer)?;
+    same_origin_management_endpoint(&metadata.verification_endpoint, &config.issuer)?;
+    let repository = endpoints
+        .store
+        .scope(tenant.id.clone())
+        .ssf_upstream_streams();
+    let recorded = repository
+        .find(peer.as_str())
+        .await
+        .map_err(|_| SetupError::Storage)?
+        .ok_or(SetupError::Peer)?;
+    let mut nonce = [0_u8; 32];
+    getrandom::fill(&mut nonce).map_err(|_| SetupError::Credential)?;
+    let state = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(nonce);
+    let state_hash = Sha256::digest(state.as_bytes());
+    let expires_at = now
+        .checked_add(time::Duration::minutes(15))
+        .ok_or(SetupError::Response)?;
+    if !repository
+        .begin_verification(
+            peer.as_str(),
+            &recorded.stream_id,
+            &state_hash,
+            expires_at,
+            now,
+        )
+        .await
+        .map_err(|_| SetupError::Storage)?
+    {
+        return Err(SetupError::PendingReview);
+    }
+    let token = read_bearer_file(&config.bearer_token_file)?;
+    let authorization = Zeroizing::new(format!("Bearer {}", token.as_str()));
+    let body = serde_json::to_vec(&json!({
+        "stream_id": &recorded.stream_id,
+        "state": &state,
+    }))
+    .map_err(|_| SetupError::Response)?;
+    let response = poster
+        .post_with_response(
+            &metadata.verification_endpoint,
+            PostRequest::of("application/json").authorized_by(Some(&authorization)),
+            &body,
+        )
+        .await
+        .map_err(|_| SetupError::Transport)?;
+    if response.status != 204 || response.truncated || !response.body.is_empty() {
+        return Err(SetupError::Response);
+    }
+    Ok(())
+}
+
+/// Delete one recorded remote poll stream. A durable marker precedes the
+/// outbound DELETE: if the reply is lost, the next call reads the authenticated
+/// stream list and finishes locally only when the exact stream is absent.
+pub async fn delete_recorded_stream(
+    endpoints: &ClientEndpoints,
+    tenant: &Tenant,
+    config: &SsfUpstreamPeerConfig,
+    poster: &HttpsPoster,
+    now: OffsetDateTime,
+) -> Result<(), SetupError> {
+    let peer = ClientId::new(config.issuer.as_str());
+    let (issuer, _jwks, _scopes, metadata) =
+        ssf_receiver::configured_peer(endpoints, tenant, &peer)
+            .await
+            .map_err(|_| SetupError::Peer)?;
+    // Cleanup remains possible if the operator revoked ALL-subject consent
+    // after creating the stream. Remote deletion only needs the pinned
+    // identity and authenticated configuration endpoint.
+    if issuer != config.issuer || !metadata.supports_poll {
+        return Err(SetupError::Peer);
+    }
+    same_origin_management_endpoint(&metadata.configuration_endpoint, &issuer)?;
+    let repository = endpoints
+        .store
+        .scope(tenant.id.clone())
+        .ssf_upstream_streams();
+    if repository
+        .pending_setup(peer.as_str())
+        .await
+        .map_err(|_| SetupError::Storage)?
+        .is_some()
+    {
+        return Err(SetupError::PendingReview);
+    }
+    let recorded = repository
+        .find(peer.as_str())
+        .await
+        .map_err(|_| SetupError::Storage)?
+        .ok_or(SetupError::Peer)?;
+    if recorded.issuer != issuer.as_str()
+        || recorded.jwks_uri != metadata.jwks_uri
+        || recorded.configuration_endpoint != metadata.configuration_endpoint
+        || recorded.status_endpoint != metadata.status_endpoint
+        || recorded.audience != format!("{}{}", tenant.issuer.as_str(), ssf_receiver::RECEIVER_PATH)
+        || recorded.delivery_method != stream::DELIVERY_POLL
+    {
+        return Err(SetupError::PendingReview);
+    }
+    let token = read_bearer_file(&config.bearer_token_file)?;
+    let authorization = Zeroizing::new(format!("Bearer {}", token.as_str()));
+    if !repository
+        .begin_delete(peer.as_str(), &recorded.stream_id, now)
+        .await
+        .map_err(|_| SetupError::Storage)?
+    {
+        return Err(SetupError::PendingReview);
+    }
+    let listed = list_streams(poster, &metadata.configuration_endpoint, &authorization).await?;
+    if !listed.is_empty() {
+        let remote = reconcile_listed(
+            &listed,
+            &metadata,
+            true,
+            &issuer,
+            &recorded.audience,
+            &recorded.events_requested,
+            now,
+        )?
+        .ok_or(SetupError::PendingReview)?;
+        if remote.stream_id != recorded.stream_id || remote.poll_endpoint != recorded.poll_endpoint
+        {
+            return Err(SetupError::PendingReview);
+        }
+        let url = status_url(&metadata.configuration_endpoint, &recorded.stream_id)?;
+        let response = poster
+            .delete_with_response(&url, &authorization)
+            .await
+            .map_err(|_| SetupError::Transport)?;
+        if response.status != 204 || response.truncated || !response.body.is_empty() {
+            return Err(SetupError::Response);
+        }
+        // A 204 proves that DELETE was accepted; authenticated readback proves
+        // that a retry will not create a second remote stream accidentally.
+        if !list_streams(poster, &metadata.configuration_endpoint, &authorization)
+            .await?
+            .is_empty()
+        {
+            return Err(SetupError::PendingReview);
+        }
+    }
+    if repository
+        .finish_delete(peer.as_str(), &recorded.stream_id)
+        .await
+        .map_err(|_| SetupError::Storage)?
+    {
+        Ok(())
+    } else {
+        Err(SetupError::PendingReview)
+    }
+}
+
 /// Poll at most one SET from an established upstream stream, apply it through
 /// the push receiver's atomic replay/lifecycle path, then acknowledge its
 /// `jti` in a separate RFC 8936 request. A failure before acknowledgement
@@ -137,7 +314,10 @@ pub async fn poll_once(
         ssf_receiver::configured_peer(endpoints, tenant, &peer)
             .await
             .map_err(|_| SetupError::Peer)?;
-    if issuer != config.issuer || !metadata.supports_poll {
+    if issuer != config.issuer
+        || !metadata.supports_poll
+        || !metadata.subject_policy_allowed(config.allow_all_subjects)
+    {
         return Err(SetupError::Peer);
     }
     let repository = endpoints
@@ -149,6 +329,9 @@ pub async fn poll_once(
         .await
         .map_err(|_| SetupError::Storage)?
         .ok_or(SetupError::Peer)?;
+    if established.deletion_started_at.is_some() {
+        return Err(SetupError::PendingReview);
+    }
     if established.issuer != issuer.as_str()
         || established.jwks_uri != metadata.jwks_uri
         || established.configuration_endpoint != metadata.configuration_endpoint
@@ -201,6 +384,73 @@ pub async fn poll_once(
     .await;
     let event = match event {
         Ok(event) => event,
+        // A verification SET need not carry CAEP's txn/event_timestamp, so
+        // the lifecycle parser may reject its profile before seeing its URI.
+        Err(
+            ssf_receiver::ReceiverError::UnsupportedEvent | ssf_receiver::ReceiverError::Profile,
+        ) => {
+            let control = ssf_receiver::verify_polled_stream_verification(
+                endpoints,
+                tenant,
+                &peer,
+                &established.audience,
+                &established.stream_id,
+                &set,
+                now,
+            )
+            .await;
+            let control = match control {
+                Ok(control) => control,
+                Err(error) => {
+                    let (code, description) = invalid_set_error(error).ok_or(SetupError::Event)?;
+                    report_invalid_set(poster, poll_url, &authorization, &jti, code, description)
+                        .await?;
+                    return mark_poll_outcome(&repository, &peer, &established.stream_id, now)
+                        .await;
+                }
+            };
+            if control.peer != peer || control.jti != jti {
+                report_invalid_set(
+                    poster,
+                    poll_url,
+                    &authorization,
+                    &jti,
+                    "invalid_request",
+                    "The SET identifier does not match the poll response",
+                )
+                .await?;
+                return mark_poll_outcome(&repository, &peer, &established.stream_id, now).await;
+            }
+            let state_hash = control
+                .state
+                .as_deref()
+                .map(|state| Sha256::digest(state.as_bytes()));
+            let accepted = repository
+                .complete_verification(
+                    peer.as_str(),
+                    &established.stream_id,
+                    &jti,
+                    state_hash.as_deref(),
+                    control.replay_until,
+                    now,
+                )
+                .await
+                .map_err(|_| SetupError::Storage)?;
+            if !accepted {
+                report_invalid_set(
+                    poster,
+                    poll_url,
+                    &authorization,
+                    &jti,
+                    "invalid_state",
+                    "The verification state does not match the pending request",
+                )
+                .await?;
+                return mark_poll_outcome(&repository, &peer, &established.stream_id, now).await;
+            }
+            acknowledge_polled_set(poster, poll_url, &authorization, &jti).await?;
+            return mark_poll_outcome(&repository, &peer, &established.stream_id, now).await;
+        }
         Err(error) => {
             let (code, description) = invalid_set_error(error).ok_or(SetupError::Event)?;
             report_invalid_set(poster, poll_url, &authorization, &jti, code, description).await?;
@@ -267,6 +517,40 @@ pub async fn poll_once(
     ssf_receiver::apply_verified_event(endpoints, tenant, &event, now)
         .await
         .map_err(|_| SetupError::Event)?;
+    acknowledge_polled_set(poster, poll_url, &authorization, &jti).await?;
+    if !repository
+        .mark_polled(peer.as_str(), &established.stream_id, now)
+        .await
+        .map_err(|_| SetupError::Storage)?
+    {
+        return Err(SetupError::Peer);
+    }
+    Ok(true)
+}
+
+async fn mark_poll_outcome(
+    repository: &asterius_store_pg::PgSsfUpstreamStreams,
+    peer: &ClientId,
+    stream_id: &str,
+    now: OffsetDateTime,
+) -> Result<bool, SetupError> {
+    if repository
+        .mark_polled(peer.as_str(), stream_id, now)
+        .await
+        .map_err(|_| SetupError::Storage)?
+    {
+        Ok(false)
+    } else {
+        Err(SetupError::Peer)
+    }
+}
+
+async fn acknowledge_polled_set(
+    poster: &HttpsPoster,
+    poll_url: &str,
+    authorization: &str,
+    jti: &str,
+) -> Result<(), SetupError> {
     let acknowledgement = serde_json::to_vec(&json!({
         "maxEvents": 0,
         "returnImmediately": true,
@@ -286,14 +570,7 @@ pub async fn poll_once(
     if parse_polled_set(&response)?.is_some() {
         return Err(SetupError::Response);
     }
-    if !repository
-        .mark_polled(peer.as_str(), &established.stream_id, now)
-        .await
-        .map_err(|_| SetupError::Storage)?
-    {
-        return Err(SetupError::Peer);
-    }
-    Ok(true)
+    Ok(())
 }
 
 /// Only deterministic SET validation failures are reported. A missing key,
@@ -413,7 +690,10 @@ pub async fn create_poll_stream(
     let (issuer, _jwks, scopes, metadata) = ssf_receiver::configured_peer(endpoints, tenant, &peer)
         .await
         .map_err(|_| SetupError::Peer)?;
-    if issuer != config.issuer || !metadata.supports_poll {
+    if issuer != config.issuer
+        || !metadata.supports_poll
+        || !metadata.subject_policy_allowed(config.allow_all_subjects)
+    {
         return Err(SetupError::Peer);
     }
     same_origin_management_endpoint(&metadata.configuration_endpoint, &issuer)?;
@@ -479,9 +759,15 @@ pub async fn create_poll_stream(
         saved
     };
     let listed = list_streams(poster, &metadata.configuration_endpoint, &authorization).await?;
-    if let Some(established) =
-        reconcile_listed(&listed, &metadata, &issuer, &audience, &events, now)?
-    {
+    if let Some(established) = reconcile_listed(
+        &listed,
+        &metadata,
+        config.allow_all_subjects,
+        &issuer,
+        &audience,
+        &events,
+        now,
+    )? {
         same_origin_management_endpoint(
             established
                 .poll_endpoint
@@ -520,6 +806,7 @@ pub async fn create_poll_stream(
         }
         let established = ssf_receiver::validated_upstream_stream(
             &metadata,
+            config.allow_all_subjects,
             &issuer,
             &audience,
             &events,
@@ -577,6 +864,7 @@ async fn list_streams(
 fn reconcile_listed(
     listed: &[Value],
     metadata: &ssf_receiver::UpstreamMetadata,
+    allow_all_subjects: bool,
     issuer: &asterius_domain::Issuer,
     audience: &str,
     events: &[String],
@@ -595,6 +883,7 @@ fn reconcile_listed(
     let document = serde_json::to_vec(value).map_err(|_| SetupError::Response)?;
     ssf_receiver::validated_upstream_stream(
         metadata,
+        allow_all_subjects,
         issuer,
         audience,
         events,

@@ -4,7 +4,7 @@
 //! reception does not create one and cannot infer a stream from a signed SET.
 
 use crate::error::to_domain_error;
-use asterius_domain::{DomainError, TenantId};
+use asterius_domain::{DomainError, TenantId, ct_eq};
 use sqlx::PgPool;
 use time::OffsetDateTime;
 
@@ -24,6 +24,11 @@ pub struct UpstreamStream {
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
     pub last_polled_at: Option<OffsetDateTime>,
+    /// A durable remote DELETE intent; polling stops until readback proves
+    /// the exact stream was removed and this row can be deleted.
+    pub deletion_started_at: Option<OffsetDateTime>,
+    pub last_verified_at: Option<OffsetDateTime>,
+    pub last_challenge_verified_at: Option<OffsetDateTime>,
 }
 
 /// Durable outbound create intent. Its immutable fields are the trust and
@@ -278,10 +283,15 @@ impl PgSsfUpstreamStreams {
             OffsetDateTime,
             OffsetDateTime,
             Option<OffsetDateTime>,
+            Option<OffsetDateTime>,
+            Option<OffsetDateTime>,
+            Option<OffsetDateTime>,
         )> = sqlx::query_as(
             "select peer_client_id, issuer, jwks_uri, configuration_endpoint,
                     status_endpoint, stream_id, delivery_method, poll_endpoint,
-                    audience, events_requested, created_at, updated_at, last_polled_at
+                    audience, events_requested, created_at, updated_at, last_polled_at,
+                    deletion_started_at, last_verified_at,
+                    last_challenge_verified_at
                from ssf_receiver_upstream_streams
               where tenant_id = $1 and peer_client_id = $2",
         )
@@ -304,7 +314,189 @@ impl PgSsfUpstreamStreams {
             created_at: row.10,
             updated_at: row.11,
             last_polled_at: row.12,
+            deletion_started_at: row.13,
+            last_verified_at: row.14,
+            last_challenge_verified_at: row.15,
         }))
+    }
+
+    /// Persist a one-way delete intent before making an outbound request.
+    /// Repeated calls retain the original marker for crash reconciliation.
+    pub async fn begin_delete(
+        &self,
+        peer_client_id: &str,
+        stream_id: &str,
+        now: OffsetDateTime,
+    ) -> Result<bool, DomainError> {
+        let result = sqlx::query(
+            "update ssf_receiver_upstream_streams
+                set deletion_started_at = coalesce(deletion_started_at, $4)
+              where tenant_id = $1 and peer_client_id = $2 and stream_id = $3",
+        )
+        .bind(self.tenant.as_str())
+        .bind(peer_client_id)
+        .bind(stream_id)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    /// Remove only the stream whose pending remote deletion was read back as
+    /// absent. Another stream or a non-deleting row cannot be removed here.
+    pub async fn finish_delete(
+        &self,
+        peer_client_id: &str,
+        stream_id: &str,
+    ) -> Result<bool, DomainError> {
+        let result = sqlx::query(
+            "delete from ssf_receiver_upstream_streams
+              where tenant_id = $1 and peer_client_id = $2 and stream_id = $3
+                and deletion_started_at is not null",
+        )
+        .bind(self.tenant.as_str())
+        .bind(peer_client_id)
+        .bind(stream_id)
+        .execute(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    /// Reserve one verification challenge before calling the transmitter.
+    /// A lost response leaves the challenge pending until its bounded expiry.
+    pub async fn begin_verification(
+        &self,
+        peer_client_id: &str,
+        stream_id: &str,
+        state_hash: &[u8],
+        expires_at: OffsetDateTime,
+        now: OffsetDateTime,
+    ) -> Result<bool, DomainError> {
+        if state_hash.len() != 32 || expires_at <= now {
+            return Err(DomainError::invalid(
+                "ssf.verification",
+                "invalid challenge",
+            ));
+        }
+        let result = sqlx::query(
+            "update ssf_receiver_upstream_streams
+                set verification_state_hash = $4, verification_expires_at = $5
+              where tenant_id = $1 and peer_client_id = $2 and stream_id = $3
+                and deletion_started_at is null
+                and (verification_expires_at is null or verification_expires_at <= $6)",
+        )
+        .bind(self.tenant.as_str())
+        .bind(peer_client_id)
+        .bind(stream_id)
+        .bind(state_hash)
+        .bind(expires_at)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    /// Accept one verified stream-scoped SET, recording its JTI before ACK.
+    /// A duplicate is accepted without consuming a later challenge. `false`
+    /// means the returned state was absent from the pending challenge window.
+    pub async fn complete_verification(
+        &self,
+        peer_client_id: &str,
+        stream_id: &str,
+        jti: &str,
+        state_hash: Option<&[u8]>,
+        replay_until: OffsetDateTime,
+        now: OffsetDateTime,
+    ) -> Result<bool, DomainError> {
+        let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
+        let pending: Option<(Option<Vec<u8>>, Option<OffsetDateTime>)> = sqlx::query_as(
+            "select verification_state_hash, verification_expires_at
+               from ssf_receiver_upstream_streams
+              where tenant_id = $1 and peer_client_id = $2 and stream_id = $3
+                and deletion_started_at is null for update",
+        )
+        .bind(self.tenant.as_str())
+        .bind(peer_client_id)
+        .bind(stream_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(to_domain_error)?;
+        let Some((pending_hash, pending_until)) = pending else {
+            return Ok(false);
+        };
+        let duplicate: bool = sqlx::query_scalar(
+            "select exists(select 1 from ssf_receiver_upstream_verification_events
+              where tenant_id = $1 and peer_client_id = $2 and jti = $3
+                and stream_id = $4 and replay_until > $5)",
+        )
+        .bind(self.tenant.as_str())
+        .bind(peer_client_id)
+        .bind(jti)
+        .bind(stream_id)
+        .bind(now)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(to_domain_error)?;
+        if duplicate {
+            return Ok(true);
+        }
+        if let Some(state_hash) = state_hash {
+            let matches = pending_hash
+                .as_deref()
+                .is_some_and(|expected| ct_eq(expected, state_hash));
+            if !matches || !pending_until.is_some_and(|until| until > now) {
+                return Ok(false);
+            }
+        }
+        sqlx::query(
+            "delete from ssf_receiver_upstream_verification_events
+              where tenant_id = $1 and peer_client_id = $2 and replay_until <= $3",
+        )
+        .bind(self.tenant.as_str())
+        .bind(peer_client_id)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(to_domain_error)?;
+        let inserted = sqlx::query(
+            "insert into ssf_receiver_upstream_verification_events
+                (tenant_id, peer_client_id, jti, stream_id, replay_until, processed_at)
+             values ($1, $2, $3, $4, $5, $6)
+             on conflict (tenant_id, peer_client_id, jti) do nothing",
+        )
+        .bind(self.tenant.as_str())
+        .bind(peer_client_id)
+        .bind(jti)
+        .bind(stream_id)
+        .bind(replay_until)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(to_domain_error)?;
+        if inserted.rows_affected() != 1 {
+            return Ok(false);
+        }
+        sqlx::query(
+            "update ssf_receiver_upstream_streams
+                set last_verified_at = $4,
+                    last_challenge_verified_at = case when $5 then $4 else last_challenge_verified_at end,
+                    verification_state_hash = case when $5 then null else verification_state_hash end,
+                    verification_expires_at = case when $5 then null else verification_expires_at end
+              where tenant_id = $1 and peer_client_id = $2 and stream_id = $3",
+        )
+        .bind(self.tenant.as_str())
+        .bind(peer_client_id)
+        .bind(stream_id)
+        .bind(now)
+        .bind(state_hash.is_some())
+        .execute(&mut *tx)
+        .await
+        .map_err(to_domain_error)?;
+        tx.commit().await.map_err(to_domain_error)?;
+        Ok(true)
     }
 
     /// Advances the health timestamp only for the exact stream still stored.
@@ -322,7 +514,8 @@ impl PgSsfUpstreamStreams {
             "update ssf_receiver_upstream_streams
                 set last_polled_at = $4, updated_at = $4
               where tenant_id = $1 and peer_client_id = $2 and stream_id = $3
-                and delivery_method = 'urn:ietf:rfc:8936'",
+                and delivery_method = 'urn:ietf:rfc:8936'
+                and deletion_started_at is null",
         )
         .bind(self.tenant.as_str())
         .bind(peer_client_id)
