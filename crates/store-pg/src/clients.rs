@@ -265,6 +265,7 @@ impl PgClientRepository {
                     authorization_details_types, use_mtls_endpoint_aliases,
                     tls_client_auth_field, tls_client_auth_value,
                     userinfo_signed_response_alg, encrypt_userinfo, introspection_signed_response_alg,
+                    authorization_signed_response_alg, response_modes,
                     backchannel_token_delivery_mode, backchannel_client_notification_endpoint,
                     backchannel_user_code_parameter,
                     is_agent, agent_owner_user_id, agent_policy,
@@ -320,6 +321,7 @@ impl PgClientRepository {
                     authorization_details_types, use_mtls_endpoint_aliases,
                     tls_client_auth_field, tls_client_auth_value,
                     userinfo_signed_response_alg, encrypt_userinfo, introspection_signed_response_alg,
+                    authorization_signed_response_alg, response_modes,
                     backchannel_token_delivery_mode, backchannel_client_notification_endpoint,
                     backchannel_user_code_parameter,
                     is_agent, agent_owner_user_id, agent_policy,
@@ -408,10 +410,11 @@ impl PgClientRepository {
                                   backchannel_logout_uri, backchannel_logout_session_required,
                                   roles_in_id_token, managed_groups_claim, client_secret_hash,
                                   introspection_signed_response_alg, command_endpoint,
-                                  encrypt_id_token, encrypt_userinfo)
+                                  encrypt_id_token, encrypt_userinfo,
+                                  authorization_signed_response_alg, response_modes)
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
                      $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31,
-                     $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42)
+                     $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44)
              on conflict (tenant_id, client_id) do update
              set client_name = excluded.client_name,
                  compliance_profile = excluded.compliance_profile,
@@ -455,7 +458,9 @@ impl PgClientRepository {
                  managed_groups_claim = excluded.managed_groups_claim,
                  command_endpoint = excluded.command_endpoint,
                  encrypt_id_token = excluded.encrypt_id_token,
-                 encrypt_userinfo = excluded.encrypt_userinfo"
+                 encrypt_userinfo = excluded.encrypt_userinfo,
+                 authorization_signed_response_alg = excluded.authorization_signed_response_alg,
+                 response_modes = excluded.response_modes"
             ),
             self.tenant.as_str(),
             client.id.as_str(),
@@ -506,6 +511,11 @@ impl PgClientRepository {
                 .map(asterius_domain::RedirectUri::as_str),
             registration.encrypt_id_token,
             registration.encrypt_userinfo,
+            algorithm_column(registration.authorization_signed_response_alg),
+            registration
+                .response_modes
+                .as_ref()
+                .map(|modes| modes.iter().cloned().collect::<Vec<_>>()),
         )
         .execute(&self.pool)
         .await
@@ -631,10 +641,11 @@ impl PgClientRepository {
                                   backchannel_logout_uri, backchannel_logout_session_required,
                                   roles_in_id_token, managed_groups_claim,
                                   introspection_signed_response_alg, command_endpoint,
-                                  encrypt_id_token, encrypt_userinfo)
+                                  encrypt_id_token, encrypt_userinfo,
+                                  authorization_signed_response_alg, response_modes)
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
                      $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31,
-                     $32, $33, $34, $35, $36, $37, $38, $39, $40, $41)
+                     $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43)
              returning client_id, client_name, compliance_profile, token_endpoint_auth_method, redirect_uris,
                        post_logout_redirect_uris, grant_types, response_types, scopes, resources, jwks, jwks_uri,
                        id_token_signed_response_alg, encrypt_id_token, application_type, subject_type,
@@ -644,6 +655,7 @@ impl PgClientRepository {
                        authorization_details_types, use_mtls_endpoint_aliases,
                        tls_client_auth_field, tls_client_auth_value,
                        userinfo_signed_response_alg, encrypt_userinfo, introspection_signed_response_alg,
+                    authorization_signed_response_alg, response_modes,
                        backchannel_token_delivery_mode, backchannel_client_notification_endpoint,
                        backchannel_user_code_parameter,
                        is_agent, agent_owner_user_id, agent_policy,
@@ -693,6 +705,8 @@ impl PgClientRepository {
             registration.command_endpoint.as_ref().map(asterius_domain::RedirectUri::as_str),
             registration.encrypt_id_token,
             registration.encrypt_userinfo,
+            algorithm_column(registration.authorization_signed_response_alg),
+            registration.response_modes.as_ref().map(|modes| modes.iter().cloned().collect::<Vec<_>>()),
         )
         .fetch_one(&mut *connection)
         .await
@@ -895,7 +909,9 @@ impl PgClientRepository {
                  client_secret_hash = case when $33 then $34 else client_secret_hash end,
                  command_endpoint = $36,
                  encrypt_id_token = $37,
-                 encrypt_userinfo = $38
+                 encrypt_userinfo = $38,
+                 authorization_signed_response_alg = $39,
+                 response_modes = $40
              where tenant_id = $1 and client_id = $2
              returning client_id, client_name, compliance_profile, token_endpoint_auth_method, redirect_uris,
                        post_logout_redirect_uris, grant_types, response_types, scopes, resources, jwks, jwks_uri,
@@ -906,6 +922,7 @@ impl PgClientRepository {
                        authorization_details_types, use_mtls_endpoint_aliases,
                        tls_client_auth_field, tls_client_auth_value,
                        userinfo_signed_response_alg, encrypt_userinfo, introspection_signed_response_alg,
+                    authorization_signed_response_alg, response_modes,
                        backchannel_token_delivery_mode, backchannel_client_notification_endpoint,
                        backchannel_user_code_parameter,
                        is_agent, agent_owner_user_id, agent_policy,
@@ -955,6 +972,8 @@ impl PgClientRepository {
             registration.command_endpoint.as_ref().map(asterius_domain::RedirectUri::as_str),
             registration.encrypt_id_token,
             registration.encrypt_userinfo,
+            algorithm_column(registration.authorization_signed_response_alg),
+            registration.response_modes.as_ref().map(|modes| modes.iter().cloned().collect::<Vec<_>>()),
         )
         .fetch_optional(&self.pool)
         .await
@@ -1456,6 +1475,8 @@ struct Row {
     userinfo_signed_response_alg: Option<String>,
     encrypt_userinfo: bool,
     introspection_signed_response_alg: Option<String>,
+    authorization_signed_response_alg: Option<String>,
+    response_modes: Option<Vec<String>>,
     backchannel_token_delivery_mode: Option<String>,
     backchannel_client_notification_endpoint: Option<String>,
     backchannel_user_code_parameter: bool,
@@ -1519,6 +1540,8 @@ impl Row {
             use_mtls_endpoint_aliases: Some(self.use_mtls_endpoint_aliases),
             userinfo_signed_response_alg: self.userinfo_signed_response_alg,
             introspection_signed_response_alg: self.introspection_signed_response_alg,
+            authorization_signed_response_alg: self.authorization_signed_response_alg,
+            response_modes: self.response_modes,
             backchannel_token_delivery_mode: self.backchannel_token_delivery_mode,
             backchannel_client_notification_endpoint: self.backchannel_client_notification_endpoint,
             // CIBA Core 1.0 §4's default is false, and the column is not null,

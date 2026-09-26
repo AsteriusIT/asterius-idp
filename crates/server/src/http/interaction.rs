@@ -1749,6 +1749,9 @@ async fn complete(
                 &response,
                 &request.client,
                 &redirect_uri,
+                string("authorization_signed_response_alg")
+                    .as_deref()
+                    .and_then(asterius_domain::SigningAlgorithm::parse),
                 now,
             )
             .await
@@ -1762,8 +1765,17 @@ async fn signed_delivery(
     response: &AuthorizationResponse,
     client: &asterius_domain::ClientId,
     redirect_uri: &str,
+    algorithm: Option<asterius_domain::SigningAlgorithm>,
     now: OffsetDateTime,
 ) -> Response {
+    let Some(algorithm) = algorithm else {
+        tracing::error!(tenant = %context.tenant.id, "stored JARM request has no registered signing algorithm");
+        return error_page(
+            context,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            InteractionError::NotAvailable,
+        );
+    };
     let Some(signer) = context.signer else {
         return error_page(
             context,
@@ -1776,6 +1788,7 @@ async fn signed_delivery(
         &context.tenant.id,
         response,
         client,
+        algorithm,
         now,
         time::Duration::minutes(5),
     )

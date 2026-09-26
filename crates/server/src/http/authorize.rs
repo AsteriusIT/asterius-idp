@@ -544,11 +544,19 @@ async fn refuse(
         let Some(signer) = context.signer else {
             return error_page(context, StatusCode::SERVICE_UNAVAILABLE);
         };
+        let Some(algorithm) = string("authorization_signed_response_alg")
+            .as_deref()
+            .and_then(asterius_domain::SigningAlgorithm::parse)
+        else {
+            tracing::error!(tenant = %context.tenant.id, "stored JARM request has no registered signing algorithm");
+            return error_page(context, StatusCode::INTERNAL_SERVER_ERROR);
+        };
         match asterius_oidc::jarm::sign(
             signer,
             &context.tenant.id,
             &response,
             &stored.client,
+            algorithm,
             now,
             time::Duration::minutes(5),
         )

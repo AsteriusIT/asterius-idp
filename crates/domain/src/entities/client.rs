@@ -1106,6 +1106,10 @@ pub struct ClientMetadata {
     pub id_token_signed_response_alg: Option<String>,
     /// OIDC Registration §2.
     pub request_object_signing_alg: Option<String>,
+    /// JARM §3. Required for signed responses in this FAPI deployment.
+    pub authorization_signed_response_alg: Option<String>,
+    /// FAPI Message Signing §5.3.3. Absent permits every supported mode.
+    pub response_modes: Option<Vec<String>>,
     /// CIBA Core 1.0 §4.
     pub backchannel_authentication_request_signing_alg: Option<String>,
     /// OIDC Registration §2.
@@ -1235,6 +1239,10 @@ pub struct ClientRegistration {
     /// OIDC Registration §2. `None` means the client registered no request
     /// objects; JAR is `ast-s36.1` and is not implemented.
     pub request_object_signing_alg: Option<SigningAlgorithm>,
+    /// JARM §3. Explicit because FAPI forbids JARM's RS256 default.
+    pub authorization_signed_response_alg: Option<SigningAlgorithm>,
+    /// FAPI Message Signing §5.3.3. Absent permits every supported mode.
+    pub response_modes: Option<BTreeSet<String>>,
     /// CIBA Core 1.0 §4. `None` unless the client registered one.
     pub backchannel_authentication_request_signing_alg: Option<SigningAlgorithm>,
     /// OIDC Core §8.
@@ -1450,7 +1458,7 @@ impl ClientRegistration {
     /// because it names an algorithm the *client* signs with and this server
     /// only verifies, so it needs no key of ours.
     #[must_use]
-    pub fn server_signed_algorithms(&self) -> [(&'static str, Option<SigningAlgorithm>); 4] {
+    pub fn server_signed_algorithms(&self) -> [(&'static str, Option<SigningAlgorithm>); 5] {
         [
             // OIDC Registration §2. Always present — it has a profile default
             // — so this entry is never `None`.
@@ -1467,6 +1475,10 @@ impl ClientRegistration {
             (
                 "introspection_signed_response_alg",
                 self.introspection_signed_response_alg,
+            ),
+            (
+                "authorization_signed_response_alg",
+                self.authorization_signed_response_alg,
             ),
             // OIDC Registration §2, and still `None` now that `ast-gxh.9` has
             // landed the JAR path. The direction is what decides the entry, not
@@ -1841,6 +1853,43 @@ impl ClientMetadata {
         capabilities: Capabilities,
         compliance_profile: ClientComplianceProfile,
     ) -> Result<ClientRegistration, ClientMetadataError> {
+        for field in [
+            "authorization_encrypted_response_alg",
+            "authorization_encrypted_response_enc",
+        ] {
+            if self.additional_metadata.contains_key(field) {
+                return Err(ClientMetadataError::rejected(
+                    field,
+                    "encrypted JARM responses are not supported",
+                ));
+            }
+        }
+        let response_modes = self
+            .response_modes
+            .as_ref()
+            .map(|modes| {
+                if modes.is_empty() || modes.len() > 5 {
+                    return Err(ClientMetadataError::rejected(
+                        "response_modes",
+                        "must contain one to five supported modes",
+                    ));
+                }
+                let mut distinct = BTreeSet::new();
+                for mode in modes {
+                    if !matches!(
+                        mode.as_str(),
+                        "query" | "form_post" | "query.jwt" | "jwt" | "form_post.jwt"
+                    ) || !distinct.insert(mode.clone())
+                    {
+                        return Err(ClientMetadataError::rejected(
+                            "response_modes",
+                            "contains an unsupported or repeated mode",
+                        ));
+                    }
+                }
+                Ok(distinct)
+            })
+            .transpose()?;
         let token_endpoint_auth_method = self.auth_method(capabilities, compliance_profile)?;
         let tls_client_auth_subject =
             self.tls_client_auth_subject(token_endpoint_auth_method, capabilities)?;
@@ -1983,6 +2032,12 @@ impl ClientMetadata {
                 .as_deref()
                 .map(|raw| signing_algorithm("request_object_signing_alg", raw))
                 .transpose()?,
+            authorization_signed_response_alg: self
+                .authorization_signed_response_alg
+                .as_deref()
+                .map(|raw| signing_algorithm("authorization_signed_response_alg", raw))
+                .transpose()?,
+            response_modes,
             backchannel_authentication_request_signing_alg: self
                 .backchannel_authentication_request_signing_alg
                 .as_deref()

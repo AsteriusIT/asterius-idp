@@ -1171,6 +1171,15 @@ pub(crate) fn client_information(
     if let Some(alg) = registration.request_object_signing_alg {
         object.insert("request_object_signing_alg".to_owned(), json!(alg.as_str()));
     }
+    if let Some(alg) = registration.authorization_signed_response_alg {
+        object.insert(
+            "authorization_signed_response_alg".to_owned(),
+            json!(alg.as_str()),
+        );
+    }
+    if let Some(modes) = &registration.response_modes {
+        object.insert("response_modes".to_owned(), json!(modes));
+    }
     if let Some(alg) = registration.backchannel_authentication_request_signing_alg {
         object.insert(
             "backchannel_authentication_request_signing_alg".to_owned(),

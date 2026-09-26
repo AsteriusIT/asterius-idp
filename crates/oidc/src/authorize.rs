@@ -724,6 +724,13 @@ pub fn validate(
         Some(raw) => ResponseMode::parse(raw)?,
         None => ResponseMode::default(),
     };
+    if registration
+        .response_modes
+        .as_ref()
+        .is_some_and(|allowed| !allowed.contains(response_mode.as_str()))
+    {
+        return Err(AuthorizationError::Invalid("response_mode"));
+    }
 
     // FAPI 2.0 SP §5.3.2.2 item 6: required in a pushed request. RFC 6749
     // §3.1.2.3 would let it be omitted when exactly one is registered; the
