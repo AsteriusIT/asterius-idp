@@ -50,6 +50,17 @@ validation policy with the routed tenant's issuer as audience and the request's
 proven DPoP thumbprint. No token endpoint handler reads this policy yet, so
 adding a trust entry alone cannot redeem an ID-JAG.
 
+The storage boundary has three separate tenant-scoped records: an
+operator-provisioned exact `(issuer, sub) → local user` binding, an owner
+consent for that user and exact issuer/actor/client/resource/scope set, and a
+replay tombstone keyed by tenant, issuer and the SHA-256 hash of `jti`. One SQL
+statement inserts the tombstone only when the bound user is active and the
+consent is current and covers every requested scope. A uniqueness constraint
+settles concurrent replays. There is intentionally no consent writer yet, so
+the predicate remains closed. A future authenticated owner flow must create
+and revoke consent, then token issuance and audit must be attached without
+letting a failed issuance leave a usable grant.
+
 ## Consequences
 
 A deployment can authorize a managed agent's cross-app access with a bounded,

@@ -26,6 +26,7 @@ mod error;
 mod federation_keys;
 mod grants;
 mod groups;
+mod id_jag_redemption;
 mod initial_access_tokens;
 mod invitations;
 mod key_store;
@@ -88,6 +89,7 @@ pub use federation_keys::{
     FederationKeyRecord, FederationKeySnapshot, PgFederationKeys, ROTATION_PERIOD,
 };
 pub use grants::{PgGrantRepository, Revocation};
+pub use id_jag_redemption::PgIdJagRedemption;
 pub use initial_access_tokens::PgInitialAccessTokens;
 pub use invitations::{
     ActivatedInvitation, Invitation, InvitationPreview, MAX_INVITATION_LIFETIME, NewInvitation,

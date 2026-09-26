@@ -65,6 +65,12 @@ impl<'a> TenantScope<'a> {
         crate::PgVerifiedClaims::new(self.pool.clone(), self.tenant.clone())
     }
 
+    /// Issuer-scoped ID-JAG subject bindings, consent gate and replay claims.
+    #[must_use]
+    pub fn id_jag_redemption(&self) -> crate::PgIdJagRedemption {
+        crate::PgIdJagRedemption::new(self.pool.clone(), self.tenant.clone())
+    }
+
     /// Signed Claims Provider sources retained for this tenant's users.
     #[must_use]
     pub fn aggregated_claims(&self, kek: Arc<dyn Kek>) -> crate::PgAggregatedClaims {
