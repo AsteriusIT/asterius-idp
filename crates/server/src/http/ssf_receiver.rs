@@ -213,11 +213,14 @@ async fn receive(
     let peer = ClientId::new(issuer);
     let audience = format!("{}{}", tenant.issuer.as_str(), RECEIVER_PATH);
     let now = OffsetDateTime::now_utc();
-    let Ok(event) =
-        verify_for_configured_peer(&endpoints, &tenant, &peer, &audience, token, now).await
-    else {
-        return response(StatusCode::BAD_REQUEST);
-    };
+    let event =
+        match verify_for_configured_peer(&endpoints, &tenant, &peer, &audience, token, now).await {
+            Ok(event) => event,
+            Err(ReceiverError::Metadata | ReceiverError::Keys) => {
+                return response(StatusCode::SERVICE_UNAVAILABLE);
+            }
+            Err(_) => return response(StatusCode::BAD_REQUEST),
+        };
     let pinned = endpoints
         .http_signature_peers
         .find(tenant.id.as_str(), event.peer.as_str());
@@ -432,7 +435,7 @@ pub struct VerifiedEvent {
 
 /// Why an incoming SET was refused. Error messages never include token
 /// material, identifiers, or event payloads.
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, Copy, Error)]
 #[non_exhaustive]
 pub enum ReceiverError {
     /// Signature, claim, or token type validation failed.
@@ -450,9 +453,196 @@ pub enum ReceiverError {
     /// Registered key lookup failed.
     #[error("the configured peer keys are unavailable")]
     Keys,
+    /// The configured peer's metadata could not be fetched or validated.
+    #[error("the configured peer metadata is unavailable")]
+    Metadata,
     /// The client is not authorized to submit events for this tenant.
     #[error("the event peer is not configured for this receiver")]
     Peer,
+}
+
+/// The portion of SSF 1.0 transmitter metadata needed to accept push SETs.
+/// The document is discovered from a registered issuer, never from a SET.
+#[derive(Debug, Clone)]
+struct UpstreamMetadata {
+    jwks_uri: String,
+}
+
+const METADATA_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+const METADATA_FAILURE_TTL: std::time::Duration = std::time::Duration::from_secs(10);
+const MAX_METADATA_CACHE_ENTRIES: usize = 1024;
+
+#[derive(Debug, Clone)]
+struct CachedMetadata {
+    expires_at: std::time::Instant,
+    result: Result<UpstreamMetadata, ReceiverError>,
+}
+
+type MetadataCell = std::sync::Arc<tokio::sync::Mutex<Option<CachedMetadata>>>;
+type MetadataKey = (String, String, String);
+
+/// Bounded, per-configured-peer discovery cache. A cell serializes refreshes
+/// for one peer, while other peers and hot entries continue independently.
+#[derive(Debug, Default)]
+pub struct UpstreamMetadataCache {
+    entries: std::sync::Mutex<std::collections::HashMap<MetadataKey, MetadataCell>>,
+}
+
+impl UpstreamMetadataCache {
+    /// Empty cache for one server process. No metadata is trusted at startup.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    async fn validate(
+        &self,
+        endpoints: &crate::http::protocol::ClientEndpoints,
+        tenant: &Tenant,
+        issuer: &Issuer,
+        pinned_jwks_uri: &str,
+    ) -> Result<(), ReceiverError> {
+        let key = (
+            tenant.id.as_str().to_owned(),
+            issuer.as_str().to_owned(),
+            pinned_jwks_uri.to_owned(),
+        );
+        let cell = {
+            let mut entries = self.entries.lock().map_err(|_| ReceiverError::Metadata)?;
+            if !entries.contains_key(&key) && entries.len() >= MAX_METADATA_CACHE_ENTRIES {
+                // Eviction is only a performance decision. A removed cell may
+                // still serve an in-flight request through its Arc.
+                if let Some(evicted) = entries.keys().next().cloned() {
+                    entries.remove(&evicted);
+                }
+            }
+            std::sync::Arc::clone(
+                entries
+                    .entry(key)
+                    .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(None))),
+            )
+        };
+        let mut cached = cell.lock().await;
+        let now = std::time::Instant::now();
+        if let Some(entry) = cached.as_ref()
+            && entry.expires_at > now
+        {
+            return entry.result.as_ref().map(|_| ()).map_err(|error| *error);
+        }
+        let result = discover_configured_peer(endpoints, issuer)
+            .await
+            .and_then(|metadata| {
+                if metadata.jwks_uri == pinned_jwks_uri {
+                    Ok(metadata)
+                } else {
+                    Err(ReceiverError::Metadata)
+                }
+            });
+        let ttl = if result.is_ok() {
+            METADATA_CACHE_TTL
+        } else {
+            METADATA_FAILURE_TTL
+        };
+        *cached = Some(CachedMetadata {
+            expires_at: now + ttl,
+            result: result.clone(),
+        });
+        result.map(|_| ())
+    }
+}
+
+impl UpstreamMetadata {
+    fn from_document(document: &[u8], issuer: &Issuer) -> Result<Self, ReceiverError> {
+        let value: Value = serde_json::from_slice(document).map_err(|_| ReceiverError::Metadata)?;
+        let object = value.as_object().ok_or(ReceiverError::Metadata)?;
+        if object.get("issuer").and_then(Value::as_str) != Some(issuer.as_str()) {
+            return Err(ReceiverError::Metadata);
+        }
+        // We implement the final 1.0 wire contract. A missing version means
+        // the first implementer's draft, not the final specification.
+        if object.get("spec_version").and_then(Value::as_str) != Some("1_0") {
+            return Err(ReceiverError::Metadata);
+        }
+        let jwks_uri = object
+            .get("jwks_uri")
+            .and_then(Value::as_str)
+            .ok_or(ReceiverError::Metadata)?;
+        validate_metadata_url(jwks_uri)?;
+        let methods = object
+            .get("delivery_methods_supported")
+            .and_then(Value::as_array)
+            .ok_or(ReceiverError::Metadata)?;
+        if !methods
+            .iter()
+            .any(|method| method.as_str() == Some(asterius_ssf::stream::DELIVERY_PUSH))
+        {
+            return Err(ReceiverError::Metadata);
+        }
+        if let Some(critical) = object.get("critical_subject_members") {
+            let members = critical.as_array().ok_or(ReceiverError::Metadata)?;
+            // The receiver processes the base RFC 9493 formats, but no
+            // transmitter-specific critical extension members.
+            if !members.is_empty() {
+                return Err(ReceiverError::Metadata);
+            }
+        }
+        for endpoint in [
+            "configuration_endpoint",
+            "status_endpoint",
+            "verification_endpoint",
+        ] {
+            let url = object
+                .get(endpoint)
+                .and_then(Value::as_str)
+                .ok_or(ReceiverError::Metadata)?;
+            validate_metadata_url(url)?;
+        }
+        let schemes = object
+            .get("authorization_schemes")
+            .and_then(Value::as_array)
+            .ok_or(ReceiverError::Metadata)?;
+        if !schemes.iter().any(|scheme| {
+            scheme.get("spec_urn").and_then(Value::as_str) == Some("urn:ietf:rfc:6749")
+        }) {
+            return Err(ReceiverError::Metadata);
+        }
+        Ok(Self {
+            jwks_uri: jwks_uri.to_owned(),
+        })
+    }
+}
+
+fn validate_metadata_url(raw: &str) -> Result<(), ReceiverError> {
+    let url = url::Url::parse(raw).map_err(|_| ReceiverError::Metadata)?;
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(ReceiverError::Metadata);
+    }
+    Ok(())
+}
+
+/// Fetches only the well-known location derived from the operator-registered
+/// issuer. The shared client URL fetcher enforces HTTPS, DNS/IP SSRF checks,
+/// redirect refusal, response type, body limit, and timeout.
+async fn discover_configured_peer(
+    endpoints: &crate::http::protocol::ClientEndpoints,
+    issuer: &Issuer,
+) -> Result<UpstreamMetadata, ReceiverError> {
+    let url = format!(
+        "https://{}/.well-known/ssf-configuration{}",
+        issuer.authority(),
+        issuer.path(),
+    );
+    let document = endpoints
+        .outbound
+        .fetch_json(&url)
+        .await
+        .map_err(|_| ReceiverError::Metadata)?;
+    UpstreamMetadata::from_document(&document, issuer)
 }
 
 /// Finds a peer by its tenant-local client identity and enforces the explicit
@@ -479,10 +669,19 @@ pub async fn configured_peer(
         return Err(ReceiverError::Peer);
     }
     let issuer = Issuer::parse(peer.as_str()).map_err(|_| ReceiverError::Peer)?;
-    let jwks = client.registration.jwks;
-    if matches!(jwks, JwksSource::None) {
+    if issuer.as_str() != peer.as_str() {
         return Err(ReceiverError::Peer);
     }
+    let jwks = client.registration.jwks;
+    let JwksSource::Uri(ref pinned_jwks_uri) = jwks else {
+        // A receiver using inline keys or an unpinned URL cannot satisfy the
+        // CAEP profile's metadata JWKS requirement.
+        return Err(ReceiverError::Peer);
+    };
+    endpoints
+        .ssf_metadata_cache
+        .validate(endpoints, tenant, &issuer, pinned_jwks_uri)
+        .await?;
     Ok((issuer, jwks, client.registration.scopes))
 }
 

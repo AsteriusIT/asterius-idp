@@ -646,6 +646,20 @@ impl ClientUrlFetcher for HttpsClientUrlFetcher {
             }
         }
     }
+
+    async fn fetch_json(&self, url: &str) -> Result<Vec<u8>, DomainError> {
+        let outcome =
+            match tokio::time::timeout(TOTAL_TIMEOUT, self.get(url, &["application/json"])).await {
+                Ok(outcome) => outcome,
+                Err(_) => Err(FetchError::TimedOut {
+                    host: ssrf::check_url(url).map_or_else(|_| "the URL".to_owned(), |t| t.host),
+                }),
+            };
+        outcome.map_err(|error| {
+            tracing::warn!(error = %error, "JSON metadata fetch failed");
+            error.into()
+        })
+    }
 }
 
 #[async_trait::async_trait]

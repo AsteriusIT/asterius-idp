@@ -429,6 +429,7 @@ fn assemble(
         tenant_settings: Some(settings.clone()),
         signed_metadata: None,
         clients: Some(Arc::new(ClientEndpoints {
+            ssf_metadata_cache: Arc::default(),
             http_signature_peers: Arc::default(),
             http_signature_replay: Arc::clone(&replay),
             id_jag_approvals: Arc::default(),

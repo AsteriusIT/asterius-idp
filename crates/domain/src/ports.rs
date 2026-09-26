@@ -293,6 +293,13 @@ pub trait ClientUrlFetcher: Debug + Send + Sync {
     /// keys, and do not ask again immediately" — because the difference is
     /// useful to an operator reading a log and to nobody else.
     async fn fetch(&self, url: &str) -> Result<Vec<u8>, DomainError>;
+
+    /// Fetches a JSON metadata document through the same guarded transport.
+    /// The production adapter requires `application/json`; the default keeps
+    /// existing in-process fetch fakes usable for callers that only need bytes.
+    async fn fetch_json(&self, url: &str) -> Result<Vec<u8>, DomainError> {
+        self.fetch(url).await
+    }
 }
 
 /// A successfully fetched CIMD document and the server's bounded freshness
