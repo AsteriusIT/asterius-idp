@@ -3161,7 +3161,8 @@ impl Handling<'_> {
             &serde_json::json!({
             "entity_id": sp.entity_id,
             "acs_url": sp.acs_url,
-            "allow_unsigned_requests": sp.allow_unsigned_requests
+            "allow_unsigned_requests": sp.allow_unsigned_requests,
+            "redirect_signing_key_present": sp.redirect_signing_public_key_der.is_some()
             }),
         ))
     }
