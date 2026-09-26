@@ -327,6 +327,8 @@ impl TokenExchange<'_> {
         }
     }
 
+    // Keep this protocol transition together so validation and issuance order stays auditable.
+    #[allow(clippy::too_many_lines)]
     async fn issue_native_sso(
         &self,
         tenant: &Tenant,
@@ -1265,6 +1267,8 @@ const fn describe(error: &token_exchange::ExchangeError) -> &'static str {
     }
 }
 
+// Keep these fixtures adjacent to the grant helpers they exercise.
+#[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1410,6 +1414,8 @@ impl TokenExchange<'_> {
         }
     }
 
+    // Keep this protocol transition together so validation and issuance order stays auditable.
+    #[allow(clippy::too_many_lines)]
     async fn issue_id_jag(
         &self,
         tenant: &Tenant,

@@ -637,10 +637,10 @@ async fn release(
     let mut claims = resolved.userinfo;
     let requested = asterius_oidc::claims::ClaimsRequest::from_json(&grant.claims)
         .map_err(|error| Refused::Server(DomainError::invalid("claims", error.to_string())))?;
-    if let Some(ida) = requested.ida_userinfo() {
-        if let Some(projected) = context.source.verified_claims(id, ida).await? {
-            claims.insert("verified_claims".to_owned(), projected);
-        }
+    if let Some(ida) = requested.ida_userinfo()
+        && let Some(projected) = context.source.verified_claims(id, ida).await?
+    {
+        claims.insert("verified_claims".to_owned(), projected);
     }
     claims.extend(
         context

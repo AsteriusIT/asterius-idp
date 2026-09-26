@@ -245,6 +245,8 @@ impl AuthorizationCode<'_> {
 
     /// The redemption itself, with failures as `Err` so the checks read in
     /// order rather than as a staircase of early returns.
+    // Keep this protocol transition together so validation and issuance order stays auditable.
+    #[allow(clippy::too_many_lines)]
     async fn redeem(
         &self,
         tenant: &Tenant,
@@ -650,6 +652,8 @@ impl AuthorizationCode<'_> {
     ///
     /// `Cache-Control` is not set here: the token endpoint applies it to every
     /// response, so that it cannot be the one thing a grant forgets.
+    // The explicit inputs preserve each issuer dependency at the call boundary.
+    #[allow(clippy::too_many_arguments)]
     fn response(
         grant: &Grant,
         token_type: &str,

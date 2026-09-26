@@ -761,6 +761,8 @@ async fn unacceptable(
     None
 }
 
+// Keep this protocol transition together so validation and issuance order stays auditable.
+#[allow(clippy::too_many_lines)]
 pub async fn update(
     context: &ConfigurationContext<'_>,
     client_id: &str,

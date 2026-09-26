@@ -477,6 +477,8 @@ pub async fn register(
 /// one place to be given back: a refusal returned from anywhere below is still
 /// a `Response` that passes through the caller above, and no future early
 /// return can forget to release a reservation.
+// Keep this protocol transition together so validation and issuance order stays auditable.
+#[allow(clippy::too_many_lines)]
 async fn registered(
     context: &RegisterContext<'_>,
     headers: &HeaderMap,

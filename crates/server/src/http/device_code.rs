@@ -229,6 +229,8 @@ impl GrantHandler for DeviceCode<'_> {
 impl DeviceCode<'_> {
     /// The redemption itself, with failures as `Err` so the checks read in
     /// order.
+    // Keep this protocol transition together so validation and issuance order stays auditable.
+    #[allow(clippy::too_many_lines)]
     async fn redeem(
         &self,
         tenant: &Tenant,

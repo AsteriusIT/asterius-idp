@@ -268,6 +268,8 @@ impl GrantHandler for RefreshToken<'_> {
 
 impl RefreshToken<'_> {
     /// The refresh itself, with failures as `Err` so the checks read in order.
+    // Keep this protocol transition together so validation and issuance order stays auditable.
+    #[allow(clippy::too_many_lines)]
     async fn refresh(
         &self,
         tenant: &Tenant,
@@ -470,6 +472,9 @@ impl RefreshToken<'_> {
     /// The claim comes first and is not optional: `PgGrantRepository::claim`
     /// is the only constructor of the authority both builders demand, so
     /// "issue a token from a revoked grant" does not run.
+    // Keep this protocol transition together so validation and issuance order stays auditable.
+    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_arguments)]
     async fn mint(
         &self,
         tenant: &Tenant,
