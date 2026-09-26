@@ -71,8 +71,12 @@ The upstream credential identifier is never treated as a local credential
 identifier. Events require a valid CAEP `event_timestamp`; older events are
 durably marked stale and acknowledged without applying an action. User-row
 locking serializes order even when signals arrive through separate peer
-mappings. These verified actions and audit-chain records share a transaction
-with the durable inbox.
+mappings. A timestamp more than ten seconds ahead of the receiver clock is
+rejected before it can become the subject's ordering high-water mark. For each
+of the ten standard CAEP credential types, `create` and `update` are observe-only;
+`revoke` and `delete` revoke local sessions. Unknown type and change values are
+rejected, and no inbound event writes local credential records. These verified
+actions and audit-chain records share a transaction with the durable inbox.
 
 This slice does not yet create receiver streams from upstream metadata, accept
 poll delivery, implement the complete CAEP event vocabulary, or transactionally

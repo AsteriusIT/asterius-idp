@@ -130,14 +130,6 @@ async fn receive(
             }
         }
     };
-    let Some(event_at) = event
-        .event
-        .get("event_timestamp")
-        .and_then(Value::as_i64)
-        .and_then(|seconds| OffsetDateTime::from_unix_timestamp(seconds).ok())
-    else {
-        return response(StatusCode::BAD_REQUEST);
-    };
     match endpoints
         .store
         .scope(tenant.id)
@@ -148,7 +140,7 @@ async fn receive(
             &event.jti,
             event.replay_until,
             action,
-            event_at,
+            event.event_at,
             now,
         )
         .await
@@ -204,6 +196,8 @@ pub struct VerifiedEvent {
     pub subject: Subject,
     /// The single supported lifecycle event.
     pub event_type: LifecycleEventType,
+    /// Validated CAEP event time, bounded against the receiver clock.
+    pub event_at: OffsetDateTime,
     /// Claims associated with the event type (for example CAEP timestamps).
     pub event: Value,
 }
@@ -387,12 +381,15 @@ fn parse_verified_event(
     if !event.is_object() {
         return Err(ReceiverError::Profile);
     }
-    if event
+    let event_at = event
         .get("event_timestamp")
         .and_then(Value::as_i64)
         .and_then(|seconds| OffsetDateTime::from_unix_timestamp(seconds).ok())
-        .is_none()
-    {
+        .ok_or(ReceiverError::Profile)?;
+    // A signed event with an arbitrarily future timestamp would become the
+    // subject's ordering high-water mark and suppress legitimate later SETs.
+    // Permit the same small clock skew as the JWS verifier, but no more.
+    if event_at > now + asterius_jose::verify::DEFAULT_FUTURE_SKEW {
         return Err(ReceiverError::Profile);
     }
     Ok(VerifiedEvent {
@@ -401,6 +398,7 @@ fn parse_verified_event(
         replay_until,
         subject,
         event_type,
+        event_at,
         event: event.clone(),
     })
 }
