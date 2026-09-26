@@ -1,7 +1,7 @@
 //! Internal SAML AuthnRequest validation boundary.
 //!
-//! This service does not route a browser request or issue a response. The
-//! bounded XML parser deliberately rejects XML Signature elements. HTTP-
+//! This service validates requests before a browser SSO response is issued.
+//! The bounded unsigned XML parser rejects XML Signature elements. HTTP-
 //! Redirect query and POST XML signatures are verified using a tenant-scoped
 //! pinned SP key before replay reservation. Raw unsigned XML passes only
 //! when the SP explicitly opts in; the default persisted policy refuses it.
@@ -83,8 +83,8 @@ impl SamlRequestValidator {
     /// URL parsing or normalization cannot turn a supplied destination or ACS
     /// into a different operator-approved endpoint.
     ///
-    /// The destination is the canonical future SSO endpoint derived from the
-    /// routed tenant's issuer. No browser route currently serves it.
+    /// The destination is the canonical SSO endpoint derived from the routed
+    /// tenant's issuer.
     pub async fn validate_unsigned(
         &self,
         tenant: &Tenant,
@@ -141,7 +141,9 @@ impl SamlRequestValidator {
     /// selects only a candidate SP within the routed tenant; the request is
     /// accepted only after its digest and RSA signature verify against that
     /// SP's operator-pinned key and its ID is atomically reserved.
-    /// No browser route currently calls this method.
+    /// An unsigned POST is accepted only when this SP explicitly permits it;
+    /// a malformed signed request cannot fall back because the unsigned
+    /// parser refuses XML Signature elements.
     pub async fn validate_post(
         &self,
         tenant: &Tenant,
@@ -150,7 +152,25 @@ impl SamlRequestValidator {
         now: OffsetDateTime,
     ) -> Result<ValidatedAuthnRequest, ValidationError> {
         let form = parse_post_form(content_type, body).map_err(|_| ValidationError::Refused)?;
-        let signed = parse_signed_post(&form.xml).map_err(|_| ValidationError::Refused)?;
+        let signed = match parse_signed_post(&form.xml) {
+            Ok(signed) => signed,
+            Err(_) => {
+                let request =
+                    parse_authn_request(&form.xml).map_err(|_| ValidationError::Refused)?;
+                let (trust, sp) = self.check_routed(tenant, &request, now).await?;
+                if !sp.allow_unsigned_requests {
+                    return Err(ValidationError::Refused);
+                }
+                let reserved = trust
+                    .reserve_unsigned_request(&sp.entity_id, &sp.acs_url, &request.id)
+                    .await
+                    .map_err(ValidationError::Store)?;
+                if !reserved {
+                    return Err(ValidationError::Refused);
+                }
+                return Ok(Self::accepted(tenant, sp, request, form.relay_state));
+            }
+        };
         let (trust, sp) = self
             .check_routed(tenant, signed.unverified_request(), now)
             .await?;

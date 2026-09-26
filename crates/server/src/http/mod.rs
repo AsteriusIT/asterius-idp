@@ -112,6 +112,7 @@ pub mod register;
 pub mod request_id;
 pub mod request_object;
 pub mod revocation;
+pub mod saml;
 pub mod security_headers;
 pub mod server;
 pub mod signup;

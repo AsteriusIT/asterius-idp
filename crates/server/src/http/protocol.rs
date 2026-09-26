@@ -465,6 +465,7 @@ pub fn routes(state: ProtocolState) -> Router {
     // the database wiring for them. `ast-gxh.1`, `ast-a05.1`.
     if let Some(endpoints) = built {
         router = router.merge(crate::http::oid4vp::routes(Arc::clone(&endpoints)));
+        router = router.merge(crate::http::saml::routes(Arc::clone(&endpoints)));
         router = router
             .route(
                 Endpoint::PushedAuthorizationRequest.path(),
