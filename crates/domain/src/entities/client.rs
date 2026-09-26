@@ -21,7 +21,7 @@ use crate::entities::agent::{AGENT_GRANT_TYPES, AgentLimits, AgentOwner, AgentPr
 use crate::keys::SigningAlgorithm;
 use crate::{ClientId, TenantId};
 use serde::Deserialize;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 use time::OffsetDateTime;
 use url::{Host, Url};
@@ -1078,6 +1078,10 @@ impl std::fmt::Display for RedirectUri {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct ClientMetadata {
+    /// Unknown extensions are ignored, except unsupported response encryption
+    /// requests, which must not be silently downgraded to plaintext.
+    #[serde(flatten)]
+    pub additional_metadata: BTreeMap<String, serde_json::Value>,
     /// Human-readable name, shown on the consent screen.
     pub client_name: Option<String>,
     /// OIDC Registration §2. `web` or `native`.
@@ -1833,6 +1837,19 @@ impl ClientMetadata {
         capabilities: Capabilities,
         compliance_profile: ClientComplianceProfile,
     ) -> Result<ClientRegistration, ClientMetadataError> {
+        for field in [
+            "id_token_encrypted_response_alg",
+            "id_token_encrypted_response_enc",
+            "userinfo_encrypted_response_alg",
+            "userinfo_encrypted_response_enc",
+        ] {
+            if self.additional_metadata.contains_key(field) {
+                return Err(ClientMetadataError::rejected(
+                    field,
+                    "encrypted responses are not supported",
+                ));
+            }
+        }
         let token_endpoint_auth_method = self.auth_method(capabilities, compliance_profile)?;
         let tls_client_auth_subject =
             self.tls_client_auth_subject(token_endpoint_auth_method, capabilities)?;
