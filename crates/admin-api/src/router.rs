@@ -6721,7 +6721,7 @@ impl Handling<'_> {
             .backend
             .federation_key_inventory(&self.tenant.id)
             .await
-            .map_err(|error| AdminError::from_storage(crate::FEDERATION_KEYS_LIST_ID, &error))?;
+            .map_err(|error| federation_key_error(crate::FEDERATION_KEYS_LIST_ID, error))?;
         Ok(json_no_store(StatusCode::OK, &document))
     }
 
@@ -6732,7 +6732,7 @@ impl Handling<'_> {
             .backend
             .federation_key_rotate(&self.tenant.id, &self.principal.audit_actor(), self.now)
             .await
-            .map_err(|error| AdminError::from_storage(crate::FEDERATION_KEYS_ROTATE_ID, &error))?;
+            .map_err(|error| federation_key_error(crate::FEDERATION_KEYS_ROTATE_ID, error))?;
         Ok(json_no_store(
             StatusCode::ACCEPTED,
             &serde_json::json!({"staged_kid": kid, "propagation_seconds": 360}),
@@ -7574,6 +7574,17 @@ fn parse_user_id(raw: &str) -> Result<asterius_domain::UserId, AdminError> {
         .map_err(|_| AdminError::NotFound)
 }
 
+/// Missing federation inventory is an expected unconfigured state, not an outage.
+fn federation_key_error(operation: &'static str, error: DomainError) -> AdminError {
+    match error {
+        DomainError::NotFound => AdminError::NotFound,
+        DomainError::Conflict(_) => AdminError::Conflict(
+            "Federation key state prevents this operation; reload the keys and review the tenant's federation configuration.".into(),
+        ),
+        other => AdminError::from_storage(operation, &other),
+    }
+}
+
 fn group_error(operation: &'static str, error: DomainError) -> AdminError {
     match error {
         DomainError::NotFound => AdminError::NotFound,
@@ -7664,6 +7675,32 @@ pub const CLIENT_ADDRESS_EXTENSION: &str = "asterius_admin_api::ClientAddress";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn federation_keys_distinguish_absent_configuration_from_storage_failure() {
+        for operation in [
+            crate::FEDERATION_KEYS_LIST_ID,
+            crate::FEDERATION_KEYS_ROTATE_ID,
+        ] {
+            let missing = federation_key_error(operation, DomainError::NotFound);
+            assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+            assert_eq!(missing.code(), "not_found");
+            let conflict = federation_key_error(
+                operation,
+                DomainError::Conflict("internal database detail".into()),
+            );
+            assert_eq!(conflict.status(), StatusCode::CONFLICT);
+            assert!(!conflict.to_string().contains("internal database detail"));
+            let storage = federation_key_error(
+                operation,
+                DomainError::Storage(Box::new(std::io::Error::other("internal database detail"))),
+            );
+            assert_eq!(storage.status(), StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(storage.code(), "unavailable");
+            assert!(!storage.to_string().contains("internal database detail"));
+        }
+    }
+
     // The gate reads an operation's effect through
     // `Effect::needs_csrf_token`, so the enum itself is only named by the
     // table-driven tests below.

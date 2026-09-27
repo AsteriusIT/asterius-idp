@@ -65,7 +65,7 @@ export function FederationKeys({ session }: Readonly<{ session: Session }>): JSX
         } else {
           setLoad({
             kind: 'failed',
-            message: error instanceof Error ? error.message : 'Federation keys could not be read',
+            message: error instanceof ApiError ? `Federation keys could not be read (HTTP ${error.status}): ${error.message}` : error instanceof Error ? error.message : 'Federation keys could not be read',
           });
         }
       },
@@ -119,7 +119,7 @@ export function FederationKeys({ session }: Readonly<{ session: Session }>): JSX
         {load.kind === 'loading' && <Skeleton rows={4} label="Reading Federation keys." />}
         {load.kind === 'failed' && <LoadFailure message={load.message} onRetry={refresh} />}
         {load.kind === 'disabled' && (
-          <p className="muted">Federation is not enabled for this tenant.</p>
+          <p className="muted">No federation signing keys are configured for this tenant. These keys are provisioned when OpenID Federation is enabled in the deployment configuration.</p>
         )}
         {ready !== null && (
           <>
