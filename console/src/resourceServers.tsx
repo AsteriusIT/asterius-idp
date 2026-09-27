@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { PencilIcon, PlusIcon } from 'lucide-react';
 import { mutate, read, type Session } from './api';
+import { FlowOrigin } from './flow-origin';
 import {
   Dialog,
   DialogContent,
@@ -127,7 +128,7 @@ export function ResourceServers({ session }: Readonly<{ session: Session }>): JS
       {load.kind === 'failed' && <LoadFailure message={load.message} onRetry={refresh} />}
       {load.kind === 'ready' && (load.items.length === 0 ? <p className="muted">No resource servers are registered.</p> :
         <table><caption className="visually-hidden">Registered resource servers</caption><thead><tr><th>Audience</th><th>Supported scopes</th><th>Token lifetime</th><th>Introspection clients</th>{mayWrite && <th>Actions</th>}</tr></thead>
-          <tbody>{load.items.map(item => <tr key={item.identifier}><td><code>{item.identifier}</code></td><td>{scopeDescription(item.scopes)}</td>
+          <tbody>{load.items.map(item => <tr key={item.identifier}><td><code>{item.identifier}</code><FlowOrigin session={session} kind="api" resource={item.identifier} /></td><td>{scopeDescription(item.scopes)}</td>
             <td>{item.default_token_lifetime_seconds === null ? 'Tenant default' : `${item.default_token_lifetime_seconds} seconds`}</td>
             <td>{item.introspection_clients.length === 0 ? 'None' : item.introspection_clients.join(', ')}</td>
             {mayWrite && <td><Button small className="size-8 p-0" disabled={busy} aria-label={`Edit ${item.identifier}`} title="Edit" onClick={() => openEdit(item)}><PencilIcon aria-hidden="true" /></Button> <Button small variant="danger" disabled={busy} onClick={() => void withdraw(item.identifier)}>Withdraw</Button></td>}</tr>)}</tbody></table>)}

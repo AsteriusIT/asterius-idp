@@ -2507,6 +2507,17 @@ impl AdminBackend for Deployment {
             .await
     }
 
+    async fn flow_origins(
+        &self,
+        tenant: &TenantId,
+        kind: &str,
+        resource: &str,
+    ) -> Result<Vec<serde_json::Value>, DomainError> {
+        asterius_store_pg::PgArchitectureFlows::new(self.store.pool().clone())
+            .origins(tenant, kind, resource)
+            .await
+    }
+
     async fn begin_flow_apply(
         &self,
         tenant: &TenantId,

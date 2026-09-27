@@ -29,6 +29,7 @@
  *   ends up in a token.
  */
 import { useCallback, useEffect, useState } from 'react';
+import { FlowOrigin } from './flow-origin';
 import type { JSX } from 'react';
 import { mutate, read, type Session } from './api';
 import { toast } from './components/ui/toast';
@@ -266,7 +267,8 @@ export function RoleCatalogue({
               key: 'name',
               header: 'Role',
               sortBy: (role) => role.name,
-              cell: (role) => <strong>{role.name}</strong>,
+              cell: (role) => <><strong>{role.name}</strong>{path.startsWith('clients/') &&
+                <FlowOrigin session={session} kind="role" resource={JSON.stringify([decodeURIComponent(path.split('/')[1] ?? ''), role.name])} />}</>,
             },
             {
               key: 'description',

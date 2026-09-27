@@ -3,6 +3,7 @@ import type { JSX } from 'react';
 import type { Directory } from './users';
 import { userIdForUsername } from './user-lookup';
 import { mutate, read, type Session } from './api';
+import { FlowOrigin } from './flow-origin';
 import { assignmentsOf, clientCatalogue, TENANT_CATALOGUE, type AppRole, type HeldRoles } from './appRoles';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from './components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './components/ui/tabs';
@@ -146,6 +147,7 @@ function GroupDetail({ session, id, onBack }: Readonly<{ session: Session; id: s
     description={<>Machine name: <code>{group.name}</code></>} actions={writable ? <><Button onClick={() => setEditing(true)}>Edit</Button>
       <Button variant="danger" onClick={() => setDeleting(true)}>Delete</Button></> : undefined}>
     {refusal !== null && <Message tone="error">{refusal}</Message>}
+    <FlowOrigin session={session} kind="group" resource={id} />
     <Tabs defaultValue={session.scopes.includes(MEMBERS_READ) ? 'members' : session.scopes.includes(ROLES_READ) ? 'roles' : 'details'}><TabsList aria-label="Group sections">
       {session.scopes.includes(MEMBERS_READ) && <TabsTrigger value="members">Members</TabsTrigger>}
       {session.scopes.includes(ROLES_READ) && <TabsTrigger value="roles">Roles</TabsTrigger>}

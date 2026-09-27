@@ -16,6 +16,11 @@ export interface PlanStep {
   scope: string; resource_id: string | null; explanation: string;
 }
 export interface Plan { flow_id: string; revision: number; digest: string; applicable: boolean; steps: PlanStep[] }
+export interface ResourceLink {
+  node_id: string; resource_kind: string; resource_id: string;
+  relation: 'managed' | 'reference'; state: 'pending' | 'applied';
+  created_in_revision: number; last_applied_revision: number | null;
+}
 
 const VALID_CONNECTIONS = new Set([
   'application:api', 'group:role', 'application:role',

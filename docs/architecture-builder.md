@@ -26,7 +26,9 @@ provider nodes document architecture only; they do not configure integrations.
    shows create, retry, reference, unchanged, attach, conflict, document, and
    detached operations. The operator explicitly applies that exact digest.
 5. The flow shows its applied revision and the last apply error. A failed apply
-   can leave earlier steps complete; preview again before retrying.
+   can leave earlier steps complete; preview again before retrying. Its linked
+   resource list shows node and resource IDs, including objects removed from
+   the draft that remain live. Resource screens link back to their flow.
 
 The Web app + API template supplies the graph shape; the operator fills in
 tenant-specific identifiers and credentials before applying. The canvas does

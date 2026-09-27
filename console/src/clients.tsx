@@ -1,4 +1,5 @@
 import { hrefOf } from './routes';
+import { FlowOrigin } from './flow-origin';
 /**
  * The clients screen (`ast-f7m.5`).
  *
@@ -495,6 +496,7 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
         back={{ label: 'Back to applications', onClick: close }}
       >
         {editing.kind === 'existing' && mayReadAppRoles(session) && <a className="application-roles-link" href={hrefOf('roles', { client: editing.document.client_id })}>Manage application roles →</a>}
+        {editing.kind === 'existing' && <FlowOrigin session={session} kind="application" resource={editing.document.client_id} />}
         {notice !== null && <Message tone="success">{notice}</Message>}
         {refusal !== null && <Message tone="error">{refusal}</Message>}
         {editing.kind === 'existing' && discovery !== null && discoveryUrl !== null && <Panel
