@@ -134,3 +134,26 @@ cover the canvas mechanics; the server owns the product semantics above.
 ## Application developer experience
 
 See the [developer experience draft](developer-experience.md) for web app, SPA and API integration paths, language recipes, and the proposed connection handoff. A condensed version is available in console Help & guides.
+
+## Architecture patterns
+
+**BFF (Backend for Frontend)** is available as a starting template or an Add BFF
+button in an existing diagram. It creates two managed objects: a confidential
+FAPI sign-in application and a BFF API, connected by authorized API access. The
+API starts with the `bff.access` permission and a 300-second token lifetime.
+The application inherits the compiler's private-key JWT, PAR and DPoP defaults.
+Supply exact callback URLs, public JWKS and the API audience before Apply.
+The preset creates identity registrations, not a deployed BFF or cookie session.
+Your backend still implements session storage, CSRF protection and API calls.
+Both objects remain independently editable and keep their flow provenance.
+
+**API → API** describes a downstream call. **API gateway** is a context-only
+node: applications and APIs can call it, and it can route to APIs. Gateway and
+API-chain links are labelled context only on the canvas and become document
+steps in Preview. They do not provision proxy routes, service credentials,
+token exchange, scopes or transitive access. Register an explicit application
+client and its authorized API access separately when the calling service needs
+OAuth credentials. A gateway node always represents diagram context.
+
+Roles remain leaves and identity providers connect only to groups or users.
+Self-links are rejected; distinct APIs can describe calls in either direction.

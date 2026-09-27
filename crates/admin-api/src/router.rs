@@ -4716,7 +4716,8 @@ impl Handling<'_> {
                     }
                     flows::NodeKind::Stream
                     | flows::NodeKind::IdentityProvider
-                    | flows::NodeKind::User => {
+                    | flows::NodeKind::User
+                    | flows::NodeKind::Gateway => {
                         return Err(AdminError::Conflict(
                             "integration setup is unavailable".into(),
                         ));
@@ -4955,7 +4956,8 @@ impl Handling<'_> {
             | flows::NodeKind::Role
             | flows::NodeKind::Stream
             | flows::NodeKind::IdentityProvider
-            | flows::NodeKind::User => {
+            | flows::NodeKind::User
+            | flows::NodeKind::Gateway => {
                 return Err(AdminError::Unavailable);
             }
         }
@@ -5036,7 +5038,10 @@ impl Handling<'_> {
                     .await
                     .map_err(|error| group_error(crate::FLOW_APPLY_ID, error))?;
             }
-            flows::NodeKind::Stream | flows::NodeKind::IdentityProvider | flows::NodeKind::User => {
+            flows::NodeKind::Stream
+            | flows::NodeKind::IdentityProvider
+            | flows::NodeKind::User
+            | flows::NodeKind::Gateway => {
                 return Err(AdminError::Unavailable);
             }
         }
@@ -5193,6 +5198,7 @@ impl Handling<'_> {
             flows::NodeKind::Stream,
             flows::NodeKind::IdentityProvider,
             flows::NodeKind::User,
+            flows::NodeKind::Gateway,
         ];
         for kind in ordered {
             for node in graph.nodes.iter().filter(|node| node.kind == kind) {
@@ -5201,6 +5207,7 @@ impl Handling<'_> {
                     flows::NodeKind::Stream
                         | flows::NodeKind::IdentityProvider
                         | flows::NodeKind::User
+                        | flows::NodeKind::Gateway
                 ) {
                     self.require_flow_scope(flows::scope_for(kind, false))?;
                 }
@@ -5515,7 +5522,8 @@ impl Handling<'_> {
                     }
                     flows::NodeKind::Stream
                     | flows::NodeKind::IdentityProvider
-                    | flows::NodeKind::User => {
+                    | flows::NodeKind::User
+                    | flows::NodeKind::Gateway => {
                         action = if matches!(node.mode, flows::NodeMode::Reference) {
                             "document"
                         } else {

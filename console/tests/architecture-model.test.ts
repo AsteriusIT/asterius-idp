@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { validConnection, type Graph, type Kind } from '../src/architecture-model.ts';
+import { bffPreset, connectionLabel, validConnection, type Graph, type Kind } from '../src/architecture-model.ts';
 
 function graph(source: Kind, target: Kind): Graph {
   return { schema_version: 1, nodes: [
@@ -25,9 +25,41 @@ test('a connection cannot be repeated', () => {
 
 
 test('identity providers connect only to groups or users, and roles are leaves', () => {
-  const kinds: Kind[] = ['application', 'api', 'role', 'group', 'user', 'identity_provider', 'stream'];
+  const kinds: Kind[] = ['application', 'api', 'role', 'group', 'user', 'identity_provider', 'stream', 'gateway'];
   for (const kind of kinds) {
     assert.equal(validConnection(graph('identity_provider', kind), 'a', 'b'), kind === 'group' || kind === 'user');
     assert.equal(validConnection(graph('role', kind), 'a', 'b'), false);
+  }
+});
+
+test('API chains and gateways allow calls but never role or identity links', () => {
+  for (const [source, target] of [['api', 'api'], ['api', 'gateway'], ['application', 'gateway'], ['gateway', 'api']] as [Kind, Kind][]) {
+    const value = graph(source, target);
+    assert.equal(validConnection(value, 'a', 'b'), true);
+    assert.equal(validConnection(value, 'a', 'a'), false);
+  }
+  for (const kind of ['user', 'role', 'identity_provider', 'application', 'group'] as Kind[]) {
+    assert.equal(validConnection(graph('gateway', kind), 'a', 'b'), false);
+  }
+});
+
+
+test('BFF expands into provisionable resources with explicit missing deployment values', () => {
+  let counter = 0;
+  const preset = bffPreset(() => `node-${counter++}`, 500);
+  assert.equal(preset.nodes.length, 2);
+  const [app, api] = preset.nodes;
+  assert.equal(app?.kind, 'application');
+  assert.equal(api?.kind, 'api');
+  assert.equal(app?.mode, 'managed');
+  assert.equal(api?.mode, 'managed');
+  assert.deepEqual(app?.settings, { redirect_uris: [], jwks_uri: '' });
+  assert.equal(api?.identifier, '');
+  assert.deepEqual(api?.settings, { scopes: ['bff.access'], default_token_lifetime_seconds: 300 });
+  assert(preset.nodes.every(node => node.y === 500));
+  assert(validConnection({ ...preset, edges: [] }, preset.edges[0]!.source, preset.edges[0]!.target));
+  assert(!connectionLabel('application', 'api').includes('context only'));
+  for (const [source, target] of [['api', 'api'], ['api', 'gateway'], ['gateway', 'api'], ['application', 'gateway']] as [Kind, Kind][]) {
+    assert(connectionLabel(source, target).includes('context only'));
   }
 });

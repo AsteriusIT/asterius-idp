@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
-import { AppWindow, Database, Users, UserRound, ShieldCheck, Radio, LogIn, ArrowLeft, Plus, Pencil, Eye, Trash2, X } from 'lucide-react';
+import { AppWindow, Database, Users, UserRound, ShieldCheck, Radio, LogIn, ArrowLeft, Plus, Pencil, Eye, Trash2, X, Network, Layers } from 'lucide-react';
 import {
   Background, Controls, Handle, MiniMap, Position, ReactFlow, BaseEdge, EdgeLabelRenderer, getBezierPath,
   applyEdgeChanges, applyNodeChanges,
@@ -9,25 +9,25 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { mutate, read, type Session } from './api';
-import { validConnection, type ArchitectureNode, type Flow, type Graph, type Kind, type Mode, type Plan, type ResourceLink } from './architecture-model';
+import { bffPreset, connectionLabel, validConnection, type ArchitectureNode, type Flow, type Graph, type Kind, type Mode, type Plan, type ResourceLink } from './architecture-model';
 import { hrefOf, paramsOf } from './routes';
 import { toast } from './components/ui/toast';
 import { Button, Field, LoadFailure, Panel, Screen, Skeleton } from './ui';
 
 const TYPES: Readonly<Record<Kind, string>> = {
   application: 'Web application', api: 'API', group: 'Group', role: 'Role',
-  stream: 'Security event stream', identity_provider: 'External identity provider', user: 'User',
+  stream: 'Security event stream', identity_provider: 'External identity provider', user: 'User', gateway: 'API gateway',
 };
-const ICONS = { application: AppWindow, api: Database, group: Users, user: UserRound, role: ShieldCheck, stream: Radio, identity_provider: LogIn };
+const ICONS = { application: AppWindow, api: Database, group: Users, user: UserRound, role: ShieldCheck, stream: Radio, identity_provider: LogIn, gateway: Network };
 interface CanvasData extends Record<string, unknown> { label: string; kind: Kind; identifier: string; mode: Mode }
 const ArchitectureCard = memo(function ArchitectureCard({ data }: { data: CanvasData }): JSX.Element {
   const Icon = ICONS[data.kind];
-  const leaf = ['role', 'user', 'api', 'stream'].includes(data.kind);
+  const leaf = ['role', 'user', 'stream'].includes(data.kind);
   return <div className={`architecture-card ${data.kind === 'role' ? 'architecture-role-leaf' : ''}`}>
     {data.kind !== 'identity_provider' && <Handle type="target" position={Position.Left} />}
     <span className="architecture-card-kind"><Icon size={18} aria-hidden="true" />{TYPES[data.kind]}</span>
     <strong>{data.label}</strong>
-    {data.kind !== 'role' && <span className="muted">{data.kind === 'application' && data.mode === 'managed' ? 'Application' : data.identifier || 'Select to configure'}</span>}
+    {data.kind !== 'role' && <span className="muted">{data.kind === 'gateway' ? 'Context only' : data.kind === 'application' && data.mode === 'managed' ? 'Application' : data.identifier || 'Select to configure'}</span>}
     {!leaf && <Handle type="source" position={Position.Right} />}
   </div>;
 });
@@ -54,7 +54,7 @@ function FlowCanvas({ graph, writable, onSelect, onChange }: { graph: Graph; wri
   useEffect(() => setEdges(graph.edges.map(edge => {
     const from = graph.nodes.find(node => node.id === edge.source)?.kind;
     const to = graph.nodes.find(node => node.id === edge.target)?.kind;
-    return { ...edge, type: 'architecture', data: { remove: writable ? () => onChange({ ...graph, edges: graph.edges.filter(item => item.id !== edge.id) }) : undefined }, label: to === 'role' ? from === 'group' ? 'Grants' : 'Defines' : from === 'identity_provider' ? 'Supplies identities' : to === 'api' ? 'Calls' : 'Sends events' };
+    return { ...edge, type: 'architecture', data: { remove: writable ? () => onChange({ ...graph, edges: graph.edges.filter(item => item.id !== edge.id) }) : undefined }, label: connectionLabel(from, to) };
   })), [graph, writable, onChange]);
   const onNodesChange = useCallback((changes: NodeChange<CanvasNode<CanvasData>>[]) => setNodes(current => applyNodeChanges(changes, current)), []);
   const onEdgesChange = useCallback((changes: EdgeChange<CanvasEdge>[]) => setEdges(current => applyEdgeChanges(changes, current)), []);
@@ -71,7 +71,7 @@ export function ArchitectureFlows({ session, fragment }: { session: Session; fra
   const params = paramsOf(fragment);
   const id = params.get('flow');
   const mode = params.get('mode');
-  if (id || mode === 'new') return <ArchitectureWorkspace key={`${id ?? 'new'}:${mode ?? 'view'}`} session={session} flowId={id} editing={mode === 'edit' || mode === 'new'} templateRequested={params.get('template') === 'web'} initialNode={params.get('node')} />;
+  if (id || mode === 'new') return <ArchitectureWorkspace key={`${id ?? 'new'}:${mode ?? 'view'}`} session={session} flowId={id} editing={mode === 'edit' || mode === 'new'} templateRequested={params.get('template')} initialNode={params.get('node')} />;
   return <ArchitectureDirectory session={session} />;
 }
 
@@ -82,7 +82,7 @@ function ArchitectureDirectory({ session }: { session: Session }): JSX.Element {
   const refresh = useCallback(() => { setLoading(true); setError(''); read('flows').then(value => setItems((value as { items: Flow[] }).items), error => setError(String(error))).finally(() => setLoading(false)); }, []);
   useEffect(refresh, [refresh]);
   return <Screen title="Architectures" description="Plan your applications and access, then manage the resources they create."
-    actions={session.scopes.includes('admin.flows:write') ? <div className="architecture-toolbar"><a className="architecture-action" href={hrefOf('architecture', { mode: 'new', template: 'web' })}>Web app + API template</a><a className="architecture-action primary" href={hrefOf('architecture', { mode: 'new' })}><Plus size={16} />New architecture</a></div> : undefined}>
+    actions={session.scopes.includes('admin.flows:write') ? <div className="architecture-toolbar"><a className="architecture-action" href={hrefOf('architecture', { mode: 'new', template: 'web' })}>Web app + API template</a><a className="architecture-action" href={hrefOf('architecture', { mode: 'new', template: 'bff' })}><Layers size={16} />BFF template</a><a className="architecture-action primary" href={hrefOf('architecture', { mode: 'new' })}><Plus size={16} />New architecture</a></div> : undefined}>
     <Panel title="Saved architectures">
       {loading ? <Skeleton rows={3} label="Loading architectures" /> : error ? <LoadFailure message={error} onRetry={refresh} /> : items.length === 0 ? <p>Create your first architecture from a template or start with a blank canvas.</p> :
         <div className="architecture-directory">{items.map(item => <article key={item.id}><AppWindow aria-hidden="true" /><div><h2><a href={hrefOf('architecture', { flow: item.id })}>{item.name}</a></h2><p>{item.graph.nodes.length} objects · {item.applied_revision === item.revision ? 'Applied' : 'Draft changes'}</p><small>Updated {new Date(item.updated_at).toLocaleString()}</small></div><a aria-label={`View ${item.name}`} href={hrefOf('architecture', { flow: item.id })}><Eye size={18} />View</a>{session.scopes.includes('admin.flows:write') && <a aria-label={`Edit ${item.name}`} href={hrefOf('architecture', { flow: item.id, mode: 'edit' })}><Pencil size={18} />Edit</a>}</article>)}</div>}
@@ -91,7 +91,7 @@ function ArchitectureDirectory({ session }: { session: Session }): JSX.Element {
 }
 const EMPTY: Graph = { schema_version: 1, nodes: [], edges: [] };
 
-function ArchitectureWorkspace({ session, flowId, editing, templateRequested, initialNode }: { session: Session; flowId: string | null; editing: boolean; templateRequested: boolean; initialNode: string | null }): JSX.Element {
+function ArchitectureWorkspace({ session, flowId, editing, templateRequested, initialNode }: { session: Session; flowId: string | null; editing: boolean; templateRequested: string | null; initialNode: string | null }): JSX.Element {
   const [loadError, setLoadError] = useState('');
   const [tab, setTab] = useState<'object' | 'review' | 'resources'>('object');
   const [flow, setFlow] = useState<Flow | null>(null);
@@ -111,7 +111,7 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
   const canWrite = editing && session.scopes.includes('admin.flows:write') && !applying && !busy;
   const refresh = (): void => { setLinkRefresh(value => value + 1); };
   useEffect(() => {
-    if (!flowId) { if (templateRequested) template(); else create(); return; }
+    if (!flowId) { if (templateRequested === 'bff') { setName('Backend for frontend'); setGraph(bffPreset()); setDirty(true); } else if (templateRequested === 'web') template(); else create(); return; }
     const target = flowId;
     let active = true;
     read(`flows/${encodeURIComponent(target)}`).then(value => {
@@ -192,8 +192,13 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
     const settings = kind === 'application' ? { redirect_uris: [], jwks_uri: '' }
       : kind === 'api' ? { scopes: [], default_token_lifetime_seconds: 300 }
       : kind === 'role' ? { description: '' } : {};
-    change({ ...graph, nodes: [...graph.nodes, { id, kind, label: TYPES[kind], identifier: '', mode: kind === 'stream' || kind === 'identity_provider' || kind === 'user' ? 'reference' : 'managed', x: 60 + (index % 4) * 230, y: 80 + Math.floor(index / 4) * 150, settings }] });
+    change({ ...graph, nodes: [...graph.nodes, { id, kind, label: TYPES[kind], identifier: '', mode: kind === 'stream' || kind === 'identity_provider' || kind === 'user' || kind === 'gateway' ? 'reference' : 'managed', x: 60 + (index % 4) * 230, y: 80 + Math.floor(index / 4) * 150, settings }] });
     setSelected(id);
+  };
+  const addBff = (): void => {
+    const next = bffPreset(() => crypto.randomUUID(), Math.max(0, ...graph.nodes.map(node => node.y)) + 180);
+    change({ ...graph, nodes: [...graph.nodes, ...next.nodes], edges: [...graph.edges, ...next.edges] });
+    setSelected(next.nodes[0]!.id); setTab('object');
   };
   const selectedNode = graph.nodes.find(node => node.id === selected);
   const updateSelected = (patch: Partial<ArchitectureNode>): void => {
@@ -223,7 +228,7 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
     </header>
     <div className="architecture-workspace-body">
       <div className="architecture-stage">
-        {canWrite && <div className="architecture-palette" aria-label="Add an object">{(Object.keys(TYPES) as Kind[]).map(kind => { const Icon = ICONS[kind]; return <Button key={kind} small title={`Add ${TYPES[kind].toLowerCase()}`} aria-label={`Add ${TYPES[kind].toLowerCase()}`} onClick={() => { addNode(kind); setTab('object'); }}><Icon size={18} />{(kind === 'identity_provider' || kind === 'stream') && TYPES[kind]}</Button>; })}</div>}
+        {canWrite && <div className="architecture-palette" aria-label="Add an object"><Button small title="Add backend for frontend preset" onClick={addBff}><Layers size={18} />BFF</Button>{(Object.keys(TYPES) as Kind[]).map(kind => { const Icon = ICONS[kind]; return <Button key={kind} small title={`Add ${TYPES[kind].toLowerCase()}`} aria-label={`Add ${TYPES[kind].toLowerCase()}`} onClick={() => { addNode(kind); setTab('object'); }}><Icon size={18} />{(kind === 'identity_provider' || kind === 'stream' || kind === 'gateway') && TYPES[kind]}</Button>; })}</div>}
         <div className="architecture-stage-canvas"><FlowCanvas graph={graph} writable={canWrite} onSelect={id => { setSelected(id); setTab('object'); }} onChange={change} /></div>
       </div>
       <aside className="architecture-sidepane" aria-label="Architecture details">
@@ -232,15 +237,15 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
           <nav className="architecture-pane-tabs" aria-label="Architecture settings sections">{(['object', 'review', 'resources'] as const).map(value => <button type="button" key={value} aria-pressed={tab === value} onClick={() => setTab(value)}>{value === 'object' ? 'Settings' : value === 'review' ? 'Review' : 'Resources'}</button>)}</nav>}
         {tab === 'object' && <div className="architecture-pane-content">
           {!selectedNode && <><h2>Architecture settings</h2><Field label="Architecture name">{props => <input {...props} value={name} maxLength={120} disabled={!canWrite} onChange={event => { setName(event.target.value); setDirty(true); setPlan(null); }} />}</Field>
-            <p className="muted">Select an object to edit it. Drag between handles to connect objects. Select a connection to remove it. Click the canvas background to return here.</p><Button onClick={() => navigate(hrefOf('help'))}>Developer integration guide</Button></>}
+            <p className="muted">BFF adds a sign-in application and API with bff.access permission and a five-minute token lifetime. Add callbacks, public keys and the API audience before applying. API chains and gateways are context only. Select an object to edit it. Drag between handles to connect objects. Select a connection to remove it. Click the canvas background to return here.</p><Button onClick={() => navigate(hrefOf('help'))}>Developer integration guide</Button></>}
         {selectedNode && <div className="architecture-inspector">
           <Field label="Display name">{props => <input {...props} value={selectedNode.label} disabled={!canWrite} onChange={event => updateSelected({ label: event.target.value })} />}</Field>
           {(selectedNode.kind !== 'application' || selectedNode.mode === 'reference') &&
-            <Field label={selectedNode.kind === 'user' ? 'Username' : selectedNode.kind === 'api' ? 'API audience URL' : selectedNode.kind === 'role' ? 'Role name' : selectedNode.kind === 'group' ? 'Group machine name' : 'Identifier'}>{props => <input {...props} value={selectedNode.identifier} disabled={!canWrite} onChange={event => updateSelected({ identifier: event.target.value })} />}</Field>}
-          <Field label="Ownership">{props => <select {...props} value={selectedNode.mode} disabled={!canWrite || selectedNode.kind === 'stream' || selectedNode.kind === 'identity_provider' || selectedNode.kind === 'user'} onChange={event => updateSelected({ mode: event.target.value as Mode })}>
-            <option value="managed">Create with flow</option><option value="reference">{selectedNode.kind === 'stream' || selectedNode.kind === 'identity_provider' || selectedNode.kind === 'user' ? 'Diagram context only' : 'Existing reference'}</option>
+            <Field label={selectedNode.kind === 'user' ? 'Username' : selectedNode.kind === 'gateway' ? 'Gateway address (optional)' : selectedNode.kind === 'api' ? 'API audience URL' : selectedNode.kind === 'role' ? 'Role name' : selectedNode.kind === 'group' ? 'Group machine name' : 'Identifier'}>{props => <input {...props} value={selectedNode.identifier} disabled={!canWrite} onChange={event => updateSelected({ identifier: event.target.value })} />}</Field>}
+          <Field label="Ownership">{props => <select {...props} value={selectedNode.mode} disabled={!canWrite || selectedNode.kind === 'stream' || selectedNode.kind === 'identity_provider' || selectedNode.kind === 'user' || selectedNode.kind === 'gateway'} onChange={event => updateSelected({ mode: event.target.value as Mode })}>
+            <option value="managed">Create with flow</option><option value="reference">{selectedNode.kind === 'stream' || selectedNode.kind === 'identity_provider' || selectedNode.kind === 'user' || selectedNode.kind === 'gateway' ? 'Diagram context only' : 'Existing reference'}</option>
           </select>}</Field>
-          {(selectedNode.kind === 'stream' || selectedNode.kind === 'identity_provider' || selectedNode.kind === 'user') &&
+          {(selectedNode.kind === 'stream' || selectedNode.kind === 'identity_provider' || selectedNode.kind === 'user' || selectedNode.kind === 'gateway') &&
             <p className="muted">Shown for architecture context. Apply does not configure or verify this integration.</p>}
           {selectedNode.kind === 'application' && selectedNode.mode === 'managed' && <>
             <LinesField key={`${selectedNode.id}:redirects`} label="Sign-in callback URLs" values={asStrings(selectedNode.settings.redirect_uris)} disabled={!canWrite} onChange={values => updateSelected({ settings: { ...selectedNode.settings, redirect_uris: values } })} />
@@ -256,9 +261,11 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
             value={String(selectedNode.settings.description ?? '')}
             onChange={event => updateSelected({ settings: { ...selectedNode.settings, description: event.target.value } })} />}</Field>}
           {selectedNode.kind === 'group' && <p className="muted">Use a lowercase machine name such as <code>engineering</code> as the stable identifier.</p>}
-          {selectedNode.kind === 'api' && <p className="muted">The stable identifier is an absolute HTTPS resource URL.</p>}
+          {selectedNode.kind === 'api' && <p className="muted">Use the exact HTTPS audience URL. API-to-API and API-to-gateway links describe calls only; they do not grant access or configure token exchange.</p>}
           {selectedNode.kind === 'application' && selectedNode.mode === 'reference' && <p className="muted">Enter the existing application client ID as its identifier.</p>}
           {selectedNode.kind === 'identity_provider' && <p>Connect this provider to a group or user. This describes where identities come from; it does not configure sign-in.</p>}
+          {selectedNode.kind === 'gateway' && <p>A gateway describes routing in your architecture. Connect applications or APIs to it, then connect it to downstream APIs. Apply does not deploy routes, credentials or access policies.</p>}
+          {selectedNode.kind === 'application' && selectedNode.mode === 'managed' && <p className="muted">Creates a confidential FAPI client with private_key_jwt, PAR and DPoP. For a BFF, keep tokens and signing keys on the server and implement a browser session cookie in your application.</p>}
           {selectedNode.kind === 'role' && <p>A role is a leaf: one application defines it, and groups may grant it.</p>}
           {canWrite && <Button variant="danger" onClick={removeSelected}><Trash2 size={16} />{links.some(link => link.node_id === selectedNode.id) ? 'Remove from diagram' : 'Delete draft object'}</Button>}
           {links.some(link => link.node_id === selectedNode.id) && <p className="muted">This object has a linked resource. Removing it from the diagram keeps the live resource.</p>}
