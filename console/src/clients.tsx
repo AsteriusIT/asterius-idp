@@ -133,6 +133,15 @@ const GRANT_PRESENTATION: Record<string, { label: string; icon: typeof KeyRoundI
 
 /** The signing algorithms this profile permits (ADR-0003, FAPI 2.0 SP §5.4.1). */
 const ALGORITHMS: readonly string[] = ['EdDSA', 'ES256', 'PS256'];
+const RESPONSE_MODES = ['query', 'form_post', 'query.jwt', 'jwt', 'form_post.jwt'] as const;
+
+function responseModeRows(modes: readonly string[] | null): readonly string[] {
+  return [...RESPONSE_MODES, ...(modes ?? []).filter((mode) => !RESPONSE_MODES.includes(mode as typeof RESPONSE_MODES[number]))];
+}
+
+function encryptionEnabled(alg: string, enc: string): boolean {
+  return alg !== '' || enc !== '';
+}
 
 /** Optional algorithm choices, including a value introduced by a newer server. */
 function algorithmOptions(value: string): readonly { value: string; label: string }[] {
@@ -963,11 +972,11 @@ function Editor({
               <Button type="button" variant="danger" disabled={busy} onClick={onRevokeSecret}>Revoke secret</Button>
             </Actions>
           </div>}
-          {draft.token_endpoint_auth_method !== 'client_secret_basic' && draft.token_endpoint_auth_method !== 'none' && editing.kind === 'existing' && editing.document.jwks !== undefined && (
+          {draft.token_endpoint_auth_method !== 'none' && editing.kind === 'existing' && editing.document.jwks !== undefined && (
             <JsonView value={editing.document.jwks} label="Registered inline JWK Set JSON" />
           )}
           {draft.token_endpoint_auth_method === 'none' && <p className="muted">Public clients do not authenticate with a JWK Set.</p>}
-          {draft.token_endpoint_auth_method !== 'client_secret_basic' && draft.token_endpoint_auth_method !== 'none' && <><p>
+          {draft.token_endpoint_auth_method !== 'none' && <><p>
             <label htmlFor="jwks-uri">JWK Set URL</label>
             <input
               id="jwks-uri"
@@ -1038,6 +1047,69 @@ function Editor({
             Configuring this opts the client into signed authorization request objects. Every
             request object must use this algorithm and a registered client key.
           </p>
+          <p>
+            <label htmlFor="authorization-response-alg">JARM authorization response signing algorithm</label>
+            <FormSelect
+              id="authorization-response-alg"
+              name="authorization_signed_response_alg"
+              value={draft.authorization_signed_response_alg}
+              onValueChange={(value) => onChange({ ...draft, authorization_signed_response_alg: value })}
+              disabled={busy || !canWrite}
+              options={algorithmOptions(draft.authorization_signed_response_alg)}
+            />
+          </p>
+          <p className="muted">Required when this client uses <code>jwt</code>, <code>query.jwt</code>, or <code>form_post.jwt</code>.</p>
+          <fieldset>
+            <legend>Allowed authorization response modes</legend>
+            <p className="muted">No selection means the server permits every supported mode. Select modes to restrict this client.</p>
+            {responseModeRows(draft.response_modes).map((mode) => <label key={mode} className="grant-option">
+              <input
+                type="checkbox"
+                name="response_modes"
+                value={mode}
+                checked={draft.response_modes?.includes(mode) ?? false}
+                onChange={(event) => {
+                  const next = event.target.checked
+                    ? [...(draft.response_modes ?? []), mode]
+                    : (draft.response_modes ?? []).filter((item) => item !== mode);
+                  onChange({ ...draft, response_modes: next.length === 0 ? null : next });
+                }}
+              />{' '}{mode}{!RESPONSE_MODES.includes(mode as typeof RESPONSE_MODES[number]) && ' (unrecognized; preserved)'}
+            </label>)}
+          </fieldset>
+          <p>
+            <label>
+              <input
+                type="checkbox"
+                name="id_token_encrypted_response_alg"
+                checked={encryptionEnabled(draft.id_token_encrypted_response_alg, draft.id_token_encrypted_response_enc)}
+                onChange={(event) => onChange({ ...draft,
+                  id_token_encrypted_response_alg: event.target.checked ? 'RSA-OAEP-256' : '',
+                  id_token_encrypted_response_enc: event.target.checked ? 'A256GCM' : '',
+                })}
+              />{' '}Encrypt ID token responses (RSA-OAEP-256 / A256GCM)
+            </label>
+          </p>
+          {encryptionEnabled(draft.id_token_encrypted_response_alg, draft.id_token_encrypted_response_enc)
+            && (draft.id_token_encrypted_response_alg !== 'RSA-OAEP-256' || draft.id_token_encrypted_response_enc !== 'A256GCM')
+            && <p className="muted">Existing ID token encryption pair: <code>{draft.id_token_encrypted_response_alg}</code> / <code>{draft.id_token_encrypted_response_enc}</code>. It will be preserved until changed.</p>}
+          <p>
+            <label>
+              <input
+                type="checkbox"
+                name="userinfo_encrypted_response_alg"
+                checked={encryptionEnabled(draft.userinfo_encrypted_response_alg, draft.userinfo_encrypted_response_enc)}
+                onChange={(event) => onChange({ ...draft,
+                  userinfo_encrypted_response_alg: event.target.checked ? 'RSA-OAEP-256' : '',
+                  userinfo_encrypted_response_enc: event.target.checked ? 'A256GCM' : '',
+                })}
+              />{' '}Encrypt UserInfo responses (RSA-OAEP-256 / A256GCM)
+            </label>
+          </p>
+          {encryptionEnabled(draft.userinfo_encrypted_response_alg, draft.userinfo_encrypted_response_enc)
+            && (draft.userinfo_encrypted_response_alg !== 'RSA-OAEP-256' || draft.userinfo_encrypted_response_enc !== 'A256GCM')
+            && <p className="muted">Existing UserInfo encryption pair: <code>{draft.userinfo_encrypted_response_alg}</code> / <code>{draft.userinfo_encrypted_response_enc}</code>. It will be preserved until changed.</p>}
+          <p className="muted">Response encryption requires an inline JWK Set with an encryption key. UserInfo encryption also requires a UserInfo signing algorithm.</p>
           <p>
             <label htmlFor="subject-type">Subject type</label>
             <FormSelect
