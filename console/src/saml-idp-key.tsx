@@ -16,6 +16,18 @@ interface Inventory {
   readonly keys: readonly IdpKeySummary[];
 }
 
+interface SpTrust {
+  readonly entity_id: string;
+  readonly acs_url: string;
+  readonly allow_unsigned_requests: boolean;
+  readonly redirect_signing_key_sha256: string | null;
+  readonly created_at: string;
+}
+
+interface SpInventory {
+  readonly service_providers: readonly SpTrust[];
+}
+
 type Load =
   | { readonly kind: 'loading' }
   | { readonly kind: 'empty' }
@@ -28,6 +40,8 @@ type KeyAction = {
 };
 
 const KEY_PATH = 'saml/idp-key';
+const SP_PATH = 'saml/sp-trusts';
+const MAX_SP_BODY_BYTES = 4 * 1024;
 const MIN_DER_BYTES = 256;
 const MAX_DER_BYTES = 16_384;
 
@@ -182,6 +196,7 @@ export function SamlIdpKey({ session }: Readonly<{ session: Session }>): JSX.Ele
           </form>
         </Panel>
       )}
+      <SpTrusts session={session} />
       {confirming !== null && (
         <ConfirmDialog
           title={confirming.kind === 'activate' ? 'Activate this SAML signing certificate?' : 'Confirm SP rollover is complete?'}
@@ -195,5 +210,149 @@ export function SamlIdpKey({ session }: Readonly<{ session: Session }>): JSX.Ele
         />
       )}
     </Screen>
+  );
+}
+
+function SpTrusts({ session }: Readonly<{ session: Session }>): JSX.Element {
+  const [load, setLoad] = useState<
+    | { readonly kind: 'loading' }
+    | { readonly kind: 'ready'; readonly trusts: readonly SpTrust[] }
+    | { readonly kind: 'failed'; readonly message: string }
+  >({ kind: 'loading' });
+  const [entityId, setEntityId] = useState('');
+  const [acsUrl, setAcsUrl] = useState('');
+  const [allowUnsigned, setAllowUnsigned] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<{ tone: 'success' | 'error'; text: string } | null>(null);
+  const [removing, setRemoving] = useState<string | null>(null);
+  const signingKeyInput = useRef<HTMLInputElement>(null);
+  const canWrite = session.scopes.includes('admin.saml:write');
+
+  const refresh = useCallback(() => {
+    setLoad({ kind: 'loading' });
+    read(SP_PATH).then(
+      (value) => setLoad({ kind: 'ready', trusts: (value as SpInventory).service_providers }),
+      (error: unknown) => setLoad({
+        kind: 'failed',
+        message: error instanceof Error ? error.message : 'SAML SP trusts could not be read.',
+      }),
+    );
+  }, []);
+
+  useEffect(refresh, [refresh]);
+
+  const provision = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault();
+    const keyFile = signingKeyInput.current?.files?.[0];
+    if (!allowUnsigned && !keyFile) {
+      setMessage({ tone: 'error', text: 'Choose a Redirect signing key or explicitly allow unsigned requests.' });
+      return;
+    }
+    setBusy(true);
+    setMessage(null);
+    try {
+      let redirect_signing_public_key_der_base64: string | null = null;
+      if (keyFile) {
+        if (keyFile.size < 256 || keyFile.size > 4096) {
+          throw new Error('The RSA public key DER file must be between 256 bytes and 4 KB.');
+        }
+        redirect_signing_public_key_der_base64 = btoa(String.fromCharCode(...new Uint8Array(await keyFile.arrayBuffer())));
+      }
+      const payload = {
+        entity_id: entityId,
+        acs_url: acsUrl,
+        allow_unsigned_requests: allowUnsigned,
+        redirect_signing_public_key_der_base64,
+      };
+      if (new TextEncoder().encode(JSON.stringify(payload)).length > MAX_SP_BODY_BYTES) {
+        throw new Error('The SP trust exceeds the API limit of 4 KB. Use a smaller signing key or shorter identifiers.');
+      }
+      await mutate(SP_PATH, 'PUT', session, payload);
+      setEntityId('');
+      setAcsUrl('');
+      setAllowUnsigned(false);
+      if (signingKeyInput.current) signingKeyInput.current.value = '';
+      refresh();
+      setMessage({ tone: 'success', text: 'The SP trust was added.' });
+      toast.success('SP trust added');
+    } catch (error: unknown) {
+      const text = error instanceof Error ? error.message : 'The SP trust could not be added.';
+      setMessage({ tone: 'error', text });
+      toast.error('SP trust unchanged', text);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async (selectedEntityId: string): Promise<void> => {
+    setRemoving(null);
+    setBusy(true);
+    setMessage(null);
+    try {
+      await mutate(SP_PATH, 'DELETE', session, { entity_id: selectedEntityId });
+      refresh();
+      setMessage({ tone: 'success', text: 'The SP trust was removed.' });
+      toast.success('SP trust removed');
+    } catch (error: unknown) {
+      const text = error instanceof Error ? error.message : 'The SP trust could not be removed.';
+      setMessage({ tone: 'error', text });
+      toast.error('SP trust unchanged', text);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      {message !== null && <Message tone={message.tone}>{message.text}</Message>}
+      <Panel title="Trusted service providers" description="Only these exact entity IDs and ACS URLs may use this tenant's SAML IdP.">
+        {load.kind === 'loading' && <Skeleton rows={3} label="Reading SAML SP trusts." />}
+        {load.kind === 'failed' && <LoadFailure message={load.message} onRetry={refresh} />}
+        {load.kind === 'ready' && load.trusts.length === 0 && <p className="muted">No service providers are trusted yet.</p>}
+        {load.kind === 'ready' && load.trusts.map((trust) => (
+          <div key={trust.entity_id} className="flex flex-col gap-3 border-b border-border py-3 last:border-b-0">
+            <dl className="stats">
+              <div><dt>Entity ID</dt><dd><code className="break-all">{trust.entity_id}</code></dd></div>
+              <div><dt>ACS URL</dt><dd><code className="break-all">{trust.acs_url}</code></dd></div>
+              <div><dt>Unsigned requests</dt><dd><Badge tone={trust.allow_unsigned_requests ? 'warn' : 'ok'}>{trust.allow_unsigned_requests ? 'Allowed' : 'Refused'}</Badge></dd></div>
+              <div><dt>Redirect signing key SHA-256</dt><dd>{trust.redirect_signing_key_sha256 === null ? 'None' : <code className="break-all">{trust.redirect_signing_key_sha256}</code>}</dd></div>
+              <div><dt>Added</dt><dd><Timestamp value={trust.created_at} /></dd></div>
+            </dl>
+            {canWrite && <Button variant="danger" disabled={busy} onClick={() => setRemoving(trust.entity_id)}>Remove trust</Button>}
+          </div>
+        ))}
+      </Panel>
+      {canWrite && (
+        <Panel title="Add service provider" description="Enter operator-approved values. The IdP matches the entity ID and HTTPS ACS URL exactly; it does not import SP metadata.">
+          <form className="flex flex-col gap-3" onSubmit={(event) => { void provision(event); }}>
+            <label className="flex flex-col gap-1" htmlFor="saml-sp-entity-id">Entity ID
+              <input id="saml-sp-entity-id" value={entityId} onChange={(event) => setEntityId(event.target.value)} maxLength={1024} required disabled={busy} autoComplete="off" />
+            </label>
+            <label className="flex flex-col gap-1" htmlFor="saml-sp-acs-url">Assertion consumer service URL (HTTPS)
+              <input id="saml-sp-acs-url" type="url" value={acsUrl} onChange={(event) => setAcsUrl(event.target.value)} maxLength={2048} pattern="https://.*" required disabled={busy} autoComplete="off" />
+            </label>
+            <label className="flex flex-col gap-1" htmlFor="saml-sp-signing-key">Redirect signing public key (RSA DER)
+              <input id="saml-sp-signing-key" ref={signingKeyInput} type="file" disabled={busy} autoComplete="off" />
+            </label>
+            <label className="flex items-center gap-2" htmlFor="saml-sp-allow-unsigned">
+              <input id="saml-sp-allow-unsigned" type="checkbox" checked={allowUnsigned} onChange={(event) => setAllowUnsigned(event.target.checked)} disabled={busy} />
+              Allow unsigned authentication requests for this SP
+            </label>
+            <p className="muted">Unsigned requests are refused by default. A pinned public key is required unless you explicitly allow them.</p>
+            <Button type="submit" disabled={busy}>{busy ? 'Adding…' : 'Add SP trust'}</Button>
+          </form>
+        </Panel>
+      )}
+      {removing !== null && (
+        <ConfirmDialog
+          title="Remove this SP trust?"
+          body={<>The service provider <code className="break-all">{removing}</code> will no longer be able to start SAML sign-in for this tenant. Existing replay records remain retained.</>}
+          confirmLabel="Remove SP trust"
+          busy={busy}
+          onCancel={() => setRemoving(null)}
+          onConfirm={() => { void remove(removing); }}
+        />
+      )}
+    </>
   );
 }
