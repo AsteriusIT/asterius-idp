@@ -13,6 +13,14 @@ export interface ClientDocument {
   readonly id_token_signed_response_alg: string;
   readonly userinfo_signed_response_alg?: string;
   readonly request_object_signing_alg?: string;
+  readonly authorization_signed_response_alg?: string;
+  readonly response_modes?: readonly string[];
+  readonly backchannel_authentication_request_signing_alg?: string;
+  readonly introspection_signed_response_alg?: string;
+  readonly id_token_encrypted_response_alg?: string;
+  readonly id_token_encrypted_response_enc?: string;
+  readonly userinfo_encrypted_response_alg?: string;
+  readonly userinfo_encrypted_response_enc?: string;
   readonly tls_client_certificate_bound_access_tokens?: boolean;
   readonly subject_type: string;
   readonly resources: readonly string[];
@@ -76,6 +84,15 @@ export interface Draft {
   readonly userinfo_signed_response_alg: string;
   /** Empty means the optional registration member was absent. */
   readonly request_object_signing_alg: string;
+  readonly authorization_signed_response_alg: string;
+  /** `null` preserves an absent response-mode restriction. */
+  readonly response_modes: readonly string[] | null;
+  readonly backchannel_authentication_request_signing_alg: string;
+  readonly introspection_signed_response_alg: string;
+  readonly id_token_encrypted_response_alg: string;
+  readonly id_token_encrypted_response_enc: string;
+  readonly userinfo_encrypted_response_alg: string;
+  readonly userinfo_encrypted_response_enc: string;
   /** `null` preserves an absent member from an older API document. */
   readonly tls_client_certificate_bound_access_tokens: boolean | null;
   readonly subject_type: string;
@@ -119,6 +136,15 @@ export function draftOf(document: ClientDocument): Draft {
     id_token_signed_response_alg: document.id_token_signed_response_alg,
     userinfo_signed_response_alg: document.userinfo_signed_response_alg ?? '',
     request_object_signing_alg: document.request_object_signing_alg ?? '',
+    authorization_signed_response_alg: document.authorization_signed_response_alg ?? '',
+    response_modes: document.response_modes === undefined ? null : [...document.response_modes],
+    backchannel_authentication_request_signing_alg:
+      document.backchannel_authentication_request_signing_alg ?? '',
+    introspection_signed_response_alg: document.introspection_signed_response_alg ?? '',
+    id_token_encrypted_response_alg: document.id_token_encrypted_response_alg ?? '',
+    id_token_encrypted_response_enc: document.id_token_encrypted_response_enc ?? '',
+    userinfo_encrypted_response_alg: document.userinfo_encrypted_response_alg ?? '',
+    userinfo_encrypted_response_enc: document.userinfo_encrypted_response_enc ?? '',
     tls_client_certificate_bound_access_tokens:
       document.tls_client_certificate_bound_access_tokens ?? null,
     subject_type: document.subject_type,
@@ -150,6 +176,14 @@ export function emptyDraft(): Draft {
     id_token_signed_response_alg: 'EdDSA',
     userinfo_signed_response_alg: '',
     request_object_signing_alg: '',
+    authorization_signed_response_alg: '',
+    response_modes: null,
+    backchannel_authentication_request_signing_alg: '',
+    introspection_signed_response_alg: '',
+    id_token_encrypted_response_alg: '',
+    id_token_encrypted_response_enc: '',
+    userinfo_encrypted_response_alg: '',
+    userinfo_encrypted_response_enc: '',
     tls_client_certificate_bound_access_tokens: false,
     subject_type: 'public',
     sector_identifier_uri: '',
@@ -286,6 +320,20 @@ export function documentFrom(draft: Draft): Record<string, unknown> {
   if (draft.request_object_signing_alg !== '') {
     document.request_object_signing_alg = draft.request_object_signing_alg;
   }
+  for (const field of [
+    'authorization_signed_response_alg',
+    'backchannel_authentication_request_signing_alg',
+    'introspection_signed_response_alg',
+    'id_token_encrypted_response_alg',
+    'id_token_encrypted_response_enc',
+    'userinfo_encrypted_response_alg',
+    'userinfo_encrypted_response_enc',
+  ] as const) {
+    if (draft[field] !== '') document[field] = draft[field];
+  }
+  if (draft.response_modes !== null) {
+    document.response_modes = [...draft.response_modes];
+  }
   if (draft.tls_client_certificate_bound_access_tokens !== null) {
     document.tls_client_certificate_bound_access_tokens =
       draft.tls_client_certificate_bound_access_tokens;
@@ -296,10 +344,10 @@ export function documentFrom(draft: Draft): Record<string, unknown> {
   if (draft.command_endpoint.trim() !== '') {
     document.command_endpoint = draft.command_endpoint.trim();
   }
-  if (draft.token_endpoint_auth_method !== 'client_secret_basic' && draft.jwks.trim() !== '') {
+  if (draft.token_endpoint_auth_method !== 'none' && draft.jwks.trim() !== '') {
     document.jwks = JSON.parse(draft.jwks) as unknown;
   }
-  if (draft.token_endpoint_auth_method !== 'client_secret_basic' && draft.jwks_uri.trim() !== '') {
+  if (draft.token_endpoint_auth_method !== 'none' && draft.jwks_uri.trim() !== '') {
     document.jwks_uri = draft.jwks_uri.trim();
   }
   return document;

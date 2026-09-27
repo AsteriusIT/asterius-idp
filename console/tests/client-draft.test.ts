@@ -157,6 +157,63 @@ test('saving an older client preserves absent security metadata', () => {
   assert.equal('userinfo_signed_response_alg' in payload, false);
   assert.equal('request_object_signing_alg' in payload, false);
   assert.equal('tls_client_certificate_bound_access_tokens' in payload, false);
+  for (const field of [
+    'authorization_signed_response_alg', 'response_modes',
+    'backchannel_authentication_request_signing_alg', 'introspection_signed_response_alg',
+    'id_token_encrypted_response_alg', 'id_token_encrypted_response_enc',
+    'userinfo_encrypted_response_alg', 'userinfo_encrypted_response_enc',
+  ]) assert.equal(field in payload, false, field);
+});
+
+test('whole-document edit preserves JARM, JWE, CIBA and introspection metadata', () => {
+  const saved = client({
+    authorization_signed_response_alg: 'ES256',
+    response_modes: ['query.jwt', 'form_post.jwt'],
+    backchannel_authentication_request_signing_alg: 'PS256',
+    introspection_signed_response_alg: 'EdDSA',
+    id_token_encrypted_response_alg: 'RSA-OAEP-256',
+    id_token_encrypted_response_enc: 'A256GCM',
+    userinfo_encrypted_response_alg: 'RSA-OAEP-256',
+    userinfo_encrypted_response_enc: 'A256GCM',
+  });
+  const payload = documentFrom({ ...draftOf(saved), client_name: 'Renamed client' });
+
+  assert.equal(payload.client_name, 'Renamed client');
+  for (const field of [
+    'authorization_signed_response_alg', 'response_modes',
+    'backchannel_authentication_request_signing_alg', 'introspection_signed_response_alg',
+    'id_token_encrypted_response_alg', 'id_token_encrypted_response_enc',
+    'userinfo_encrypted_response_alg', 'userinfo_encrypted_response_enc',
+  ] as const) assert.deepEqual(payload[field], saved[field], field);
+});
+
+test('whole-document edit keeps unrecognized signing values and explicit response modes', () => {
+  const saved = client({
+    authorization_signed_response_alg: 'FutureJarmAlg',
+    response_modes: ['future.jwt'],
+    backchannel_authentication_request_signing_alg: 'FutureCibaAlg',
+    introspection_signed_response_alg: 'FutureIntrospectionAlg',
+  });
+  const payload = documentFrom(draftOf(saved));
+  assert.equal(payload.authorization_signed_response_alg, 'FutureJarmAlg');
+  assert.deepEqual(payload.response_modes, ['future.jwt']);
+  assert.equal(payload.backchannel_authentication_request_signing_alg, 'FutureCibaAlg');
+  assert.equal(payload.introspection_signed_response_alg, 'FutureIntrospectionAlg');
+});
+
+test('shared-secret client keeps inline encryption keys on whole-document save', () => {
+  const jwks = { keys: [{ kty: 'RSA', kid: 'encryption-key', use: 'enc' }] };
+  const payload = documentFrom(draftOf(client({
+    compliance_profile: 'oidc',
+    token_endpoint_auth_method: 'client_secret_basic',
+    jwks,
+    id_token_encrypted_response_alg: 'RSA-OAEP-256',
+    id_token_encrypted_response_enc: 'A256GCM',
+  })));
+
+  assert.deepEqual(payload.jwks, jwks);
+  assert.equal(payload.id_token_encrypted_response_alg, 'RSA-OAEP-256');
+  assert.equal(payload.id_token_encrypted_response_enc, 'A256GCM');
 });
 
 test('preserves authentication, sender binding and every certificate identity variant', () => {
