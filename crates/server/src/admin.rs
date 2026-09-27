@@ -883,6 +883,12 @@ impl asterius_admin_api::ssf::SsfAdministration for DeploymentSsf {
         use time::format_description::well_known::Rfc3339;
 
         let runtime = self.upstream.as_ref().ok_or(Error::Unavailable)?;
+        let tenant_entity = self
+            .tenants
+            .find_by_id(tenant)
+            .await
+            .map_err(|_| Error::Unavailable)?
+            .ok_or(Error::Peer)?;
         let mut items = Vec::new();
         for config in runtime.peers.get(tenant.as_str()).into_iter().flatten() {
             let peer = config.issuer.as_str();
@@ -914,6 +920,7 @@ impl asterius_admin_api::ssf::SsfAdministration for DeploymentSsf {
             items.push(UpstreamPeerSummary {
                 peer_client_id: peer.to_owned(),
                 state,
+                expected_audience: crate::ssf_upstream::expected_audience(config, &tenant_entity),
                 allow_all_subjects: config.allow_all_subjects,
                 pending_since: pending
                     .as_ref()

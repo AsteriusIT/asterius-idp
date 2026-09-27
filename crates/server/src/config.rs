@@ -369,6 +369,9 @@ pub struct LdapSourceConfig {
 pub struct SsfUpstreamPeerConfig {
     pub issuer: Issuer,
     pub bearer_token_file: PathBuf,
+    /// Exact transmitter-assigned `aud` expected in the stream and SETs.
+    /// Defaults to this tenant's SSF receiver URL for existing peers.
+    pub expected_audience: Option<String>,
     /// Explicit consent to receive signals for every subject the upstream
     /// transmitter considers eligible (`default_subjects: ALL`).
     pub allow_all_subjects: bool,
@@ -908,6 +911,7 @@ struct RawLdapSource {
 struct RawSsfUpstreamPeer {
     issuer: String,
     bearer_token_file: PathBuf,
+    expected_audience: Option<String>,
     #[serde(default)]
     allow_all_subjects: bool,
 }
@@ -2322,9 +2326,22 @@ fn validate_ssf_upstream_peers(
                 );
                 return None;
             }
+            if entry.expected_audience.as_ref().is_some_and(|audience| {
+                audience.is_empty()
+                    || audience.len() > 512
+                    || audience.trim() != audience
+                    || audience.chars().any(char::is_control)
+            }) {
+                errors.problem(
+                    format!("{path}.expected_audience"),
+                    "must be a nonempty audience of at most 512 bytes without surrounding whitespace or control characters",
+                );
+                return None;
+            }
             Some(SsfUpstreamPeerConfig {
                 issuer,
                 bearer_token_file: entry.bearer_token_file,
+                expected_audience: entry.expected_audience,
                 allow_all_subjects: entry.allow_all_subjects,
             })
         })
@@ -3668,6 +3685,36 @@ mod tests {
             Err(other) => panic!("expected validation problems, got {other}"),
             Ok(_) => panic!("expected validation problems, configuration was accepted"),
         }
+    }
+
+    #[test]
+    fn upstream_audience_pin_is_explicit_and_bounded() {
+        let raw = RawSsfUpstreamPeer {
+            issuer: "https://transmitter.example".to_owned(),
+            bearer_token_file: PathBuf::from("/run/secrets/ssf-token"),
+            expected_audience: Some("receiver-client-id".to_owned()),
+            allow_all_subjects: false,
+        };
+        let mut errors = Collector::default();
+        let configured = validate_ssf_upstream_peers(0, Some(vec![raw]), &mut errors);
+        assert!(errors.0.is_empty());
+        assert_eq!(
+            configured[0].expected_audience.as_deref(),
+            Some("receiver-client-id")
+        );
+
+        let invalid = RawSsfUpstreamPeer {
+            issuer: "https://transmitter.example".to_owned(),
+            bearer_token_file: PathBuf::from("/run/secrets/ssf-token"),
+            expected_audience: Some(" receiver-client-id ".to_owned()),
+            allow_all_subjects: false,
+        };
+        let mut errors = Collector::default();
+        assert!(validate_ssf_upstream_peers(0, Some(vec![invalid]), &mut errors).is_empty());
+        assert_eq!(
+            errors.0[0].path,
+            "tenant[0].ssf_upstream_peer[0].expected_audience"
+        );
     }
 
     #[test]
