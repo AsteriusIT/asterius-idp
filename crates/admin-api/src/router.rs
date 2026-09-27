@@ -4714,7 +4714,9 @@ impl Handling<'_> {
                             })?;
                         serde_json::json!([owner, node.identifier]).to_string()
                     }
-                    flows::NodeKind::Stream | flows::NodeKind::IdentityProvider => {
+                    flows::NodeKind::Stream
+                    | flows::NodeKind::IdentityProvider
+                    | flows::NodeKind::User => {
                         return Err(AdminError::Conflict(
                             "integration setup is unavailable".into(),
                         ));
@@ -4952,7 +4954,8 @@ impl Handling<'_> {
             flows::NodeKind::Api
             | flows::NodeKind::Role
             | flows::NodeKind::Stream
-            | flows::NodeKind::IdentityProvider => {
+            | flows::NodeKind::IdentityProvider
+            | flows::NodeKind::User => {
                 return Err(AdminError::Unavailable);
             }
         }
@@ -5033,7 +5036,7 @@ impl Handling<'_> {
                     .await
                     .map_err(|error| group_error(crate::FLOW_APPLY_ID, error))?;
             }
-            flows::NodeKind::Stream | flows::NodeKind::IdentityProvider => {
+            flows::NodeKind::Stream | flows::NodeKind::IdentityProvider | flows::NodeKind::User => {
                 return Err(AdminError::Unavailable);
             }
         }
@@ -5148,6 +5151,12 @@ impl Handling<'_> {
         }
         let graph: flows::Graph =
             serde_json::from_value(saved["graph"].clone()).map_err(|_| AdminError::Unavailable)?;
+        flows::FlowInput {
+            name: saved["name"].as_str().unwrap_or_default().to_owned(),
+            graph: graph.clone(),
+            revision: Some(revision),
+        }
+        .validate()?;
         let applied_graph: Option<flows::Graph> = saved["applied_graph"]
             .as_object()
             .map(|_| serde_json::from_value(saved["applied_graph"].clone()))
@@ -5183,12 +5192,15 @@ impl Handling<'_> {
             flows::NodeKind::Role,
             flows::NodeKind::Stream,
             flows::NodeKind::IdentityProvider,
+            flows::NodeKind::User,
         ];
         for kind in ordered {
             for node in graph.nodes.iter().filter(|node| node.kind == kind) {
                 if !matches!(
                     kind,
-                    flows::NodeKind::Stream | flows::NodeKind::IdentityProvider
+                    flows::NodeKind::Stream
+                        | flows::NodeKind::IdentityProvider
+                        | flows::NodeKind::User
                 ) {
                     self.require_flow_scope(flows::scope_for(kind, false))?;
                 }
@@ -5501,7 +5513,9 @@ impl Handling<'_> {
                             explanation = "Connect exactly one application to this role.".into();
                         }
                     }
-                    flows::NodeKind::Stream | flows::NodeKind::IdentityProvider => {
+                    flows::NodeKind::Stream
+                    | flows::NodeKind::IdentityProvider
+                    | flows::NodeKind::User => {
                         action = if matches!(node.mode, flows::NodeMode::Reference) {
                             "document"
                         } else {
@@ -7584,6 +7598,7 @@ fn flow_client_matches(live: &Client, registration: &serde_json::Value) -> bool 
         "client_name",
         "redirect_uris",
         "jwks_uri",
+        "jwks",
         "token_endpoint_auth_method",
         "grant_types",
         "scope",
@@ -14792,6 +14807,7 @@ mod tests {
             "grant_types",
             "scope",
             "jwks_uri",
+            "jwks",
             "token_endpoint_auth_method",
             "id_token_signed_response_alg",
             "status",

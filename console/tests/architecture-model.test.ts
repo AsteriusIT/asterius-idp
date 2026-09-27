@@ -22,3 +22,12 @@ test('a connection cannot be repeated', () => {
   value.edges.push({ id: 'e', source: 'a', target: 'b' });
   assert.equal(validConnection(value, 'a', 'b'), false);
 });
+
+
+test('identity providers connect only to groups or users, and roles are leaves', () => {
+  const kinds: Kind[] = ['application', 'api', 'role', 'group', 'user', 'identity_provider', 'stream'];
+  for (const kind of kinds) {
+    assert.equal(validConnection(graph('identity_provider', kind), 'a', 'b'), kind === 'group' || kind === 'user');
+    assert.equal(validConnection(graph('role', kind), 'a', 'b'), false);
+  }
+});

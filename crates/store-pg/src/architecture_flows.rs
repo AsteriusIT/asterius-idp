@@ -569,11 +569,12 @@ impl PgArchitectureFlows {
         expected_updated_at: OffsetDateTime,
         registration: &ClientRegistration,
     ) -> Result<(), DomainError> {
-        let JwksSource::Uri(jwks_uri) = &registration.jwks else {
-            return Err(DomainError::invalid(
-                "jwks_uri",
-                "flow applications need a public JWKS URI",
-            ));
+        let (jwks, jwks_uri) = match &registration.jwks {
+            JwksSource::Uri(uri) => (None, Some(uri.as_str())),
+            JwksSource::Inline(keys) => (Some(keys.clone()), None),
+            JwksSource::None => {
+                return Err(DomainError::invalid("jwks", "public keys are required"));
+            }
         };
         let redirects = registration
             .redirect_uris
@@ -581,16 +582,17 @@ impl PgArchitectureFlows {
             .map(|uri| uri.as_str().to_owned())
             .collect::<Vec<_>>();
         let changed = sqlx::query(
-            "update clients set client_name = $4, redirect_uris = $5, jwks_uri = $6
+            "update clients set client_name = $4, redirect_uris = $5, jwks_uri = $6, jwks = $7
              where tenant_id = $1 and client_id = $2 and updated_at = $3
-               and token_endpoint_auth_method = 'private_key_jwt' and jwks is null",
+               and token_endpoint_auth_method = 'private_key_jwt'",
         )
         .bind(tenant.as_str())
         .bind(id)
         .bind(expected_updated_at)
         .bind(&registration.client_name)
         .bind(redirects)
-        .bind(jwks_uri.as_str())
+        .bind(jwks_uri)
+        .bind(jwks)
         .execute(&self.pool)
         .await
         .map_err(to_domain_error)?

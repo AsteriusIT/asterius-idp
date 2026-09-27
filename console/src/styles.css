@@ -1573,3 +1573,40 @@
 @media (max-width: 42rem) { .architecture-flow-list li, .architecture-object-list li { align-items: flex-start; flex-direction: column; } .architecture-canvas { height: 24rem; } }
 @media (max-width: 42rem) { .architecture-plan-list li { grid-template-columns: 1fr; gap: .15rem; } }
 }
+
+/* Dedicated architecture workspace: the canvas owns the available viewport. */
+.architecture-workspace { height: 100dvh; display: flex; flex-direction: column; background: var(--surface); color: var(--fg); }
+.architecture-workspace-header { display: flex; align-items: center; gap: .75rem; padding: .8rem 1rem; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.architecture-title { display: grid; flex: 1; min-width: 10rem; }
+.architecture-title small { color: var(--muted); }
+.architecture-workspace-body { display: grid; grid-template-columns: minmax(0, 1fr) 360px; flex: 1; min-height: 0; }
+.architecture-stage { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.architecture-stage-canvas { flex: 1; min-height: 0; background: var(--surface); }
+.architecture-stage .architecture-palette { padding: .65rem; margin: 0; border-bottom: 1px solid var(--line); }
+.architecture-sidepane { border-left: 1px solid var(--line); overflow-y: auto; min-height: 0; }
+.architecture-pane-tabs { display: flex; position: sticky; top: 0; z-index: 2; background: var(--surface); padding: .5rem; gap: .25rem; border-bottom: 1px solid var(--line); }
+.architecture-pane-tabs button { flex: 1; padding: .55rem .2rem; border-radius: .4rem; cursor: pointer; }
+.architecture-pane-tabs button[aria-pressed="true"] { background: var(--line); font-weight: 700; }
+.architecture-pane-content { padding: 1rem; display: grid; gap: 1rem; }
+.architecture-sidepane .architecture-inspector { display: grid; grid-template-columns: 1fr; gap: 1rem; }
+.architecture-sidepane .panel { margin: .75rem; }
+.architecture-card-kind { display: flex; align-items: center; gap: .4rem; }
+.architecture-role-leaf { min-width: 8rem; border-radius: 2rem; padding: .55rem 1.1rem; border-style: dashed; }
+.react-flow__node.selected .architecture-card { outline: 2px solid var(--accent, #6366f1); outline-offset: 2px; }
+.architecture-directory { display: grid; gap: .75rem; }
+.architecture-directory article { display: flex; align-items: center; gap: 1rem; padding: 1rem; border: 1px solid var(--line); border-radius: .75rem; }
+.architecture-directory article > div { flex: 1; min-width: 0; }
+.architecture-directory h2 { margin: 0; font-size: 1.1rem; }
+.architecture-directory p { margin: .25rem 0; }
+.architecture-directory a, .architecture-action { display: inline-flex; align-items: center; gap: .4rem; }
+.architecture-action { padding: .6rem .8rem; border: 1px solid var(--line); border-radius: .5rem; }
+@media (max-width: 760px) {
+  .architecture-workspace-body { grid-template-columns: 1fr; grid-template-rows: minmax(260px, 1fr) minmax(180px, 38%); overflow: auto; }
+  .architecture-sidepane { border-left: 0; border-top: 1px solid var(--line); }
+  .architecture-stage .architecture-palette { flex-wrap: nowrap; overflow-x: auto; flex-shrink: 0; }
+  .architecture-stage .architecture-palette > * { flex-shrink: 0; }
+  .architecture-directory article { flex-wrap: wrap; }
+}
+
+.architecture-sidepane .architecture-plan-list li { grid-template-columns: 1fr; gap: .25rem; }
+.architecture-sidepane .architecture-object-list li { flex-wrap: wrap; overflow-wrap: anywhere; }
