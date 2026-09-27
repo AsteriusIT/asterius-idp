@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { loadAllTenants, tenantSwitchUrl } from '../src/tenant-switcher-model.ts';
+import { loadAllTenants, suggestedTenantIssuer, tenantSwitchUrl } from '../src/tenant-switcher-model.ts';
 import type { TenantPage, TenantRow } from '../src/tenants.tsx';
 
 function tenant(id: string): TenantRow {
@@ -33,4 +33,10 @@ test('switcher keeps a session on a host that serves the target tenant', () => {
     'https://console.example/t/other/admin/#/overview');
   assert.equal(tenantSwitchUrl(target, 'https://unrelated.example', 'overview'),
     'https://id.example/t/other/admin/#/overview');
+});
+
+test('new tenants default to a distinct issuer path on the current host', () => {
+  assert.equal(suggestedTenantIssuer('photon', 'https://auth.demo.asteriusit.fr'),
+    'https://auth.demo.asteriusit.fr/t/photon');
+  assert.equal(suggestedTenantIssuer('', 'https://auth.demo.asteriusit.fr'), '');
 });
