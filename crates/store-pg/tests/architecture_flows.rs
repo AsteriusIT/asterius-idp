@@ -115,6 +115,102 @@ async fn drafts_are_tenant_bound_and_stale_writes_conflict() {
         repository.links(&one, id).await.expect("links")[0]["state"],
         "applied"
     );
+    let origins = repository
+        .origins(&one, "api", intent.resource)
+        .await
+        .expect("origins");
+    assert_eq!(origins.len(), 1);
+    assert_eq!(origins[0]["flow_id"], id.to_string());
+    assert_eq!(origins[0]["relation"], "managed");
+    assert!(
+        repository
+            .origins(&two, "api", intent.resource)
+            .await
+            .expect("other origins")
+            .is_empty()
+    );
+    let reference_flow = Uuid::new_v4();
+    repository
+        .create(
+            &one,
+            reference_flow,
+            "Reference",
+            json!({"schema_version": 1, "nodes": [], "edges": []}),
+            now,
+        )
+        .await
+        .expect("reference flow");
+    let reference_token = repository
+        .begin_apply(&one, reference_flow, 1, now)
+        .await
+        .expect("reference apply");
+    let reference = FlowLinkIntent {
+        node: "existing-api",
+        kind: "api",
+        resource: intent.resource,
+        relation: "reference",
+    };
+    repository
+        .reserve(&one, reference_flow, reference_token, 1, &reference, now)
+        .await
+        .expect("reference link");
+    repository
+        .complete(
+            &one,
+            reference_flow,
+            reference_token,
+            1,
+            "existing-api",
+            now,
+        )
+        .await
+        .expect("complete reference");
+    let origins = repository
+        .origins(&one, "api", intent.resource)
+        .await
+        .expect("both origins");
+    assert_eq!(origins.len(), 2);
+    assert_eq!(
+        origins
+            .iter()
+            .filter(|item| item["relation"] == "managed")
+            .count(),
+        1
+    );
+    assert_eq!(
+        origins
+            .iter()
+            .filter(|item| item["relation"] == "reference")
+            .count(),
+        1
+    );
+    let duplicate_flow = Uuid::new_v4();
+    repository
+        .create(
+            &one,
+            duplicate_flow,
+            "Duplicate origin",
+            json!({"schema_version": 1, "nodes": [], "edges": []}),
+            now,
+        )
+        .await
+        .expect("duplicate flow");
+    let duplicate_token = repository
+        .begin_apply(&one, duplicate_flow, 1, now)
+        .await
+        .expect("duplicate apply");
+    let duplicate = FlowLinkIntent {
+        node: "second-api",
+        kind: "api",
+        resource: intent.resource,
+        relation: "managed",
+    };
+    assert!(
+        repository
+            .reserve(&one, duplicate_flow, duplicate_token, 1, &duplicate, now)
+            .await
+            .is_err()
+    );
     let group_id = Uuid::new_v4();
     repository
         .create_group(&one, group_id, "engineering", "Engineering", now)

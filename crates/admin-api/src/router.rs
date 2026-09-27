@@ -377,6 +377,8 @@ async fn route_standard(
         crate::FLOW_UPDATE_ID => context.update_flow(body).await,
         crate::FLOW_PLAN_ID => context.plan_flow(body).await,
         crate::FLOW_APPLY_ID => context.apply_flow(body).await,
+        crate::FLOW_LINKS_ID => context.read_flow_links().await,
+        crate::FLOW_ORIGINS_ID => context.read_flow_origins().await,
         crate::RESOURCE_SERVERS_LIST_ID => context.list_resource_servers().await,
         crate::RESOURCE_SERVER_READ_ID => context.read_resource_server().await,
         crate::RESOURCE_SERVER_UPDATE_ID => context.update_resource_server(body).await,
@@ -4432,6 +4434,50 @@ impl Handling<'_> {
         Ok(json_no_store(StatusCode::OK, &document))
     }
 
+    async fn read_flow_links(&self) -> Result<Response, AdminError> {
+        let flow = self.flow_in_path()?;
+        self.state
+            .backend
+            .read_flow(&self.tenant.id, flow)
+            .await
+            .map_err(|error| group_error(crate::FLOW_LINKS_ID, error))?;
+        let items = self
+            .state
+            .backend
+            .flow_links(&self.tenant.id, flow)
+            .await
+            .map_err(|error| group_error(crate::FLOW_LINKS_ID, error))?;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({"items": items}),
+        ))
+    }
+
+    async fn read_flow_origins(&self) -> Result<Response, AdminError> {
+        let kind = query_value(&self.query, "kind")
+            .ok_or_else(|| AdminError::Invalid("resource kind is required".into()))?;
+        let resource = query_value(&self.query, "id")
+            .ok_or_else(|| AdminError::Invalid("resource ID is required".into()))?;
+        if !matches!(kind.as_str(), "application" | "api" | "group" | "role")
+            || resource.is_empty()
+            || resource.len() > 512
+        {
+            return Err(AdminError::Invalid(
+                "unsupported resource kind or ID".into(),
+            ));
+        }
+        let items = self
+            .state
+            .backend
+            .flow_origins(&self.tenant.id, &kind, &resource)
+            .await
+            .map_err(|error| group_error(crate::FLOW_ORIGINS_ID, error))?;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({"items": items}),
+        ))
+    }
+
     async fn create_flow(&self, body: axum::body::Body) -> Result<Response, AdminError> {
         let input: flows::FlowInput = self.parse_body(body).await?;
         input.validate()?;
@@ -5178,6 +5224,15 @@ impl Handling<'_> {
                                     explanation =
                                         "Referenced role does not exist under this application."
                                             .into();
+                                } else if action == "unchanged"
+                                    && live.is_some_and(|live| {
+                                        live.description.as_deref()
+                                            != requested.description.as_deref()
+                                    })
+                                {
+                                    action = "conflict";
+                                    explanation =
+                                        "The role description drifted from this flow.".into();
                                 } else if action == "retry" && live.is_some() {
                                     action = "conflict";
                                     explanation = "A previous apply stopped after role creation; verify its origin before retrying.".into();

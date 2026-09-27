@@ -159,6 +159,15 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
         Err(DomainError::NotFound)
     }
 
+    async fn flow_origins(
+        &self,
+        _tenant: &TenantId,
+        _kind: &str,
+        _resource: &str,
+    ) -> Result<Vec<serde_json::Value>, DomainError> {
+        Err(DomainError::NotFound)
+    }
+
     async fn begin_flow_apply(
         &self,
         _tenant: &TenantId,

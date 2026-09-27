@@ -157,6 +157,34 @@ impl PgArchitectureFlows {
         })).collect())
     }
 
+    /// Returns every flow that names this tenant's resource. A managed link is
+    /// its creation origin; references never claim ownership.
+    pub async fn origins(
+        &self,
+        tenant: &TenantId,
+        kind: &str,
+        resource: &str,
+    ) -> Result<Vec<Value>, DomainError> {
+        let rows: Vec<(Uuid, String, String, String, String)> = sqlx::query_as(
+            "select links.flow_id, flows.name, links.node_id, links.relation, links.state
+             from flow_resource_links links
+             join architecture_flows flows on flows.tenant_id = links.tenant_id and flows.flow_id = links.flow_id
+             where links.tenant_id = $1 and links.resource_kind = $2 and links.resource_id = $3
+             order by links.relation, flows.name, links.node_id",
+        )
+        .bind(tenant.as_str()).bind(kind).bind(resource)
+        .fetch_all(&self.pool).await.map_err(to_domain_error)?;
+        Ok(rows
+            .into_iter()
+            .map(|(flow, name, node, relation, state)| {
+                json!({
+                    "flow_id": flow, "flow_name": name, "node_id": node,
+                    "relation": relation, "state": state,
+                })
+            })
+            .collect())
+    }
+
     pub async fn begin_apply(
         &self,
         tenant: &TenantId,

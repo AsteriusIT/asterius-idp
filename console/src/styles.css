@@ -1567,6 +1567,9 @@
 .architecture-inspector { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: .75rem; padding: 1rem 0; }
 .architecture-plan-list { list-style: none; padding: 0; margin: 1rem 0 0; }
 .architecture-plan-list li { display: grid; grid-template-columns: minmax(10rem, 2fr) minmax(5rem, .5fr) minmax(12rem, 2fr); gap: .75rem; padding: .65rem 0; border-bottom: 1px solid var(--line); }
+.architecture-resource-id { display: block; max-width: 42rem; overflow-wrap: anywhere; color: var(--muted); }
+.flow-origin { display: flex; flex-wrap: wrap; gap: .4rem .8rem; margin: .3rem 0 .6rem; font-size: .85rem; }
+.flow-origin a { text-decoration: underline; text-underline-offset: .18em; }
 @media (max-width: 42rem) { .architecture-flow-list li, .architecture-object-list li { align-items: flex-start; flex-direction: column; } .architecture-canvas { height: 24rem; } }
 @media (max-width: 42rem) { .architecture-plan-list li { grid-template-columns: 1fr; gap: .15rem; } }
 }

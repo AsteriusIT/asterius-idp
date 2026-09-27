@@ -8,7 +8,8 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { mutate, read, type Session } from './api';
-import { validConnection, type ArchitectureNode, type Flow, type Graph, type Kind, type Mode, type Plan } from './architecture-model';
+import { validConnection, type ArchitectureNode, type Flow, type Graph, type Kind, type Mode, type Plan, type ResourceLink } from './architecture-model';
+import { hrefOf, paramsOf } from './routes';
 import { toast } from './components/ui/toast';
 import { Button, Field, LoadFailure, Panel, Screen, Skeleton } from './ui';
 
@@ -41,6 +42,8 @@ export function ArchitectureFlows({ session }: { session: Session }): JSX.Elemen
   const [busy, setBusy] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [plan, setPlan] = useState<Plan | null>(null);
+  const [links, setLinks] = useState<ResourceLink[]>([]);
+  const [linkRefresh, setLinkRefresh] = useState(0);
   const [planning, setPlanning] = useState(false);
   const [applying, setApplying] = useState(false);
   const canWrite = session.scopes.includes('admin.flows:write');
@@ -51,11 +54,33 @@ export function ArchitectureFlows({ session }: { session: Session }): JSX.Elemen
     }, error => { setFailure(error instanceof Error ? error.message : 'Flows could not be loaded'); setLoad('failed'); });
   }, []);
   useEffect(refresh, [refresh]);
+  useEffect(() => {
+    const target = paramsOf(window.location.hash).get('flow');
+    if (!target) return;
+    let active = true;
+    read(`flows/${encodeURIComponent(target)}`).then(value => {
+      if (!active) return;
+      const item = value as Flow;
+      setFlow(item); setName(item.name); setGraph(item.graph); setDirty(false); setPlan(null);
+      const node = paramsOf(window.location.hash).get('node');
+      setSelected(node && item.graph.nodes.some(entry => entry.id === node) ? node : null);
+    }, () => toast.error('Architecture could not be opened', 'Check that you can read this flow.'));
+    return () => { active = false; };
+  }, [session.workspace]);
+  useEffect(() => {
+    if (!flow) { setLinks([]); return; }
+    let active = true;
+    read(`flows/${encodeURIComponent(flow.id)}/links`).then(
+      value => { if (active) setLinks((value as { items: ResourceLink[] }).items); },
+      () => { if (active) setLinks([]); },
+    );
+    return () => { active = false; };
+  }, [flow?.id, flow?.applied_revision, linkRefresh, session.workspace]);
   const open = (item: Flow): void => {
-    setFlow(item); setName(item.name); setGraph(item.graph); setSelected(null); setDirty(false); setPlan(null);
+    setFlow(item); setName(item.name); setGraph(item.graph); setSelected(null); setDirty(false); setPlan(null); setLinkRefresh(value => value + 1);
   };
   const create = (): void => {
-    setFlow(null); setName('Untitled architecture'); setGraph(EMPTY); setSelected(null); setDirty(false); setPlan(null);
+    setFlow(null); setName('Untitled architecture'); setGraph(EMPTY); setSelected(null); setDirty(false); setPlan(null); setLinks([]);
   };
   const template = (): void => {
     const [app, api, role, group] = Array.from({ length: 4 }, () => crypto.randomUUID());
@@ -92,10 +117,12 @@ export function ArchitectureFlows({ session }: { session: Session }): JSX.Elemen
     if (!flow || !plan?.applicable) return;
     setApplying(true);
     mutate(`flows/${encodeURIComponent(flow.id)}/apply`, 'POST', session, { revision: plan.revision, digest: plan.digest }).then(() => {
+      setLinkRefresh(value => value + 1);
       toast.success('Architecture applied', 'Created resources are now linked to this flow.');
       read(`flows/${encodeURIComponent(flow.id)}`).then(value => open(value as Flow), () => refresh());
       refresh();
     }, error => {
+      setLinkRefresh(value => value + 1);
       setPlan(null);
       toast.error('Apply stopped', error instanceof Error ? error.message : 'Preview the flow again to inspect partial progress.');
       read(`flows/${encodeURIComponent(flow.id)}`).then(value => open(value as Flow), () => refresh());
@@ -238,12 +265,43 @@ export function ArchitectureFlows({ session }: { session: Session }): JSX.Elemen
           </li>)}</ul>
         </>}
       </Panel>}
+      {flow && <Panel title="Linked resources" description="Created resources keep this flow as their origin. Removing an object from the diagram never deletes its live resource.">
+        {links.length === 0 ? <p className="muted">No resources linked yet. Apply a plan to create or attach them.</p> :
+          <ul className="architecture-object-list">{links.map(link => <li key={link.node_id}>
+            <span><strong>{graph.nodes.find(node => node.id === link.node_id)?.label ?? link.node_id}</strong>
+              {' · '}{link.resource_kind} · {link.relation === 'managed' ? 'Created here' : 'Existing reference'}
+              {link.state === 'pending' ? ' · Apply pending' : ''}
+              {!graph.nodes.some(node => node.id === link.node_id) ? ' · Removed from draft; live resource kept' : ''}
+              <small className="architecture-resource-id">{link.resource_id}</small></span>
+            <a href={resourceHref(link)}>{resourceLabel(link.resource_kind)} →</a>
+          </li>)}</ul>}
+      </Panel>}
     </>}
   </Screen>;
 }
 
 function lines(value: string): string[] { return value.split('\n').map(item => item.trim()).filter(Boolean); }
 function asStrings(value: unknown): string[] { return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []; }
+
+function resourceLabel(kind: string): string {
+  if (kind === 'application') return 'Open applications';
+  if (kind === 'api') return 'Open resource servers';
+  if (kind === 'group') return 'Open groups';
+  if (kind === 'role') return 'Open roles';
+  return 'Open architecture';
+}
+function resourceHref(link: ResourceLink): string {
+  if (link.resource_kind === 'application') return hrefOf('clients');
+  if (link.resource_kind === 'api') return hrefOf('resources');
+  if (link.resource_kind === 'group') return hrefOf('groups');
+  if (link.resource_kind === 'role') {
+    try {
+      const [client] = JSON.parse(link.resource_id) as [string, string];
+      return hrefOf('roles', { client });
+    } catch { return hrefOf('roles'); }
+  }
+  return hrefOf('architecture');
+}
 
 function ConnectionForm({ graph, onAdd }: { graph: Graph; onAdd: (source: string, target: string) => void }): JSX.Element {
   const [source, setSource] = useState('');

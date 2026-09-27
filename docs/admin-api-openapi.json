@@ -2132,6 +2132,76 @@
         "x-asterius-scope": "admin.keys:write"
       }
     },
+    "/admin/api/v1/flow-origins": {
+      "get": {
+        "operationId": "flows.origins",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.flows:read"
+            ]
+          }
+        ],
+        "summary": "Finds the flows that created or reference a tenant resource",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.flows:read"
+      }
+    },
     "/admin/api/v1/flows": {
       "get": {
         "operationId": "flows.list",
@@ -2562,6 +2632,86 @@
         "x-asterius-idempotent": true,
         "x-asterius-reach": "tenant",
         "x-asterius-scope": "admin.flows:write"
+      }
+    },
+    "/admin/api/v1/flows/{flow_id}/links": {
+      "get": {
+        "operationId": "flows.links",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "flow_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.flows:read"
+            ]
+          }
+        ],
+        "summary": "Lists the resources linked to a saved architecture flow",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.flows:read"
       }
     },
     "/admin/api/v1/flows/{flow_id}/plan": {
