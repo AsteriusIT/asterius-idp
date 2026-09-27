@@ -1,7 +1,15 @@
 # Visual identity architecture builder
 
-Status: product and implementation design for `ast-q0af`. No provisioning
-behavior is implied by saving a diagram.
+Status: the first tenant-scoped builder is implemented. Saving a draft changes
+only the diagram. **Preview changes** checks live resources and returns a
+revision-bound digest; **Apply changes** explicitly provisions supported
+nodes and connections.
+
+The implemented catalog provisions FAPI web applications, APIs with scopes,
+groups, application roles, application-to-API access, and group-to-role grants.
+An application needs its JWKS URI and redirect URIs before it can be applied.
+The server rejects secrets in node settings. Stream and external identity
+provider nodes document architecture only; they do not configure integrations.
 
 ## Operator journey
 
@@ -15,19 +23,14 @@ behavior is implied by saving a diagram.
    The canvas rejects obviously invalid connections and explains why. The
    server performs the same validation on save and apply.
 4. Save a draft without changing live identity resources. **Preview changes**
-   shows each create, update, unchanged reference and conflict, with a link to
-   the affected live resource. The operator explicitly applies a validated
-   revision.
-5. The flow shows applied revision, resource links, drift and the last apply
-   result. A created resource's ordinary console page links back to the flow
-   and node that introduced it.
+   shows create, retry, reference, unchanged, attach, conflict, document, and
+   detached operations. The operator explicitly applies that exact digest.
+5. The flow shows its applied revision and the last apply error. A failed apply
+   can leave earlier steps complete; preview again before retrying.
 
-The first implemented template should provision an application, a resource
-server, its scopes and application roles, and a group with role assignments.
-Provider connections and Shared Signals streams can join the node catalog
-only when their respective admin APIs can safely express their setup. The
-canvas must not pretend that a drawn external identity provider is connected
-until the identity-brokering work in `ast-7vbr` exists.
+The Web app + API template supplies the graph shape; the operator fills in
+tenant-specific identifiers and credentials before applying. The canvas does
+not treat a drawn external identity provider as connected.
 
 ## Graph model
 
@@ -74,10 +77,9 @@ flow then reports drift against the last applied specification. A rename does
 not change the resource ID or erase its origin.
 
 Removing a node from a draft does not delete its live resource. Preview marks
-it **detached candidate** and offers an explicit, separately confirmed choice
-to keep or delete it. Destructive operations use the same RBAC and conflict
-checks as ordinary resource screens. A flow may be archived while preserving
-resource-origin history and audit records.
+it **detached**. Deletion and flow archival are future operations; use the
+ordinary resource screens for explicit deletion. Provenance survives diagram
+edits.
 
 ## Planning and applying
 
@@ -88,10 +90,9 @@ returns a bounded plan with explanations. Applying requires that exact plan
 digest and graph revision, so edits or drift between preview and apply force a
 fresh preview.
 
-The apply runner is idempotent. It records a run and each operation with a
-stable key based on flow, revision and node. It creates resources through the
-same domain services and audit paths as the ordinary admin API, records the
-returned IDs in `flow_resource_links`, and resumes safely after interruption.
+The apply runner records each operation with a stable flow/node link. It
+creates resources through the tenant's existing domain model and records
+their IDs in `flow_resource_links`. It resumes safely after interruption.
 Some operations span multiple tables or external effects, so an interrupted
 apply can be partial. The UI shows completed, pending and refused operations
 and offers a safe retry; it never reports the whole flow as applied while one

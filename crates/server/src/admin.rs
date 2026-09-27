@@ -2442,6 +2442,137 @@ impl DeploymentUsers {
 
 #[async_trait::async_trait]
 impl AdminBackend for Deployment {
+    async fn create_flow_role(
+        &self,
+        flow: uuid::Uuid,
+        token: uuid::Uuid,
+        revision: i64,
+        node: &str,
+        role: &asterius_domain::ApplicationRole,
+        now: time::OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        asterius_store_pg::PgArchitectureFlows::new(self.store.pool().clone())
+            .create_role_and_complete(flow, token, revision, node, role, now)
+            .await
+    }
+    async fn add_flow_client_resource(
+        &self,
+        tenant: &TenantId,
+        client: &str,
+        resource: &str,
+    ) -> Result<(), DomainError> {
+        asterius_store_pg::PgArchitectureFlows::new(self.store.pool().clone())
+            .add_client_resource(tenant, client, resource)
+            .await
+    }
+    async fn create_flow_api(
+        &self,
+        tenant: &TenantId,
+        step: &asterius_admin_api::flows::ApplyStep,
+        server: &asterius_domain::ResourceServer,
+    ) -> Result<(), DomainError> {
+        asterius_store_pg::PgArchitectureFlows::new(self.store.pool().clone())
+            .create_api_and_complete(
+                tenant,
+                &asterius_store_pg::FlowApplyStep {
+                    flow: step.flow,
+                    token: step.token,
+                    revision: step.revision,
+                    node: &step.node,
+                    now: step.now,
+                },
+                server,
+            )
+            .await
+    }
+    async fn create_flow_group(
+        &self,
+        tenant: &TenantId,
+        id: uuid::Uuid,
+        name: &str,
+        display_name: &str,
+        now: time::OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        asterius_store_pg::PgArchitectureFlows::new(self.store.pool().clone())
+            .create_group(tenant, id, name, display_name, now)
+            .await
+    }
+    async fn flow_links(
+        &self,
+        tenant: &TenantId,
+        flow: uuid::Uuid,
+    ) -> Result<Vec<serde_json::Value>, DomainError> {
+        asterius_store_pg::PgArchitectureFlows::new(self.store.pool().clone())
+            .links(tenant, flow)
+            .await
+    }
+
+    async fn begin_flow_apply(
+        &self,
+        tenant: &TenantId,
+        flow: uuid::Uuid,
+        revision: i64,
+        now: time::OffsetDateTime,
+    ) -> Result<uuid::Uuid, DomainError> {
+        asterius_store_pg::PgArchitectureFlows::new(self.store.pool().clone())
+            .begin_apply(tenant, flow, revision, now)
+            .await
+    }
+
+    async fn reserve_flow_link(
+        &self,
+        tenant: &TenantId,
+        flow: uuid::Uuid,
+        token: uuid::Uuid,
+        revision: i64,
+        link: &asterius_admin_api::flows::LinkIntent,
+        now: time::OffsetDateTime,
+    ) -> Result<serde_json::Value, DomainError> {
+        asterius_store_pg::PgArchitectureFlows::new(self.store.pool().clone())
+            .reserve(
+                tenant,
+                flow,
+                token,
+                revision,
+                &asterius_store_pg::FlowLinkIntent {
+                    node: &link.node,
+                    kind: &link.kind,
+                    resource: &link.resource,
+                    relation: &link.relation,
+                },
+                now,
+            )
+            .await
+    }
+
+    async fn complete_flow_link(
+        &self,
+        tenant: &TenantId,
+        flow: uuid::Uuid,
+        token: uuid::Uuid,
+        revision: i64,
+        node: &str,
+        now: time::OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        asterius_store_pg::PgArchitectureFlows::new(self.store.pool().clone())
+            .complete(tenant, flow, token, revision, node, now)
+            .await
+    }
+
+    async fn finish_flow_apply(
+        &self,
+        tenant: &TenantId,
+        flow: uuid::Uuid,
+        token: uuid::Uuid,
+        revision: i64,
+        digest: &str,
+        error: Option<&str>,
+    ) -> Result<(), DomainError> {
+        asterius_store_pg::PgArchitectureFlows::new(self.store.pool().clone())
+            .finish_apply(tenant, flow, token, revision, digest, error)
+            .await
+    }
+
     async fn list_flows(&self, tenant: &TenantId) -> Result<Vec<serde_json::Value>, DomainError> {
         asterius_store_pg::PgArchitectureFlows::new(self.store.pool().clone())
             .list(tenant)

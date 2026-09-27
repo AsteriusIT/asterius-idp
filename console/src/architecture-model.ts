@@ -6,7 +6,16 @@ export interface ArchitectureNode {
 }
 export interface ArchitectureEdge { id: string; source: string; target: string }
 export interface Graph { schema_version: 1; nodes: ArchitectureNode[]; edges: ArchitectureEdge[] }
-export interface Flow { id: string; name: string; graph: Graph; revision: number; updated_at: string }
+export interface Flow {
+  id: string; name: string; graph: Graph; revision: number; updated_at: string;
+  applied_revision?: number | null; last_apply_error?: string | null;
+}
+
+export interface PlanStep {
+  id: string; label: string; kind: string; action: 'create' | 'reference' | 'unchanged' | 'retry' | 'attach' | 'document' | 'detached' | 'conflict';
+  scope: string; resource_id: string | null; explanation: string;
+}
+export interface Plan { flow_id: string; revision: number; digest: string; applicable: boolean; steps: PlanStep[] }
 
 const VALID_CONNECTIONS = new Set([
   'application:api', 'group:role', 'application:role',

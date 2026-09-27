@@ -8,7 +8,7 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { mutate, read, type Session } from './api';
-import { validConnection, type ArchitectureNode, type Flow, type Graph, type Kind, type Mode } from './architecture-model';
+import { validConnection, type ArchitectureNode, type Flow, type Graph, type Kind, type Mode, type Plan } from './architecture-model';
 import { toast } from './components/ui/toast';
 import { Button, Field, LoadFailure, Panel, Screen, Skeleton } from './ui';
 
@@ -22,7 +22,8 @@ function ArchitectureCard({ data }: { data: CanvasData }): JSX.Element {
     <Handle type="target" position={Position.Left} />
     <span className="architecture-card-kind">{TYPES[data.kind]}</span>
     <strong>{data.label}</strong>
-    <span className="muted">{data.identifier || 'Set an identifier'}</span>
+    <span className="muted">{data.kind === 'application' && data.mode === 'managed'
+      ? 'Client ID assigned on Apply' : data.identifier || 'Set an identifier'}</span>
     <Handle type="source" position={Position.Right} />
   </div>;
 }
@@ -39,6 +40,9 @@ export function ArchitectureFlows({ session }: { session: Session }): JSX.Elemen
   const [selected, setSelected] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [plan, setPlan] = useState<Plan | null>(null);
+  const [planning, setPlanning] = useState(false);
+  const [applying, setApplying] = useState(false);
   const canWrite = session.scopes.includes('admin.flows:write');
   const refresh = useCallback(() => {
     setLoad('loading');
@@ -48,12 +52,26 @@ export function ArchitectureFlows({ session }: { session: Session }): JSX.Elemen
   }, []);
   useEffect(refresh, [refresh]);
   const open = (item: Flow): void => {
-    setFlow(item); setName(item.name); setGraph(item.graph); setSelected(null); setDirty(false);
+    setFlow(item); setName(item.name); setGraph(item.graph); setSelected(null); setDirty(false); setPlan(null);
   };
   const create = (): void => {
-    setFlow(null); setName('Untitled architecture'); setGraph(EMPTY); setSelected(null); setDirty(false);
+    setFlow(null); setName('Untitled architecture'); setGraph(EMPTY); setSelected(null); setDirty(false); setPlan(null);
   };
-  const change = (next: Graph): void => { setGraph(next); setDirty(true); };
+  const template = (): void => {
+    const [app, api, role, group] = Array.from({ length: 4 }, () => crypto.randomUUID());
+    setFlow(null); setName('Web app and API'); setSelected(null); setPlan(null); setDirty(true);
+    setGraph({ schema_version: 1, nodes: [
+      { id: app!, kind: 'application', label: 'Web application', identifier: '', mode: 'managed', x: 40, y: 100, settings: { redirect_uris: [], jwks_uri: '' } },
+      { id: api!, kind: 'api', label: 'API', identifier: '', mode: 'managed', x: 350, y: 40, settings: { scopes: [], default_token_lifetime_seconds: 300 } },
+      { id: role!, kind: 'role', label: 'Reader', identifier: 'reader', mode: 'managed', x: 350, y: 220, settings: { description: 'Read access to this application' } },
+      { id: group!, kind: 'group', label: 'Team', identifier: 'team', mode: 'managed', x: 40, y: 320, settings: {} },
+    ], edges: [
+      { id: crypto.randomUUID(), source: app!, target: api! },
+      { id: crypto.randomUUID(), source: app!, target: role! },
+      { id: crypto.randomUUID(), source: group!, target: role! },
+    ] });
+  };
+  const change = (next: Graph): void => { setGraph(next); setDirty(true); setPlan(null); };
   const save = (): void => {
     setBusy(true);
     const path = flow ? `flows/${encodeURIComponent(flow.id)}` : 'flows';
@@ -63,10 +81,33 @@ export function ArchitectureFlows({ session }: { session: Session }): JSX.Elemen
       open(saved); refresh(); toast.success('Architecture saved', saved.name);
     }, error => toast.error('Architecture was not saved', error instanceof Error ? error.message : 'Try again')).finally(() => setBusy(false));
   };
+  const preview = (): void => {
+    if (!flow) return;
+    setPlanning(true); setPlan(null);
+    mutate(`flows/${encodeURIComponent(flow.id)}/plan`, 'POST', session, { revision: flow.revision }).then(value => {
+      setPlan(value as Plan);
+    }, error => toast.error('Preview could not be built', error instanceof Error ? error.message : 'Try again')).finally(() => setPlanning(false));
+  };
+  const apply = (): void => {
+    if (!flow || !plan?.applicable) return;
+    setApplying(true);
+    mutate(`flows/${encodeURIComponent(flow.id)}/apply`, 'POST', session, { revision: plan.revision, digest: plan.digest }).then(() => {
+      toast.success('Architecture applied', 'Created resources are now linked to this flow.');
+      read(`flows/${encodeURIComponent(flow.id)}`).then(value => open(value as Flow), () => refresh());
+      refresh();
+    }, error => {
+      setPlan(null);
+      toast.error('Apply stopped', error instanceof Error ? error.message : 'Preview the flow again to inspect partial progress.');
+      read(`flows/${encodeURIComponent(flow.id)}`).then(value => open(value as Flow), () => refresh());
+    }).finally(() => setApplying(false));
+  };
   const addNode = (kind: Kind): void => {
     const id = crypto.randomUUID();
     const index = graph.nodes.length;
-    change({ ...graph, nodes: [...graph.nodes, { id, kind, label: TYPES[kind], identifier: '', mode: 'managed', x: 60 + (index % 4) * 230, y: 80 + Math.floor(index / 4) * 150, settings: {} }] });
+    const settings = kind === 'application' ? { redirect_uris: [], jwks_uri: '' }
+      : kind === 'api' ? { scopes: [], default_token_lifetime_seconds: 300 }
+      : kind === 'role' ? { description: '' } : {};
+    change({ ...graph, nodes: [...graph.nodes, { id, kind, label: TYPES[kind], identifier: '', mode: kind === 'stream' || kind === 'identity_provider' ? 'reference' : 'managed', x: 60 + (index % 4) * 230, y: 80 + Math.floor(index / 4) * 150, settings }] });
     setSelected(id);
   };
   const nodes: CanvasNode<CanvasData>[] = useMemo(() => graph.nodes.map(node => ({
@@ -107,7 +148,7 @@ export function ArchitectureFlows({ session }: { session: Session }): JSX.Elemen
   };
 
   return <Screen title="Architecture builder" description="Draw how applications, APIs and access fit together. Save a draft before provisioning resources."
-    actions={canWrite ? <Button variant="primary" onClick={create}>New architecture</Button> : undefined}>
+    actions={canWrite ? <div className="architecture-toolbar"><Button onClick={template}>Start from web app + API</Button><Button variant="primary" onClick={create}>Blank architecture</Button></div> : undefined}>
     <Panel title="Saved architectures" description="Open a diagram to edit its layout and connections.">
       {load === 'loading' && <Skeleton rows={3} label="Reading architectures." />}
       {load === 'failed' && <LoadFailure message={failure} onRetry={refresh} />}
@@ -121,7 +162,7 @@ export function ArchitectureFlows({ session }: { session: Session }): JSX.Elemen
       <Panel title={flow ? `Edit ${flow.name}` : 'New architecture'} description="Use the canvas or the object and connection lists below. The diagram is a draft until you apply a plan.">
         <div className="architecture-toolbar">
           <Field label="Architecture name">{props => <input {...props} value={name} maxLength={120} disabled={!canWrite} onChange={event => { setName(event.target.value); setDirty(true); }} />}</Field>
-          {canWrite && <Button variant="primary" disabled={busy || !dirty && Boolean(flow) || !name.trim()} onClick={save}>{busy ? 'Saving…' : 'Save diagram'}</Button>}
+          {canWrite && <Button variant="primary" disabled={busy || !dirty && Boolean(flow) || !name.trim()} onClick={save}>{busy ? 'Saving…' : 'Save draft'}</Button>}
         </div>
         {dirty && <p role="status" className="muted">Unsaved changes</p>}
         {canWrite && <div className="architecture-palette" aria-label="Add object">
@@ -139,14 +180,39 @@ export function ArchitectureFlows({ session }: { session: Session }): JSX.Elemen
       <Panel title="Objects" description="Select an object to edit its display name and stable identifier. Reference objects are linked without being owned by this flow.">
         <ul className="architecture-object-list">{graph.nodes.map(node => <li key={node.id}>
           <button type="button" className="identity-link" onClick={() => setSelected(node.id)} aria-current={selected === node.id ? 'true' : undefined}>{node.label}</button>
-          <span>{TYPES[node.kind]} · {node.mode === 'managed' ? 'Create with flow' : 'Existing reference'}</span>
+          <span>{TYPES[node.kind]} · {node.kind === 'stream' || node.kind === 'identity_provider' ? 'Diagram context only' : node.mode === 'managed' ? 'Create with flow' : 'Existing reference'}</span>
         </li>)}</ul>
         {selectedNode && <div className="architecture-inspector">
           <Field label="Display name">{props => <input {...props} value={selectedNode.label} disabled={!canWrite} onChange={event => updateSelected({ label: event.target.value })} />}</Field>
-          <Field label="Stable identifier">{props => <input {...props} value={selectedNode.identifier} disabled={!canWrite} onChange={event => updateSelected({ identifier: event.target.value })} />}</Field>
-          <Field label="Ownership">{props => <select {...props} value={selectedNode.mode} disabled={!canWrite} onChange={event => updateSelected({ mode: event.target.value as Mode })}>
-            <option value="managed">Create with flow</option><option value="reference">Existing reference</option>
+          {(selectedNode.kind !== 'application' || selectedNode.mode === 'reference') &&
+            <Field label="Stable identifier">{props => <input {...props} value={selectedNode.identifier} disabled={!canWrite} onChange={event => updateSelected({ identifier: event.target.value })} />}</Field>}
+          <Field label="Ownership">{props => <select {...props} value={selectedNode.mode} disabled={!canWrite || selectedNode.kind === 'stream' || selectedNode.kind === 'identity_provider'} onChange={event => updateSelected({ mode: event.target.value as Mode })}>
+            <option value="managed">Create with flow</option><option value="reference">{selectedNode.kind === 'stream' || selectedNode.kind === 'identity_provider' ? 'Diagram context only' : 'Existing reference'}</option>
           </select>}</Field>
+          {(selectedNode.kind === 'stream' || selectedNode.kind === 'identity_provider') &&
+            <p className="muted">Shown for architecture context. Apply does not configure or verify this integration.</p>}
+          {selectedNode.kind === 'application' && selectedNode.mode === 'managed' && <>
+            <Field label="Redirect URIs, one per line">{props => <textarea {...props} rows={3} disabled={!canWrite}
+              value={asStrings(selectedNode.settings.redirect_uris).join('\n')}
+              onChange={event => updateSelected({ settings: { ...selectedNode.settings, redirect_uris: lines(event.target.value) } })} />}</Field>
+            <Field label="Public JWKS URL">{props => <input {...props} type="url" disabled={!canWrite}
+              value={String(selectedNode.settings.jwks_uri ?? '')}
+              onChange={event => updateSelected({ settings: { ...selectedNode.settings, jwks_uri: event.target.value } })} />}</Field>
+          </>}
+          {selectedNode.kind === 'api' && selectedNode.mode === 'managed' && <>
+            <Field label="OAuth scopes, one per line">{props => <textarea {...props} rows={3} disabled={!canWrite}
+              value={asStrings(selectedNode.settings.scopes).join('\n')}
+              onChange={event => updateSelected({ settings: { ...selectedNode.settings, scopes: lines(event.target.value) } })} />}</Field>
+            <Field label="Default token lifetime (seconds)">{props => <input {...props} type="number" min={1} max={86400} disabled={!canWrite}
+              value={Number(selectedNode.settings.default_token_lifetime_seconds ?? 300)}
+              onChange={event => updateSelected({ settings: { ...selectedNode.settings, default_token_lifetime_seconds: Number(event.target.value) } })} />}</Field>
+          </>}
+          {selectedNode.kind === 'role' && <Field label="What this role permits">{props => <textarea {...props} rows={2} disabled={!canWrite}
+            value={String(selectedNode.settings.description ?? '')}
+            onChange={event => updateSelected({ settings: { ...selectedNode.settings, description: event.target.value } })} />}</Field>}
+          {selectedNode.kind === 'group' && <p className="muted">Use a lowercase machine name such as <code>engineering</code> as the stable identifier.</p>}
+          {selectedNode.kind === 'api' && <p className="muted">The stable identifier is an absolute HTTPS resource URL.</p>}
+          {selectedNode.kind === 'application' && selectedNode.mode === 'reference' && <p className="muted">Enter the existing application client ID as its identifier.</p>}
           {canWrite && <Button onClick={removeSelected}>Remove object from diagram</Button>}
         </div>}
       </Panel>
@@ -157,9 +223,27 @@ export function ArchitectureFlows({ session }: { session: Session }): JSX.Elemen
         </li>)}</ul>
         {canWrite && <ConnectionForm graph={graph} onAdd={addConnection} />}
       </Panel>
+      {flow && <Panel title="Preview and apply" description="Preview checks every object, connection and required permission. Applying uses this exact saved revision.">
+        <div className="architecture-toolbar">
+          <Button disabled={dirty || planning || applying} onClick={preview}>{planning ? 'Checking…' : 'Preview changes'}</Button>
+          {canWrite && plan?.applicable && <Button variant="primary" disabled={dirty || applying} onClick={apply}>{applying ? 'Applying…' : 'Apply this plan'}</Button>}
+        </div>
+        {dirty && <p className="muted">Save the diagram before previewing it.</p>}
+        {flow.applied_revision != null && <p className="muted">Last fully applied revision: {flow.applied_revision}.</p>}
+        {flow.last_apply_error && <p role="alert">Last apply stopped: {flow.last_apply_error}. Preview again to inspect progress.</p>}
+        {plan && <>
+          <p role="status">{plan.applicable ? 'Ready to apply.' : 'Resolve the conflicts below before applying.'} {plan.steps.length} planned items.</p>
+          <ul className="architecture-plan-list">{plan.steps.map(step => <li key={step.id}>
+            <strong>{step.label}</strong><span>{step.action}</span><span className="muted">{step.explanation || step.scope}</span>
+          </li>)}</ul>
+        </>}
+      </Panel>}
     </>}
   </Screen>;
 }
+
+function lines(value: string): string[] { return value.split('\n').map(item => item.trim()).filter(Boolean); }
+function asStrings(value: unknown): string[] { return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []; }
 
 function ConnectionForm({ graph, onAdd }: { graph: Graph; onAdd: (source: string, target: string) => void }): JSX.Element {
   const [source, setSource] = useState('');

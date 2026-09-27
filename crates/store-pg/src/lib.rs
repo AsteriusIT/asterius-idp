@@ -75,7 +75,7 @@ mod verified_claims;
 pub use admin_seed::{DeploymentAdmin, PgAdminSeed, Seeded};
 pub use aggregated_claims::{PgAggregatedClaims, StoredClaimSource};
 pub use application_roles::PgApplicationRoles;
-pub use architecture_flows::PgArchitectureFlows;
+pub use architecture_flows::{FlowApplyStep, FlowLinkIntent, PgArchitectureFlows};
 pub use audit::{PgAuditSink, VerifiedChain};
 pub use auth_requests::PgAuthRequestRepository;
 pub use authorization_details_types::PgAuthorizationDetailsTypes;
