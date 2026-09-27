@@ -10,6 +10,7 @@
 mod admin_seed;
 mod aggregated_claims;
 mod application_roles;
+mod architecture_flows;
 mod audit;
 mod auth_requests;
 mod authorization_details_types;
@@ -74,6 +75,7 @@ mod verified_claims;
 pub use admin_seed::{DeploymentAdmin, PgAdminSeed, Seeded};
 pub use aggregated_claims::{PgAggregatedClaims, StoredClaimSource};
 pub use application_roles::PgApplicationRoles;
+pub use architecture_flows::PgArchitectureFlows;
 pub use audit::{PgAuditSink, VerifiedChain};
 pub use auth_requests::PgAuthRequestRepository;
 pub use authorization_details_types::PgAuthorizationDetailsTypes;

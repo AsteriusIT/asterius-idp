@@ -48,6 +48,7 @@ export const NAVIGATION_ICONS: Readonly<Record<string, LucideIcon>> = {
   roles: ShieldCheckIcon,
   clients: AppWindowIcon,
   resources: ServerIcon,
+  architecture: NetworkIcon,
   'authorization-details': ShapesIcon,
   keys: KeyRoundIcon,
   policy: ScaleIcon,

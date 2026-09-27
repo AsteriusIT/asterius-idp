@@ -52,7 +52,7 @@ use crate::idempotency::{self, IdempotencyKey};
 use crate::operations::{Method, Operation};
 use crate::pagination::{Cursor, Page, PageRequest};
 use crate::{
-    audit, authorization_details_types, clients, csrf, groups, initial_access_tokens, keys,
+    audit, authorization_details_types, clients, csrf, flows, groups, initial_access_tokens, keys,
     openapi, outbox, policies, resource_servers, saml, scim, scim_groups, ssf, throttle, users,
 };
 
@@ -370,6 +370,10 @@ async fn route_standard(
         crate::CLIENT_CREATE_ID => context.create_client(body).await,
         crate::CLIENT_UPDATE_ID => context.update_client(body).await,
         crate::CLIENT_RESOURCES_UPDATE_ID => context.update_client_resources(body).await,
+        crate::FLOWS_LIST_ID => context.list_flows().await,
+        crate::FLOW_CREATE_ID => context.create_flow(body).await,
+        crate::FLOW_READ_ID => context.read_flow().await,
+        crate::FLOW_UPDATE_ID => context.update_flow(body).await,
         crate::RESOURCE_SERVERS_LIST_ID => context.list_resource_servers().await,
         crate::RESOURCE_SERVER_READ_ID => context.read_resource_server().await,
         crate::RESOURCE_SERVER_UPDATE_ID => context.update_resource_server(body).await,
@@ -4390,6 +4394,86 @@ impl Handling<'_> {
             StatusCode::OK,
             &serde_json::to_value(page).unwrap_or_else(|_| serde_json::json!({})),
         ))
+    }
+
+    async fn list_flows(&self) -> Result<Response, AdminError> {
+        let items = self
+            .state
+            .backend
+            .list_flows(&self.tenant.id)
+            .await
+            .map_err(|error| group_error(crate::FLOWS_LIST_ID, error))?;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({ "items": items }),
+        ))
+    }
+
+    fn flow_in_path(&self) -> Result<uuid::Uuid, AdminError> {
+        self.last_decoded_path_segment()?
+            .parse()
+            .map_err(|_| AdminError::NotFound)
+    }
+
+    async fn read_flow(&self) -> Result<Response, AdminError> {
+        let document = self
+            .state
+            .backend
+            .read_flow(&self.tenant.id, self.flow_in_path()?)
+            .await
+            .map_err(|error| group_error(crate::FLOW_READ_ID, error))?;
+        Ok(json_no_store(StatusCode::OK, &document))
+    }
+
+    async fn create_flow(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let input: flows::FlowInput = self.parse_body(body).await?;
+        input.validate()?;
+        if input.revision.is_some() {
+            return Err(AdminError::Invalid(
+                "new flows must not specify a revision".into(),
+            ));
+        }
+        let id = uuid::Uuid::new_v4();
+        let graph = serde_json::to_value(input.graph).map_err(|_| AdminError::Unavailable)?;
+        let document = self
+            .state
+            .backend
+            .create_flow(&self.tenant.id, id, &input.name, graph, self.now)
+            .await
+            .map_err(|error| group_error(crate::FLOW_CREATE_ID, error))?;
+        self.record(
+            EventType::ADMIN_CHANGED,
+            Detail::new()
+                .label("operation", crate::FLOW_CREATE_ID)
+                .text("flow_id", id.to_string()),
+        )
+        .await;
+        Ok(json_no_store(StatusCode::CREATED, &document))
+    }
+
+    async fn update_flow(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let id = self.flow_in_path()?;
+        let input: flows::FlowInput = self.parse_body(body).await?;
+        input.validate()?;
+        let revision = input
+            .revision
+            .filter(|revision| *revision > 0)
+            .ok_or_else(|| AdminError::Invalid("a positive flow revision is required".into()))?;
+        let graph = serde_json::to_value(input.graph).map_err(|_| AdminError::Unavailable)?;
+        let document = self
+            .state
+            .backend
+            .update_flow(&self.tenant.id, id, revision, &input.name, graph, self.now)
+            .await
+            .map_err(|error| group_error(crate::FLOW_UPDATE_ID, error))?;
+        self.record(
+            EventType::ADMIN_CHANGED,
+            Detail::new()
+                .label("operation", crate::FLOW_UPDATE_ID)
+                .text("flow_id", id.to_string()),
+        )
+        .await;
+        Ok(json_no_store(StatusCode::OK, &document))
     }
 
     async fn create_group(&self, body: axum::body::Body) -> Result<Response, AdminError> {
@@ -8503,6 +8587,46 @@ mod tests {
 
     #[async_trait::async_trait]
     impl AdminBackend for Handle {
+        async fn list_flows(
+            &self,
+            _tenant: &TenantId,
+        ) -> Result<Vec<serde_json::Value>, DomainError> {
+            Ok(Vec::new())
+        }
+
+        async fn read_flow(
+            &self,
+            _tenant: &TenantId,
+            id: uuid::Uuid,
+        ) -> Result<serde_json::Value, DomainError> {
+            Ok(
+                serde_json::json!({"id": id, "name": "Example", "graph": {"schema_version": 1, "nodes": [], "edges": []}, "revision": 1}),
+            )
+        }
+
+        async fn create_flow(
+            &self,
+            tenant: &TenantId,
+            id: uuid::Uuid,
+            _name: &str,
+            _graph: serde_json::Value,
+            _now: OffsetDateTime,
+        ) -> Result<serde_json::Value, DomainError> {
+            self.read_flow(tenant, id).await
+        }
+
+        async fn update_flow(
+            &self,
+            tenant: &TenantId,
+            id: uuid::Uuid,
+            _revision: i64,
+            _name: &str,
+            _graph: serde_json::Value,
+            _now: OffsetDateTime,
+        ) -> Result<serde_json::Value, DomainError> {
+            self.read_flow(tenant, id).await
+        }
+
         async fn federation_key_inventory(
             &self,
             _tenant: &TenantId,
@@ -9548,6 +9672,7 @@ mod tests {
             .replace("{tenant_id}", "acme")
             .replace("{kid}", SEEDED_KID)
             .replace("{client_id}", SEEDED_CLIENT_ID)
+            .replace("{flow_id}", SEEDED_INVITATION_ID)
             .replace("{identifier}", SEEDED_RESOURCE_PATH)
             .replace("{type}", SEEDED_DETAIL_TYPE)
             .replace("{user_id}", SEEDED_USER_ID)
@@ -9629,6 +9754,12 @@ mod tests {
             // the same document `POST /register` takes, validated by the same
             // call.
             crate::CLIENT_CREATE_ID | crate::CLIENT_UPDATE_ID => valid_registration(),
+            crate::FLOW_CREATE_ID => {
+                serde_json::json!({"name": "Walked", "graph": {"schema_version": 1, "nodes": [], "edges": []}})
+            }
+            crate::FLOW_UPDATE_ID => {
+                serde_json::json!({"name": "Walked", "revision": 1, "graph": {"schema_version": 1, "nodes": [], "edges": []}})
+            }
             crate::CLIENT_RESOURCES_UPDATE_ID => {
                 serde_json::json!({"resources": [SEEDED_RESOURCE]})
             }

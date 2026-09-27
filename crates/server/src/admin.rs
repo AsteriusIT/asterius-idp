@@ -2442,6 +2442,49 @@ impl DeploymentUsers {
 
 #[async_trait::async_trait]
 impl AdminBackend for Deployment {
+    async fn list_flows(&self, tenant: &TenantId) -> Result<Vec<serde_json::Value>, DomainError> {
+        asterius_store_pg::PgArchitectureFlows::new(self.store.pool().clone())
+            .list(tenant)
+            .await
+    }
+
+    async fn read_flow(
+        &self,
+        tenant: &TenantId,
+        id: uuid::Uuid,
+    ) -> Result<serde_json::Value, DomainError> {
+        asterius_store_pg::PgArchitectureFlows::new(self.store.pool().clone())
+            .read(tenant, id)
+            .await
+    }
+
+    async fn create_flow(
+        &self,
+        tenant: &TenantId,
+        id: uuid::Uuid,
+        name: &str,
+        graph: serde_json::Value,
+        now: time::OffsetDateTime,
+    ) -> Result<serde_json::Value, DomainError> {
+        asterius_store_pg::PgArchitectureFlows::new(self.store.pool().clone())
+            .create(tenant, id, name, graph, now)
+            .await
+    }
+
+    async fn update_flow(
+        &self,
+        tenant: &TenantId,
+        id: uuid::Uuid,
+        revision: i64,
+        name: &str,
+        graph: serde_json::Value,
+        now: time::OffsetDateTime,
+    ) -> Result<serde_json::Value, DomainError> {
+        asterius_store_pg::PgArchitectureFlows::new(self.store.pool().clone())
+            .update(tenant, id, revision, name, graph, now)
+            .await
+    }
+
     async fn federation_key_inventory(
         &self,
         tenant: &TenantId,

@@ -50,6 +50,7 @@ pub mod clients;
 pub mod console;
 pub mod csrf;
 pub mod error;
+pub mod flows;
 pub mod groups;
 pub mod id_jag;
 pub mod idempotency;
@@ -131,6 +132,10 @@ pub const CLIENT_READ_ID: &str = "clients.read";
 pub const CLIENT_HEALTH_ID: &str = "clients.health";
 /// The `operationId` of `POST /clients`.
 pub const CLIENT_CREATE_ID: &str = "clients.create";
+pub const FLOWS_LIST_ID: &str = "flows.list";
+pub const FLOW_CREATE_ID: &str = "flows.create";
+pub const FLOW_READ_ID: &str = "flows.read";
+pub const FLOW_UPDATE_ID: &str = "flows.update";
 /// The `operationId` of `PUT /clients/{client_id}`.
 pub const CLIENT_UPDATE_ID: &str = "clients.update";
 /// The `operationId` of `PUT /clients/{client_id}/resources`.
@@ -1415,6 +1420,38 @@ pub const USER_ROLES_UPDATE: Operation = Operation::mutation(
 );
 
 /// This tenant's managed group catalogue.
+pub const FLOWS_LIST: Operation = Operation::read(
+    FLOWS_LIST_ID,
+    "/flows",
+    S::Get,
+    A::new(R::Tenant, "admin.flows:read"),
+    "Lists saved architecture flows for this tenant",
+);
+
+pub const FLOW_CREATE: Operation = Operation::mutation(
+    FLOW_CREATE_ID,
+    "/flows",
+    M::Post,
+    A::new(R::Tenant, "admin.flows:write"),
+    "Creates a saved architecture flow",
+);
+
+pub const FLOW_READ: Operation = Operation::read(
+    FLOW_READ_ID,
+    "/flows/{flow_id}",
+    S::Get,
+    A::new(R::Tenant, "admin.flows:read"),
+    "Reads one saved architecture flow",
+);
+
+pub const FLOW_UPDATE: Operation = Operation::mutation(
+    FLOW_UPDATE_ID,
+    "/flows/{flow_id}",
+    M::Put,
+    A::new(R::Tenant, "admin.flows:write"),
+    "Updates a flow when its revision still matches",
+);
+
 pub const GROUPS_LIST: Operation = Operation::read(
     GROUPS_LIST_ID,
     "/groups",
@@ -1839,7 +1876,7 @@ pub const SCIM_BULK: Operation = Operation::mutation(
     "SCIM Bulk is unsupported by this service",
 );
 
-static REGISTRY: [Operation; 135] = [
+static REGISTRY: [Operation; 139] = [
     SESSION_READ,
     SESSION_END,
     OVERVIEW_USERS,
@@ -1932,6 +1969,10 @@ static REGISTRY: [Operation; 135] = [
     USER_GRANT_REVOKE,
     USER_ROLES_READ,
     USER_ROLES_UPDATE,
+    FLOWS_LIST,
+    FLOW_CREATE,
+    FLOW_READ,
+    FLOW_UPDATE,
     GROUPS_LIST,
     SCIM_CONFIG,
     SCIM_SCHEMAS,
