@@ -7,16 +7,16 @@ nodes and connections.
 
 The implemented catalog provisions FAPI web applications, APIs with scopes,
 groups, application roles, application-to-API access, and group-to-role grants.
-An application needs its JWKS URI and redirect URIs before it can be applied.
+An application needs either a public JWKS URI or inline public JWKS JSON, plus redirect URIs, before it can be applied.
 The server rejects secrets in node settings. Stream and external identity
 provider nodes document architecture only; they do not configure integrations.
 
 ## Operator journey
 
-1. Open **Architecture flows** for the active tenant. Start from a blank canvas
+1. Use the **Architecture builder** network icon before the account menu in the top bar for the active tenant. Start from a blank canvas
    or a template such as **Web app + API**.
 2. Add typed nodes for a web application, API/resource server, group, role and
-   supported signal integration. Inspect each node in a labelled form. A node
+   context-only signal integration or user. Select a node to inspect it in the right pane; click the canvas background for architecture settings. Roles are leaf nodes. External identity providers may connect only to groups or users. Select a connection to reveal its remove action. Unlinked draft objects can be deleted; removing linked objects preserves live resources. A node
    either describes a resource to create or references an existing resource.
 3. Connect nodes with named relationships, such as **app calls API**, **role
    belongs to app**, **group grants role** or **stream sends events to receiver**.
@@ -130,3 +130,7 @@ Its [custom nodes](https://reactflow.dev/learn/customization/custom-nodes),
 [connection validation](https://reactflow.dev/examples/interaction/validation)
 and [JSON flow format](https://reactflow.dev/api-reference/types/react-flow-json-object)
 cover the canvas mechanics; the server owns the product semantics above.
+
+## Application developer experience
+
+See the [developer experience draft](developer-experience.md) for web app, SPA and API integration paths, language recipes, and the proposed connection handoff. A condensed version is available in console Help & guides.

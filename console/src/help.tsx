@@ -3,6 +3,7 @@ import type { Session } from './api';
 import { visibleTo } from './navigation';
 import { hrefOf } from './routes';
 import { Panel, Screen } from './ui';
+import { DeveloperGuide } from './developer-guide';
 
 interface Guide {
   readonly title: string;
@@ -35,10 +36,10 @@ const GUIDES: readonly Guide[] = [
     title: 'Build an access architecture', purpose: 'Draw and provision a web application, API, group, and roles together.',
     route: 'architecture', action: 'Open architecture builder',
     steps: [
-      'Choose View to inspect a saved architecture, or Edit to open its fullscreen workspace. Start a new architecture from Web app + API or a blank diagram. Add objects from the toolbar; select one to edit its settings in the right pane.',
-      'Enter application callback URLs and choose a public JWKS URL or paste public JWKS JSON. Enter the API audience and permissions. Connect applications to APIs and role leaves, and groups to roles, using handles or the Links tab. Save draft preserves the diagram without changing live resources.',
+      'Choose View to inspect a saved architecture, or Edit to open its fullscreen workspace. Start a new architecture from Web app + API or a blank diagram. Open the builder using the network icon beside your account menu. Add objects from the toolbar; select one to edit its settings in the right pane. Click the canvas background for architecture settings.',
+      'Enter application callback URLs and choose a public JWKS URL or paste public JWKS JSON. Enter the API audience and permissions. Connect applications to APIs and role leaves, and groups to roles, by dragging between their handles. Save draft preserves the diagram without changing live resources.',
       'Preview the saved revision. Changes to settings owned by this flow appear as updates; manual changes to those settings appear as conflicts. If Apply stops partway through, preview again to see what completed and retry safely.',
-      'Open a linked resource to return to its creating flow. Removing an object from the diagram leaves the live resource in place. Streams, users and external identity providers are diagram context only. Providers may connect only to groups or users; these links do not configure sign-in or membership.',
+      'Open a linked resource to return to its creating flow. Use Delete draft object for objects that have not been linked to a resource. For linked objects, Remove from diagram leaves the live resource in place. Select a connection on the canvas to remove it. Streams, users and external identity providers are diagram context only. Providers may connect only to groups or users; these links do not configure sign-in or membership.',
     ],
   },
   {
@@ -124,6 +125,7 @@ export function Help({ session }: Readonly<{ session: Session }>): JSX.Element {
           ? <div className="guide-grid">{guides.map((guide) => <GuideCard key={guide.title} guide={guide} />)}</div>
           : <p className="muted">Your current role has no management screens. Ask an administrator which access you need.</p>}
       </Panel>
+      <DeveloperGuide />
       <Panel title="Words used here" description="A few terms you will see across the console.">
         <dl className="guide-terms">
           <Term name="Tenant">An isolated identity workspace. Users, applications, and policy belong to a tenant.</Term>

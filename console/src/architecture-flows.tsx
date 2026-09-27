@@ -1,11 +1,11 @@
 import { memo, useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
-import { AppWindow, Database, Users, UserRound, ShieldCheck, Radio, LogIn, ArrowLeft, Plus, Pencil, Eye } from 'lucide-react';
+import { AppWindow, Database, Users, UserRound, ShieldCheck, Radio, LogIn, ArrowLeft, Plus, Pencil, Eye, Trash2, X } from 'lucide-react';
 import {
-  Background, Controls, Handle, MiniMap, Position, ReactFlow,
+  Background, Controls, Handle, MiniMap, Position, ReactFlow, BaseEdge, EdgeLabelRenderer, getBezierPath,
   applyEdgeChanges, applyNodeChanges,
   type Edge as CanvasEdge, type EdgeChange,
-  type Node as CanvasNode, type NodeChange,
+  type Node as CanvasNode, type NodeChange, type EdgeProps,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { mutate, read, type Session } from './api';
@@ -33,7 +33,17 @@ const ArchitectureCard = memo(function ArchitectureCard({ data }: { data: Canvas
 });
 const NODE_TYPES = { architecture: ArchitectureCard };
 
-function FlowCanvas({ graph, writable, onSelect, onChange }: { graph: Graph; writable: boolean; onSelect: (id: string) => void; onChange: (graph: Graph) => void }): JSX.Element {
+function ArchitectureLink(props: EdgeProps): JSX.Element {
+  const [path, x, y] = getBezierPath(props);
+  const remove = props.data?.remove as (() => void) | undefined;
+  return <><BaseEdge path={path} {...(props.selected ? { style: { stroke: 'var(--accent, #6366f1)', strokeWidth: 2 } } : {})} />
+    <EdgeLabelRenderer><div className="architecture-edge-label nodrag nopan" style={{ transform: `translate(-50%, -50%) translate(${x}px, ${y}px)` }}>
+      <span>{props.label}</span>{props.selected && remove && <button type="button" title="Remove connection from diagram" aria-label="Remove connection from diagram" onClick={event => { event.stopPropagation(); remove(); }}><Trash2 size={15} /></button>}
+    </div></EdgeLabelRenderer></>;
+}
+const EDGE_TYPES = { architecture: ArchitectureLink };
+
+function FlowCanvas({ graph, writable, onSelect, onChange }: { graph: Graph; writable: boolean; onSelect: (id: string | null) => void; onChange: (graph: Graph) => void }): JSX.Element {
   const [nodes, setNodes] = useState<CanvasNode<CanvasData>[]>([]);
   const [edges, setEdges] = useState<CanvasEdge[]>([]);
   useEffect(() => setNodes(previous => graph.nodes.map(node => {
@@ -44,12 +54,12 @@ function FlowCanvas({ graph, writable, onSelect, onChange }: { graph: Graph; wri
   useEffect(() => setEdges(graph.edges.map(edge => {
     const from = graph.nodes.find(node => node.id === edge.source)?.kind;
     const to = graph.nodes.find(node => node.id === edge.target)?.kind;
-    return { ...edge, label: to === 'role' ? from === 'group' ? 'Grants' : 'Defines' : from === 'identity_provider' ? 'Supplies identities' : to === 'api' ? 'Calls' : 'Sends events' };
-  })), [graph.edges, graph.nodes]);
+    return { ...edge, type: 'architecture', data: { remove: writable ? () => onChange({ ...graph, edges: graph.edges.filter(item => item.id !== edge.id) }) : undefined }, label: to === 'role' ? from === 'group' ? 'Grants' : 'Defines' : from === 'identity_provider' ? 'Supplies identities' : to === 'api' ? 'Calls' : 'Sends events' };
+  })), [graph, writable, onChange]);
   const onNodesChange = useCallback((changes: NodeChange<CanvasNode<CanvasData>>[]) => setNodes(current => applyNodeChanges(changes, current)), []);
   const onEdgesChange = useCallback((changes: EdgeChange<CanvasEdge>[]) => setEdges(current => applyEdgeChanges(changes, current)), []);
-  return <ReactFlow nodes={nodes} edges={edges} nodeTypes={NODE_TYPES} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
-    onNodeClick={(_, node) => onSelect(node.id)} nodesDraggable={writable} nodesConnectable={writable} deleteKeyCode={null}
+  return <ReactFlow nodes={nodes} edges={edges} nodeTypes={NODE_TYPES} edgeTypes={EDGE_TYPES} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
+    onNodeClick={(_, node) => onSelect(node.id)} onPaneClick={() => onSelect(null)} onEdgeClick={() => onSelect(null)} nodesDraggable={writable} nodesConnectable={writable} deleteKeyCode={null}
     onNodeDragStop={(_, moved, dragged) => onChange({ ...graph, nodes: graph.nodes.map(node => { const position = (dragged.length ? dragged : [moved]).find(item => item.id === node.id)?.position; return position ? { ...node, ...position } : node; }) })}
     onConnect={connection => { if (writable && connection.source && connection.target && validConnection(graph, connection.source, connection.target)) onChange({ ...graph, edges: [...graph.edges, { id: crypto.randomUUID(), source: connection.source, target: connection.target }] }); }}
     isValidConnection={connection => Boolean(connection.source && connection.target && validConnection(graph, connection.source, connection.target))} fitView>
@@ -83,7 +93,7 @@ const EMPTY: Graph = { schema_version: 1, nodes: [], edges: [] };
 
 function ArchitectureWorkspace({ session, flowId, editing, templateRequested, initialNode }: { session: Session; flowId: string | null; editing: boolean; templateRequested: boolean; initialNode: string | null }): JSX.Element {
   const [loadError, setLoadError] = useState('');
-  const [tab, setTab] = useState<'object' | 'connections' | 'review' | 'resources'>('object');
+  const [tab, setTab] = useState<'object' | 'review' | 'resources'>('object');
   const [flow, setFlow] = useState<Flow | null>(null);
   const [name, setName] = useState('');
   const [graph, setGraph] = useState<Graph>(EMPTY);
@@ -142,7 +152,7 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
       { id: crypto.randomUUID(), source: group!, target: role! },
     ] });
   };
-  const change = (next: Graph): void => { setGraph(next); setDirty(true); setPlan(null); };
+  const change = useCallback((next: Graph): void => { setGraph(next); setDirty(true); setPlan(null); }, []);
   const save = (): void => {
     if (!canWrite || hasInvalidKeys) return;
     setBusy(true);
@@ -194,9 +204,6 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
     change({ ...graph, nodes: graph.nodes.filter(node => node.id !== selected), edges: graph.edges.filter(edge => edge.source !== selected && edge.target !== selected) });
     setSelected(null);
   };
-  const addConnection = (source: string, target: string): void => {
-    if (validConnection(graph, source, target)) change({ ...graph, edges: [...graph.edges, { id: crypto.randomUUID(), source, target }] });
-  };
 
   useEffect(() => {
     if (!dirty) return;
@@ -209,23 +216,23 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
   if (flowId && !flow) return <Skeleton rows={5} label="Loading architecture" />;
   return <section className="architecture-workspace" aria-label={editing ? 'Architecture editor' : 'Architecture viewer'}>
     <header className="architecture-workspace-header">
-      <Button onClick={() => navigate(hrefOf('architecture'))} disabled={applying || busy}><ArrowLeft size={18} />Architectures</Button>
+      <Button title="Back to architectures" aria-label="Back to architectures" onClick={() => navigate(hrefOf('architecture'))} disabled={applying || busy}><ArrowLeft size={18} /></Button>
       <div className="architecture-title"><strong>{name}</strong><small>{session.workspace} · {editing ? dirty ? 'Unsaved changes' : 'Editing draft' : 'Viewing saved architecture'}</small></div>
-      {editing ? <><Button disabled={!canWrite || hasInvalidKeys || !name.trim() || !dirty && Boolean(flow)} onClick={save}>{busy ? 'Saving…' : 'Save draft'}</Button>{flow && <Button disabled={busy || applying} onClick={() => navigate(hrefOf('architecture', { flow: flow.id }))}>View</Button>}</> : session.scopes.includes('admin.flows:write') && flow && <Button onClick={() => navigate(hrefOf('architecture', { flow: flow.id, mode: 'edit' }))}><Pencil size={16} />Edit architecture</Button>}
-      {flow && <Button disabled={dirty || planning || applying} onClick={() => { setTab('review'); preview(); }}>{planning ? 'Checking…' : 'Review changes'}</Button>}
+      {editing ? <><Button disabled={!canWrite || hasInvalidKeys || !name.trim() || !dirty && Boolean(flow)} onClick={save}>{busy ? 'Saving…' : 'Save draft'}</Button>{flow && <Button disabled={busy || applying} title="View architecture" aria-label="View architecture" onClick={() => navigate(hrefOf('architecture', { flow: flow.id }))}><Eye size={18} /></Button>}</> : session.scopes.includes('admin.flows:write') && flow && <Button onClick={() => navigate(hrefOf('architecture', { flow: flow.id, mode: 'edit' }))}><Pencil size={16} />Edit architecture</Button>}
+      {flow && <Button disabled={dirty || planning || applying} onClick={() => { setSelected(null); setTab('review'); preview(); }}>{planning ? 'Checking…' : 'Review changes'}</Button>}
     </header>
     <div className="architecture-workspace-body">
       <div className="architecture-stage">
-        {canWrite && <div className="architecture-palette" aria-label="Add an object">{(Object.keys(TYPES) as Kind[]).map(kind => { const Icon = ICONS[kind]; return <Button key={kind} small onClick={() => { addNode(kind); setTab('object'); }}><Icon size={16} />{TYPES[kind]}</Button>; })}</div>}
+        {canWrite && <div className="architecture-palette" aria-label="Add an object">{(Object.keys(TYPES) as Kind[]).map(kind => { const Icon = ICONS[kind]; return <Button key={kind} small title={`Add ${TYPES[kind].toLowerCase()}`} aria-label={`Add ${TYPES[kind].toLowerCase()}`} onClick={() => { addNode(kind); setTab('object'); }}><Icon size={18} />{(kind === 'identity_provider' || kind === 'stream') && TYPES[kind]}</Button>; })}</div>}
         <div className="architecture-stage-canvas"><FlowCanvas graph={graph} writable={canWrite} onSelect={id => { setSelected(id); setTab('object'); }} onChange={change} /></div>
       </div>
       <aside className="architecture-sidepane" aria-label="Architecture details">
-        {graph.edges.some(edge => !validConnection({ ...graph, edges: graph.edges.filter(item => item.id !== edge.id) }, edge.source, edge.target)) && <p role="alert" className="architecture-pane-content">This diagram has an unsupported link. Open Links to remove it. Identity providers can connect only to groups or users.</p>}
-        <nav className="architecture-pane-tabs" aria-label="Details sections">{(['object', 'connections', 'review', 'resources'] as const).map(value => <button type="button" key={value} aria-pressed={tab === value} onClick={() => setTab(value)}>{value === 'object' ? 'Objects' : value === 'review' ? 'Review' : value === 'resources' ? 'Resources' : 'Links'}</button>)}</nav>
+        {graph.edges.some(edge => !validConnection({ ...graph, edges: graph.edges.filter(item => item.id !== edge.id) }, edge.source, edge.target)) && <p role="alert" className="architecture-pane-content">This diagram has an unsupported link. Select the link on the canvas to remove it. Identity providers can connect only to groups or users.</p>}
+        {selectedNode ? <div className="architecture-pane-heading"><strong>{TYPES[selectedNode.kind]}</strong><Button small title="Architecture settings" aria-label="Architecture settings" onClick={() => { setSelected(null); setTab('object'); }}><X size={18} /></Button></div> :
+          <nav className="architecture-pane-tabs" aria-label="Architecture settings sections">{(['object', 'review', 'resources'] as const).map(value => <button type="button" key={value} aria-pressed={tab === value} onClick={() => setTab(value)}>{value === 'object' ? 'Settings' : value === 'review' ? 'Review' : 'Resources'}</button>)}</nav>}
         {tab === 'object' && <div className="architecture-pane-content">
-          <Field label="Architecture name">{props => <input {...props} value={name} maxLength={120} disabled={!canWrite} onChange={event => { setName(event.target.value); setDirty(true); setPlan(null); }} />}</Field>
-          <Field label="Object to inspect">{props => <select {...props} value={selected ?? ''} onChange={event => setSelected(event.target.value || null)}><option value="">Select an object on the canvas</option>{graph.nodes.map(node => <option key={node.id} value={node.id}>{node.label} · {TYPES[node.kind]}</option>)}</select>}</Field>
-          {!selectedNode && <p className="muted">Select an object to see its settings. Add objects from the toolbar, then connect their handles or use Links.</p>}
+          {!selectedNode && <><h2>Architecture settings</h2><Field label="Architecture name">{props => <input {...props} value={name} maxLength={120} disabled={!canWrite} onChange={event => { setName(event.target.value); setDirty(true); setPlan(null); }} />}</Field>
+            <p className="muted">Select an object to edit it. Drag between handles to connect objects. Select a connection to remove it. Click the canvas background to return here.</p><Button onClick={() => navigate(hrefOf('help'))}>Developer integration guide</Button></>}
         {selectedNode && <div className="architecture-inspector">
           <Field label="Display name">{props => <input {...props} value={selectedNode.label} disabled={!canWrite} onChange={event => updateSelected({ label: event.target.value })} />}</Field>
           {(selectedNode.kind !== 'application' || selectedNode.mode === 'reference') &&
@@ -253,16 +260,10 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
           {selectedNode.kind === 'application' && selectedNode.mode === 'reference' && <p className="muted">Enter the existing application client ID as its identifier.</p>}
           {selectedNode.kind === 'identity_provider' && <p>Connect this provider to a group or user. This describes where identities come from; it does not configure sign-in.</p>}
           {selectedNode.kind === 'role' && <p>A role is a leaf: one application defines it, and groups may grant it.</p>}
-          {canWrite && <Button onClick={removeSelected}>Remove object from diagram</Button>}
+          {canWrite && <Button variant="danger" onClick={removeSelected}><Trash2 size={16} />{links.some(link => link.node_id === selectedNode.id) ? 'Remove from diagram' : 'Delete draft object'}</Button>}
+          {links.some(link => link.node_id === selectedNode.id) && <p className="muted">This object has a linked resource. Removing it from the diagram keeps the live resource.</p>}
         </div>}
         </div>}
-      {tab === 'connections' && <Panel title="Connections" description="Application → API; application → role; group → role; application → stream; identity provider → group or user.">
-        <ul className="architecture-object-list">{graph.edges.map(edge => <li key={edge.id}>
-          <span>{graph.nodes.find(node => node.id === edge.source)?.label} → {graph.nodes.find(node => node.id === edge.target)?.label}</span>
-          {canWrite && <Button small onClick={() => change({ ...graph, edges: graph.edges.filter(item => item.id !== edge.id) })}>Remove</Button>}
-        </li>)}</ul>
-        {canWrite && <ConnectionForm graph={graph} onAdd={addConnection} />}
-      </Panel>}
       {tab === 'review' && flow && <Panel title="Preview and apply" description="Preview checks every object, connection and required permission. Applying uses this exact saved revision.">
         <div className="architecture-toolbar">
           <Button disabled={dirty || planning || applying} onClick={preview}>{planning ? 'Checking…' : 'Preview changes'}</Button>
@@ -338,14 +339,4 @@ function resourceHref(link: ResourceLink): string {
     } catch { return hrefOf('roles'); }
   }
   return hrefOf('architecture');
-}
-
-function ConnectionForm({ graph, onAdd }: { graph: Graph; onAdd: (source: string, target: string) => void }): JSX.Element {
-  const [source, setSource] = useState('');
-  const [target, setTarget] = useState('');
-  return <div className="architecture-toolbar">
-    <Field label="From">{props => <select {...props} value={source} onChange={event => setSource(event.target.value)}><option value="">Choose object</option>{graph.nodes.map(node => <option key={node.id} value={node.id}>{node.label}</option>)}</select>}</Field>
-    <Field label="To">{props => <select {...props} value={target} onChange={event => setTarget(event.target.value)}><option value="">Choose object</option>{graph.nodes.filter(node => validConnection(graph, source, node.id)).map(node => <option key={node.id} value={node.id}>{node.label}</option>)}</select>}</Field>
-    <Button disabled={!validConnection(graph, source, target)} onClick={() => { onAdd(source, target); setSource(''); setTarget(''); }}>Connect objects</Button>
-  </div>;
 }
