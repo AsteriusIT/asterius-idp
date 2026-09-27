@@ -58,6 +58,8 @@ export interface Session {
   /** The tenant whose console and relative admin API this document is using. */
   readonly workspace: string;
   readonly user: string;
+  /** Human-readable login name; the user ID remains for API operations only. */
+  readonly username: string;
   readonly roles: readonly string[];
   /** Scopes held in the active workspace. */
   readonly scopes: readonly string[];

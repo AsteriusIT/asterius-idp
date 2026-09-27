@@ -871,7 +871,7 @@ function Editor({
           </p>
           <p className="muted">
             Off by default. New ID tokens and UserInfo responses resolve at most 100 current
-            memberships for this client and return stable <code>group:&lt;uuid&gt;</code> references.
+            memberships for this client and return stable, opaque group references.
             Names and directory membership for other clients are never disclosed.
           </p>
         </fieldset></TabsContent>

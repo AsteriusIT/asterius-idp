@@ -244,6 +244,14 @@ function SpTrusts({ session }: Readonly<{ session: Session }>): JSX.Element {
   const provision = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
     const keyFile = signingKeyInput.current?.files?.[0];
+    try {
+      if (new URL(acsUrl).protocol !== 'https:') {
+        throw new Error('The assertion consumer service URL must use HTTPS.');
+      }
+    } catch {
+      setMessage({ tone: 'error', text: 'Enter a valid HTTPS assertion consumer service URL.' });
+      return;
+    }
     if (!allowUnsigned && !keyFile) {
       setMessage({ tone: 'error', text: 'Choose a Redirect signing key or explicitly allow unsigned requests.' });
       return;
@@ -329,7 +337,7 @@ function SpTrusts({ session }: Readonly<{ session: Session }>): JSX.Element {
               <input id="saml-sp-entity-id" value={entityId} onChange={(event) => setEntityId(event.target.value)} maxLength={1024} required disabled={busy} autoComplete="off" />
             </label>
             <label className="flex flex-col gap-1" htmlFor="saml-sp-acs-url">Assertion consumer service URL (HTTPS)
-              <input id="saml-sp-acs-url" type="url" value={acsUrl} onChange={(event) => setAcsUrl(event.target.value)} maxLength={2048} pattern="https://.*" required disabled={busy} autoComplete="off" />
+              <input id="saml-sp-acs-url" type="url" value={acsUrl} onChange={(event) => setAcsUrl(event.target.value)} maxLength={2048} required disabled={busy} autoComplete="off" />
             </label>
             <label className="flex flex-col gap-1" htmlFor="saml-sp-signing-key">Redirect signing public key (RSA DER)
               <input id="saml-sp-signing-key" ref={signingKeyInput} type="file" disabled={busy} autoComplete="off" />

@@ -35,6 +35,7 @@ import { toast } from './components/ui/toast';
 import {
   describeFeatures,
 } from './tenant-list-model';
+import { tenantSwitchUrl } from './tenant-switcher-model';
 import {
   Actions,
   Badge,
@@ -370,7 +371,7 @@ function TenantTable({
                   routed to, so this tenant's clients are administered from this
                   tenant's own console and not from here. The link says where
                   that is; a session there is a session of that tenant. */}
-              <a href={tenantConsoleUrl(row.issuer, 'clients')}>Clients</a>
+              <a href={tenantSwitchUrl(row, window.location.origin, 'clients')}>Applications</a>
             </span>
           ),
         },

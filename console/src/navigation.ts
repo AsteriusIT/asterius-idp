@@ -26,7 +26,7 @@ export type Reach = 'tenant' | 'deployment';
  * `Overview` is a group of one, drawn without a heading: it is where the
  * console opens, and a heading above a single item says the item's name twice.
  */
-export type Group = 'Overview' | 'Directory' | 'Trust' | 'Observability' | 'Deployment';
+export type Group = 'Overview' | 'Directory' | 'Trust' | 'Observability' | 'Deployment' | 'Help';
 
 /** The order the groups appear in, top to bottom. */
 export const GROUPS: readonly Group[] = [
@@ -35,6 +35,7 @@ export const GROUPS: readonly Group[] = [
   'Trust',
   'Observability',
   'Deployment',
+  'Help',
 ];
 
 /** One destination in the console. */
@@ -136,6 +137,7 @@ export const DESTINATIONS: readonly Destination[] = [
   // Local-only browser preferences. It makes no API call, so there is no
   // server scope to require and every signed-in console user can reach it.
   { route: 'preferences', menuOnly: true, label: 'Preferences', reach: 'tenant', scope: null, bead: 'ast-f7m.10', group: 'Deployment' },
+  { route: 'help', label: 'Help & guides', reach: 'tenant', scope: null, bead: 'ast-p2mm', group: 'Help' },
 ];
 
 /**

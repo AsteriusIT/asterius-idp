@@ -115,7 +115,7 @@ export function ScimProvisioning({ session }: Readonly<{ session: Session }>): J
 
   return (
     <Screen title="SCIM provisioning" description={`Configure an automation client for tenant ${session.workspace}. The provisioning API accepts client credentials tokens and DPoP proofs.`}>
-      <Panel title="Connection values" description="Give these values to the external identity provider. Use the token endpoint from this tenant's OpenID discovery document.">
+      <Panel title="Connection values" description="Give these values to the external identity provider. Use the token endpoint from this tenant's discovery document.">
         <dl>
           <dt>SCIM base URL</dt><dd><code>{urls.base}</code></dd>
           <dt>Token resource audience</dt><dd><code>{urls.audience}</code></dd>

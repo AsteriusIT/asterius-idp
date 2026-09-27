@@ -297,8 +297,8 @@ export function Users({ session }: Readonly<{ session: Session }>): JSX.Element 
   if (view.kind === 'new') {
     return (
       <Screen
-        title="Add an account"
-        description="Create the identity first. Credentials and access can be managed from its detail page afterwards."
+        title="Add a user"
+        description="Create a username now. Set up sign-in methods and access from the new user's page."
         actions={<Button onClick={() => setView({ kind: 'directory' })}>Back to users</Button>}
       >
         <NewAccount
@@ -369,9 +369,9 @@ function DirectoryScreen({
   return (
     <Screen
       title="Users"
-      description="The accounts of this tenant, and what each one can sign in with."
+      description="Find people in this tenant and manage how they sign in and what they can access."
       actions={session.scopes.includes('admin.users:write') ? (
-        <Button variant="primary" onClick={onNew}>Add account</Button>
+        <Button variant="primary" onClick={onNew}>Add user</Button>
       ) : undefined}
     >
       <Panel
@@ -473,8 +473,8 @@ function UserTable({
         },
         {
           key: 'verified',
-          header: 'Verified',
-          cell: (row) => (row.email_verified ? 'yes' : 'no'),
+          header: 'Email status',
+          cell: (row) => row.email === null ? 'Not set' : <Badge tone={row.email_verified ? 'ok' : 'warn'}>{row.email_verified ? 'Verified' : 'Not verified'}</Badge>,
         },
         {
           key: 'status',
@@ -559,12 +559,12 @@ function NewAccount({
   };
 
   return (
-    <Panel id="new-account" title="Account details">
+    <Panel id="new-account" title="New user" description="The username is their sign-in name. You can add an email address and initial password now or later.">
       {refusal !== null && <Message tone="error">{refusal}</Message>}
       <form onSubmit={submit}>
         {/* `accept_username` is what refuses one; this is the same rule said
             a round trip earlier (`ast-f9j5` (2), `validation.ts`). */}
-        <Field label="Username" required error={usernameComplaint(username)}>
+        <Field label="Username" hint="The name this person will use to sign in." required error={usernameComplaint(username)}>
           {(props) => (
             <input
               {...props}
@@ -574,7 +574,7 @@ function NewAccount({
             />
           )}
         </Field>
-        <Field label="Email" error={emailAddress(email)}>
+        <Field label="Email address" hint="Used for verification and recovery messages when provided." error={emailAddress(email)}>
           {(props) => (
             <input
               {...props}
@@ -586,7 +586,7 @@ function NewAccount({
           )}
         </Field>
         <Field
-          label="Password"
+          label="Initial password (optional)"
           hint="Leave it empty for an account that will enrol a passkey. An account with no password cannot be signed into until it has a credential."
         >
           {(props) => (
@@ -602,7 +602,7 @@ function NewAccount({
         </Field>
         <Actions>
           <Button type="submit" variant="primary" disabled={busy}>
-            Create account
+            Create user
           </Button>
         </Actions>
       </form>
@@ -725,18 +725,18 @@ function Account({
       title={user.username}
       identity={user.username}
       back={{ label: 'Back to users', onClick: onBack }}
-      description={<>User ID: <code>{user.user_id}</code></>}
+      description={<>{user.email ?? 'No email address'} · {user.status === 'active' ? 'Active account' : `${user.status[0]?.toUpperCase()}${user.status.slice(1)} account`}</>}
     >
       {notice !== null && <Message tone="success">{notice}</Message>}
 
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList aria-label="Account sections">
-          <TabsTrigger value="details">Details</TabsTrigger>
-          <TabsTrigger value="claims">Claims</TabsTrigger>
-          <TabsTrigger value="credentials">Credentials</TabsTrigger>
+          <TabsTrigger value="details">Profile</TabsTrigger>
+          <TabsTrigger value="claims">Identity data</TabsTrigger>
+          <TabsTrigger value="credentials">Sign-in methods</TabsTrigger>
           <TabsTrigger value="sessions">Sessions</TabsTrigger>
-          <TabsTrigger value="grants">Authorizations</TabsTrigger>
-          {(mayReadAppRoles(session) || roles !== null) && <TabsTrigger value="roles">Roles</TabsTrigger>}
+          <TabsTrigger value="grants">Connected apps</TabsTrigger>
+          {(mayReadAppRoles(session) || roles !== null) && <TabsTrigger value="roles">Access roles</TabsTrigger>}
           {mayReadMemberships(session) && <TabsTrigger value="groups">Groups</TabsTrigger>}
         </TabsList>
         <TabsContent value="details">
@@ -771,7 +771,7 @@ function Account({
       >
         <dl className="stats account-summary">
           <div className="stat"><dt>Username</dt><dd>{user.username}</dd></div>
-          <div className="stat"><dt>Email</dt><dd>{user.email ?? '—'} <Badge>{user.email_verified ? 'Verified' : 'Unverified'}</Badge></dd></div>
+          <div className="stat"><dt>Email address</dt><dd>{user.email ?? 'Not set'} {user.email !== null && <Badge tone={user.email_verified ? 'ok' : 'warn'}>{user.email_verified ? 'Verified' : 'Not verified'}</Badge>}</dd></div>
           <div className="stat"><dt>Signed up</dt><dd><Timestamp value={user.created_at} /></dd></div>
           <div className="stat">
             <dt>Status</dt>
@@ -850,7 +850,7 @@ function Account({
         <TabsContent value="credentials">
       <Panel className="flat-section"
         id="credentials"
-        title="Credentials"
+        title="Sign-in methods"
         actions={
           mayManageAccount(session) ? (
           <>

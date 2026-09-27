@@ -11,6 +11,8 @@ import {
   type MetricState,
 } from './overview-model';
 import { Badge, Button, EmptyState, LoadFailure, Panel, Screen, Skeleton, Timestamp } from './ui';
+import { visibleTo } from './navigation';
+import { hrefOf } from './routes';
 
 export function Overview({ session }: Readonly<{ session: Session }>): JSX.Element {
   const definitions = visibleMetrics(session);
@@ -59,6 +61,13 @@ export function Overview({ session }: Readonly<{ session: Session }>): JSX.Eleme
   const applicationPolicy = allowNonFapiClients === null
     ? null
     : applicationPolicyPresentation(allowNonFapiClients);
+  const available = new Set(visibleTo(session).map((destination) => destination.route));
+  const shortcuts = [
+    { route: 'users', title: 'Find a person', detail: 'Review their profile, sessions, and access.' },
+    { route: 'clients', title: 'Connect an application', detail: 'Register an app and review its sign-in settings.' },
+    { route: 'groups', title: 'Manage group access', detail: 'Add members and assign application roles.' },
+    { route: 'audit', title: 'Investigate an event', detail: 'Trace changes and sign-in activity.' },
+  ].filter((shortcut) => available.has(shortcut.route));
 
   return (
     <Screen
@@ -67,14 +76,22 @@ export function Overview({ session }: Readonly<{ session: Session }>): JSX.Eleme
       actions={<Button onClick={reload}>Refresh summaries</Button>}
     >
       <div className="overview-bento">
+        <Panel title="What would you like to do?" description="Go straight to a common task in this tenant.">
+          <div className="quick-link-grid">
+            {shortcuts.map((shortcut) => <a className="quick-link" key={shortcut.route} href={hrefOf(shortcut.route)}>
+              <strong>{shortcut.title}<span aria-hidden="true">→</span></strong><small>{shortcut.detail}</small>
+            </a>)}
+            <a className="quick-link" href={hrefOf('help')}><strong>Read a guide<span aria-hidden="true">→</span></strong><small>Step-by-step help for common work.</small></a>
+          </div>
+        </Panel>
         <Panel
           className="overview-identity"
           title={session.workspace}
-          description="Active workspace"
+          description="Active tenant"
           actions={applicationPolicy !== null && <Badge tone={applicationPolicy.tone}>{applicationPolicy.label}</Badge>}
         >
           <dl className="stats overview-context">
-            <div className="stat"><dt>User</dt><dd className="wrap-anywhere">{session.user}</dd></div>
+            <div className="stat"><dt>Signed in as</dt><dd className="wrap-anywhere">{session.username}</dd></div>
             <div className="stat"><dt>Roles</dt><dd>{session.roles.length > 0 ? <span className="row">{session.roles.map((role) => <Badge key={role} tone="neutral">{role}</Badge>)}</span> : 'none'}</dd></div>
           </dl>
         </Panel>
