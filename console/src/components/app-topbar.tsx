@@ -1,5 +1,6 @@
 import type { JSX } from 'react';
 import {
+  NetworkIcon,
   ChevronDownIcon,
   FingerprintIcon,
   LogOutIcon,
@@ -41,6 +42,7 @@ export function AppTopbar({
       </div>
 
       <div className="topbar-actions">
+        {session.scopes.includes('admin.flows:read') && <Button asChild variant="ghost" size="icon" title="Architecture builder" aria-label="Architecture builder"><a href={hrefOf('architecture')}><NetworkIcon aria-hidden="true" /></a></Button>}
         <AccountMenu session={session} onSignOut={onSignOut} />
       </div>
     </header>

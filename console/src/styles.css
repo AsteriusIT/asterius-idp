@@ -1610,3 +1610,11 @@
 
 .architecture-sidepane .architecture-plan-list li { grid-template-columns: 1fr; gap: .25rem; }
 .architecture-sidepane .architecture-object-list li { flex-wrap: wrap; overflow-wrap: anywhere; }
+
+.architecture-pane-heading { display: flex; align-items: center; justify-content: space-between; padding: .75rem 1rem; border-bottom: 1px solid var(--line); }
+.architecture-pane-content h2 { font-size: 1rem; margin: 0; }
+.architecture-edge-label { position: absolute; pointer-events: none; display: flex; align-items: center; gap: .35rem; padding: .2rem .4rem; background: var(--surface); border-radius: .4rem; font-size: .75rem; }
+.architecture-edge-label button { pointer-events: all; display: inline-flex; cursor: pointer; padding: .3rem; color: var(--fg); border: 1px solid var(--line); border-radius: .25rem; }
+
+.developer-recipe { padding: .8rem 0; border-bottom: 1px solid var(--line); }
+.developer-recipe summary { cursor: pointer; font-weight: 600; }
