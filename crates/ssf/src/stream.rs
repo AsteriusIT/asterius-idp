@@ -12,12 +12,13 @@
 //!
 //! §8.1.1 splits the members in two.
 //!
-//! * **Receiver-supplied**: `events_requested`, `delivery`, `description`,
-//!   `inactivity_timeout`. These are what a receiver is configuring.
+//! * **Receiver-supplied**: `events_requested`, `delivery`, `description`.
+//!   These are what a receiver is configuring.
 //! * **Transmitter-supplied**: `stream_id`, `iss`, `aud`, `events_supported`,
-//!   `events_delivered`, `min_verification_interval`. These describe what the
-//!   transmitter decided, and §8.1.1.3 says a request that carries one with a
-//!   value that is *not* the current one is an error rather than a change.
+//!   `events_delivered`, `min_verification_interval`, `inactivity_timeout`.
+//!   These describe what the transmitter decided, and §8.1.1.3 says a request
+//!   that carries one with a value that is *not* the current one is an error
+//!   rather than a change.
 //!
 //! [`StreamRequest::parse`] therefore keeps the echoed transmitter-supplied
 //! members verbatim rather than dropping them, and
@@ -100,10 +101,10 @@ pub const MAX_AUDIENCE: usize = 8;
 /// The longest audience value, and the longest delivery URL.
 pub const MAX_URL_LEN: usize = 512;
 
-/// The narrowest `inactivity_timeout` a receiver may ask for, in seconds.
+/// The narrowest `inactivity_timeout` this transmitter will report, in seconds.
 pub const MIN_INACTIVITY_TIMEOUT: u64 = 60;
 
-/// The widest `inactivity_timeout` a receiver may ask for: one year.
+/// The widest `inactivity_timeout` this transmitter will report: one year.
 pub const MAX_INACTIVITY_TIMEOUT: u64 = 365 * 24 * 60 * 60;
 
 /// How often a receiver may ask for a verification event (§8.1.1,
@@ -432,7 +433,7 @@ impl DeliveryRequest {
     }
 }
 
-/// The receiver-supplied members of one request (§8.1.1), plus whatever
+/// The receiver-supplied members of one request (§8.1.1), plus any
 /// transmitter-supplied members it echoed.
 ///
 /// Every field is an [`Option`], and the distinction is the whole of §8.1.1.3
@@ -454,7 +455,7 @@ pub struct StreamRequest {
     pub delivery: Option<DeliveryRequest>,
     /// §8.1.1's `description`.
     pub description: Option<String>,
-    /// §8.1.1's `inactivity_timeout`, in seconds.
+    /// §8.1.1's transmitter-supplied `inactivity_timeout`, echoed on updates.
     pub inactivity_timeout: Option<u64>,
     /// The transmitter-supplied members the request carried, verbatim, for
     /// §8.1.1.3's comparison.
@@ -465,8 +466,9 @@ pub struct StreamRequest {
 ///
 /// `stream_id` is not among them: it addresses the request rather than
 /// describing the stream, and §8.1.1.3 requires it. `aud` is not among them
-/// either, because it is compared as a set rather than as a rendered value —
-/// see [`StreamConfiguration::refuse_transmitter_edits`].
+/// either, because it is compared as a set rather than as a rendered value.
+/// `inactivity_timeout` is parsed as a bounded integer and compared directly.
+/// See [`StreamConfiguration::refuse_transmitter_edits`].
 const TRANSMITTER_SUPPLIED: [&str; 4] = [
     "iss",
     "events_supported",
@@ -765,13 +767,18 @@ impl StreamConfiguration {
         if request.audience.is_some() {
             return Err(StreamError::TransmitterSupplied { member: "aud" });
         }
+        if request.inactivity_timeout.is_some() {
+            return Err(StreamError::TransmitterSupplied {
+                member: "inactivity_timeout",
+            });
+        }
         Ok(Self {
             stream_id: StreamId::generate(),
             audience: vec![default_audience.to_owned()],
             events_requested: request.events_requested.clone().unwrap_or_default(),
             delivery: resolve_delivery(request, transmitter, None)?,
             description: request.description.clone(),
-            inactivity_timeout: request.inactivity_timeout,
+            inactivity_timeout: None,
         })
     }
 
@@ -797,9 +804,6 @@ impl StreamConfiguration {
         }
         if let Some(description) = request.description.clone() {
             updated.description = Some(description);
-        }
-        if let Some(timeout) = request.inactivity_timeout {
-            updated.inactivity_timeout = Some(timeout);
         }
         Ok(updated)
     }
@@ -828,7 +832,7 @@ impl StreamConfiguration {
             events_requested: request.events_requested.clone().unwrap_or_default(),
             delivery: resolve_delivery(request, transmitter, Some(&self.stream_id))?,
             description: request.description.clone(),
-            inactivity_timeout: request.inactivity_timeout,
+            inactivity_timeout: self.inactivity_timeout,
         })
     }
 
@@ -856,6 +860,13 @@ impl StreamConfiguration {
                 != self.audience.iter().collect::<BTreeSet<_>>()
         {
             return Err(StreamError::TransmitterSupplied { member: "aud" });
+        }
+        if let Some(timeout) = request.inactivity_timeout
+            && self.inactivity_timeout != Some(timeout)
+        {
+            return Err(StreamError::TransmitterSupplied {
+                member: "inactivity_timeout",
+            });
         }
         let current = self.render(transmitter);
         for (member, echoed) in &request.echoed {
@@ -1345,6 +1356,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_creation_cannot_choose_the_transmitter_supplied_inactivity_timeout() {
+        let events = supported(&[]);
+        let parsed = request(&json!({"inactivity_timeout": 3600}));
+        assert_eq!(
+            StreamConfiguration::create(&parsed, RECEIVER, &transmitter(&events)),
+            Err(StreamError::TransmitterSupplied {
+                member: "inactivity_timeout"
+            })
+        );
+    }
+
     /// A `POST` cannot pre-empt a transmitter-supplied member: there is no
     /// current value it could have matched.
     #[test]
@@ -1372,11 +1395,11 @@ mod tests {
     fn the_rendered_stream_carries_every_member_the_section_defines() {
         // Arrange
         let events = supported(&[SESSION_REVOKED]);
-        let stream = stream(&json!({
+        let mut stream = stream(&json!({
             "events_requested": [SESSION_REVOKED],
             "description": "prod",
-            "inactivity_timeout": 3600,
         }));
+        stream.inactivity_timeout = Some(3600);
 
         // Act
         let rendered = stream.render(&transmitter(&events));
@@ -1524,6 +1547,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_patch_may_echo_but_not_change_the_inactivity_timeout() {
+        let events = supported(&[]);
+        let transmitter = transmitter(&events);
+        let mut before = stream(&json!({}));
+        before.inactivity_timeout = Some(3600);
+        let echoed = request(&json!({"inactivity_timeout": 3600}));
+        assert_eq!(before.patch(&echoed, &transmitter), Ok(before.clone()));
+
+        let changed = request(&json!({"inactivity_timeout": 7200}));
+        assert_eq!(
+            before.patch(&changed, &transmitter),
+            Err(StreamError::TransmitterSupplied {
+                member: "inactivity_timeout"
+            })
+        );
+    }
+
     /// §8.1.1.3: `stream_id` is REQUIRED, and a request without one addresses
     /// nothing.
     #[test]
@@ -1542,17 +1583,17 @@ mod tests {
     // §8.1.1.4 — PUT
     // -----------------------------------------------------------------------
 
-    /// §8.1.1.4: a receiver-supplied member the request does not carry is
-    /// deleted.
+    /// §8.1.1.4: missing receiver-supplied members are deleted, while the
+    /// transmitter-supplied inactivity timeout survives replacement.
     #[test]
     fn a_replace_deletes_the_members_it_does_not_carry() {
         // Arrange
         let events = supported(&[SESSION_REVOKED]);
-        let before = stream(&json!({
+        let mut before = stream(&json!({
             "description": "prod",
-            "inactivity_timeout": 3600,
             "events_requested": [SESSION_REVOKED],
         }));
+        before.inactivity_timeout = Some(3600);
 
         // Act
         let after = before
@@ -1564,7 +1605,7 @@ mod tests {
 
         // Assert
         assert_eq!(after.description.as_deref(), Some("staging"));
-        assert_eq!(after.inactivity_timeout, None);
+        assert_eq!(after.inactivity_timeout, Some(3600));
         assert!(after.events_requested.is_empty());
     }
 
