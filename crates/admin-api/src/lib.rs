@@ -136,6 +136,8 @@ pub const FLOWS_LIST_ID: &str = "flows.list";
 pub const FLOW_CREATE_ID: &str = "flows.create";
 pub const FLOW_READ_ID: &str = "flows.read";
 pub const FLOW_UPDATE_ID: &str = "flows.update";
+pub const FLOW_PLAN_ID: &str = "flows.plan";
+pub const FLOW_APPLY_ID: &str = "flows.apply";
 /// The `operationId` of `PUT /clients/{client_id}`.
 pub const CLIENT_UPDATE_ID: &str = "clients.update";
 /// The `operationId` of `PUT /clients/{client_id}/resources`.
@@ -1452,6 +1454,22 @@ pub const FLOW_UPDATE: Operation = Operation::mutation(
     "Updates a flow when its revision still matches",
 );
 
+pub const FLOW_PLAN: Operation = Operation::probe(
+    FLOW_PLAN_ID,
+    "/flows/{flow_id}/plan",
+    M::Post,
+    A::new(R::Tenant, "admin.flows:read"),
+    "Previews a saved architecture revision and its required permissions",
+);
+
+pub const FLOW_APPLY: Operation = Operation::mutation(
+    FLOW_APPLY_ID,
+    "/flows/{flow_id}/apply",
+    M::Post,
+    A::new(R::Tenant, "admin.flows:write"),
+    "Applies exactly the previewed architecture plan",
+);
+
 pub const GROUPS_LIST: Operation = Operation::read(
     GROUPS_LIST_ID,
     "/groups",
@@ -1876,7 +1894,7 @@ pub const SCIM_BULK: Operation = Operation::mutation(
     "SCIM Bulk is unsupported by this service",
 );
 
-static REGISTRY: [Operation; 139] = [
+static REGISTRY: [Operation; 141] = [
     SESSION_READ,
     SESSION_END,
     OVERVIEW_USERS,
@@ -1973,6 +1991,8 @@ static REGISTRY: [Operation; 139] = [
     FLOW_CREATE,
     FLOW_READ,
     FLOW_UPDATE,
+    FLOW_PLAN,
+    FLOW_APPLY,
     GROUPS_LIST,
     SCIM_CONFIG,
     SCIM_SCHEMAS,

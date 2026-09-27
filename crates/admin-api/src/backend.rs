@@ -114,6 +114,97 @@ pub trait PolicyTrial: std::fmt::Debug + Send + Sync {
 /// What an admin API request needs from below the API.
 #[async_trait::async_trait]
 pub trait AdminBackend: std::fmt::Debug + Send + Sync {
+    async fn create_flow_role(
+        &self,
+        _flow: uuid::Uuid,
+        _token: uuid::Uuid,
+        _revision: i64,
+        _node: &str,
+        _role: &asterius_domain::ApplicationRole,
+        _now: time::OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        Err(DomainError::NotFound)
+    }
+    async fn add_flow_client_resource(
+        &self,
+        _tenant: &TenantId,
+        _client: &str,
+        _resource: &str,
+    ) -> Result<(), DomainError> {
+        Err(DomainError::NotFound)
+    }
+    async fn create_flow_api(
+        &self,
+        _tenant: &TenantId,
+        _step: &crate::flows::ApplyStep,
+        _server: &asterius_domain::ResourceServer,
+    ) -> Result<(), DomainError> {
+        Err(DomainError::NotFound)
+    }
+    async fn create_flow_group(
+        &self,
+        _tenant: &TenantId,
+        _id: uuid::Uuid,
+        _name: &str,
+        _display_name: &str,
+        _now: time::OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        Err(DomainError::NotFound)
+    }
+    async fn flow_links(
+        &self,
+        _tenant: &TenantId,
+        _flow: uuid::Uuid,
+    ) -> Result<Vec<serde_json::Value>, DomainError> {
+        Err(DomainError::NotFound)
+    }
+
+    async fn begin_flow_apply(
+        &self,
+        _tenant: &TenantId,
+        _flow: uuid::Uuid,
+        _revision: i64,
+        _now: time::OffsetDateTime,
+    ) -> Result<uuid::Uuid, DomainError> {
+        Err(DomainError::NotFound)
+    }
+
+    async fn reserve_flow_link(
+        &self,
+        _tenant: &TenantId,
+        _flow: uuid::Uuid,
+        _token: uuid::Uuid,
+        _revision: i64,
+        _link: &crate::flows::LinkIntent,
+        _now: time::OffsetDateTime,
+    ) -> Result<serde_json::Value, DomainError> {
+        Err(DomainError::NotFound)
+    }
+
+    async fn complete_flow_link(
+        &self,
+        _tenant: &TenantId,
+        _flow: uuid::Uuid,
+        _token: uuid::Uuid,
+        _revision: i64,
+        _node: &str,
+        _now: time::OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        Err(DomainError::NotFound)
+    }
+
+    async fn finish_flow_apply(
+        &self,
+        _tenant: &TenantId,
+        _flow: uuid::Uuid,
+        _token: uuid::Uuid,
+        _revision: i64,
+        _digest: &str,
+        _error: Option<&str>,
+    ) -> Result<(), DomainError> {
+        Err(DomainError::NotFound)
+    }
+
     /// Tenant-scoped architecture drafts, with compare-and-swap updates.
     async fn list_flows(&self, _tenant: &TenantId) -> Result<Vec<serde_json::Value>, DomainError> {
         Err(DomainError::NotFound)

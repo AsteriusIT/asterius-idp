@@ -53,7 +53,8 @@ use crate::operations::{Method, Operation};
 use crate::pagination::{Cursor, Page, PageRequest};
 use crate::{
     audit, authorization_details_types, clients, csrf, flows, groups, initial_access_tokens, keys,
-    openapi, outbox, policies, resource_servers, saml, scim, scim_groups, ssf, throttle, users,
+    openapi, outbox, policies, resource_servers, roles, saml, scim, scim_groups, ssf, throttle,
+    users,
 };
 
 fn upstream_operation_error(error: ssf::UpstreamOperationError) -> AdminError {
@@ -374,6 +375,8 @@ async fn route_standard(
         crate::FLOW_CREATE_ID => context.create_flow(body).await,
         crate::FLOW_READ_ID => context.read_flow().await,
         crate::FLOW_UPDATE_ID => context.update_flow(body).await,
+        crate::FLOW_PLAN_ID => context.plan_flow(body).await,
+        crate::FLOW_APPLY_ID => context.apply_flow(body).await,
         crate::RESOURCE_SERVERS_LIST_ID => context.list_resource_servers().await,
         crate::RESOURCE_SERVER_READ_ID => context.read_resource_server().await,
         crate::RESOURCE_SERVER_UPDATE_ID => context.update_resource_server(body).await,
@@ -4410,7 +4413,11 @@ impl Handling<'_> {
     }
 
     fn flow_in_path(&self) -> Result<uuid::Uuid, AdminError> {
-        self.last_decoded_path_segment()?
+        self.path
+            .split('/')
+            .skip_while(|segment| *segment != "flows")
+            .nth(1)
+            .ok_or(AdminError::NotFound)?
             .parse()
             .map_err(|_| AdminError::NotFound)
     }
@@ -4474,6 +4481,866 @@ impl Handling<'_> {
         )
         .await;
         Ok(json_no_store(StatusCode::OK, &document))
+    }
+
+    fn require_flow_scope(&self, scope: &'static str) -> Result<(), AdminError> {
+        if self.principal.held().satisfies(
+            crate::Authority::new(crate::Reach::Tenant, scope),
+            &self.tenant.id,
+        ) {
+            Ok(())
+        } else {
+            Err(AdminError::Forbidden)
+        }
+    }
+
+    async fn plan_flow(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let request: flows::RevisionRequest = self.parse_body(body).await?;
+        let (plan, _) = self.compile_flow(request.revision).await?;
+        let value = serde_json::to_value(plan).map_err(|_| AdminError::Unavailable)?;
+        Ok(json_no_store(StatusCode::OK, &value))
+    }
+
+    async fn apply_flow(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let request: flows::ApplyRequest = self.parse_body(body).await?;
+        let id = self.flow_in_path()?;
+        let saved = self
+            .state
+            .backend
+            .read_flow(&self.tenant.id, id)
+            .await
+            .map_err(|error| group_error(crate::FLOW_APPLY_ID, error))?;
+        if saved["applied_revision"].as_i64() == Some(request.revision)
+            && saved["applied_digest"].as_str() == Some(request.digest.as_str())
+        {
+            let links = self
+                .state
+                .backend
+                .flow_links(&self.tenant.id, id)
+                .await
+                .map_err(|error| group_error(crate::FLOW_APPLY_ID, error))?;
+            return Ok(json_no_store(
+                StatusCode::OK,
+                &serde_json::json!({
+                    "flow_id": id, "applied_revision": request.revision, "links": links,
+                }),
+            ));
+        }
+        let (plan, graph) = self.compile_flow(request.revision).await?;
+        if plan.digest != request.digest {
+            return Err(AdminError::Conflict(
+                "flow or live resources changed; preview again".into(),
+            ));
+        }
+        if !plan.applicable {
+            return Err(AdminError::Conflict(
+                "resolve every conflict in the preview before applying".into(),
+            ));
+        }
+        let token = self
+            .state
+            .backend
+            .begin_flow_apply(
+                &self.tenant.id,
+                id,
+                request.revision,
+                OffsetDateTime::now_utc(),
+            )
+            .await
+            .map_err(|error| group_error(crate::FLOW_APPLY_ID, error))?;
+        let result = self.execute_flow(id, token, &plan, &graph).await;
+        let failure = result.as_ref().err().map(ToString::to_string);
+        self.state
+            .backend
+            .finish_flow_apply(
+                &self.tenant.id,
+                id,
+                token,
+                request.revision,
+                &request.digest,
+                failure.as_deref(),
+            )
+            .await
+            .map_err(|error| group_error(crate::FLOW_APPLY_ID, error))?;
+        self.record(
+            EventType::ADMIN_CHANGED,
+            Detail::new()
+                .label("operation", crate::FLOW_APPLY_ID)
+                .text("flow_id", id.to_string())
+                .number("revision", request.revision)
+                .label(
+                    "result",
+                    if result.is_ok() {
+                        "applied"
+                    } else {
+                        "partial_or_failed"
+                    },
+                ),
+        )
+        .await;
+        result?;
+        let links = self
+            .state
+            .backend
+            .flow_links(&self.tenant.id, id)
+            .await
+            .map_err(|error| group_error(crate::FLOW_APPLY_ID, error))?;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({
+                "flow_id": id, "applied_revision": request.revision, "links": links,
+            }),
+        ))
+    }
+
+    // The ordered apply loop keeps node and connection reservations in one
+    // sequence; moving either into a second traversal would change retry order.
+    #[allow(clippy::too_many_lines)]
+    async fn execute_flow(
+        &self,
+        id: uuid::Uuid,
+        token: uuid::Uuid,
+        plan: &flows::Plan,
+        graph: &flows::Graph,
+    ) -> Result<(), AdminError> {
+        let mut linked: std::collections::HashMap<String, String> = self
+            .state
+            .backend
+            .flow_links(&self.tenant.id, id)
+            .await
+            .map_err(|error| group_error(crate::FLOW_APPLY_ID, error))?
+            .into_iter()
+            .filter_map(|link| {
+                Some((
+                    link["node_id"].as_str()?.to_owned(),
+                    link["resource_id"].as_str()?.to_owned(),
+                ))
+            })
+            .collect();
+        for step in &plan.steps {
+            if matches!(step.action.as_str(), "unchanged" | "document" | "detached") {
+                continue;
+            }
+            if let Some(node) = graph.nodes.iter().find(|node| node.id == step.id) {
+                let resource = match node.kind {
+                    flows::NodeKind::Application => linked
+                        .get(&node.id)
+                        .cloned()
+                        .or_else(|| step.resource_id.clone())
+                        .unwrap_or_else(|| asterius_domain::ClientId::mint().as_str().to_owned()),
+                    flows::NodeKind::Group => linked
+                        .get(&node.id)
+                        .cloned()
+                        .or_else(|| step.resource_id.clone())
+                        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                    flows::NodeKind::Api => node.identifier.clone(),
+                    flows::NodeKind::Role => {
+                        let owner = graph
+                            .edges
+                            .iter()
+                            .find(|edge| edge.target == node.id)
+                            .and_then(|edge| linked.get(&edge.source))
+                            .ok_or_else(|| {
+                                AdminError::Conflict("role owner was not applied".into())
+                            })?;
+                        serde_json::json!([owner, node.identifier]).to_string()
+                    }
+                    flows::NodeKind::Stream | flows::NodeKind::IdentityProvider => {
+                        return Err(AdminError::Conflict(
+                            "integration setup is unavailable".into(),
+                        ));
+                    }
+                };
+                let relation = if matches!(node.mode, flows::NodeMode::Managed) {
+                    "managed"
+                } else {
+                    "reference"
+                };
+                let intent = flows::LinkIntent {
+                    node: node.id.clone(),
+                    kind: node.kind.as_str().into(),
+                    resource: resource.clone(),
+                    relation: relation.into(),
+                };
+                let step_now = OffsetDateTime::now_utc();
+                let reservation = self
+                    .state
+                    .backend
+                    .reserve_flow_link(&self.tenant.id, id, token, plan.revision, &intent, step_now)
+                    .await
+                    .map_err(|error| group_error(crate::FLOW_APPLY_ID, error))?;
+                if node.kind == flows::NodeKind::Api
+                    && relation == "managed"
+                    && reservation["state"] != "applied"
+                {
+                    let requested: resource_servers::Document =
+                        serde_json::from_value(node.settings.clone())
+                            .map_err(|_| AdminError::Invalid("API settings are invalid".into()))?;
+                    let server = resource_servers::parse(&resource, requested)?;
+                    let apply_step = flows::ApplyStep {
+                        flow: id,
+                        token,
+                        revision: plan.revision,
+                        node: node.id.clone(),
+                        now: step_now,
+                    };
+                    self.state
+                        .backend
+                        .create_flow_api(&self.tenant.id, &apply_step, &server)
+                        .await
+                        .map_err(|error| group_error(crate::FLOW_APPLY_ID, error))?;
+                } else if node.kind == flows::NodeKind::Role
+                    && relation == "managed"
+                    && reservation["state"] != "applied"
+                {
+                    let identity: (String, String) =
+                        serde_json::from_str(&resource).map_err(|_| AdminError::Unavailable)?;
+                    let requested = roles::RequestedRole {
+                        name: node.identifier.clone(),
+                        description: node
+                            .settings
+                            .get("description")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned),
+                    };
+                    let role = roles::accept_role(
+                        &requested,
+                        &self.tenant.id,
+                        RoleOwner::Client(asterius_domain::ClientId::new(identity.0)),
+                        step_now,
+                    )?;
+                    self.state
+                        .backend
+                        .create_flow_role(id, token, plan.revision, &node.id, &role, step_now)
+                        .await
+                        .map_err(|error| group_error(crate::FLOW_APPLY_ID, error))?;
+                } else {
+                    if relation == "managed" && reservation["state"] != "applied" {
+                        self.provision_flow_node(node, &resource).await?;
+                    }
+                    self.state
+                        .backend
+                        .complete_flow_link(
+                            &self.tenant.id,
+                            id,
+                            token,
+                            plan.revision,
+                            &node.id,
+                            step_now,
+                        )
+                        .await
+                        .map_err(|error| group_error(crate::FLOW_APPLY_ID, error))?;
+                }
+                linked.insert(node.id.clone(), resource);
+                self.record(
+                    EventType::ADMIN_CHANGED,
+                    Detail::new()
+                        .label("operation", crate::FLOW_APPLY_ID)
+                        .text("flow_id", id.to_string())
+                        .text("node_id", &node.id)
+                        .label("resource_kind", node.kind.as_str()),
+                )
+                .await;
+            } else if let Some(edge) = graph.edges.iter().find(|edge| edge.id == step.id) {
+                let source = linked.get(&edge.source).ok_or_else(|| {
+                    AdminError::Conflict("connection source was not applied".into())
+                })?;
+                let target = linked.get(&edge.target).ok_or_else(|| {
+                    AdminError::Conflict("connection target was not applied".into())
+                })?;
+                let from = graph
+                    .nodes
+                    .iter()
+                    .find(|node| node.id == edge.source)
+                    .ok_or(AdminError::Unavailable)?;
+                let kind = if from.kind == flows::NodeKind::Application {
+                    "client_resource"
+                } else {
+                    "group_role"
+                };
+                let resource = serde_json::json!([source, target]).to_string();
+                let intent = flows::LinkIntent {
+                    node: edge.id.clone(),
+                    kind: kind.into(),
+                    resource,
+                    relation: "managed".into(),
+                };
+                let step_now = OffsetDateTime::now_utc();
+                self.state
+                    .backend
+                    .reserve_flow_link(&self.tenant.id, id, token, plan.revision, &intent, step_now)
+                    .await
+                    .map_err(|error| group_error(crate::FLOW_APPLY_ID, error))?;
+                self.provision_flow_edge(from.kind, source, target).await?;
+                self.state
+                    .backend
+                    .complete_flow_link(
+                        &self.tenant.id,
+                        id,
+                        token,
+                        plan.revision,
+                        &edge.id,
+                        step_now,
+                    )
+                    .await
+                    .map_err(|error| group_error(crate::FLOW_APPLY_ID, error))?;
+                self.record(
+                    EventType::ADMIN_CHANGED,
+                    Detail::new()
+                        .label("operation", crate::FLOW_APPLY_ID)
+                        .text("flow_id", id.to_string())
+                        .text("node_id", &edge.id)
+                        .label("resource_kind", kind),
+                )
+                .await;
+            }
+        }
+        Ok(())
+    }
+
+    async fn provision_flow_node(
+        &self,
+        node: &flows::Node,
+        resource: &str,
+    ) -> Result<(), AdminError> {
+        match node.kind {
+            flows::NodeKind::Group => {
+                let metadata = asterius_domain::GroupMetadata::parse(&node.identifier, &node.label)
+                    .map_err(|error| AdminError::Invalid(error.to_string()))?;
+                let id = resource.parse().map_err(|_| AdminError::Unavailable)?;
+                self.state
+                    .backend
+                    .create_flow_group(
+                        &self.tenant.id,
+                        id,
+                        metadata.name().as_str(),
+                        metadata.display_name(),
+                        self.now,
+                    )
+                    .await
+                    .map_err(|error| group_error(crate::FLOW_APPLY_ID, error))?;
+            }
+            flows::NodeKind::Application => {
+                let client_id = asterius_domain::ClientId::new(resource.to_owned());
+                if self
+                    .state
+                    .backend
+                    .clients()
+                    .find(&self.tenant.id, &client_id)
+                    .await
+                    .map_err(|error| group_error(crate::FLOW_APPLY_ID, error))?
+                    .is_some()
+                {
+                    return Ok(());
+                }
+                let document = flows::application_registration(node)?;
+                let bytes = serde_json::to_vec(&document).map_err(|_| AdminError::Unavailable)?;
+                let mut registration = ClientRegistration::from_json_with_profile(
+                    &bytes,
+                    self.state.backend.capabilities(),
+                    ClientComplianceProfile::Fapi,
+                )
+                .map_err(|error| clients::refusal(&error))?;
+                self.check_client_is_serviceable(&registration, crate::FLOW_APPLY_ID)
+                    .await?;
+                registration
+                    .resources
+                    .insert(self.tenant.default_resource.clone());
+                let client = Client {
+                    tenant: self.tenant.id.clone(),
+                    id: client_id,
+                    registration,
+                    status: ClientStatus::Active,
+                    created_at: self.now,
+                    updated_at: self.now,
+                };
+                self.state
+                    .backend
+                    .clients()
+                    .create(&client, None)
+                    .await
+                    .map_err(|error| group_error(crate::FLOW_APPLY_ID, error))?;
+            }
+            flows::NodeKind::Api
+            | flows::NodeKind::Role
+            | flows::NodeKind::Stream
+            | flows::NodeKind::IdentityProvider => {
+                return Err(AdminError::Unavailable);
+            }
+        }
+        Ok(())
+    }
+
+    async fn provision_flow_edge(
+        &self,
+        source_kind: flows::NodeKind,
+        source: &str,
+        target: &str,
+    ) -> Result<(), AdminError> {
+        if source_kind == flows::NodeKind::Application {
+            if self
+                .state
+                .ipsie_identity_only_clients
+                .get(self.tenant.id.as_str())
+                .is_some_and(|clients| clients.contains(source))
+            {
+                return Err(AdminError::Invalid(
+                    "this application is limited to the tenant identity audience".into(),
+                ));
+            }
+            self.state
+                .backend
+                .add_flow_client_resource(&self.tenant.id, source, target)
+                .await
+                .map_err(|error| group_error(crate::FLOW_APPLY_ID, error))?;
+        } else {
+            let group = asterius_domain::GroupId::from_uuid(
+                source.parse().map_err(|_| AdminError::Unavailable)?,
+            );
+            let (client, name): (String, String) =
+                serde_json::from_str(target).map_err(|_| AdminError::Unavailable)?;
+            let owner = RoleOwner::Client(asterius_domain::ClientId::new(client));
+            let name = roles::accept_name(&name)?;
+            self.state
+                .backend
+                .application_roles()
+                .assign_group(&self.tenant.id, group, &owner, &name, self.now)
+                .await
+                .map_err(|error| group_error(crate::FLOW_APPLY_ID, error))?;
+        }
+        Ok(())
+    }
+
+    // Preview and Apply call the same compiler. Its ordered traversal also
+    // produces the digest input, so status and digest cannot diverge.
+    #[allow(clippy::too_many_lines)]
+    async fn compile_flow(&self, revision: i64) -> Result<(flows::Plan, flows::Graph), AdminError> {
+        let id = self.flow_in_path()?;
+        let saved = self
+            .state
+            .backend
+            .read_flow(&self.tenant.id, id)
+            .await
+            .map_err(|error| group_error(crate::FLOW_PLAN_ID, error))?;
+        if saved["revision"].as_i64() != Some(revision) {
+            return Err(AdminError::Conflict(
+                "flow revision changed; save and preview again".into(),
+            ));
+        }
+        let graph: flows::Graph =
+            serde_json::from_value(saved["graph"].clone()).map_err(|_| AdminError::Unavailable)?;
+        let links = self
+            .state
+            .backend
+            .flow_links(&self.tenant.id, id)
+            .await
+            .map_err(|error| group_error(crate::FLOW_PLAN_ID, error))?;
+        let clients = self
+            .state
+            .backend
+            .clients()
+            .list(&self.tenant.id)
+            .await
+            .map_err(|error| group_error(crate::FLOW_PLAN_ID, error))?;
+        let resources = self
+            .state
+            .backend
+            .resource_servers(&self.tenant.id)
+            .list()
+            .await
+            .map_err(|error| group_error(crate::FLOW_PLAN_ID, error))?;
+        let mut steps = Vec::new();
+        let mut fingerprints = Vec::new();
+        let mut declared_resources = std::collections::HashSet::new();
+        let ordered = [
+            flows::NodeKind::Api,
+            flows::NodeKind::Group,
+            flows::NodeKind::Application,
+            flows::NodeKind::Role,
+            flows::NodeKind::Stream,
+            flows::NodeKind::IdentityProvider,
+        ];
+        for kind in ordered {
+            for node in graph.nodes.iter().filter(|node| node.kind == kind) {
+                self.require_flow_scope(flows::scope_for(kind, false))?;
+                let link = links.iter().find(|link| link["node_id"] == node.id);
+                let mut resource_id = link
+                    .and_then(|link| link["resource_id"].as_str())
+                    .map(str::to_owned);
+                let mut explanation = String::new();
+                let mut action;
+                match kind {
+                    flows::NodeKind::Api => {
+                        let parsed = resource_servers::parse(
+                            &node.identifier,
+                            serde_json::from_value(node.settings.clone()).map_err(|_| {
+                                AdminError::Invalid(format!(
+                                    "{}: API settings are invalid",
+                                    node.label
+                                ))
+                            })?,
+                        )?;
+                        let live = resources
+                            .iter()
+                            .find(|resource| resource.identifier == parsed.identifier);
+                        resource_id = Some(node.identifier.clone());
+                        if let Some(live) = live {
+                            fingerprints.push(resource_servers::render(live));
+                        }
+                        action = flow_action(node.mode, link, live.is_some());
+                        if link.is_some_and(|link| link["resource_id"] != node.identifier) {
+                            action = "conflict";
+                            explanation = "This API node is linked to another identifier.".into();
+                        } else if matches!(action, "unchanged" | "retry")
+                            && live.is_some_and(|live| {
+                                resource_servers::render(live) != resource_servers::render(&parsed)
+                            })
+                        {
+                            action = "conflict";
+                            explanation = "The API settings drifted from this flow; review them before applying.".into();
+                        } else if action == "conflict" {
+                            explanation = if live.is_some() { "An API with this identifier already exists; choose Existing reference." } else { "The API created by this flow is missing." }.into();
+                        }
+                        if action == "reference" && live.is_none() {
+                            action = "conflict";
+                            explanation = "Referenced API does not exist in this tenant.".into();
+                        }
+                    }
+                    flows::NodeKind::Group => {
+                        let metadata =
+                            asterius_domain::GroupMetadata::parse(&node.identifier, &node.label)
+                                .map_err(|error| AdminError::Invalid(error.to_string()))?;
+                        let matches = self
+                            .state
+                            .backend
+                            .groups()
+                            .search(&self.tenant.id, metadata.name().as_str(), None, 100)
+                            .await
+                            .map_err(|error| group_error(crate::FLOW_PLAN_ID, error))?;
+                        let live = matches
+                            .iter()
+                            .find(|group| group.metadata.name() == metadata.name());
+                        if let Some(live) = live {
+                            fingerprints.push(groups::document(live));
+                            resource_id = Some(live.id.as_uuid().to_string());
+                        }
+                        action = flow_action(node.mode, link, live.is_some());
+                        if link.is_some_and(|link| {
+                            live.is_some_and(|live| {
+                                link["resource_id"] != live.id.as_uuid().to_string()
+                            })
+                        }) {
+                            action = "conflict";
+                            explanation = "This group name points to another group.".into();
+                        } else if matches!(action, "unchanged" | "retry")
+                            && live.is_some_and(|live| live.metadata.display_name() != node.label)
+                        {
+                            action = "conflict";
+                            explanation = "The group display name drifted from this flow.".into();
+                        } else if action == "conflict" {
+                            explanation = if live.is_some() { "A group with this machine name already exists; choose Existing reference." } else { "The group created by this flow is missing." }.into();
+                        }
+                        if action == "reference" && live.is_none() {
+                            action = "conflict";
+                            explanation = "Referenced group does not exist in this tenant.".into();
+                        }
+                    }
+                    flows::NodeKind::Application => {
+                        let live = resource_id
+                            .as_deref()
+                            .or_else(|| {
+                                matches!(node.mode, flows::NodeMode::Reference)
+                                    .then_some(node.identifier.as_str())
+                            })
+                            .and_then(|resource| {
+                                clients.iter().find(|client| client.id.as_str() == resource)
+                            });
+                        if let Some(live) = live {
+                            fingerprints.push(clients::document(live));
+                            resource_id = Some(live.id.as_str().to_owned());
+                        }
+                        action = flow_action(node.mode, link, live.is_some());
+                        if matches!(node.mode, flows::NodeMode::Reference)
+                            && link.is_some_and(|link| link["resource_id"] != node.identifier)
+                        {
+                            action = "conflict";
+                            explanation = "This reference was changed; remove the old node and add a new reference.".into();
+                        }
+                        if action == "reference" && live.is_none() {
+                            action = "conflict";
+                            explanation =
+                                "Referenced application does not exist in this tenant.".into();
+                        }
+                        if action == "conflict"
+                            && link.is_some()
+                            && matches!(node.mode, flows::NodeMode::Managed)
+                        {
+                            explanation = "The application created by this flow is missing.".into();
+                        }
+                        if !matches!(node.mode, flows::NodeMode::Reference) {
+                            let registration = flows::application_registration(node)?;
+                            let bytes = serde_json::to_vec(&registration)
+                                .map_err(|_| AdminError::Unavailable)?;
+                            let parsed = ClientRegistration::from_json_with_profile(
+                                &bytes,
+                                self.state.backend.capabilities(),
+                                ClientComplianceProfile::Fapi,
+                            )
+                            .map_err(|error| clients::refusal(&error))?;
+                            if matches!(action, "create" | "retry") {
+                                self.check_client_is_serviceable(&parsed, crate::FLOW_PLAN_ID)
+                                    .await?;
+                            }
+                            if matches!(action, "unchanged" | "retry")
+                                && live.is_some_and(|live| {
+                                    let current = clients::document(live);
+                                    current["client_name"] != registration["client_name"]
+                                        || current["redirect_uris"] != registration["redirect_uris"]
+                                        || current["jwks_uri"] != registration["jwks_uri"]
+                                        || current["token_endpoint_auth_method"]
+                                            != registration["token_endpoint_auth_method"]
+                                })
+                            {
+                                action = "conflict";
+                                explanation =
+                                    "The application registration drifted from this flow.".into();
+                            }
+                        }
+                    }
+                    flows::NodeKind::Role => {
+                        let _ = roles::accept_name(&node.identifier)?;
+                        let requested = roles::RequestedRole {
+                            name: node.identifier.clone(),
+                            description: node
+                                .settings
+                                .get("description")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_owned),
+                        };
+                        let _ = roles::accept_role(
+                            &requested,
+                            &self.tenant.id,
+                            RoleOwner::Client(asterius_domain::ClientId::new("flow-preview")),
+                            self.now,
+                        )?;
+                        let owners = graph
+                            .edges
+                            .iter()
+                            .filter(|edge| edge.target == node.id)
+                            .filter_map(|edge| {
+                                graph.nodes.iter().find(|candidate| {
+                                    candidate.id == edge.source
+                                        && candidate.kind == flows::NodeKind::Application
+                                })
+                            })
+                            .collect::<Vec<_>>();
+                        if owners.len() == 1 {
+                            let owner = owners[0];
+                            let owner_id = links
+                                .iter()
+                                .find(|link| link["node_id"] == owner.id)
+                                .and_then(|link| link["resource_id"].as_str())
+                                .or_else(|| {
+                                    matches!(owner.mode, flows::NodeMode::Reference)
+                                        .then_some(owner.identifier.as_str())
+                                });
+                            if let Some(owner_id) = owner_id {
+                                let owner = RoleOwner::Client(asterius_domain::ClientId::new(
+                                    owner_id.to_owned(),
+                                ));
+                                let catalogue = self
+                                    .state
+                                    .backend
+                                    .application_roles()
+                                    .catalogue(&self.tenant.id, &owner)
+                                    .await
+                                    .map_err(|error| group_error(crate::FLOW_PLAN_ID, error))?;
+                                let live = catalogue
+                                    .iter()
+                                    .find(|role| role.name.as_str() == node.identifier);
+                                if let Some(live) = live {
+                                    fingerprints.push(roles::document(live));
+                                }
+                                let existing_id =
+                                    serde_json::json!([owner_id, node.identifier]).to_string();
+                                resource_id = Some(existing_id.clone());
+                                action = flow_action(node.mode, link, live.is_some());
+                                if link.is_some_and(|link| link["resource_id"] != existing_id) {
+                                    action = "conflict";
+                                    explanation =
+                                        "This role now points to another application.".into();
+                                } else if action == "conflict" {
+                                    explanation =
+                                        "The role already exists; choose Existing reference."
+                                            .into();
+                                } else if action == "reference" && live.is_none() {
+                                    action = "conflict";
+                                    explanation =
+                                        "Referenced role does not exist under this application."
+                                            .into();
+                                } else if action == "retry" && live.is_some() {
+                                    action = "conflict";
+                                    explanation = "A previous apply stopped after role creation; verify its origin before retrying.".into();
+                                }
+                            } else {
+                                action = if matches!(node.mode, flows::NodeMode::Managed) {
+                                    "create"
+                                } else {
+                                    "conflict"
+                                };
+                                if action == "conflict" {
+                                    explanation =
+                                        "Apply the owner application before referencing its roles."
+                                            .into();
+                                }
+                            }
+                        } else {
+                            action = "conflict";
+                            explanation = "Connect exactly one application to this role.".into();
+                        }
+                    }
+                    flows::NodeKind::Stream | flows::NodeKind::IdentityProvider => {
+                        action = if matches!(node.mode, flows::NodeMode::Reference) {
+                            "document"
+                        } else {
+                            "conflict"
+                        };
+                        explanation = if action == "document" {
+                            "Shown as architecture context only; no live integration is verified or created.".into()
+                        } else {
+                            "Change this to Existing reference to keep it as architecture context; setup is not available here yet.".into()
+                        };
+                    }
+                }
+                let duplicate_key = match kind {
+                    flows::NodeKind::Api | flows::NodeKind::Group => {
+                        Some(format!("{}:{}", kind.as_str(), node.identifier))
+                    }
+                    flows::NodeKind::Role => graph
+                        .edges
+                        .iter()
+                        .find(|edge| edge.target == node.id)
+                        .map(|edge| format!("role:{}:{}", edge.source, node.identifier)),
+                    _ => None,
+                };
+                if duplicate_key.is_some_and(|key| !declared_resources.insert(key)) {
+                    action = "conflict";
+                    explanation = "Another node in this diagram names the same resource.".into();
+                }
+                if link.is_some_and(|link| {
+                    link["relation"]
+                        != if matches!(node.mode, flows::NodeMode::Managed) {
+                            "managed"
+                        } else {
+                            "reference"
+                        }
+                }) {
+                    action = "conflict";
+                    explanation = "This node's ownership cannot be changed after it was linked; add a new node instead.".into();
+                }
+                let scope = flows::scope_for(kind, action != "reference" && action != "unchanged");
+                if action != "conflict"
+                    && action != "reference"
+                    && action != "unchanged"
+                    && self.require_flow_scope(scope).is_err()
+                {
+                    action = "conflict";
+                    explanation = format!("This operation needs {scope}.");
+                }
+                steps.push(flows::PlanStep {
+                    id: node.id.clone(),
+                    label: node.label.clone(),
+                    kind: kind.as_str().into(),
+                    action: action.into(),
+                    scope: scope.into(),
+                    resource_id,
+                    explanation,
+                });
+            }
+        }
+        for edge in &graph.edges {
+            let source = graph
+                .nodes
+                .iter()
+                .find(|node| node.id == edge.source)
+                .ok_or(AdminError::Unavailable)?;
+            let target = graph
+                .nodes
+                .iter()
+                .find(|node| node.id == edge.target)
+                .ok_or(AdminError::Unavailable)?;
+            if source.kind == flows::NodeKind::Application && target.kind == flows::NodeKind::Role {
+                continue;
+            }
+            let supported = matches!(
+                (source.kind, target.kind),
+                (flows::NodeKind::Application, flows::NodeKind::Api)
+                    | (flows::NodeKind::Group, flows::NodeKind::Role)
+            );
+            let scope = if source.kind == flows::NodeKind::Application {
+                "admin.clients:write"
+            } else {
+                "admin.app_roles:write"
+            };
+            let applied = links
+                .iter()
+                .any(|link| link["node_id"] == edge.id && link["state"] == "applied");
+            let action = if !supported {
+                "document"
+            } else if self.require_flow_scope(scope).is_err() {
+                "conflict"
+            } else if applied {
+                "unchanged"
+            } else {
+                "attach"
+            };
+            steps.push(flows::PlanStep {
+                id: edge.id.clone(),
+                label: format!("{} → {}", source.label, target.label),
+                kind: "connection".into(),
+                action: action.into(),
+                scope: scope.into(),
+                resource_id: None,
+                explanation: if supported {
+                    String::new()
+                } else {
+                    "Drawn for context only; no live integration is created.".into()
+                },
+            });
+        }
+        let current_ids = graph
+            .nodes
+            .iter()
+            .map(|node| node.id.as_str())
+            .chain(graph.edges.iter().map(|edge| edge.id.as_str()))
+            .collect::<std::collections::HashSet<_>>();
+        for link in &links {
+            let Some(node_id) = link["node_id"].as_str() else {
+                continue;
+            };
+            if !current_ids.contains(node_id) {
+                steps.push(flows::PlanStep {
+                    id: node_id.to_owned(),
+                    label: format!("Previously linked {}", link["resource_kind"].as_str().unwrap_or("resource")),
+                    kind: "detached".into(), action: "detached".into(),
+                    scope: "admin.flows:read".into(),
+                    resource_id: link["resource_id"].as_str().map(str::to_owned),
+                    explanation: "Removed from the diagram; the live resource is retained and its origin remains recorded.".into(),
+                });
+            }
+        }
+        let digest_input = serde_json::json!({ "flow_id": id, "revision": revision, "graph": graph, "links": links, "steps": steps, "live": fingerprints });
+        let encoded = serde_json::to_vec(&digest_input).map_err(|_| AdminError::Unavailable)?;
+        let digest = asterius_domain::sha256_hex(&encoded);
+        let applicable = steps.iter().all(|step| step.action != "conflict");
+        let plan = flows::Plan {
+            flow_id: id.to_string(),
+            revision,
+            digest,
+            applicable,
+            steps,
+        };
+        Ok((plan, graph))
     }
 
     async fn create_group(&self, body: axum::body::Body) -> Result<Response, AdminError> {
@@ -6378,6 +7245,23 @@ fn group_error(operation: &'static str, error: DomainError) -> AdminError {
         DomainError::Conflict(message) => AdminError::Conflict(message),
         DomainError::Invalid { field, reason } => AdminError::Invalid(format!("{field}: {reason}")),
         other => AdminError::from_storage(operation, &other),
+    }
+}
+
+fn flow_action(
+    mode: flows::NodeMode,
+    link: Option<&serde_json::Value>,
+    live: bool,
+) -> &'static str {
+    if matches!(mode, flows::NodeMode::Reference) {
+        return "reference";
+    }
+    match (link, live) {
+        (Some(link), true) if link["state"] == "applied" => "unchanged",
+        (Some(link), false) if link["state"] == "applied" => "conflict",
+        (Some(_), _) => "retry",
+        (None, true) => "conflict",
+        (None, false) => "create",
     }
 }
 
@@ -8587,6 +9471,36 @@ mod tests {
 
     #[async_trait::async_trait]
     impl AdminBackend for Handle {
+        async fn flow_links(
+            &self,
+            _tenant: &TenantId,
+            _flow: uuid::Uuid,
+        ) -> Result<Vec<serde_json::Value>, DomainError> {
+            Ok(Vec::new())
+        }
+
+        async fn begin_flow_apply(
+            &self,
+            _tenant: &TenantId,
+            _flow: uuid::Uuid,
+            _revision: i64,
+            _now: OffsetDateTime,
+        ) -> Result<uuid::Uuid, DomainError> {
+            Ok(uuid::Uuid::new_v4())
+        }
+
+        async fn finish_flow_apply(
+            &self,
+            _tenant: &TenantId,
+            _flow: uuid::Uuid,
+            _token: uuid::Uuid,
+            _revision: i64,
+            _digest: &str,
+            _error: Option<&str>,
+        ) -> Result<(), DomainError> {
+            Ok(())
+        }
+
         async fn list_flows(
             &self,
             _tenant: &TenantId,
@@ -9222,6 +10136,32 @@ mod tests {
         })
     }
 
+    fn empty_flow_digest() -> String {
+        let value = serde_json::json!({
+            "flow_id": uuid::Uuid::parse_str(SEEDED_INVITATION_ID).expect("fixed flow ID"),
+            "revision": 1,
+            "graph": { "schema_version": 1, "nodes": [], "edges": [] },
+            "links": [], "steps": [], "live": [],
+        });
+        asterius_domain::sha256_hex(&serde_json::to_vec(&value).expect("JSON"))
+    }
+
+    #[tokio::test]
+    async fn apply_requires_the_exact_preview_digest() {
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+        let response = world
+            .send(
+                as_console(&crate::FLOW_APPLY, &cookie)
+                    .body(Body::from(
+                        serde_json::json!({"revision": 1, "digest": "stale"}).to_string(),
+                    ))
+                    .expect("request"),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
     fn seeded_client(tenant: &str, id: &str) -> Client {
         Client {
             tenant: TenantId::parse(tenant).expect("a valid tenant id"),
@@ -9760,6 +10700,10 @@ mod tests {
             crate::FLOW_UPDATE_ID => {
                 serde_json::json!({"name": "Walked", "revision": 1, "graph": {"schema_version": 1, "nodes": [], "edges": []}})
             }
+            crate::FLOW_PLAN_ID | crate::GROUP_DELETE_ID => serde_json::json!({"revision": 1}),
+            crate::FLOW_APPLY_ID => {
+                serde_json::json!({"revision": 1, "digest": empty_flow_digest()})
+            }
             crate::CLIENT_RESOURCES_UPDATE_ID => {
                 serde_json::json!({"resources": [SEEDED_RESOURCE]})
             }
@@ -9800,7 +10744,6 @@ mod tests {
                 "display_name": "Engineering updated",
                 "revision": 1
             }),
-            crate::GROUP_DELETE_ID => serde_json::json!({"revision": 1}),
             // Creation needs only a name; later user and group assignments
             // refer to that role in the tenant's catalogue (`ast-095`).
             crate::APP_ROLE_CREATE_ID
