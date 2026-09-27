@@ -70,6 +70,8 @@ pub const MAX_BODY_BYTES: usize = 4 * 1024;
 pub struct UpstreamPeerSummary {
     pub peer_client_id: String,
     pub state: &'static str,
+    /// Exact transmitter-assigned audience accepted for this peer's SETs.
+    pub expected_audience: String,
     /// Operator consent for an upstream stream with `default_subjects=ALL`.
     /// No credential path or bearer token is returned.
     pub allow_all_subjects: bool,

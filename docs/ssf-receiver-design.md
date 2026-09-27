@@ -91,7 +91,11 @@ needs separate subject enrollment at the transmitter before it can deliver
 user events.
 
 An operator may now configure `tenant.ssf_upstream_peer` with a canonical
-issuer and a bearer token file for outbound OAuth management. The credential
+issuer, a bearer token file, and an optional exact `expected_audience` pin for
+outbound OAuth management. The receiver omits transmitter-owned `aud` from
+stream creation and validates the returned value against the pin (defaulting
+to this tenant's `/ssf/receiver` URL); that same value is pinned for later SETs.
+The credential
 is read only for an explicit management call and is sent only to same-origin
 configuration and status endpoints retained from verified metadata, through
 the guarded HTTPS transport. The create service checks a 201 JSON stream

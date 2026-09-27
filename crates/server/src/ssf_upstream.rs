@@ -38,6 +38,13 @@ pub enum SetupError {
     Event,
 }
 
+pub(crate) fn expected_audience(config: &SsfUpstreamPeerConfig, tenant: &Tenant) -> String {
+    config
+        .expected_audience
+        .clone()
+        .unwrap_or_else(|| format!("{}{}", tenant.issuer.as_str(), ssf_receiver::RECEIVER_PATH))
+}
+
 /// Read back the exact stream recorded for a configured peer. This does not
 /// repair drift or change local state; an operator must investigate a mismatch.
 pub async fn verify_recorded_stream(
@@ -80,7 +87,7 @@ pub async fn verify_recorded_stream(
     if recorded.deletion_started_at.is_some() {
         return Err(SetupError::PendingReview);
     }
-    let expected_audience = format!("{}{}", tenant.issuer.as_str(), ssf_receiver::RECEIVER_PATH);
+    let expected_audience = expected_audience(config, tenant);
     if recorded.peer_client_id != peer.as_str()
         || recorded.issuer != issuer.as_str()
         || recorded.jwks_uri != metadata.jwks_uri
@@ -239,7 +246,7 @@ pub async fn delete_recorded_stream(
         || recorded.jwks_uri != metadata.jwks_uri
         || recorded.configuration_endpoint != metadata.configuration_endpoint
         || recorded.status_endpoint != metadata.status_endpoint
-        || recorded.audience != format!("{}{}", tenant.issuer.as_str(), ssf_receiver::RECEIVER_PATH)
+        || recorded.audience != expected_audience(config, tenant)
         || recorded.delivery_method != stream::DELIVERY_POLL
     {
         return Err(SetupError::PendingReview);
@@ -340,8 +347,7 @@ pub async fn poll_once(
         || established.configuration_endpoint != metadata.configuration_endpoint
         || established.status_endpoint != metadata.status_endpoint
         || established.delivery_method != stream::DELIVERY_POLL
-        || established.audience
-            != format!("{}{}", tenant.issuer.as_str(), ssf_receiver::RECEIVER_PATH)
+        || established.audience != expected_audience(config, tenant)
     {
         return Err(SetupError::Peer);
     }
@@ -725,7 +731,7 @@ pub async fn create_poll_stream(
     if scopes.contains(ssf_receiver::DISABLE_ACCOUNT_SCOPE) {
         events.push(caep::ACCOUNT_DISABLED.to_owned());
     }
-    let audience = format!("{}{}", tenant.issuer.as_str(), ssf_receiver::RECEIVER_PATH);
+    let audience = expected_audience(config, tenant);
     let intent = asterius_store_pg::UpstreamSetupIntent {
         peer_client_id: peer.as_str().to_owned(),
         issuer: issuer.as_str().to_owned(),
@@ -791,12 +797,7 @@ pub async fn create_poll_stream(
         )
         .await
     } else if newly_reserved && listed.is_empty() {
-        let body = serde_json::to_vec(&json!({
-        "aud": &audience,
-        "events_requested": &events,
-        "delivery": { "method": stream::DELIVERY_POLL },
-        }))
-        .map_err(|_| SetupError::Response)?;
+        let body = poll_create_body(&events)?;
         let created = poster
             .post_with_response(
                 &metadata.configuration_endpoint,
@@ -844,6 +845,16 @@ pub async fn create_poll_stream(
     } else {
         Err(SetupError::PendingReview)
     }
+}
+
+fn poll_create_body(events: &[String]) -> Result<Vec<u8>, SetupError> {
+    // SSF 1.0 Final §8.1.1.1: aud is transmitter-supplied. The response is
+    // checked against the operator's expected-audience pin before adoption.
+    serde_json::to_vec(&json!({
+        "events_requested": events,
+        "delivery": { "method": stream::DELIVERY_POLL },
+    }))
+    .map_err(|_| SetupError::Response)
 }
 
 async fn list_streams(
@@ -1015,4 +1026,19 @@ fn validate_status(response: &PostResponse, stream_id: &str) -> Result<(), Setup
         return Err(SetupError::Response);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn poll_create_requests_only_receiver_supplied_members() {
+        let body = poll_create_body(&[caep::SESSION_REVOKED.to_owned()]).expect("JSON body");
+        let value: Value = serde_json::from_slice(&body).expect("JSON object");
+        assert_eq!(value.as_object().expect("object").len(), 2);
+        assert!(value.get("aud").is_none());
+        assert_eq!(value["delivery"]["method"], stream::DELIVERY_POLL);
+        assert_eq!(value["events_requested"], json!([caep::SESSION_REVOKED]));
+    }
 }

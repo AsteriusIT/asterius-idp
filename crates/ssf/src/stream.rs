@@ -25,14 +25,11 @@
 //! alternative — ignoring them — would let a receiver believe it had changed
 //! its own `aud`, which is the one member that decides whose signals reach it.
 //!
-//! # `aud` is settled once, at creation
+//! # `aud` is settled by the transmitter at creation
 //!
-//! §8.1.1 makes `aud` immutable. A receiver may name it on the `POST` (it is
-//! what its own SET verifier will check the `aud` claim against); once the
-//! stream exists it is transmitter-supplied like `iss`, and a `PATCH` or `PUT`
-//! naming a different one is refused. A `POST` that names none gets the
-//! receiver's own client identifier, which is the only audience the
-//! transmitter can be sure the receiver recognises.
+//! §8.1.1 makes `aud` transmitter-supplied and immutable. A `POST` may not
+//! choose it; this transmitter uses the authenticated receiver's client
+//! identifier. A `PATCH` or `PUT` may echo that value but cannot change it.
 //!
 //! # The one member that is a credential
 //!
@@ -447,7 +444,7 @@ pub struct StreamRequest {
     /// The stream this request addresses. REQUIRED by §8.1.1.3 and §8.1.1.4,
     /// meaningless on a `POST`.
     pub stream_id: Option<StreamId>,
-    /// §8.1.1's `aud`, which only a `POST` may settle.
+    /// §8.1.1's transmitter-supplied `aud`, which updates may echo unchanged.
     pub audience: Option<Vec<String>>,
     /// §8.1.1's `events_requested`. Entries that are not event type URIs are
     /// a refusal; entries this transmitter does not support are *ignored*,
@@ -746,11 +743,9 @@ pub struct StreamConfiguration {
 impl StreamConfiguration {
     /// §8.1.1.1: a stream from a `POST` body.
     ///
-    /// `default_audience` is what a receiver that named no `aud` gets — its
-    /// own client identifier, the one audience the transmitter knows it
-    /// recognises — and a `POST` that echoed a transmitter-supplied member is
-    /// refused before anything is created, because there is no current value
-    /// for it to have matched.
+    /// `default_audience` is the authenticated receiver's client identifier.
+    /// A `POST` that names any transmitter-supplied member is refused before
+    /// anything is created, because there is no current value to echo.
     ///
     /// A body with no `delivery` is a poll stream (§8.1.1.1: where the
     /// delivery method is not specified, the transmitter selects one), which
@@ -767,12 +762,12 @@ impl StreamConfiguration {
         if let Some(member) = request.echoed.keys().next() {
             return Err(StreamError::TransmitterSupplied { member });
         }
+        if request.audience.is_some() {
+            return Err(StreamError::TransmitterSupplied { member: "aud" });
+        }
         Ok(Self {
             stream_id: StreamId::generate(),
-            audience: request
-                .audience
-                .clone()
-                .unwrap_or_else(|| vec![default_audience.to_owned()]),
+            audience: vec![default_audience.to_owned()],
             events_requested: request.events_requested.clone().unwrap_or_default(),
             delivery: resolve_delivery(request, transmitter, None)?,
             description: request.description.clone(),
@@ -1338,6 +1333,16 @@ mod tests {
 
         // Assert
         assert_eq!(rendered["aud"], json!(RECEIVER));
+    }
+
+    #[test]
+    fn a_creation_cannot_choose_the_transmitter_supplied_audience() {
+        let events = supported(&[]);
+        let parsed = request(&json!({"aud": "https://another-receiver.example"}));
+        assert_eq!(
+            StreamConfiguration::create(&parsed, RECEIVER, &transmitter(&events)),
+            Err(StreamError::TransmitterSupplied { member: "aud" })
+        );
     }
 
     /// A `POST` cannot pre-empt a transmitter-supplied member: there is no

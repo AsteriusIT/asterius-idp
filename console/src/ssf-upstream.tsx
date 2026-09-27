@@ -8,6 +8,7 @@ import { Actions, Badge, Button, ConfirmDialog, DataTable, EmptyState, LoadFailu
 interface Peer {
   readonly peer_client_id: string;
   readonly state: 'not_started' | 'pending_review' | 'established' | 'deletion_pending';
+  readonly expected_audience: string;
   readonly allow_all_subjects: boolean;
   readonly pending_since?: string;
   readonly last_polled_at?: string;
@@ -125,6 +126,7 @@ export function SsfUpstreamPeers({ session }: Readonly<{ session: Session }>): J
             { key: 'subject-policy', header: 'ALL-subject consent', cell: (peer) => peer.allow_all_subjects
               ? 'ALL allowed by operator'
               : 'ALL requires operator consent' },
+            { key: 'audience', header: 'Expected SET audience', cell: (peer) => <code>{peer.expected_audience}</code> },
             { key: 'pending', header: 'Pending since', cell: (peer) => <Timestamp value={peer.pending_since ?? null} /> },
             { key: 'last_poll', header: 'Last poll', cell: (peer) => <Timestamp value={peer.last_polled_at ?? null} /> },
             { key: 'last_verified', header: 'Last signed verification', cell: (peer) => <Timestamp value={peer.last_verified_at ?? null} /> },
