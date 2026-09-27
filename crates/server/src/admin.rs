@@ -914,6 +914,7 @@ impl asterius_admin_api::ssf::SsfAdministration for DeploymentSsf {
             items.push(UpstreamPeerSummary {
                 peer_client_id: peer.to_owned(),
                 state,
+                allow_all_subjects: config.allow_all_subjects,
                 pending_since: pending
                     .as_ref()
                     .and_then(|intent| intent.started_at.format(&Rfc3339).ok()),
