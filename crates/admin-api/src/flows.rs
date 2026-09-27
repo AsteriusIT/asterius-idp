@@ -68,7 +68,7 @@ pub fn scope_for(kind: NodeKind, write: bool) -> &'static str {
         (NodeKind::Group, true) => "admin.groups:write",
         (NodeKind::Role, false) => "admin.app_roles:read",
         (NodeKind::Role, true) => "admin.app_roles:write",
-        (NodeKind::User, _) => "admin.flows:read",
+        (NodeKind::User | NodeKind::Gateway, _) => "admin.flows:read",
         (NodeKind::Stream, false) => "admin.ssf:read",
         (NodeKind::Stream, true) => "admin.ssf:write",
     }
@@ -199,6 +199,7 @@ pub enum NodeKind {
     Stream,
     IdentityProvider,
     User,
+    Gateway,
 }
 
 impl NodeKind {
@@ -212,6 +213,7 @@ impl NodeKind {
             Self::Stream => "stream",
             Self::IdentityProvider => "identity_provider",
             Self::User => "user",
+            Self::Gateway => "gateway",
         }
     }
 }
@@ -237,8 +239,10 @@ pub fn permits(source: NodeKind, target: NodeKind) -> bool {
         (source, target),
         (
             NodeKind::Application,
-            NodeKind::Api | NodeKind::Role | NodeKind::Stream
-        ) | (NodeKind::Group, NodeKind::Role)
+            NodeKind::Api | NodeKind::Role | NodeKind::Stream | NodeKind::Gateway
+        ) | (NodeKind::Api, NodeKind::Api | NodeKind::Gateway)
+            | (NodeKind::Gateway, NodeKind::Api)
+            | (NodeKind::Group, NodeKind::Role)
             | (NodeKind::IdentityProvider, NodeKind::Group | NodeKind::User)
     )
 }
@@ -311,7 +315,8 @@ impl FlowInput {
                     NodeKind::Group
                     | NodeKind::Stream
                     | NodeKind::IdentityProvider
-                    | NodeKind::User => &[],
+                    | NodeKind::User
+                    | NodeKind::Gateway => &[],
                 };
                 if settings.keys().any(|key| !allowed.contains(&key.as_str())) {
                     return Err(AdminError::Invalid(
@@ -353,7 +358,8 @@ impl FlowInput {
         for edge in &self.graph.edges {
             let source = self.graph.nodes.iter().find(|node| node.id == edge.source);
             let target = self.graph.nodes.iter().find(|node| node.id == edge.target);
-            if edge.id.is_empty()
+            if edge.source == edge.target
+                || edge.id.is_empty()
                 || edge.id.len() > 80
                 || ids.contains(edge.id.as_str())
                 || !edge_ids.insert(edge.id.as_str())
@@ -381,12 +387,65 @@ mod tests {
     use super::*;
 
     #[test]
+    fn api_chains_and_gateway_topology_are_valid() {
+        for (source, target) in [
+            (NodeKind::Api, NodeKind::Api),
+            (NodeKind::Api, NodeKind::Gateway),
+            (NodeKind::Application, NodeKind::Gateway),
+            (NodeKind::Gateway, NodeKind::Api),
+        ] {
+            assert!(permits(source, target));
+        }
+        for target in [
+            NodeKind::Role,
+            NodeKind::User,
+            NodeKind::Group,
+            NodeKind::IdentityProvider,
+            NodeKind::Application,
+        ] {
+            assert!(!permits(NodeKind::Gateway, target));
+        }
+        let mut graph = FlowInput {
+            name: "Gateway".into(),
+            revision: None,
+            graph: Graph {
+                schema_version: 1,
+                nodes: vec![Node {
+                    id: "api".into(),
+                    kind: NodeKind::Api,
+                    label: "API".into(),
+                    identifier: String::new(),
+                    mode: NodeMode::Managed,
+                    x: 0.0,
+                    y: 0.0,
+                    settings: serde_json::json!({}),
+                }],
+                edges: vec![Edge {
+                    id: "edge".into(),
+                    source: "api".into(),
+                    target: "api".into(),
+                }],
+            },
+        };
+        assert!(
+            graph.validate().is_err(),
+            "API self-links must not be accepted"
+        );
+        graph.graph.edges.clear();
+        graph.graph.nodes[0].kind = NodeKind::Gateway;
+        graph.graph.nodes[0].mode = NodeMode::Reference;
+        assert!(graph.validate().is_ok());
+        assert_eq!(NodeKind::Gateway.as_str(), "gateway");
+    }
+
+    #[test]
     fn providers_only_supply_groups_and_users_and_roles_are_leaves() {
         for kind in [
             NodeKind::Application,
             NodeKind::Api,
             NodeKind::Group,
             NodeKind::User,
+            NodeKind::Gateway,
             NodeKind::Role,
             NodeKind::Stream,
             NodeKind::IdentityProvider,
