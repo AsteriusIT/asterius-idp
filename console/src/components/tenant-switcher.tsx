@@ -8,7 +8,7 @@
  * searchable, keyboard-driven (`Command` over `Popover`), opened from anywhere
  * with `Ctrl`/`⌘`+`K`.
  *
- * # Where the list comes from, and why there is no new call
+ * # Where the list comes from
  *
  * `GET /tenants`, which the Tenants screen already reads and which
  * `crates/admin-api/src/rbac.rs` admits only to a **deployment**-scoped caller.
@@ -27,8 +27,8 @@
  *
  * # What switching does
  *
- * It navigates to `{issuer}/admin/#/overview` — the *other tenant's own
- * console* — and that is the whole mechanism.
+ * It navigates to the other tenant's console, staying on the current origin
+ * when that host serves the target tenant.
  *
  * The console is not multi-tenant in one page and must not become one: a
  * session belongs to exactly one tenant (`ADR-0010`, `ast-1cj`), the console is
@@ -43,9 +43,8 @@
  * opens the ordinary local login (`ast-wr4`); no credential is transferred
  * between origins.
  *
- * The URL is built by `tenantConsoleUrl` from the **issuer** the API reports
- * and from nothing this page knows about itself, because a tenant reached
- * through a custom host has no `/t/{id}` prefix to copy.
+ * The target issuer and custom host come from the API. A different host needs
+ * its own sign-in because the session cookie belongs to one host.
  *
  * The landing screen is **Overview**, deliberately, and not the screen the
  * operator was on: what this session may reach in the other tenant is not
@@ -69,7 +68,8 @@ import {
   CommandList,
 } from '@/components/ui/command';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { type TenantPage, type TenantRow, tenantConsoleUrl } from '@/tenants';
+import { type TenantPage, type TenantRow } from '@/tenants';
+import { loadAllTenants, tenantSwitchUrl } from '@/tenant-switcher-model';
 import { cn } from '@/lib/utils';
 
 /** Where a switch lands. See the module docs for why it is not the current route. */
@@ -105,8 +105,8 @@ export function TenantSwitcher({
       return;
     }
     setLoad({ kind: 'loading' });
-    read('tenants').then(
-      (value) => setLoad({ kind: 'ready', tenants: (value as TenantPage).items }),
+    loadAllTenants(async (path) => await read(path) as TenantPage).then(
+      (tenants) => setLoad({ kind: 'ready', tenants }),
       (error: unknown) =>
         setLoad({
           kind: 'failed',
@@ -131,8 +131,13 @@ export function TenantSwitcher({
   const go = useCallback((tenant: TenantRow) => {
     // A full navigation, on purpose: the other tenant's console is another
     // document with another session. See the module docs.
-    window.location.assign(tenantConsoleUrl(tenant.issuer, LANDING_ROUTE));
-  }, []);
+    if (tenant.tenant_id === session.workspace) { setOpen(false); return; }
+    window.location.assign(tenantSwitchUrl(tenant, window.location.origin, LANDING_ROUTE));
+  }, [session.workspace]);
+
+  const currentName = load.kind === 'ready'
+    ? (load.tenants.find((tenant) => tenant.tenant_id === session.workspace)?.display_name ?? session.workspace)
+    : session.workspace;
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -141,7 +146,7 @@ export function TenantSwitcher({
           variant="outline"
           role="combobox"
           aria-expanded={open}
-          aria-label={`Tenant: ${session.workspace}. Switch tenant`}
+          aria-label={`Tenant: ${currentName}. Switch tenant`}
           // `min-w-0 overflow-hidden`: the trigger is as wide as the rail and
           // its middle column is the only thing allowed to grow (`ast-f9j5`).
           // Without it a long tenant name pushed the chevron past the rail's
@@ -154,8 +159,8 @@ export function TenantSwitcher({
         >
           <BuildingIcon className="size-4 shrink-0" aria-hidden="true" />
           <span className="flex min-w-0 flex-1 flex-col">
-            <span className="truncate text-sm font-medium">{session.workspace}</span>
-            <span className="tenant-context-label">Workspace</span>
+            <span className="truncate text-sm font-medium">{currentName}</span>
+            <span className="tenant-context-label">Tenant</span>
           </span>
           <ChevronsUpDownIcon
             className="size-4 shrink-0 opacity-60"
@@ -164,7 +169,7 @@ export function TenantSwitcher({
         </Button>
       </PopoverTrigger>
       <PopoverContent align="start" className="tenant-menu w-(--radix-popover-trigger-width) min-w-64 p-0">
-        <div className="tenant-menu-heading"><strong>{session.workspace}</strong><span>{sessionRoleLabel(session)}</span></div>
+        <div className="tenant-menu-heading"><strong>{currentName}</strong><span>{sessionRoleLabel(session)}</span></div>
         <Command>
           {switchable && <CommandInput placeholder="Find a tenant…" />}
           <CommandList>
@@ -180,7 +185,7 @@ export function TenantSwitcher({
             )}
             {switchable && load.kind === 'failed' && (
               <div className="p-3 text-sm text-destructive" role="alert">
-                {load.message}
+                {load.message} <button type="button" className="underline" onClick={() => setLoad({ kind: 'idle' })}>Try again</button>
               </div>
             )}
             {switchable && load.kind === 'ready' && (
@@ -191,6 +196,7 @@ export function TenantSwitcher({
                     <CommandItem
                       key={tenant.tenant_id}
                       value={`${tenant.tenant_id} ${tenant.display_name}`}
+                      disabled={tenant.status === 'disabled'}
                       onSelect={() => go(tenant)}
                     >
                       <CheckIcon
@@ -216,6 +222,7 @@ export function TenantSwitcher({
                     </CommandItem>
                   ))}
                 </CommandGroup>
+                <p className="px-3 pb-3 text-xs text-muted-foreground">Switching to a tenant on another host may ask you to sign in there.</p>
               </>
             )}
           </CommandList>

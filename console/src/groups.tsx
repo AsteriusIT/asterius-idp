@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
+import type { Directory } from './users';
+import { userIdForUsername } from './user-lookup';
 import { mutate, read, type Session } from './api';
 import { assignmentsOf, clientCatalogue, TENANT_CATALOGUE, type AppRole, type HeldRoles } from './appRoles';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from './components/ui/dialog';
@@ -73,9 +75,9 @@ function GroupDirectory({ session, onOpen }: Readonly<{
           empty={<EmptyState title="No group matches." body={term === '' ? 'Create a group to organize access.' : 'Clear the search to see all groups.'} />}
           columns={[
             { key: 'display', header: 'Group', sortBy: group => group.display_name,
-              cell: group => <><strong>{group.display_name}</strong><br /><code>{group.name}</code></> },
+              cell: group => <><button type="button" className="identity-link" onClick={() => onOpen(group.id)}><strong>{group.display_name}</strong></button><br /><span className="muted">{group.name}</span></> },
             { key: 'revision', header: 'Revision', sortBy: group => group.revision, cell: group => group.revision },
-            { key: 'open', header: 'Open', actions: true, cell: group => <Button small onClick={() => onOpen(group.id)}>Manage <span className="visually-hidden">{group.display_name}</span></Button> },
+            { key: 'open', header: 'Open', actions: true, cell: group => <Button small onClick={() => onOpen(group.id)}>View <span className="visually-hidden">{group.display_name}</span></Button> },
           ]} />
         <Actions><Button disabled={cursor === null} onClick={() => setCursor(null)}>First page</Button>
           <Button disabled={load.value.next_cursor === null} onClick={() => setCursor(load.value.next_cursor)}>Next page</Button></Actions>
@@ -169,6 +171,7 @@ function GroupMembers({ session, group }: Readonly<{ session: Session; group: Gr
   const [load, setLoad] = useState<Load<MemberPage>>({ kind: 'loading' });
   const [cursor, setCursor] = useState<string | null>(null);
   const [user, setUser] = useState('');
+  const [busy, setBusy] = useState(false);
   const [refusal, setRefusal] = useState<string | null>(null);
   const writable = session.scopes.includes(MEMBERS_WRITE);
   const refresh = useCallback(() => {
@@ -177,23 +180,37 @@ function GroupMembers({ session, group }: Readonly<{ session: Session; group: Gr
       value => setLoad({ kind: 'ready', value: value as MemberPage }), error => setLoad({ kind: 'failed', message: failure(error, 'Members could not be read') }));
   }, [cursor, group.id]);
   useEffect(refresh, [refresh]);
-  const change = (id: string, add: boolean): void => {
+  const change = (id: string, add: boolean, label: string): void => {
     setRefusal(null); mutate(memberPath(group.id, id), add ? 'PUT' : 'DELETE', session).then(
-      () => { setUser(''); toast.success(add ? 'Member added' : 'Member removed', id); refresh(); },
-      error => setRefusal(failure(error, 'Membership could not be changed')),
+      () => { setUser(''); setBusy(false); toast.success(add ? 'Member added' : 'Member removed', label); refresh(); },
+      error => { setBusy(false); setRefusal(failure(error, 'Membership could not be changed')); },
+    );
+  };
+  const addUsername = (): void => {
+    const username = user.trim();
+    if (!username || busy) return;
+    setBusy(true);
+    setRefusal(null);
+    userIdForUsername(username, async (path) => await read(path) as Directory).then(
+      (id) => {
+        if (id === null) { setBusy(false); setRefusal(`No user has the username “${username}”.`); return; }
+        change(id, true, username);
+      },
+      (error: unknown) => { setBusy(false); setRefusal(failure(error, 'The user could not be found')); },
     );
   };
   return <Panel title="Members" description="Membership changes affect the next authorization decision and token issuance. Existing JWTs remain valid until expiry.">
     {refusal !== null && <Message tone="error">{refusal}</Message>}
-    {writable && <form className="toolbar" onSubmit={event => { event.preventDefault(); if (user.trim() !== '') change(user.trim(), true); }}>
-      <Field label="User ID">{props => <input {...props} value={user} placeholder="UUID" onChange={event => setUser(event.target.value)} />}</Field>
-      <Button type="submit" variant="primary" disabled={user.trim() === ''}>Add member</Button></form>}
+    {writable && session.scopes.includes('admin.users:read') && <form className="toolbar" onSubmit={event => { event.preventDefault(); addUsername(); }}>
+      <Field label="Username" hint="Enter the exact username of an existing user.">{props => <input {...props} value={user} placeholder="e.g. alex" autoComplete="off" onChange={event => setUser(event.target.value)} />}</Field>
+      <Button type="submit" variant="primary" disabled={user.trim() === '' || busy}>{busy ? 'Adding…' : 'Add member'}</Button></form>}
+    {writable && !session.scopes.includes('admin.users:read') && <Message tone="info">Ask an administrator for user directory access to add members by username.</Message>}
     {load.kind === 'loading' && <Skeleton rows={3} label="Reading members." />}
     {load.kind === 'failed' && <LoadFailure message={load.message} onRetry={refresh} />}
     {load.kind === 'ready' && <><DataTable rows={load.value.items} rowKey={row => row.user_id}
       empty={<EmptyState title="No members yet." body="Add a user to make group roles effective." />}
-      columns={[{ key: 'user', header: 'User ID', cell: row => <code>{row.user_id}</code> }, ...(writable ? [{ key: 'remove', header: 'Remove', actions: true,
-        cell: (row: { user_id: string }) => <Button small variant="danger" onClick={() => change(row.user_id, false)}>Remove <span className="visually-hidden">{row.user_id}</span></Button> }] : [])]} />
+      columns={[{ key: 'user', header: 'User', cell: row => <><strong>{row.username}</strong>{row.email && <span className="muted block">{row.email}</span>}</> }, ...(writable ? [{ key: 'remove', header: 'Remove', actions: true,
+        cell: (row: { user_id: string; username: string }) => <Button small variant="danger" onClick={() => change(row.user_id, false, row.username)}>Remove <span className="visually-hidden">{row.username}</span></Button> }] : [])]} />
       <Actions><Button disabled={cursor === null} onClick={() => setCursor(null)}>First page</Button><Button disabled={load.value.next_cursor === null} onClick={() => setCursor(load.value.next_cursor)}>Next page</Button></Actions></>}
   </Panel>;
 }

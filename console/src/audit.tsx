@@ -266,7 +266,7 @@ export function AuditExplorer({ session }: Readonly<{ session: Session }>): JSX.
           {field('agent', 'Agent', 'client_id')}
           {field('owner', 'Owner', 'subject the agent acts for')}
           {field('user', 'User', 'subject')}
-          {field('grant', 'Grant', 'grant id (UUID)')}
+          {field('grant', 'Grant ID', 'Paste a grant ID')}
           {field('type', 'Event type', 'token.exchanged, session.revoked')}
           {field('from', 'From', '2026-01-01T00:00:00Z')}
           {field('until', 'Until', '2026-12-31T00:00:00Z')}

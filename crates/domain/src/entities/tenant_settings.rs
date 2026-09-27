@@ -1026,7 +1026,6 @@ mod tests {
     #[test]
     fn assurance_policy_rejects_unattainable_and_weakened_reserved_contexts() {
         for (value, amr) in [
-            ("custom", vec!["otp"]),
             ("custom", vec!["user"]),
             ("custom", vec!["existing_session"]),
             ("phrh", vec!["swk", "user"]),
@@ -1040,6 +1039,9 @@ mod tests {
                 "accepted {value}"
             );
         }
+        let supported =
+            serde_json::json!({"acr_policy": {"levels": [{"value": "custom", "amr": ["otp"]}]}});
+        assert!(TenantSettings::from_json(Some(&supported)).is_ok());
     }
 
     /// A row written before the setting existed still carries `grant_id`.

@@ -353,6 +353,30 @@ input.capability-switch:disabled { opacity: .5; cursor: default; }
 .role-dialog-fields { border: 0; padding: 0; margin: 0; min-width: 0; }
 .role-scope { max-width: 480px; margin-bottom: 28px; }
 .application-roles-link { display: inline-flex; margin-bottom: 16px; font-size: 13px; }
+.quick-link-grid, .guide-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 12px; }
+.quick-link { display: grid; gap: 8px; padding: 18px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); color: var(--fg); text-decoration: none; transition: border-color var(--motion), background var(--motion), transform var(--motion); }
+.quick-link:hover, .quick-link:focus-visible { border-color: var(--accent); background: var(--tint-accent); transform: translateY(-2px); }
+.quick-link strong { display: flex; justify-content: space-between; gap: 12px; font-size: 14px; }
+.quick-link strong span { color: var(--accent); }
+.quick-link small { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.guide-card { display: flex; flex-direction: column; gap: 16px; min-width: 0; padding: 22px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); }
+.guide-card h3 { font-size: 16px; margin-bottom: 6px; }
+.guide-card p, .guide-card li { font-size: 13px; line-height: 1.55; }
+.guide-card ol { display: grid; gap: 9px; margin: 0; padding-left: 20px; }
+.guide-card li::marker { color: var(--accent); font-weight: 700; }
+.guide-link { display: inline-flex; align-items: center; gap: 8px; align-self: flex-start; margin-top: auto; color: var(--accent); font-size: 13px; font-weight: 600; text-decoration: none; }
+.guide-link:hover { text-decoration: underline; }
+.guide-terms { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 16px; }
+.guide-term { padding: 16px; border-left: 2px solid var(--accent); background: var(--surface-sunken); }
+.guide-term dt { font-weight: 650; margin-bottom: 5px; }
+.guide-term dd, .guide-note p { color: var(--muted); font-size: 13px; line-height: 1.55; }
+.guide-note { padding: 18px; border: 1px solid var(--line); border-radius: 9px; }
+.guide-note strong { display: block; margin-bottom: 7px; font-size: 14px; }
+.table-wrap tbody tr { transition: background var(--motion); }
+.table-wrap tbody tr:hover { background: var(--surface-sunken); }
+.table-wrap tbody tr:focus-within { background: var(--tint-accent); }
+.table-wrap td:first-child { font-weight: 500; }
+.identity-link:focus-visible, .guide-link:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; border-radius: 3px; }
 @media (max-width: 600px) {
   .capability-row { padding: 18px 14px; gap: 12px; }
   .capability-icon, .capability-state { display: none; }

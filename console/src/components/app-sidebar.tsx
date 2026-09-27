@@ -15,6 +15,11 @@ import {
   Settings2Icon,
   SlidersHorizontalIcon,
   UsersIcon,
+  BookOpenIcon,
+  MailIcon,
+  NetworkIcon,
+  RefreshCwIcon,
+  WaypointsIcon,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { Session } from '@/api';
@@ -52,6 +57,11 @@ export const NAVIGATION_ICONS: Readonly<Record<string, LucideIcon>> = {
   settings: SlidersHorizontalIcon,
   branding: PaletteIcon,
   preferences: Settings2Icon,
+  scim: RefreshCwIcon,
+  federation: NetworkIcon,
+  saml: WaypointsIcon,
+  mail: MailIcon,
+  help: BookOpenIcon,
 };
 
 /** Labelled desktop navigation, with the existing mobile sheet and collapse control. */

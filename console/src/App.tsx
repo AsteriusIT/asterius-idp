@@ -27,6 +27,7 @@ import { Groups } from './groups';
 import { ScimProvisioning } from './scim';
 import { FederationKeys } from './federation-keys';
 import { SamlIdpKey } from './saml-idp-key';
+import { Help } from './help';
 
 /**
  * What the shell is doing, as one value.
@@ -209,6 +210,7 @@ function RouteScreen({
   if (route === 'overview') {
     return <Overview session={session} />;
   }
+  if (route === 'help') return <Help session={session} />;
 
   const destination = visibleTo(session).find((candidate) => candidate.route === route);
   return (

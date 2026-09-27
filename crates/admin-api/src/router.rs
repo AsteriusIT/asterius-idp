@@ -328,7 +328,7 @@ async fn route_standard(
     body: axum::body::Body,
 ) -> Result<Response, AdminError> {
     match id {
-        crate::SESSION_READ_ID => context.session_document(),
+        crate::SESSION_READ_ID => context.session_document().await,
         crate::SESSION_END_ID => context.end_session().await,
         crate::OPENAPI_READ_ID => Ok(openapi_response()),
         crate::SCIM_CONFIG_ID | crate::SCIM_SCHEMAS_ID | crate::SCIM_RESOURCE_TYPES_ID => {
@@ -1404,7 +1404,7 @@ impl Handling<'_> {
     /// *read* the response, because there is no CORS layer anywhere in this
     /// server (`no_cors_layer_is_used_anywhere` asserts it), so the browser
     /// refuses the reader the body.
-    fn session_document(&self) -> Result<Response, AdminError> {
+    async fn session_document(&self) -> Result<Response, AdminError> {
         let Principal::Console {
             tenant,
             user,
@@ -1437,6 +1437,16 @@ impl Handling<'_> {
         // console that could not tell them apart would offer the tenant list
         // to somebody who is about to be refused it.
         let (scopes, deployment_scopes) = Self::held_scopes(held, &self.tenant.id);
+        // A deployment administrator can act in another workspace, but their
+        // account still belongs to the session's home tenant.
+        let username = self
+            .state
+            .backend
+            .users()
+            .find(tenant, *user)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::SESSION_READ_ID, &error))?
+            .map_or_else(|| "Unknown account".to_owned(), |account| account.username);
 
         Ok(json_no_store(
             StatusCode::OK,
@@ -1449,6 +1459,7 @@ impl Handling<'_> {
                 "tenant": tenant.as_str(),
                 "workspace": self.tenant.id.as_str(),
                 "user": user.as_uuid().to_string(),
+                "username": username,
                 "roles": roles,
                 "scopes": scopes,
                 "deployment_scopes": deployment_scopes,
@@ -4488,10 +4499,22 @@ impl Handling<'_> {
             )
             .await
             .map_err(|error| group_error(crate::GROUP_MEMBERS_LIST_ID, error))?;
-        let items = rows
-            .iter()
-            .map(|user| serde_json::json!({"user_id": user.as_uuid().to_string()}))
-            .collect::<Vec<_>>();
+        let mut items = Vec::with_capacity(rows.len());
+        for user in rows {
+            let account = self
+                .state
+                .backend
+                .users()
+                .find(&self.tenant.id, user)
+                .await
+                .map_err(|error| AdminError::from_storage(crate::GROUP_MEMBERS_LIST_ID, &error))?
+                .ok_or(AdminError::NotFound)?;
+            items.push(serde_json::json!({
+                "user_id": user.as_uuid().to_string(),
+                "username": account.username,
+                "email": account.email,
+            }));
+        }
         let page = Page::from_overfetched(items, request.limit, |row| {
             row["user_id"].as_str().unwrap_or_default().to_owned()
         });
@@ -8480,6 +8503,52 @@ mod tests {
 
     #[async_trait::async_trait]
     impl AdminBackend for Handle {
+        async fn federation_key_inventory(
+            &self,
+            _tenant: &TenantId,
+        ) -> Result<serde_json::Value, DomainError> {
+            Ok(serde_json::json!({"rotation_period_seconds": 360, "keys": []}))
+        }
+
+        async fn federation_key_rotate(
+            &self,
+            _tenant: &TenantId,
+            _actor: &str,
+            _now: OffsetDateTime,
+        ) -> Result<String, DomainError> {
+            Ok("staged-federation-key".to_owned())
+        }
+
+        async fn verified_claims(
+            &self,
+            _tenant: &TenantId,
+            _user: UserId,
+        ) -> Result<Vec<(uuid::Uuid, asterius_domain::VerifiedClaims)>, DomainError> {
+            Ok(Vec::new())
+        }
+
+        async fn add_verified_claims(
+            &self,
+            _tenant: &TenantId,
+            _user: UserId,
+            _bundle: &asterius_domain::VerifiedClaims,
+            _actor: &str,
+            _now: OffsetDateTime,
+        ) -> Result<uuid::Uuid, DomainError> {
+            Ok(uuid::Uuid::parse_str(SEEDED_INVITATION_ID).expect("a fixed UUID"))
+        }
+
+        async fn revoke_verified_claims(
+            &self,
+            _tenant: &TenantId,
+            _user: UserId,
+            _id: uuid::Uuid,
+            _actor: &str,
+            _now: OffsetDateTime,
+        ) -> Result<bool, DomainError> {
+            Ok(true)
+        }
+
         async fn invitation_statuses(
             &self,
             _tenant: &TenantId,
@@ -9793,6 +9862,19 @@ mod tests {
         )
         .await;
         assert_eq!(body_of(repeated).await["changed"], false);
+
+        let members = group_call(
+            &world,
+            &cookie,
+            "GET",
+            &format!("/groups/{group_id}/members"),
+            serde_json::Value::Null,
+            None,
+        )
+        .await;
+        let listed = body_of(members).await;
+        assert_eq!(listed["items"][0]["username"], "ada@example.test");
+        assert_eq!(listed["items"][0]["email"], "ada@example.test");
 
         let user_groups = group_call(
             &world,
@@ -11484,6 +11566,28 @@ mod tests {
             );
             if operation.authority().reach() == Reach::AutomationTenant {
                 assert_eq!(response.status(), StatusCode::FORBIDDEN);
+            } else if matches!(
+                operation.id(),
+                crate::SAML_SP_LIST_ID
+                    | crate::SAML_SP_PROVISION_ID
+                    | crate::SAML_SP_REMOVE_ID
+                    | crate::SAML_IDP_KEY_READ_ID
+                    | crate::SAML_IDP_KEY_PROVISION_ID
+                    | crate::SAML_IDP_KEY_ACTIVATE_ID
+                    | crate::SAML_IDP_KEY_RETIRE_ID
+                    | crate::USER_IDA_CREATE_ID
+                    | crate::USER_IDA_REVOKE_ID
+            ) {
+                // This registry walk does not seed SAML keys or SP trusts,
+                // supply mutation documents, or step up the IDA session.
+                // Those endpoints have dedicated behavior tests; here a
+                // client refusal still proves the registered handler ran.
+                assert!(
+                    response.status().is_success() || response.status().is_client_error(),
+                    "{} answered {} for a deployment admin",
+                    operation.id(),
+                    response.status()
+                );
             } else {
                 assert!(
                     response.status().is_success(),
@@ -11878,6 +11982,14 @@ mod tests {
             serde_json::Value::String(csrf::token(&cookie))
         );
         assert_eq!(document["roles"], serde_json::json!(["tenant_admin"]));
+    }
+
+    #[tokio::test]
+    async fn the_session_names_the_account_in_its_home_tenant() {
+        let world = World::new().routed_at("acme");
+        let cookie = world.sign_in_as("acme", seeded_user_id(), &[Role::TenantAdmin]);
+        let document = body_of(world.get(&crate::SESSION_READ, &cookie).await).await;
+        assert_eq!(document["username"], "ada@example.test");
     }
 
     /// The console navigates by what the caller may *do*, so the session
@@ -12831,7 +12943,7 @@ mod tests {
     async fn a_cross_tenant_session_document_names_its_active_workspace() {
         // Arrange
         let world = World::new().routed_at("acme");
-        let cookie = world.sign_in("asterius-admin", &[Role::DeploymentAdmin]);
+        let cookie = world.sign_in_as("asterius-admin", seeded_user_id(), &[Role::DeploymentAdmin]);
 
         // Act
         let document = body_of(world.get(&crate::SESSION_READ, &cookie).await).await;
@@ -12839,6 +12951,7 @@ mod tests {
         // Assert
         assert_eq!(document["tenant"], "asterius-admin");
         assert_eq!(document["workspace"], "acme");
+        assert_eq!(document["username"], "ada@example.test");
     }
 
     /// The other half of the same rule: resolving a reserved-tenant session
@@ -14851,7 +14964,7 @@ mod tests {
     async fn assurance_policy_is_scoped_audited_and_preserved_when_omitted() {
         let world = World::new();
         let policy = serde_json::json!({"amr_in_id_token": false, "levels": [
-            {"value": "tenant:verified", "amr": ["swk", "user"]}
+            {"value": "tenant:verified", "amr": ["pop", "user"]}
         ]});
         let mut body = settings_body(60, 300);
         body["acr_policy"] = policy.clone();
@@ -14908,7 +15021,7 @@ mod tests {
     #[tokio::test]
     async fn assurance_policy_api_refuses_unattainable_or_weakened_admin_contexts() {
         for (name, methods) in [
-            ("custom", vec!["otp"]),
+            ("custom", vec!["otp", "user"]),
             ("phr", vec!["pwd"]),
             (asterius_domain::acr::PASSKEY_USER_VERIFIED, vec!["swk"]),
         ] {

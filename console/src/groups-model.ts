@@ -14,6 +14,8 @@ export interface GroupPage {
 
 export interface GroupMember {
   readonly user_id: string;
+  readonly username: string;
+  readonly email: string | null;
 }
 
 export interface MemberPage {

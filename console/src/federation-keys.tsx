@@ -100,14 +100,14 @@ export function FederationKeys({ session }: Readonly<{ session: Session }>): JSX
   const pending = ready?.keys.some((key) => key.state === 'pending') ?? false;
   return (
     <Screen
-      title="OpenID Federation"
+      title="Federation keys"
       description="Inspect this tenant’s dedicated Federation signing keys and stage a successor."
     >
       {notice !== null && <Message tone="success">{notice}</Message>}
       {refusal !== null && <Message tone="error">{refusal}</Message>}
       <Panel
         title="Federation signing keys"
-        description="These keys sign the tenant’s Federation Entity Configuration, separately from OIDC tokens."
+        description="These keys sign the tenant’s federation configuration, separately from sign-in tokens."
         actions={
           ready !== null && canRotate ? (
             <Button onClick={rotate} disabled={busy || pending}>
