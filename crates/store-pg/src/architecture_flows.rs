@@ -1,6 +1,9 @@
 //! Tenant-bound persistence for architecture drafts.
 
-use asterius_domain::{ApplicationRole, DomainError, ResourceServer, RoleOwner, TenantId};
+use asterius_domain::{
+    ApplicationRole, ClientRegistration, DomainError, JwksSource, ResourceServer, RoleOwner,
+    TenantId,
+};
 use serde_json::{Value, json};
 use sqlx::{FromRow, PgPool};
 use time::OffsetDateTime;
@@ -38,6 +41,7 @@ struct FlowRow {
     revision: i64,
     applied_revision: Option<i64>,
     applied_digest: Option<String>,
+    applied_graph: Option<Value>,
     last_apply_error: Option<String>,
     created_at: OffsetDateTime,
     updated_at: OffsetDateTime,
@@ -63,6 +67,7 @@ impl FlowRow {
             "revision": self.revision,
             "applied_revision": self.applied_revision,
             "applied_digest": self.applied_digest,
+            "applied_graph": self.applied_graph,
             "last_apply_error": self.last_apply_error,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -78,7 +83,7 @@ impl PgArchitectureFlows {
 
     pub async fn list(&self, tenant: &TenantId) -> Result<Vec<Value>, DomainError> {
         let rows: Vec<FlowRow> = sqlx::query_as(
-            "select flow_id, name, graph, revision, applied_revision, applied_digest, last_apply_error, created_at, updated_at from architecture_flows
+            "select flow_id, name, graph, revision, applied_revision, applied_digest, applied_graph, last_apply_error, created_at, updated_at from architecture_flows
              where tenant_id = $1 order by updated_at desc, flow_id limit 100",
         )
         .bind(tenant.as_str())
@@ -90,7 +95,7 @@ impl PgArchitectureFlows {
 
     pub async fn read(&self, tenant: &TenantId, id: Uuid) -> Result<Value, DomainError> {
         let row: FlowRow = sqlx::query_as(
-            "select flow_id, name, graph, revision, applied_revision, applied_digest, last_apply_error, created_at, updated_at from architecture_flows
+            "select flow_id, name, graph, revision, applied_revision, applied_digest, applied_graph, last_apply_error, created_at, updated_at from architecture_flows
              where tenant_id = $1 and flow_id = $2",
         )
         .bind(tenant.as_str())
@@ -112,7 +117,7 @@ impl PgArchitectureFlows {
         let row: FlowRow = sqlx::query_as(
             "insert into architecture_flows (tenant_id, flow_id, name, graph, created_at, updated_at)
              values ($1, $2, $3, $4, $5, $5)
-             returning flow_id, name, graph, revision, applied_revision, applied_digest, last_apply_error, created_at, updated_at"
+             returning flow_id, name, graph, revision, applied_revision, applied_digest, applied_graph, last_apply_error, created_at, updated_at"
         ).bind(tenant.as_str()).bind(id).bind(name).bind(graph).bind(now)
             .fetch_one(&self.pool).await.map_err(to_domain_error)?;
         Ok(row.document())
@@ -131,7 +136,7 @@ impl PgArchitectureFlows {
             "update architecture_flows set name = $4, graph = $5, revision = revision + 1, updated_at = $6
              where tenant_id = $1 and flow_id = $2 and revision = $3
                and (apply_token is null or apply_deadline < $6)
-             returning flow_id, name, graph, revision, applied_revision, applied_digest, last_apply_error, created_at, updated_at"
+             returning flow_id, name, graph, revision, applied_revision, applied_digest, applied_graph, last_apply_error, created_at, updated_at"
         ).bind(tenant.as_str()).bind(id).bind(revision).bind(name).bind(graph).bind(now)
             .fetch_optional(&self.pool).await.map_err(to_domain_error)?;
         match row {
@@ -287,6 +292,7 @@ impl PgArchitectureFlows {
             "update architecture_flows set apply_token = null, apply_deadline = null,
              applied_revision = case when $6::text is null then $4 else applied_revision end,
              applied_digest = case when $6::text is null then $5 else applied_digest end,
+             applied_graph = case when $6::text is null then graph else applied_graph end,
              last_apply_error = $6
              where tenant_id = $1 and flow_id = $2 and apply_token = $3 and revision = $4",
         )
@@ -400,6 +406,36 @@ impl PgArchitectureFlows {
         Ok(())
     }
 
+    /// Changes only a role still carrying its previous applied description.
+    pub async fn update_role_description(
+        &self,
+        tenant: &TenantId,
+        client: &str,
+        name: &str,
+        expected: Option<&str>,
+        description: Option<&str>,
+    ) -> Result<(), DomainError> {
+        let changed = sqlx::query(
+            "update client_roles set description = $5
+             where tenant_id = $1 and client_id = $2 and name = $3
+               and description is not distinct from $4",
+        )
+        .bind(tenant.as_str())
+        .bind(client)
+        .bind(name)
+        .bind(expected)
+        .bind(description)
+        .execute(&self.pool)
+        .await
+        .map_err(to_domain_error)?
+        .rows_affected();
+        if changed == 1 {
+            Ok(())
+        } else {
+            Err(DomainError::Conflict("role changed since preview".into()))
+        }
+    }
+
     /// Creates a new API without replacing another operator's registration.
     pub async fn create_api(
         &self,
@@ -481,6 +517,91 @@ impl PgArchitectureFlows {
         }
         tx.commit().await.map_err(to_domain_error)?;
         Ok(())
+    }
+
+    /// Replaces a resource server only while its live policy still equals the
+    /// last applied specification. Manual edits cannot be overwritten by a
+    /// concurrent flow apply.
+    pub async fn update_api(
+        &self,
+        tenant: &TenantId,
+        old: &ResourceServer,
+        new: &ResourceServer,
+    ) -> Result<(), DomainError> {
+        let columns = |server: &ResourceServer| {
+            (
+                server
+                    .scopes
+                    .as_ref()
+                    .map(|set| set.iter().cloned().collect::<Vec<_>>()),
+                server
+                    .default_token_lifetime
+                    .and_then(|value| i32::try_from(value.whole_seconds()).ok()),
+                server
+                    .introspection_clients
+                    .iter()
+                    .map(|client| client.as_str().to_owned())
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let (old_scopes, old_lifetime, old_clients) = columns(old);
+        let (scopes, lifetime, clients) = columns(new);
+        let changed = sqlx::query(
+            "update resource_servers set scopes = $3, token_lifetime_seconds = $4, introspection_clients = $5, updated_at = now()
+             where tenant_id = $1 and identifier = $2 and scopes is not distinct from $6
+               and token_lifetime_seconds is not distinct from $7 and introspection_clients = $8",
+        ).bind(tenant.as_str()).bind(new.identifier.as_str()).bind(scopes).bind(lifetime).bind(clients)
+            .bind(old_scopes).bind(old_lifetime).bind(old_clients)
+            .execute(&self.pool).await.map_err(to_domain_error)?.rows_affected();
+        if changed == 1 {
+            Ok(())
+        } else {
+            Err(DomainError::Conflict("API changed since preview".into()))
+        }
+    }
+
+    /// Updates only fields owned by the architecture node. Other client
+    /// security metadata and audience policy remain untouched.
+    pub async fn update_client(
+        &self,
+        tenant: &TenantId,
+        id: &str,
+        expected_updated_at: OffsetDateTime,
+        registration: &ClientRegistration,
+    ) -> Result<(), DomainError> {
+        let JwksSource::Uri(jwks_uri) = &registration.jwks else {
+            return Err(DomainError::invalid(
+                "jwks_uri",
+                "flow applications need a public JWKS URI",
+            ));
+        };
+        let redirects = registration
+            .redirect_uris
+            .iter()
+            .map(|uri| uri.as_str().to_owned())
+            .collect::<Vec<_>>();
+        let changed = sqlx::query(
+            "update clients set client_name = $4, redirect_uris = $5, jwks_uri = $6
+             where tenant_id = $1 and client_id = $2 and updated_at = $3
+               and token_endpoint_auth_method = 'private_key_jwt' and jwks is null",
+        )
+        .bind(tenant.as_str())
+        .bind(id)
+        .bind(expected_updated_at)
+        .bind(&registration.client_name)
+        .bind(redirects)
+        .bind(jwks_uri.as_str())
+        .execute(&self.pool)
+        .await
+        .map_err(to_domain_error)?
+        .rows_affected();
+        if changed == 1 {
+            Ok(())
+        } else {
+            Err(DomainError::Conflict(
+                "application changed since preview".into(),
+            ))
+        }
     }
 
     /// Adds one already registered API audience without replacing concurrent
