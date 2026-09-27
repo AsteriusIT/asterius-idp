@@ -4583,6 +4583,11 @@ impl Handling<'_> {
                 "resolve every conflict in the preview before applying".into(),
             ));
         }
+        let prior: Option<flows::Graph> = saved["applied_graph"]
+            .as_object()
+            .map(|_| serde_json::from_value(saved["applied_graph"].clone()))
+            .transpose()
+            .map_err(|_| AdminError::Unavailable)?;
         let token = self
             .state
             .backend
@@ -4594,7 +4599,9 @@ impl Handling<'_> {
             )
             .await
             .map_err(|error| group_error(crate::FLOW_APPLY_ID, error))?;
-        let result = self.execute_flow(id, token, &plan, &graph).await;
+        let result = self
+            .execute_flow(id, token, &plan, &graph, prior.as_ref())
+            .await;
         let failure = result.as_ref().err().map(ToString::to_string);
         self.state
             .backend
@@ -4648,6 +4655,7 @@ impl Handling<'_> {
         token: uuid::Uuid,
         plan: &flows::Plan,
         graph: &flows::Graph,
+        prior: Option<&flows::Graph>,
     ) -> Result<(), AdminError> {
         let mut linked: std::collections::HashMap<String, String> = self
             .state
@@ -4664,7 +4672,22 @@ impl Handling<'_> {
             })
             .collect();
         for step in &plan.steps {
-            if matches!(step.action.as_str(), "unchanged" | "document" | "detached") {
+            if matches!(step.action.as_str(), "document" | "detached") {
+                continue;
+            }
+            if step.action == "unchanged" {
+                self.state
+                    .backend
+                    .complete_flow_link(
+                        &self.tenant.id,
+                        id,
+                        token,
+                        plan.revision,
+                        &step.id,
+                        OffsetDateTime::now_utc(),
+                    )
+                    .await
+                    .map_err(|error| group_error(crate::FLOW_APPLY_ID, error))?;
                 continue;
             }
             if let Some(node) = graph.nodes.iter().find(|node| node.id == step.id) {
@@ -4715,7 +4738,26 @@ impl Handling<'_> {
                     .reserve_flow_link(&self.tenant.id, id, token, plan.revision, &intent, step_now)
                     .await
                     .map_err(|error| group_error(crate::FLOW_APPLY_ID, error))?;
-                if node.kind == flows::NodeKind::Api
+                if step.action == "update" {
+                    let previous = prior
+                        .and_then(|graph| graph.nodes.iter().find(|old| old.id == node.id))
+                        .ok_or_else(|| {
+                            AdminError::Conflict("previous applied node is unavailable".into())
+                        })?;
+                    self.update_flow_node(node, previous, &resource).await?;
+                    self.state
+                        .backend
+                        .complete_flow_link(
+                            &self.tenant.id,
+                            id,
+                            token,
+                            plan.revision,
+                            &node.id,
+                            step_now,
+                        )
+                        .await
+                        .map_err(|error| group_error(crate::FLOW_APPLY_ID, error))?;
+                } else if node.kind == flows::NodeKind::Api
                     && relation == "managed"
                     && reservation["state"] != "applied"
                 {
@@ -4917,6 +4959,137 @@ impl Handling<'_> {
         Ok(())
     }
 
+    async fn update_flow_node(
+        &self,
+        node: &flows::Node,
+        previous: &flows::Node,
+        resource: &str,
+    ) -> Result<(), AdminError> {
+        match node.kind {
+            flows::NodeKind::Api => {
+                let document = serde_json::from_value(node.settings.clone())
+                    .map_err(|_| AdminError::Invalid("API settings are invalid".into()))?;
+                let server = resource_servers::parse(resource, document)?;
+                let old_document = serde_json::from_value(previous.settings.clone())
+                    .map_err(|_| AdminError::Unavailable)?;
+                let old = resource_servers::parse(resource, old_document)?;
+                self.state
+                    .backend
+                    .update_flow_api(&self.tenant.id, &old, &server)
+                    .await
+                    .map_err(|error| group_error(crate::FLOW_APPLY_ID, error))?;
+            }
+            flows::NodeKind::Group => {
+                let id = resource
+                    .parse::<uuid::Uuid>()
+                    .map(asterius_domain::GroupId::from_uuid)
+                    .map_err(|_| AdminError::Unavailable)?;
+                let live = self
+                    .state
+                    .backend
+                    .groups()
+                    .get(&self.tenant.id, id)
+                    .await
+                    .map_err(|error| group_error(crate::FLOW_APPLY_ID, error))?
+                    .ok_or(AdminError::NotFound)?;
+                if live.metadata.name().as_str() != previous.identifier
+                    || live.metadata.display_name() != previous.label
+                {
+                    return Err(AdminError::Conflict("group changed since preview".into()));
+                }
+                let metadata = asterius_domain::GroupMetadata::parse(&node.identifier, &node.label)
+                    .map_err(|error| AdminError::Invalid(error.to_string()))?;
+                self.state
+                    .backend
+                    .groups()
+                    .update(&self.tenant.id, id, live.revision, &metadata, self.now)
+                    .await
+                    .map_err(|error| group_error(crate::FLOW_APPLY_ID, error))?;
+            }
+            flows::NodeKind::Application => {
+                self.update_flow_application(node, previous, resource)
+                    .await?;
+            }
+            flows::NodeKind::Role => {
+                let (client, role): (String, String) =
+                    serde_json::from_str(resource).map_err(|_| AdminError::Unavailable)?;
+                let old_description = previous
+                    .settings
+                    .get("description")
+                    .and_then(serde_json::Value::as_str);
+                let description = node
+                    .settings
+                    .get("description")
+                    .and_then(serde_json::Value::as_str);
+                self.state
+                    .backend
+                    .update_flow_role(
+                        &self.tenant.id,
+                        &client,
+                        &role,
+                        old_description,
+                        description,
+                    )
+                    .await
+                    .map_err(|error| group_error(crate::FLOW_APPLY_ID, error))?;
+            }
+            flows::NodeKind::Stream | flows::NodeKind::IdentityProvider => {
+                return Err(AdminError::Unavailable);
+            }
+        }
+        Ok(())
+    }
+
+    async fn update_flow_application(
+        &self,
+        node: &flows::Node,
+        previous: &flows::Node,
+        resource: &str,
+    ) -> Result<(), AdminError> {
+        let id = asterius_domain::ClientId::new(resource.to_owned());
+        let existing = self
+            .state
+            .backend
+            .clients()
+            .find(&self.tenant.id, &id)
+            .await
+            .map_err(|error| group_error(crate::FLOW_APPLY_ID, error))?
+            .ok_or(AdminError::NotFound)?;
+        let old_document = flows::application_registration(previous)?;
+        if !flow_client_matches(&existing, &old_document) {
+            return Err(AdminError::Conflict(
+                "application changed since preview".into(),
+            ));
+        }
+        let document = flows::application_registration(node)?;
+        let bytes = serde_json::to_vec(&document).map_err(|_| AdminError::Unavailable)?;
+        let requested = ClientRegistration::from_json_with_profile(
+            &bytes,
+            self.state.backend.capabilities(),
+            ClientComplianceProfile::Fapi,
+        )
+        .map_err(|error| clients::refusal(&error))?;
+        let mut registration = existing.registration.clone();
+        registration.client_name = requested.client_name;
+        registration.redirect_uris = requested.redirect_uris;
+        registration.jwks = requested.jwks;
+        self.require_https_redirects(&id, &registration)?;
+        self.require_identity_only(&id, &registration)?;
+        self.check_client_is_serviceable(&registration, crate::FLOW_APPLY_ID)
+            .await?;
+        self.state
+            .backend
+            .update_flow_client(
+                &self.tenant.id,
+                resource,
+                existing.updated_at,
+                &registration,
+            )
+            .await
+            .map_err(|error| group_error(crate::FLOW_APPLY_ID, error))?;
+        Ok(())
+    }
+
     async fn provision_flow_edge(
         &self,
         source_kind: flows::NodeKind,
@@ -4975,6 +5148,11 @@ impl Handling<'_> {
         }
         let graph: flows::Graph =
             serde_json::from_value(saved["graph"].clone()).map_err(|_| AdminError::Unavailable)?;
+        let applied_graph: Option<flows::Graph> = saved["applied_graph"]
+            .as_object()
+            .map(|_| serde_json::from_value(saved["applied_graph"].clone()))
+            .transpose()
+            .map_err(|_| AdminError::Unavailable)?;
         let links = self
             .state
             .backend
@@ -5008,13 +5186,21 @@ impl Handling<'_> {
         ];
         for kind in ordered {
             for node in graph.nodes.iter().filter(|node| node.kind == kind) {
-                self.require_flow_scope(flows::scope_for(kind, false))?;
+                if !matches!(
+                    kind,
+                    flows::NodeKind::Stream | flows::NodeKind::IdentityProvider
+                ) {
+                    self.require_flow_scope(flows::scope_for(kind, false))?;
+                }
                 let link = links.iter().find(|link| link["node_id"] == node.id);
                 let mut resource_id = link
                     .and_then(|link| link["resource_id"].as_str())
                     .map(str::to_owned);
                 let mut explanation = String::new();
                 let mut action;
+                let previous = applied_graph
+                    .as_ref()
+                    .and_then(|graph| graph.nodes.iter().find(|old| old.id == node.id));
                 match kind {
                     flows::NodeKind::Api => {
                         let parsed = resource_servers::parse(
@@ -5037,13 +5223,28 @@ impl Handling<'_> {
                         if link.is_some_and(|link| link["resource_id"] != node.identifier) {
                             action = "conflict";
                             explanation = "This API node is linked to another identifier.".into();
-                        } else if matches!(action, "unchanged" | "retry")
+                        } else if action == "unchanged"
                             && live.is_some_and(|live| {
                                 resource_servers::render(live) != resource_servers::render(&parsed)
                             })
                         {
-                            action = "conflict";
-                            explanation = "The API settings drifted from this flow; review them before applying.".into();
+                            let old = previous.and_then(|old| {
+                                serde_json::from_value(old.settings.clone()).ok().and_then(
+                                    |settings| {
+                                        resource_servers::parse(&old.identifier, settings).ok()
+                                    },
+                                )
+                            });
+                            if old.as_ref().is_some_and(|old| {
+                                live.is_some_and(|live| {
+                                    resource_servers::render(live) == resource_servers::render(old)
+                                })
+                            }) {
+                                action = "update";
+                            } else {
+                                action = "conflict";
+                                explanation = "The API changed outside this flow, or its previous specification is unavailable.".into();
+                            }
                         } else if action == "conflict" {
                             explanation = if live.is_some() { "An API with this identifier already exists; choose Existing reference." } else { "The API created by this flow is missing." }.into();
                         }
@@ -5063,9 +5264,24 @@ impl Handling<'_> {
                             .search(&self.tenant.id, metadata.name().as_str(), None, 100)
                             .await
                             .map_err(|error| group_error(crate::FLOW_PLAN_ID, error))?;
-                        let live = matches
+                        let named = matches
                             .iter()
                             .find(|group| group.metadata.name() == metadata.name());
+                        let linked =
+                            if let Some(id) = link.and_then(|link| link["resource_id"].as_str()) {
+                                let id = id
+                                    .parse::<uuid::Uuid>()
+                                    .map_err(|_| AdminError::Unavailable)?;
+                                self.state
+                                    .backend
+                                    .groups()
+                                    .get(&self.tenant.id, asterius_domain::GroupId::from_uuid(id))
+                                    .await
+                                    .map_err(|error| group_error(crate::FLOW_PLAN_ID, error))?
+                            } else {
+                                None
+                            };
+                        let live = linked.as_ref().or(named);
                         if let Some(live) = live {
                             fingerprints.push(groups::document(live));
                             resource_id = Some(live.id.as_uuid().to_string());
@@ -5077,12 +5293,31 @@ impl Handling<'_> {
                             })
                         }) {
                             action = "conflict";
-                            explanation = "This group name points to another group.".into();
-                        } else if matches!(action, "unchanged" | "retry")
-                            && live.is_some_and(|live| live.metadata.display_name() != node.label)
+                            explanation =
+                                "The linked group is missing; another group now uses its name."
+                                    .into();
+                        } else if named
+                            .is_some_and(|named| live.is_some_and(|live| named.id != live.id))
                         {
                             action = "conflict";
-                            explanation = "The group display name drifted from this flow.".into();
+                            explanation = "This group name points to another group.".into();
+                        } else if action == "unchanged"
+                            && live.is_some_and(|live| {
+                                live.metadata.name() != metadata.name()
+                                    || live.metadata.display_name() != node.label
+                            })
+                        {
+                            if previous.is_some_and(|old| {
+                                live.is_some_and(|live| {
+                                    live.metadata.name().as_str() == old.identifier
+                                        && live.metadata.display_name() == old.label
+                                })
+                            }) {
+                                action = "update";
+                            } else {
+                                action = "conflict";
+                                explanation = "The group changed outside this flow, or its previous specification is unavailable.".into();
+                            }
                         } else if action == "conflict" {
                             explanation = if live.is_some() { "A group with this machine name already exists; choose Existing reference." } else { "The group created by this flow is missing." }.into();
                         }
@@ -5137,19 +5372,20 @@ impl Handling<'_> {
                                 self.check_client_is_serviceable(&parsed, crate::FLOW_PLAN_ID)
                                     .await?;
                             }
-                            if matches!(action, "unchanged" | "retry")
-                                && live.is_some_and(|live| {
-                                    let current = clients::document(live);
-                                    current["client_name"] != registration["client_name"]
-                                        || current["redirect_uris"] != registration["redirect_uris"]
-                                        || current["jwks_uri"] != registration["jwks_uri"]
-                                        || current["token_endpoint_auth_method"]
-                                            != registration["token_endpoint_auth_method"]
-                                })
+                            if action == "unchanged"
+                                && live
+                                    .is_some_and(|live| !flow_client_matches(live, &registration))
                             {
-                                action = "conflict";
-                                explanation =
-                                    "The application registration drifted from this flow.".into();
+                                let old = previous
+                                    .and_then(|old| flows::application_registration(old).ok());
+                                if old.as_ref().is_some_and(|old| {
+                                    live.is_some_and(|live| flow_client_matches(live, old))
+                                }) {
+                                    action = "update";
+                                } else {
+                                    action = "conflict";
+                                    explanation = "The application changed outside this flow, or its previous specification is unavailable.".into();
+                                }
                             }
                         }
                     }
@@ -5230,9 +5466,20 @@ impl Handling<'_> {
                                             != requested.description.as_deref()
                                     })
                                 {
-                                    action = "conflict";
-                                    explanation =
-                                        "The role description drifted from this flow.".into();
+                                    if previous.is_some_and(|old| {
+                                        live.is_some_and(|live| {
+                                            live.description.as_deref()
+                                                == old
+                                                    .settings
+                                                    .get("description")
+                                                    .and_then(serde_json::Value::as_str)
+                                        })
+                                    }) {
+                                        action = "update";
+                                    } else {
+                                        action = "conflict";
+                                        explanation = "The role changed outside this flow, or its previous specification is unavailable.".into();
+                                    }
                                 } else if action == "retry" && live.is_some() {
                                     action = "conflict";
                                     explanation = "A previous apply stopped after role creation; verify its origin before retrying.".into();
@@ -5293,7 +5540,11 @@ impl Handling<'_> {
                     action = "conflict";
                     explanation = "This node's ownership cannot be changed after it was linked; add a new node instead.".into();
                 }
-                let scope = flows::scope_for(kind, action != "reference" && action != "unchanged");
+                let scope = if action == "document" {
+                    "admin.flows:read"
+                } else {
+                    flows::scope_for(kind, action != "reference" && action != "unchanged")
+                };
                 if action != "conflict"
                     && action != "reference"
                     && action != "unchanged"
@@ -5332,7 +5583,9 @@ impl Handling<'_> {
                 (flows::NodeKind::Application, flows::NodeKind::Api)
                     | (flows::NodeKind::Group, flows::NodeKind::Role)
             );
-            let scope = if source.kind == flows::NodeKind::Application {
+            let scope = if !supported {
+                "admin.flows:read"
+            } else if source.kind == flows::NodeKind::Application {
                 "admin.clients:write"
             } else {
                 "admin.app_roles:write"
@@ -7323,6 +7576,24 @@ fn flow_action(
         (None, true) => "conflict",
         (None, false) => "create",
     }
+}
+
+fn flow_client_matches(live: &Client, registration: &serde_json::Value) -> bool {
+    let current = clients::document(live);
+    [
+        "client_name",
+        "redirect_uris",
+        "jwks_uri",
+        "token_endpoint_auth_method",
+        "grant_types",
+        "scope",
+        "id_token_signed_response_alg",
+        "dpop_bound_access_tokens",
+        "require_pushed_authorization_requests",
+        "compliance_profile",
+    ]
+    .iter()
+    .all(|field| current[*field] == registration[*field])
 }
 
 fn scim_group_error(operation: &'static str, error: DomainError) -> AdminError {

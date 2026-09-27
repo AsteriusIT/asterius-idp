@@ -111,6 +111,7 @@ async fn drafts_are_tenant_bound_and_stale_writes_conflict() {
     let applied = repository.read(&one, id).await.expect("applied flow");
     assert_eq!(applied["applied_revision"], 2);
     assert_eq!(applied["applied_digest"], digest);
+    assert_eq!(applied["applied_graph"]["schema_version"], 1);
     assert_eq!(
         repository.links(&one, id).await.expect("links")[0]["state"],
         "applied"
@@ -269,6 +270,28 @@ async fn drafts_are_tenant_bound_and_stale_writes_conflict() {
     let count: i64 = sqlx::query_scalar("select count(*) from client_roles where tenant_id = 'one' and client_id = 'flow-client' and name = 'reader'")
         .fetch_one(&pool).await.expect("role count");
     assert_eq!(count, 1);
+    repository
+        .update_role_description(
+            &one,
+            "flow-client",
+            "reader",
+            Some("Read"),
+            Some("Read invoices"),
+        )
+        .await
+        .expect("update role description");
+    assert!(matches!(
+        repository
+            .update_role_description(
+                &one,
+                "flow-client",
+                "reader",
+                Some("Read"),
+                Some("Unexpected")
+            )
+            .await,
+        Err(DomainError::Conflict(_))
+    ));
     assert_eq!(
         repository
             .links(&one, id)
@@ -331,6 +354,16 @@ async fn drafts_are_tenant_bound_and_stale_writes_conflict() {
         .finish_apply(&one, id, token, 2, &digest, None)
         .await
         .expect("finish third apply");
+    let mut changed_api = new_api.clone();
+    changed_api.scopes = Some(BTreeSet::from(["write".to_owned()]));
+    repository
+        .update_api(&one, &new_api, &changed_api)
+        .await
+        .expect("update API");
+    assert!(matches!(
+        repository.update_api(&one, &new_api, &changed_api).await,
+        Err(DomainError::Conflict(_))
+    ));
     sqlx::query(&format!("drop schema {schema} cascade"))
         .execute(&pool)
         .await

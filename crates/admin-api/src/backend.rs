@@ -114,6 +114,23 @@ pub trait PolicyTrial: std::fmt::Debug + Send + Sync {
 /// What an admin API request needs from below the API.
 #[async_trait::async_trait]
 pub trait AdminBackend: std::fmt::Debug + Send + Sync {
+    async fn update_flow_api(
+        &self,
+        _tenant: &TenantId,
+        _old: &asterius_domain::ResourceServer,
+        _new: &asterius_domain::ResourceServer,
+    ) -> Result<(), DomainError> {
+        Err(DomainError::NotFound)
+    }
+    async fn update_flow_client(
+        &self,
+        _tenant: &TenantId,
+        _id: &str,
+        _expected_updated_at: time::OffsetDateTime,
+        _registration: &asterius_domain::ClientRegistration,
+    ) -> Result<(), DomainError> {
+        Err(DomainError::NotFound)
+    }
     async fn create_flow_role(
         &self,
         _flow: uuid::Uuid,
@@ -122,6 +139,17 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
         _node: &str,
         _role: &asterius_domain::ApplicationRole,
         _now: time::OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        Err(DomainError::NotFound)
+    }
+
+    async fn update_flow_role(
+        &self,
+        _tenant: &TenantId,
+        _client: &str,
+        _name: &str,
+        _expected: Option<&str>,
+        _description: Option<&str>,
     ) -> Result<(), DomainError> {
         Err(DomainError::NotFound)
     }

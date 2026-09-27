@@ -12,7 +12,7 @@ export interface Flow {
 }
 
 export interface PlanStep {
-  id: string; label: string; kind: string; action: 'create' | 'reference' | 'unchanged' | 'retry' | 'attach' | 'document' | 'detached' | 'conflict';
+  id: string; label: string; kind: string; action: 'create' | 'update' | 'reference' | 'unchanged' | 'retry' | 'attach' | 'document' | 'detached' | 'conflict';
   scope: string; resource_id: string | null; explanation: string;
 }
 export interface Plan { flow_id: string; revision: number; digest: string; applicable: boolean; steps: PlanStep[] }

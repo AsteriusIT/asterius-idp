@@ -37,7 +37,7 @@ const GUIDES: readonly Guide[] = [
     steps: [
       'Start from Web app + API or a blank diagram. Give each object a clear name, then connect the application to its API and roles, and the group to a role.',
       'Fill in the application callback and public JWKS URLs, API audience and scopes, then save the diagram. Saving does not change live resources.',
-      'Preview the saved revision. Resolve conflicts and drift before applying the exact plan. If Apply stops partway through, preview again to see what completed and retry safely.',
+      'Preview the saved revision. Changes to settings owned by this flow appear as updates; manual changes to those settings appear as conflicts. If Apply stops partway through, preview again to see what completed and retry safely.',
       'Open a linked resource to return to its creating flow. Removing an object from the diagram leaves the live resource in place. Stream and external identity-provider nodes are diagram context only.',
     ],
   },

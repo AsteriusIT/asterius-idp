@@ -23,7 +23,7 @@ provider nodes document architecture only; they do not configure integrations.
    The canvas rejects obviously invalid connections and explains why. The
    server performs the same validation on save and apply.
 4. Save a draft without changing live identity resources. **Preview changes**
-   shows create, retry, reference, unchanged, attach, conflict, document, and
+   shows create, update, retry, reference, unchanged, attach, conflict, document, and
    detached operations. The operator explicitly applies that exact digest.
 5. The flow shows its applied revision and the last apply error. A failed apply
    can leave earlier steps complete; preview again before retrying. Its linked
@@ -94,7 +94,11 @@ fresh preview.
 
 The apply runner records each operation with a stable flow/node link. It
 creates resources through the tenant's existing domain model and records
-their IDs in `flow_resource_links`. It resumes safely after interruption.
+their IDs in `flow_resource_links`. It retains the last fully applied graph.
+Later node edits preview as updates only while flow-managed fields on the live
+resource still match that graph; manual changes to those fields appear as
+conflicts. Updates use conditional writes
+and preserve resource origin. The runner resumes safely after interruption.
 Some operations span multiple tables or external effects, so an interrupted
 apply can be partial. The UI shows completed, pending and refused operations
 and offers a safe retry; it never reports the whole flow as applied while one

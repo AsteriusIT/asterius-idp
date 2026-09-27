@@ -2442,6 +2442,39 @@ impl DeploymentUsers {
 
 #[async_trait::async_trait]
 impl AdminBackend for Deployment {
+    async fn update_flow_api(
+        &self,
+        tenant: &TenantId,
+        old: &asterius_domain::ResourceServer,
+        new: &asterius_domain::ResourceServer,
+    ) -> Result<(), DomainError> {
+        asterius_store_pg::PgArchitectureFlows::new(self.store.pool().clone())
+            .update_api(tenant, old, new)
+            .await
+    }
+    async fn update_flow_client(
+        &self,
+        tenant: &TenantId,
+        id: &str,
+        expected_updated_at: time::OffsetDateTime,
+        registration: &asterius_domain::ClientRegistration,
+    ) -> Result<(), DomainError> {
+        asterius_store_pg::PgArchitectureFlows::new(self.store.pool().clone())
+            .update_client(tenant, id, expected_updated_at, registration)
+            .await
+    }
+    async fn update_flow_role(
+        &self,
+        tenant: &TenantId,
+        client: &str,
+        name: &str,
+        expected: Option<&str>,
+        description: Option<&str>,
+    ) -> Result<(), DomainError> {
+        asterius_store_pg::PgArchitectureFlows::new(self.store.pool().clone())
+            .update_role_description(tenant, client, name, expected, description)
+            .await
+    }
     async fn create_flow_role(
         &self,
         flow: uuid::Uuid,
