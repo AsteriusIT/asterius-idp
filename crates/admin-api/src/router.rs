@@ -4454,9 +4454,9 @@ impl Handling<'_> {
     }
 
     async fn read_flow_origins(&self) -> Result<Response, AdminError> {
-        let kind = query_value(&self.query, "kind")
+        let kind = decoded_query_value(&self.query, "kind")
             .ok_or_else(|| AdminError::Invalid("resource kind is required".into()))?;
-        let resource = query_value(&self.query, "id")
+        let resource = decoded_query_value(&self.query, "id")
             .ok_or_else(|| AdminError::Invalid("resource ID is required".into()))?;
         if !matches!(kind.as_str(), "application" | "api" | "group" | "role")
             || resource.is_empty()
@@ -7280,6 +7280,11 @@ fn query_value(query: &str, name: &str) -> Option<String> {
         let (key, value) = pair.split_once('=')?;
         (key == name).then(|| value.to_owned())
     })
+}
+
+fn decoded_query_value(query: &str, name: &str) -> Option<String> {
+    url::form_urlencoded::parse(query.as_bytes())
+        .find_map(|(key, value)| (key == name).then(|| value.into_owned()))
 }
 
 fn parse_group_id(raw: &str) -> Result<asterius_domain::GroupId, AdminError> {
@@ -15689,6 +15694,21 @@ mod tests {
         );
         assert_eq!(query_value("a=1", "limit"), None);
         assert_eq!(query_value("", "limit"), None);
+    }
+
+    #[test]
+    fn flow_origin_query_decodes_resource_urls_and_role_ids() {
+        assert_eq!(
+            decoded_query_value(
+                "kind=api&id=https%3A%2F%2Fapi.example%2Fpayments%3Fa%3D1%26b%3D2",
+                "id"
+            ),
+            Some("https://api.example/payments?a=1&b=2".to_owned())
+        );
+        assert_eq!(
+            decoded_query_value("kind=role&id=%5B%22client%22%2C%22reader%22%5D", "id"),
+            Some("[\"client\",\"reader\"]".to_owned())
+        );
     }
 
     /// From the issuer, never from a `Host` header a caller chose.
