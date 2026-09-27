@@ -126,6 +126,10 @@ export function App(): JSX.Element {
     : (destinations[0]?.route ?? route);
   const here = DESTINATIONS.find((destination) => destination.route === current);
 
+  if (current === 'architecture' && (paramsOf(fragment).has('flow') || paramsOf(fragment).get('mode') === 'new')) {
+    return <><main id="content"><ArchitectureFlows session={shell.session} fragment={fragment} /></main><Toaster /></>;
+  }
+
   return (
     <SidebarProvider defaultOpen>
       <AppTopbar
@@ -167,7 +171,7 @@ function RouteScreen({
     return <Users session={session} />;
   }
   if (route === 'groups') return <Groups session={session} />;
-  if (route === 'architecture') return <ArchitectureFlows session={session} />;
+  if (route === 'architecture') return <ArchitectureFlows session={session} fragment={fragment} />;
   if (route === 'scim') return <ScimProvisioning session={session} />;
   if (route === 'clients') {
     return <Clients session={session} />;

@@ -1,4 +1,4 @@
-export type Kind = 'application' | 'api' | 'group' | 'role' | 'stream' | 'identity_provider';
+export type Kind = 'application' | 'api' | 'group' | 'role' | 'stream' | 'identity_provider' | 'user';
 export type Mode = 'managed' | 'reference';
 export interface ArchitectureNode {
   id: string; kind: Kind; label: string; identifier: string; mode: Mode;
@@ -24,7 +24,7 @@ export interface ResourceLink {
 
 const VALID_CONNECTIONS = new Set([
   'application:api', 'group:role', 'application:role',
-  'application:stream', 'identity_provider:application',
+  'application:stream', 'identity_provider:group', 'identity_provider:user',
 ]);
 
 export function validConnection(graph: Graph, source: string, target: string): boolean {

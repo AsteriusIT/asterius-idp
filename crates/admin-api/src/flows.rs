@@ -68,6 +68,7 @@ pub fn scope_for(kind: NodeKind, write: bool) -> &'static str {
         (NodeKind::Group, true) => "admin.groups:write",
         (NodeKind::Role, false) => "admin.app_roles:read",
         (NodeKind::Role, true) => "admin.app_roles:write",
+        (NodeKind::User, _) => "admin.flows:read",
         (NodeKind::Stream, false) => "admin.ssf:read",
         (NodeKind::Stream, true) => "admin.ssf:write",
     }
@@ -87,26 +88,74 @@ pub fn application_registration(node: &Node) -> Result<Value, AdminError> {
         .settings
         .get("jwks_uri")
         .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| AdminError::Invalid(format!("{}: add a public JWKS URI", node.label)))?;
+        .filter(|value| !value.is_empty());
+    let jwks = node.settings.get("jwks");
+    if jwks_uri.is_some() == jwks.is_some() {
+        return Err(AdminError::Invalid(format!(
+            "{}: choose a public JWKS URL or public JWKS JSON",
+            node.label
+        )));
+    }
+    if let Some(jwks) = jwks {
+        validate_public_jwks(jwks)?;
+    }
     if redirects.is_empty() || !redirects.iter().all(Value::is_string) {
         return Err(AdminError::Invalid(format!(
             "{}: redirect URIs must be non-empty strings",
             node.label
         )));
     }
-    Ok(serde_json::json!({
+    let mut document = serde_json::json!({
         "client_name": node.label,
         "redirect_uris": redirects,
         "grant_types": ["authorization_code"],
         "scope": "openid",
-        "jwks_uri": jwks_uri,
         "token_endpoint_auth_method": "private_key_jwt",
         "id_token_signed_response_alg": "EdDSA",
         "dpop_bound_access_tokens": true,
         "require_pushed_authorization_requests": true,
         "compliance_profile": "fapi",
-    }))
+    });
+    if let Some(uri) = jwks_uri {
+        document["jwks_uri"] = serde_json::json!(uri);
+    }
+    if let Some(keys) = jwks {
+        document["jwks"] = keys.clone();
+    }
+    Ok(document)
+}
+
+fn validate_public_jwks(value: &Value) -> Result<(), AdminError> {
+    if value.as_object().is_none_or(|object| object.len() != 1) {
+        return Err(AdminError::Invalid(
+            "public JWKS may only contain keys".into(),
+        ));
+    }
+    let keys = value
+        .get("keys")
+        .and_then(Value::as_array)
+        .filter(|keys| !keys.is_empty() && keys.len() <= 20)
+        .ok_or_else(|| AdminError::Invalid("public JWKS must contain 1–20 keys".into()))?;
+    if keys.iter().any(|key| {
+        key.as_object().is_none_or(|key| {
+            !matches!(
+                key.get("kty").and_then(Value::as_str),
+                Some("RSA" | "EC" | "OKP")
+            ) || key.keys().any(|name| {
+                ![
+                    "kty", "kid", "use", "key_ops", "alg", "n", "e", "crv", "x", "y", "x5c", "x5t",
+                    "x5t#S256", "x5u",
+                ]
+                .contains(&name.as_str())
+            })
+        })
+    }) || value.to_string().len() > 32_768
+    {
+        return Err(AdminError::Invalid(
+            "JWKS must contain public asymmetric keys only".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -149,6 +198,7 @@ pub enum NodeKind {
     Role,
     Stream,
     IdentityProvider,
+    User,
 }
 
 impl NodeKind {
@@ -161,6 +211,7 @@ impl NodeKind {
             Self::Role => "role",
             Self::Stream => "stream",
             Self::IdentityProvider => "identity_provider",
+            Self::User => "user",
         }
     }
 }
@@ -188,7 +239,7 @@ pub fn permits(source: NodeKind, target: NodeKind) -> bool {
             NodeKind::Application,
             NodeKind::Api | NodeKind::Role | NodeKind::Stream
         ) | (NodeKind::Group, NodeKind::Role)
-            | (NodeKind::IdentityProvider, NodeKind::Application)
+            | (NodeKind::IdentityProvider, NodeKind::Group | NodeKind::User)
     )
 }
 
@@ -238,15 +289,29 @@ impl FlowInput {
                 ));
             }
             if let Some(settings) = node.settings.as_object() {
+                if let Some(jwks) = settings.get("jwks") {
+                    validate_public_jwks(jwks)?;
+                }
+                if settings.contains_key("jwks")
+                    && settings
+                        .get("jwks_uri")
+                        .and_then(Value::as_str)
+                        .is_some_and(|uri| !uri.is_empty())
+                {
+                    return Err(AdminError::Invalid("choose one public key source".into()));
+                }
                 let allowed: &[&str] = match node.kind {
-                    NodeKind::Application => &["redirect_uris", "jwks_uri"],
+                    NodeKind::Application => &["redirect_uris", "jwks_uri", "jwks"],
                     NodeKind::Api => &[
                         "scopes",
                         "default_token_lifetime_seconds",
                         "introspection_clients",
                     ],
                     NodeKind::Role => &["description"],
-                    NodeKind::Group | NodeKind::Stream | NodeKind::IdentityProvider => &[],
+                    NodeKind::Group
+                    | NodeKind::Stream
+                    | NodeKind::IdentityProvider
+                    | NodeKind::User => &[],
                 };
                 if settings.keys().any(|key| !allowed.contains(&key.as_str())) {
                     return Err(AdminError::Invalid(
@@ -314,6 +379,61 @@ impl FlowInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn providers_only_supply_groups_and_users_and_roles_are_leaves() {
+        for kind in [
+            NodeKind::Application,
+            NodeKind::Api,
+            NodeKind::Group,
+            NodeKind::User,
+            NodeKind::Role,
+            NodeKind::Stream,
+            NodeKind::IdentityProvider,
+        ] {
+            assert_eq!(
+                permits(NodeKind::IdentityProvider, kind),
+                matches!(kind, NodeKind::Group | NodeKind::User)
+            );
+            assert!(!permits(NodeKind::Role, kind));
+        }
+    }
+
+    #[test]
+    fn public_keys_reject_secrets_and_registration_accepts_either_source() {
+        let keys = serde_json::json!({"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "public"}]});
+        assert!(validate_public_jwks(&keys).is_ok());
+        for field in ["d", "k", "client_secret"] {
+            let mut secret = keys.clone();
+            secret["keys"][0][field] = serde_json::json!("secret");
+            assert!(validate_public_jwks(&secret).is_err());
+        }
+        assert!(
+            validate_public_jwks(&serde_json::json!({"keys": [{"kty": "oct", "k": "secret"}]}))
+                .is_err()
+        );
+        let mut node = Node {
+            id: "app".into(),
+            kind: NodeKind::Application,
+            label: "App".into(),
+            identifier: String::new(),
+            mode: NodeMode::Managed,
+            x: 0.0,
+            y: 0.0,
+            settings: serde_json::json!({"redirect_uris": ["https://app.example/callback"], "jwks": keys}),
+        };
+        assert_eq!(
+            application_registration(&node).expect("public keys")["jwks"],
+            keys
+        );
+        node.settings["jwks_uri"] = serde_json::json!("https://app.example/jwks");
+        assert!(application_registration(&node).is_err());
+        node.settings
+            .as_object_mut()
+            .expect("settings")
+            .remove("jwks");
+        assert!(application_registration(&node).is_ok());
+    }
 
     #[test]
     fn rejects_cross_type_and_dangling_connections() {

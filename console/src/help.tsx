@@ -35,10 +35,10 @@ const GUIDES: readonly Guide[] = [
     title: 'Build an access architecture', purpose: 'Draw and provision a web application, API, group, and roles together.',
     route: 'architecture', action: 'Open architecture builder',
     steps: [
-      'Start from Web app + API or a blank diagram. Give each object a clear name, then connect the application to its API and roles, and the group to a role.',
-      'Fill in the application callback and public JWKS URLs, API audience and scopes, then save the diagram. Saving does not change live resources.',
+      'Choose View to inspect a saved architecture, or Edit to open its fullscreen workspace. Start a new architecture from Web app + API or a blank diagram. Add objects from the toolbar; select one to edit its settings in the right pane.',
+      'Enter application callback URLs and choose a public JWKS URL or paste public JWKS JSON. Enter the API audience and permissions. Connect applications to APIs and role leaves, and groups to roles, using handles or the Links tab. Save draft preserves the diagram without changing live resources.',
       'Preview the saved revision. Changes to settings owned by this flow appear as updates; manual changes to those settings appear as conflicts. If Apply stops partway through, preview again to see what completed and retry safely.',
-      'Open a linked resource to return to its creating flow. Removing an object from the diagram leaves the live resource in place. Stream and external identity-provider nodes are diagram context only.',
+      'Open a linked resource to return to its creating flow. Removing an object from the diagram leaves the live resource in place. Streams, users and external identity providers are diagram context only. Providers may connect only to groups or users; these links do not configure sign-in or membership.',
     ],
   },
   {
