@@ -1552,3 +1552,18 @@
     .group-role-form button { width: 100%; }
   }
 }
+
+@layer components {
+.architecture-flow-list, .architecture-object-list { list-style: none; padding: 0; margin: 0; }
+.architecture-flow-list li, .architecture-object-list li { display: flex; gap: .75rem; align-items: center; justify-content: space-between; padding: .75rem 0; border-bottom: 1px solid var(--line); }
+.architecture-flow-list li:last-child, .architecture-object-list li:last-child { border-bottom: 0; }
+.architecture-toolbar { display: flex; flex-wrap: wrap; align-items: end; gap: .75rem; margin-bottom: 1rem; }
+.architecture-toolbar > * { min-width: 12rem; }
+.architecture-palette { display: flex; flex-wrap: wrap; gap: .45rem; margin: 1rem 0; }
+.architecture-canvas { height: min(65vh, 38rem); min-height: 22rem; width: 100%; border: 1px solid var(--line); border-radius: .75rem; overflow: hidden; background: var(--surface); }
+.architecture-card { display: grid; gap: .15rem; min-width: 11rem; max-width: 15rem; padding: .75rem; border: 1px solid var(--line); border-radius: .65rem; background: var(--surface); box-shadow: 0 3px 12px rgb(0 0 0 / .1); color: var(--fg); }
+.architecture-card-kind { font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.architecture-card strong, .architecture-card .muted { overflow-wrap: anywhere; }
+.architecture-inspector { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: .75rem; padding: 1rem 0; }
+@media (max-width: 42rem) { .architecture-flow-list li, .architecture-object-list li { align-items: flex-start; flex-direction: column; } .architecture-canvas { height: 24rem; } }
+}

@@ -28,6 +28,7 @@ import { ScimProvisioning } from './scim';
 import { FederationKeys } from './federation-keys';
 import { SamlIdpKey } from './saml-idp-key';
 import { Help } from './help';
+import { ArchitectureFlows } from './architecture-flows';
 
 /**
  * What the shell is doing, as one value.
@@ -166,6 +167,7 @@ function RouteScreen({
     return <Users session={session} />;
   }
   if (route === 'groups') return <Groups session={session} />;
+  if (route === 'architecture') return <ArchitectureFlows session={session} />;
   if (route === 'scim') return <ScimProvisioning session={session} />;
   if (route === 'clients') {
     return <Clients session={session} />;

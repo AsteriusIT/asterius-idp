@@ -114,6 +114,42 @@ pub trait PolicyTrial: std::fmt::Debug + Send + Sync {
 /// What an admin API request needs from below the API.
 #[async_trait::async_trait]
 pub trait AdminBackend: std::fmt::Debug + Send + Sync {
+    /// Tenant-scoped architecture drafts, with compare-and-swap updates.
+    async fn list_flows(&self, _tenant: &TenantId) -> Result<Vec<serde_json::Value>, DomainError> {
+        Err(DomainError::NotFound)
+    }
+
+    async fn read_flow(
+        &self,
+        _tenant: &TenantId,
+        _id: uuid::Uuid,
+    ) -> Result<serde_json::Value, DomainError> {
+        Err(DomainError::NotFound)
+    }
+
+    async fn create_flow(
+        &self,
+        _tenant: &TenantId,
+        _id: uuid::Uuid,
+        _name: &str,
+        _graph: serde_json::Value,
+        _now: time::OffsetDateTime,
+    ) -> Result<serde_json::Value, DomainError> {
+        Err(DomainError::NotFound)
+    }
+
+    async fn update_flow(
+        &self,
+        _tenant: &TenantId,
+        _id: uuid::Uuid,
+        _revision: i64,
+        _name: &str,
+        _graph: serde_json::Value,
+        _now: time::OffsetDateTime,
+    ) -> Result<serde_json::Value, DomainError> {
+        Err(DomainError::NotFound)
+    }
+
     /// Public Federation key inventory for the routed tenant.
     async fn federation_key_inventory(
         &self,
