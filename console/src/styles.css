@@ -1591,7 +1591,7 @@
 .architecture-sidepane .architecture-inspector { display: grid; grid-template-columns: 1fr; gap: 1rem; }
 .architecture-sidepane .panel { margin: .75rem; }
 .architecture-card-kind { display: flex; align-items: center; gap: .4rem; }
-.architecture-role-leaf { min-width: 8rem; border-radius: 2rem; padding: .55rem 1.1rem; border-style: dashed; }
+.architecture-role-leaf { min-width: 8rem; border-radius: 2rem; padding: .55rem 1.1rem; }
 .react-flow__node.selected .architecture-card { outline: 2px solid var(--accent, #6366f1); outline-offset: 2px; }
 .architecture-directory { display: grid; gap: .75rem; }
 .architecture-directory article { display: flex; align-items: center; gap: 1rem; padding: 1rem; border: 1px solid var(--line); border-radius: .75rem; }
@@ -1614,7 +1614,17 @@
 .architecture-pane-heading { display: flex; align-items: center; justify-content: space-between; padding: .75rem 1rem; border-bottom: 1px solid var(--line); }
 .architecture-pane-content h2 { font-size: 1rem; margin: 0; }
 .architecture-edge-label { position: absolute; pointer-events: none; display: flex; align-items: center; gap: .35rem; padding: .2rem .4rem; background: var(--surface); border-radius: .4rem; font-size: .75rem; }
-.architecture-edge-label button { pointer-events: all; display: inline-flex; cursor: pointer; padding: .3rem; color: var(--fg); border: 1px solid var(--line); border-radius: .25rem; }
+.architecture-edge-label button { pointer-events: all; display: inline-flex; cursor: pointer; padding: .3rem; color: var(--fg); border: 0; border-radius: .25rem; }
 
 .developer-recipe { padding: .8rem 0; border-bottom: 1px solid var(--line); }
 .developer-recipe summary { cursor: pointer; font-weight: 600; }
+
+.architecture-card.architecture-context-only { border-style: dashed; border-width: 2px; }
+.architecture-icon-button, .architecture-palette button, .architecture-workspace .react-flow__controls-button { border: 0; box-shadow: none; }
+.architecture-workspace .react-flow__controls { box-shadow: none; }
+.architecture-edge-label button:hover { background: var(--line); }
+.architecture-icon-button:focus-visible, .architecture-palette button:focus-visible, .architecture-edge-label button:focus-visible { outline: 2px solid var(--accent, #6366f1); outline-offset: 2px; }
+.architecture-shortcuts { display: flex; flex-wrap: wrap; gap: .65rem 1.5rem; padding: .8rem 1rem; border-bottom: 1px solid var(--line); font-size: .85rem; }
+.architecture-shortcuts span { display: inline-flex; gap: .5rem; align-items: center; }
+.architecture-shortcuts kbd { background: var(--line); border-radius: .25rem; padding: .15rem .35rem; }
+.architecture-shortcuts small { flex-basis: 100%; color: var(--muted); }
