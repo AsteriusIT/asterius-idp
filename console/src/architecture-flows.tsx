@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
-import { AppWindow, Database, Users, UserRound, ShieldCheck, Radio, LogIn, ArrowLeft, Plus, Pencil, Eye, Trash2, X, Network, Layers } from 'lucide-react';
+import { AppWindow, Database, Users, UserRound, ShieldCheck, Radio, LogIn, ArrowLeft, Plus, Pencil, Eye, Trash2, X, Network, Layers, Keyboard } from 'lucide-react';
 import {
   Background, Controls, Handle, MiniMap, Position, ReactFlow, BaseEdge, EdgeLabelRenderer, getBezierPath,
   applyEdgeChanges, applyNodeChanges,
@@ -9,7 +9,7 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { mutate, read, type Session } from './api';
-import { bffPreset, connectionLabel, validConnection, type ArchitectureNode, type Flow, type Graph, type Kind, type Mode, type Plan, type ResourceLink } from './architecture-model';
+import { bffPreset, connectionLabel, contextOnlyNode, contextOnlyConnection, validConnection, type ArchitectureNode, type Flow, type Graph, type Kind, type Mode, type Plan, type ResourceLink } from './architecture-model';
 import { hrefOf, paramsOf } from './routes';
 import { toast } from './components/ui/toast';
 import { Button, Field, LoadFailure, Panel, Screen, Skeleton } from './ui';
@@ -23,11 +23,11 @@ interface CanvasData extends Record<string, unknown> { label: string; kind: Kind
 const ArchitectureCard = memo(function ArchitectureCard({ data }: { data: CanvasData }): JSX.Element {
   const Icon = ICONS[data.kind];
   const leaf = ['role', 'user', 'stream'].includes(data.kind);
-  return <div className={`architecture-card ${data.kind === 'role' ? 'architecture-role-leaf' : ''}`}>
+  return <div className={`architecture-card ${data.kind === 'role' ? 'architecture-role-leaf' : ''} ${contextOnlyNode(data.kind) ? 'architecture-context-only' : ''}`}>
     {data.kind !== 'identity_provider' && <Handle type="target" position={Position.Left} />}
     <span className="architecture-card-kind"><Icon size={18} aria-hidden="true" />{TYPES[data.kind]}</span>
     <strong>{data.label}</strong>
-    {data.kind !== 'role' && <span className="muted">{data.kind === 'gateway' ? 'Context only' : data.kind === 'application' && data.mode === 'managed' ? 'Application' : data.identifier || 'Select to configure'}</span>}
+    {data.kind !== 'role' && <span className="muted">{contextOnlyNode(data.kind) ? 'Context only' : data.kind === 'application' && data.mode === 'managed' ? 'Application' : data.identifier || 'Select to configure'}</span>}
     {!leaf && <Handle type="source" position={Position.Right} />}
   </div>;
 });
@@ -36,14 +36,14 @@ const NODE_TYPES = { architecture: ArchitectureCard };
 function ArchitectureLink(props: EdgeProps): JSX.Element {
   const [path, x, y] = getBezierPath(props);
   const remove = props.data?.remove as (() => void) | undefined;
-  return <><BaseEdge path={path} {...(props.selected ? { style: { stroke: 'var(--accent, #6366f1)', strokeWidth: 2 } } : {})} />
+  return <><BaseEdge path={path} style={{ ...(props.data?.contextOnly ? { strokeDasharray: '6 4' } : {}), ...(props.selected ? { stroke: 'var(--accent, #6366f1)', strokeWidth: 2 } : {}) }} />
     <EdgeLabelRenderer><div className="architecture-edge-label nodrag nopan" style={{ transform: `translate(-50%, -50%) translate(${x}px, ${y}px)` }}>
       <span>{props.label}</span>{props.selected && remove && <button type="button" title="Remove connection from diagram" aria-label="Remove connection from diagram" onClick={event => { event.stopPropagation(); remove(); }}><Trash2 size={15} /></button>}
     </div></EdgeLabelRenderer></>;
 }
 const EDGE_TYPES = { architecture: ArchitectureLink };
 
-function FlowCanvas({ graph, writable, onSelect, onChange }: { graph: Graph; writable: boolean; onSelect: (id: string | null) => void; onChange: (graph: Graph) => void }): JSX.Element {
+function FlowCanvas({ graph, writable, selected, selectedEdge, onEdgeSelect, onSelect, onChange }: { selected: string | null; selectedEdge: string | null; onEdgeSelect: (id: string | null) => void; graph: Graph; writable: boolean; onSelect: (id: string | null) => void; onChange: (graph: Graph) => void }): JSX.Element {
   const [nodes, setNodes] = useState<CanvasNode<CanvasData>[]>([]);
   const [edges, setEdges] = useState<CanvasEdge[]>([]);
   useEffect(() => setNodes(previous => graph.nodes.map(node => {
@@ -54,12 +54,16 @@ function FlowCanvas({ graph, writable, onSelect, onChange }: { graph: Graph; wri
   useEffect(() => setEdges(graph.edges.map(edge => {
     const from = graph.nodes.find(node => node.id === edge.source)?.kind;
     const to = graph.nodes.find(node => node.id === edge.target)?.kind;
-    return { ...edge, type: 'architecture', data: { remove: writable ? () => onChange({ ...graph, edges: graph.edges.filter(item => item.id !== edge.id) }) : undefined }, label: connectionLabel(from, to) };
+    return { ...edge, type: 'architecture', data: { contextOnly: contextOnlyConnection(from, to), remove: writable ? () => onChange({ ...graph, edges: graph.edges.filter(item => item.id !== edge.id) }) : undefined }, label: connectionLabel(from, to) };
   })), [graph, writable, onChange]);
+  useEffect(() => {
+    setNodes(current => current.map(node => ({ ...node, selected: node.id === selected })));
+    setEdges(current => current.map(edge => ({ ...edge, selected: edge.id === selectedEdge })));
+  }, [selected, selectedEdge]);
   const onNodesChange = useCallback((changes: NodeChange<CanvasNode<CanvasData>>[]) => setNodes(current => applyNodeChanges(changes, current)), []);
   const onEdgesChange = useCallback((changes: EdgeChange<CanvasEdge>[]) => setEdges(current => applyEdgeChanges(changes, current)), []);
   return <ReactFlow nodes={nodes} edges={edges} nodeTypes={NODE_TYPES} edgeTypes={EDGE_TYPES} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
-    onNodeClick={(_, node) => onSelect(node.id)} onPaneClick={() => onSelect(null)} onEdgeClick={() => onSelect(null)} nodesDraggable={writable} nodesConnectable={writable} deleteKeyCode={null}
+    onNodeClick={(_, node) => { onSelect(node.id); onEdgeSelect(null); }} onPaneClick={() => { onSelect(null); onEdgeSelect(null); }} onEdgeClick={(_, edge) => { onSelect(null); onEdgeSelect(edge.id); }} nodesDraggable={writable} nodesConnectable={writable} deleteKeyCode={null}
     onNodeDragStop={(_, moved, dragged) => onChange({ ...graph, nodes: graph.nodes.map(node => { const position = (dragged.length ? dragged : [moved]).find(item => item.id === node.id)?.position; return position ? { ...node, ...position } : node; }) })}
     onConnect={connection => { if (writable && connection.source && connection.target && validConnection(graph, connection.source, connection.target)) onChange({ ...graph, edges: [...graph.edges, { id: crypto.randomUUID(), source: connection.source, target: connection.target }] }); }}
     isValidConnection={connection => Boolean(connection.source && connection.target && validConnection(graph, connection.source, connection.target))} fitView>
@@ -98,6 +102,8 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
   const [name, setName] = useState('');
   const [graph, setGraph] = useState<Graph>(EMPTY);
   const [selected, setSelected] = useState<string | null>(null);
+  const [selectedEdge, setSelectedEdge] = useState<string | null>(null);
+  const [showShortcuts, setShowShortcuts] = useState(false);
   const [busy, setBusy] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [invalidKeys, setInvalidKeys] = useState<Record<string, boolean>>({});
@@ -133,7 +139,7 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
     return () => { active = false; };
   }, [flow?.id, flow?.applied_revision, linkRefresh, session.workspace]);
   const open = (item: Flow): void => {
-    setFlow(item); setName(item.name); setGraph(item.graph); setSelected(null); setDirty(false); setPlan(null); setLinkRefresh(value => value + 1);
+    setFlow(item); setName(item.name); setGraph(item.graph); setSelected(null); setSelectedEdge(null); setDirty(false); setPlan(null); setLinkRefresh(value => value + 1);
   };
   const create = (): void => {
     setFlow(null); setName('Untitled architecture'); setGraph(EMPTY); setSelected(null); setDirty(false); setPlan(null); setLinks([]);
@@ -154,7 +160,7 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
   };
   const change = useCallback((next: Graph): void => { setGraph(next); setDirty(true); setPlan(null); }, []);
   const save = (): void => {
-    if (!canWrite || hasInvalidKeys) return;
+    if (!canWrite || hasInvalidKeys || !name.trim() || (!dirty && flow)) return;
     setBusy(true);
     const path = flow ? `flows/${encodeURIComponent(flow.id)}` : 'flows';
     const method = flow ? 'PUT' : 'POST';
@@ -187,6 +193,7 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
     }).finally(() => setApplying(false));
   };
   const addNode = (kind: Kind): void => {
+    setSelectedEdge(null);
     const id = crypto.randomUUID();
     const index = graph.nodes.length;
     const settings = kind === 'application' ? { redirect_uris: [], jwks_uri: '' }
@@ -196,6 +203,7 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
     setSelected(id);
   };
   const addBff = (): void => {
+    setSelectedEdge(null);
     const next = bffPreset(() => crypto.randomUUID(), Math.max(0, ...graph.nodes.map(node => node.y)) + 180);
     change({ ...graph, nodes: [...graph.nodes, ...next.nodes], edges: [...graph.edges, ...next.edges] });
     setSelected(next.nodes[0]!.id); setTab('object');
@@ -216,24 +224,55 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
     window.addEventListener('beforeunload', prevent);
     return () => window.removeEventListener('beforeunload', prevent);
   }, [dirty]);
+  useEffect(() => {
+    const handleKey = (event: KeyboardEvent): void => {
+      if (event.defaultPrevented || event.isComposing || event.repeat || (flowId && !flow) || loadError) return;
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest('[role="dialog"]')) return;
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 's') {
+        event.preventDefault(); save(); return;
+      }
+      if (event.ctrlKey || event.metaKey || event.altKey || target?.closest('input, textarea, select, [contenteditable="true"], [role="textbox"], [role="combobox"]')) return;
+      if (event.key === '?') { event.preventDefault(); setShowShortcuts(value => !value); return; }
+      if (event.key === 'Escape') { event.preventDefault(); setSelected(null); setSelectedEdge(null); setTab('object'); setShowShortcuts(false); return; }
+      if (!canWrite) return;
+      if (event.key === 'Delete' || event.key === 'Backspace') {
+        if (selected || selectedEdge) {
+          event.preventDefault();
+          if (selected) removeSelected();
+          else change({ ...graph, edges: graph.edges.filter(edge => edge.id !== selectedEdge) });
+          setSelectedEdge(null);
+        }
+        return;
+      }
+      if (event.shiftKey) return;
+      const kind = ({ a: 'application', i: 'api', g: 'gateway' } as const)[event.key.toLowerCase() as 'a' | 'i' | 'g'];
+      if (kind) { event.preventDefault(); addNode(kind); setTab('object'); setSelectedEdge(null); }
+      else if (event.key.toLowerCase() === 'b') { event.preventDefault(); addBff(); setSelectedEdge(null); }
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  });
   const navigate = (href: string): void => { if (!dirty || window.confirm('Leave this architecture and discard unsaved changes?')) window.location.hash = href; };
   if (loadError) return <Screen title="Architecture"><LoadFailure message={loadError} onRetry={() => window.location.reload()} /><a href={hrefOf('architecture')}>Back to architectures</a></Screen>;
   if (flowId && !flow) return <Skeleton rows={5} label="Loading architecture" />;
   return <section className="architecture-workspace" aria-label={editing ? 'Architecture editor' : 'Architecture viewer'}>
     <header className="architecture-workspace-header">
-      <Button title="Back to architectures" aria-label="Back to architectures" onClick={() => navigate(hrefOf('architecture'))} disabled={applying || busy}><ArrowLeft size={18} /></Button>
+      <Button variant="ghost" className="architecture-icon-button" title="Back to architectures" aria-label="Back to architectures" onClick={() => navigate(hrefOf('architecture'))} disabled={applying || busy}><ArrowLeft size={18} /></Button>
       <div className="architecture-title"><strong>{name}</strong><small>{session.workspace} · {editing ? dirty ? 'Unsaved changes' : 'Editing draft' : 'Viewing saved architecture'}</small></div>
-      {editing ? <><Button disabled={!canWrite || hasInvalidKeys || !name.trim() || !dirty && Boolean(flow)} onClick={save}>{busy ? 'Saving…' : 'Save draft'}</Button>{flow && <Button disabled={busy || applying} title="View architecture" aria-label="View architecture" onClick={() => navigate(hrefOf('architecture', { flow: flow.id }))}><Eye size={18} /></Button>}</> : session.scopes.includes('admin.flows:write') && flow && <Button onClick={() => navigate(hrefOf('architecture', { flow: flow.id, mode: 'edit' }))}><Pencil size={16} />Edit architecture</Button>}
+      {editing ? <><Button disabled={!canWrite || hasInvalidKeys || !name.trim() || !dirty && Boolean(flow)} aria-keyshortcuts="Control+s Meta+s" title="Save draft (Ctrl/Cmd+S)" onClick={save}>{busy ? 'Saving…' : 'Save draft'}</Button>{flow && <Button variant="ghost" className="architecture-icon-button" disabled={busy || applying} title="View architecture" aria-label="View architecture" onClick={() => navigate(hrefOf('architecture', { flow: flow.id }))}><Eye size={18} /></Button>}</> : session.scopes.includes('admin.flows:write') && flow && <Button onClick={() => navigate(hrefOf('architecture', { flow: flow.id, mode: 'edit' }))}><Pencil size={16} />Edit architecture</Button>}
       {flow && <Button disabled={dirty || planning || applying} onClick={() => { setSelected(null); setTab('review'); preview(); }}>{planning ? 'Checking…' : 'Review changes'}</Button>}
+      <Button variant="ghost" className="architecture-icon-button" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts" aria-expanded={showShortcuts} onClick={() => setShowShortcuts(value => !value)}><Keyboard size={18} /></Button>
     </header>
+    {showShortcuts && <div className="architecture-shortcuts" role="region" aria-label="Keyboard shortcuts guide"><span><kbd>Ctrl/Cmd + S</kbd> Save draft</span><span><kbd>A</kbd> Web app</span><span><kbd>I</kbd> API</span><span><kbd>G</kbd> Gateway</span><span><kbd>B</kbd> BFF</span><span><kbd>Delete / Backspace</kbd> Remove selected object or connection from diagram</span><span><kbd>Escape</kbd> Architecture settings</span><span><kbd>?</kbd> Toggle this guide</span><small>Single-key shortcuts pause while typing. Editing shortcuts require edit access. Removing a linked object keeps its live resource.</small></div>}
     <div className="architecture-workspace-body">
       <div className="architecture-stage">
-        {canWrite && <div className="architecture-palette" aria-label="Add an object"><Button small title="Add backend for frontend preset" onClick={addBff}><Layers size={18} />BFF</Button>{(Object.keys(TYPES) as Kind[]).map(kind => { const Icon = ICONS[kind]; return <Button key={kind} small title={`Add ${TYPES[kind].toLowerCase()}`} aria-label={`Add ${TYPES[kind].toLowerCase()}`} onClick={() => { addNode(kind); setTab('object'); }}><Icon size={18} />{(kind === 'identity_provider' || kind === 'stream' || kind === 'gateway') && TYPES[kind]}</Button>; })}</div>}
-        <div className="architecture-stage-canvas"><FlowCanvas graph={graph} writable={canWrite} onSelect={id => { setSelected(id); setTab('object'); }} onChange={change} /></div>
+        {canWrite && <div className="architecture-palette" aria-label="Add an object"><Button variant="ghost" small title="Add backend for frontend preset (B)" aria-keyshortcuts="B" onClick={addBff}><Layers size={18} />BFF</Button>{(Object.keys(TYPES) as Kind[]).map(kind => { const Icon = ICONS[kind]; return <Button variant="ghost" key={kind} small title={`Add ${TYPES[kind].toLowerCase()}`} aria-label={`Add ${TYPES[kind].toLowerCase()}`} onClick={() => { addNode(kind); setTab('object'); }}><Icon size={18} />{(kind === 'identity_provider' || kind === 'stream' || kind === 'gateway') && TYPES[kind]}</Button>; })}</div>}
+        <div className="architecture-stage-canvas"><FlowCanvas graph={graph} writable={canWrite} selected={selected} selectedEdge={selectedEdge} onEdgeSelect={setSelectedEdge} onSelect={id => { setSelected(id); setTab('object'); }} onChange={change} /></div>
       </div>
       <aside className="architecture-sidepane" aria-label="Architecture details">
         {graph.edges.some(edge => !validConnection({ ...graph, edges: graph.edges.filter(item => item.id !== edge.id) }, edge.source, edge.target)) && <p role="alert" className="architecture-pane-content">This diagram has an unsupported link. Select the link on the canvas to remove it. Identity providers can connect only to groups or users.</p>}
-        {selectedNode ? <div className="architecture-pane-heading"><strong>{TYPES[selectedNode.kind]}</strong><Button small title="Architecture settings" aria-label="Architecture settings" onClick={() => { setSelected(null); setTab('object'); }}><X size={18} /></Button></div> :
+        {selectedNode ? <div className="architecture-pane-heading"><strong>{TYPES[selectedNode.kind]}</strong><Button variant="ghost" className="architecture-icon-button" small title="Architecture settings (Escape)" aria-label="Architecture settings" onClick={() => { setSelected(null); setTab('object'); }}><X size={18} /></Button></div> :
           <nav className="architecture-pane-tabs" aria-label="Architecture settings sections">{(['object', 'review', 'resources'] as const).map(value => <button type="button" key={value} aria-pressed={tab === value} onClick={() => setTab(value)}>{value === 'object' ? 'Settings' : value === 'review' ? 'Review' : 'Resources'}</button>)}</nav>}
         {tab === 'object' && <div className="architecture-pane-content">
           {!selectedNode && <><h2>Architecture settings</h2><Field label="Architecture name">{props => <input {...props} value={name} maxLength={120} disabled={!canWrite} onChange={event => { setName(event.target.value); setDirty(true); setPlan(null); }} />}</Field>

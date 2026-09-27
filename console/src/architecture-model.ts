@@ -53,3 +53,11 @@ export function connectionLabel(source: Kind | undefined, target: Kind | undefin
   if (source === 'identity_provider') return 'Supplies identities · context only';
   return target === 'api' ? 'Authorized API access' : 'Sends events · context only';
 }
+
+export function contextOnlyNode(kind: Kind): boolean {
+  return ['gateway', 'stream', 'identity_provider', 'user'].includes(kind);
+}
+
+export function contextOnlyConnection(source: Kind | undefined, target: Kind | undefined): boolean {
+  return !((source === 'application' && (target === 'api' || target === 'role')) || (source === 'group' && target === 'role'));
+}

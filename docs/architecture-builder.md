@@ -157,3 +157,17 @@ OAuth credentials. A gateway node always represents diagram context.
 
 Roles remain leaves and identity providers connect only to groups or users.
 Self-links are rejected; distinct APIs can describe calls in either direction.
+
+## Canvas controls
+
+Icon controls are borderless, with tooltips, accessible names and visible
+keyboard focus. Context-only nodes and connections have dashed outlines;
+managed/reference resources and provisioning links remain solid. Roles retain
+their pill shape.
+
+Use Ctrl/Cmd+S to save, A to add a web app, I an API, G a gateway and B a BFF.
+Delete/Backspace removes the selected node (and its incident connections) or
+selected connection from the diagram. Linked live resources are preserved.
+Escape returns to architecture settings; ? opens the keyboard shortcut guide.
+Single-key shortcuts do not run in form fields, and edit actions are disabled
+in the viewer or while saving/applying.
