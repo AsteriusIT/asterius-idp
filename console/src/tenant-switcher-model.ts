@@ -30,3 +30,9 @@ export function tenantSwitchUrl(tenant: TenantRow, currentOrigin: string, route:
   }
   return `${tenant.issuer.replace(/\/+$/, '')}/admin/#/${route}`;
 }
+
+/** Suggest a path-based issuer on the host where the administrator is signed in. */
+export function suggestedTenantIssuer(id: string, currentOrigin: string): string {
+  if (id.trim() === '') return '';
+  return `${new URL(currentOrigin).origin}/t/${encodeURIComponent(id.trim())}`;
+}

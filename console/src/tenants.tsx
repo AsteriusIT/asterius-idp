@@ -35,7 +35,7 @@ import { toast } from './components/ui/toast';
 import {
   describeFeatures,
 } from './tenant-list-model';
-import { tenantSwitchUrl } from './tenant-switcher-model';
+import { suggestedTenantIssuer, tenantSwitchUrl } from './tenant-switcher-model';
 import {
   Actions,
   Badge,
@@ -416,11 +416,13 @@ function NewTenant({
 }>): JSX.Element {
   const [id, setId] = useState('');
   const [issuer, setIssuer] = useState('');
+  const [issuerEdited, setIssuerEdited] = useState(false);
   const [displayName, setDisplayName] = useState('');
   const [resource, setResource] = useState('');
   const [host, setHost] = useState('');
   const [busy, setBusy] = useState(false);
   const [refusal, setRefusal] = useState<string | null>(null);
+  const chosenIssuer = issuerEdited ? issuer : suggestedTenantIssuer(id, window.location.origin);
 
   const submit = (event: React.FormEvent): void => {
     event.preventDefault();
@@ -428,7 +430,7 @@ function NewTenant({
     setRefusal(null);
     const body: Record<string, unknown> = {
       tenant_id: id.trim(),
-      issuer: issuer.trim(),
+      issuer: chosenIssuer.trim(),
     };
     if (displayName.trim() !== '') {
       body.display_name = displayName.trim();
@@ -444,6 +446,7 @@ function NewTenant({
         setBusy(false);
         setId('');
         setIssuer('');
+        setIssuerEdited(false);
         setDisplayName('');
         setResource('');
         setHost('');
@@ -488,16 +491,16 @@ function NewTenant({
         <Field
           label="Issuer"
           required
-          hint="The https URL this tenant identifies itself by: no trailing slash, no query string, no fragment."
-          error={refused === 'issuer' ? mark : issuerUrl(issuer)}
+          hint="Use this host and /t/<tenant id> to keep deployment admins signed in when switching. This URL becomes the tenant's identity in tokens and app settings; changing it later needs a planned migration."
+          error={refused === 'issuer' ? mark : issuerUrl(chosenIssuer)}
         >
           {(props) => (
             <input
               {...props}
               name="issuer"
               type="url"
-              value={issuer}
-              onChange={(event) => setIssuer(event.target.value)}
+              value={chosenIssuer}
+              onChange={(event) => { setIssuerEdited(true); setIssuer(event.target.value); }}
             />
           )}
         </Field>

@@ -55,7 +55,7 @@ const GUIDES: readonly Guide[] = [
     steps: [
       'Use the tenant selector in the top bar, or open Tenants to inspect the deployment list.',
       'After switching, check the tenant name in the top bar before making changes.',
-      'A tenant on another host may ask you to sign in again because the browser does not share session cookies between hosts.',
+      'A tenant whose issuer uses another host opens there. Browser sessions do not cross hosts. For one shared admin sign-in, give each tenant its own /t/<tenant id> issuer on the same domain when provisioning it.',
     ],
   },
   {
@@ -127,7 +127,7 @@ export function Help({ session }: Readonly<{ session: Session }>): JSX.Element {
         <div className="guide-grid">
           <div className="guide-note"><strong>A screen or button is missing</strong><p>Your role may not allow that action in this tenant. The Overview page shows your active role; ask a deployment administrator to review access.</p></div>
           <div className="guide-note"><strong>A save is refused</strong><p>Read the message beside the form, correct the named field, and try again. The draft stays on screen where the form supports it.</p></div>
-          <div className="guide-note"><strong>A tenant switch asks for sign-in</strong><p>The target tenant may use a different host. Sign in on that host, then check the tenant name before continuing.</p></div>
+          <div className="guide-note"><strong>A tenant switch asks for sign-in</strong><p>Check the target issuer in Tenants. A different host cannot use this browser session. An existing tenant needs a planned issuer migration before it can move to the shared domain.</p></div>
         </div>
       </Panel>
     </Screen>

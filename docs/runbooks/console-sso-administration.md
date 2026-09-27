@@ -7,6 +7,32 @@ opening a tenant screen. Read access makes a screen visible; its matching
 `*:write` scope is required before the console enables a save or destructive
 action.
 
+## One domain for several tenants
+
+For a deployment with one public domain, give every tenant a distinct issuer
+path on that domain. For example, the deployment administrator might use
+`https://auth.example.com/t/admin` and Photon
+`https://auth.example.com/t/photon`. The server resolves the tenant from the
+path, checks the request host against that tenant's issuer, and keeps each
+tenant's users, clients and signing keys separate. The browser's first-party
+admin session cookie stays on one host, so a deployment administrator can
+switch tenants without losing that session.
+
+The tenant selector follows each tenant's configured issuer. If an existing
+tenant advertises another host, the selector opens that host, where the browser
+does not send the current host's session cookie. Rewriting only the selector URL
+does not fix this: the server rejects a tenant on a host it does not own.
+
+Set the shared-domain issuer when creating a tenant. To move an existing tenant,
+plan an issuer migration: update its configured issuer while keeping the same
+tenant ID and preserving its other settings, then update clients and resource
+servers that pin the old issuer or audience. Existing signed tokens still carry
+the old issuer until they expire, and passkeys or redirects tied to the old host
+may need re-enrolment or re-registration. Verify the new discovery document's
+`issuer` and endpoints, then test sign-in and tenant switching before retiring
+the old host. Do not add a second tenant with a new ID to perform this move;
+that would create a separate identity workspace.
+
 ## Managed groups and effective roles
 
 Open **Groups** with `admin.groups:read`. A session with
