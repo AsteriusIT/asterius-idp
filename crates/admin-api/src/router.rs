@@ -10598,6 +10598,7 @@ mod tests {
                 token_endpoint: "https://login.example.test/token".to_owned(),
                 jwks_uri: "https://login.example.test/keys".to_owned(),
                 client_id: "public-client-id".to_owned(),
+                username_claim: None,
                 enabled: true,
                 allow_registration: false,
                 secret_configured: true,

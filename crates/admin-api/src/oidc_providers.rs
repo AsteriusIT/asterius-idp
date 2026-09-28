@@ -17,6 +17,8 @@ struct RawProvider {
     name: String,
     issuer: String,
     client_id: String,
+    #[serde(default)]
+    username_claim: Option<String>,
     client_secret: Option<String>,
     enabled: bool,
     #[serde(default)]
@@ -36,6 +38,7 @@ pub struct ProviderInput {
     pub name: String,
     pub issuer: String,
     pub client_id: String,
+    pub username_claim: Option<String>,
     pub client_secret: Option<zeroize::Zeroizing<String>>,
     pub enabled: bool,
     pub allow_registration: bool,
@@ -58,6 +61,7 @@ pub struct ProviderSummary {
     pub token_endpoint: String,
     pub jwks_uri: String,
     pub client_id: String,
+    pub username_claim: Option<String>,
     pub enabled: bool,
     pub allow_registration: bool,
     pub secret_configured: bool,
@@ -111,6 +115,12 @@ pub fn parse_provider(body: &[u8]) -> Result<ProviderInput, crate::error::AdminE
         || raw.client_id.is_empty()
         || raw.client_id.len() > 512
         || raw.client_id.chars().any(char::is_control)
+        || raw.username_claim.as_ref().is_some_and(|claim| {
+            claim.is_empty()
+                || claim.len() > 128
+                || claim.trim() != claim
+                || claim.chars().any(char::is_control)
+        })
         || raw.client_secret.as_ref().is_some_and(|secret| {
             secret.is_empty() || secret.len() > 4096 || secret.chars().any(char::is_control)
         })
@@ -130,6 +140,7 @@ pub fn parse_provider(body: &[u8]) -> Result<ProviderInput, crate::error::AdminE
         name: std::mem::take(&mut raw.name),
         issuer: std::mem::take(&mut raw.issuer),
         client_id: std::mem::take(&mut raw.client_id),
+        username_claim: raw.username_claim.take(),
         client_secret: raw.client_secret.take().map(zeroize::Zeroizing::new),
         enabled: raw.enabled,
         allow_registration: raw.allow_registration,
@@ -257,5 +268,29 @@ mod tests {
             callback_url("https://as.example/t/acme", "corp"),
             "https://as.example/t/acme/oidc/upstream/callback/corp"
         );
+    }
+
+    #[test]
+    fn username_claim_is_optional_and_rejects_unreadable_names() {
+        let base = serde_json::json!({"id":"corp", "name":"Corporate",
+            "issuer":"https://idp.example", "client_id":"client", "enabled":true});
+        assert_eq!(
+            parse_provider(base.to_string().as_bytes())
+                .expect("legacy provider")
+                .username_claim,
+            None
+        );
+        let mut configured = base.clone();
+        configured["username_claim"] = serde_json::json!("preferred_username");
+        assert_eq!(
+            parse_provider(configured.to_string().as_bytes())
+                .expect("configured provider")
+                .username_claim.as_deref(),
+            Some("preferred_username")
+        );
+        for name in ["", " padded ", "bad\nclaim"] {
+            configured["username_claim"] = serde_json::json!(name);
+            assert!(parse_provider(configured.to_string().as_bytes()).is_err());
+        }
     }
 }

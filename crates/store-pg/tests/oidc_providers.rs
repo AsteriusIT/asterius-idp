@@ -55,6 +55,7 @@ async fn credentials_are_encrypted_and_tenant_bound() {
         token_endpoint: "https://login.example/token".to_owned(),
         jwks_uri: "https://login.example/keys".to_owned(),
         client_id: "client".to_owned(),
+        username_claim: None,
         enabled: true,
         allow_registration: false,
         created_at: OffsetDateTime::UNIX_EPOCH,

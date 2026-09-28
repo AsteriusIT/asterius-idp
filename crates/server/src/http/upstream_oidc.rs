@@ -22,6 +22,8 @@ pub trait UpstreamIdentityResolver: std::fmt::Debug + Send + Sync {
         provider_id: &str,
         exact_issuer: &str,
         verified_subject: &str,
+        expected_username_claim: Option<&str>,
+        verified_username: Option<&str>,
     ) -> Result<Option<uuid::Uuid>, DomainError>;
 }
 
@@ -47,12 +49,20 @@ impl UpstreamIdentityResolver for StoreUpstreamIdentityResolver {
         provider_id: &str,
         exact_issuer: &str,
         verified_subject: &str,
+        expected_username_claim: Option<&str>,
+        verified_username: Option<&str>,
     ) -> Result<Option<uuid::Uuid>, DomainError> {
         match self
             .store
             .scope(tenant.clone())
             .oidc_bindings()
-            .resolve_or_create(provider_id, exact_issuer, verified_subject)
+            .resolve_or_create(
+                provider_id,
+                exact_issuer,
+                verified_subject,
+                expected_username_claim,
+                verified_username,
+            )
             .await?
         {
             asterius_store_pg::OidcResolution::User(user) => Ok(Some(*user.as_uuid())),
@@ -255,17 +265,25 @@ pub async fn callback(
         .fetch(&transaction.jwks_uri)
         .await
         .map_err(|_| FlowError::Unavailable)?;
-    let verified = asterius_jose::upstream_id_token::verify_upstream_id_token(
+    let verified = asterius_jose::upstream_id_token::verify_upstream_id_token_with_username_claim(
         id_token,
         &jwks,
         &transaction.issuer,
         &transaction.client_id,
         &transaction.nonce_digest,
+        provider.username_claim.as_deref(),
         now,
     )
     .map_err(|_| FlowError::Refused("id_token_verification_failed"))?;
     resolver
-        .resolve_or_create(tenant, provider_id, &transaction.issuer, &verified.subject)
+        .resolve_or_create(
+            tenant,
+            provider_id,
+            &transaction.issuer,
+            &verified.subject,
+            provider.username_claim.as_deref(),
+            verified.username.as_deref(),
+        )
         .await
         .map_err(|_| FlowError::Unavailable)?
         .ok_or(FlowError::Refused("upstream_identity_is_not_linked"))

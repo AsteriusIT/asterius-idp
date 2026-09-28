@@ -17,6 +17,8 @@ use asterius_domain::SigningAlgorithm;
 pub struct VerifiedUpstreamIdToken {
     /// Provider-local stable subject identifier.
     pub subject: String,
+    /// Optional configured username claim, read only from verified claims.
+    pub username: Option<String>,
     /// The token's issuance timestamp, in Unix seconds.
     pub issued_at: i64,
 }
@@ -45,6 +47,32 @@ pub fn verify_upstream_id_token(
     expected_issuer: &str,
     client_id: &str,
     expected_nonce_digest: &str,
+    now: OffsetDateTime,
+) -> Result<VerifiedUpstreamIdToken, UpstreamIdTokenError> {
+    verify_upstream_id_token_with_username_claim(
+        token,
+        jwks,
+        expected_issuer,
+        client_id,
+        expected_nonce_digest,
+        None,
+        now,
+    )
+}
+
+/// Verify an ID token and extract one optional, top-level username claim.
+/// The username is metadata only; callers must still bind by issuer and `sub`.
+///
+/// # Errors
+///
+/// Returns [`UpstreamIdTokenError::Invalid`] for an invalid token or key set.
+pub fn verify_upstream_id_token_with_username_claim(
+    token: &str,
+    jwks: &[u8],
+    expected_issuer: &str,
+    client_id: &str,
+    expected_nonce_digest: &str,
+    username_claim: Option<&str>,
     now: OffsetDateTime,
 ) -> Result<VerifiedUpstreamIdToken, UpstreamIdTokenError> {
     let invalid = UpstreamIdTokenError::Invalid;
@@ -135,6 +163,7 @@ pub fn verify_upstream_id_token(
         expected_issuer,
         client_id,
         expected_nonce_digest,
+        username_claim,
         now,
     )
 }
@@ -187,6 +216,7 @@ fn verify_claims(
     expected_issuer: &str,
     client_id: &str,
     expected_nonce_digest: &str,
+    username_claim: Option<&str>,
     now: OffsetDateTime,
 ) -> Result<VerifiedUpstreamIdToken, UpstreamIdTokenError> {
     let invalid = UpstreamIdTokenError::Invalid;
@@ -236,6 +266,10 @@ fn verify_claims(
     }
     Ok(VerifiedUpstreamIdToken {
         subject: subject.to_owned(),
+        username: username_claim
+            .and_then(|name| claims.get(name))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
         issued_at,
     })
 }
@@ -326,9 +360,35 @@ mod tests {
             check(&token, &jwk).expect("valid"),
             VerifiedUpstreamIdToken {
                 subject: "alice".to_owned(),
+                username: None,
                 issued_at: NOW
             }
         );
+    }
+
+    #[test]
+    fn username_comes_only_from_configured_signed_string_claim() {
+        for (claim_value, expected) in [
+            (json!("alice@work"), Some("alice@work")),
+            (json!(42), None),
+            (Value::Null, None),
+        ] {
+            let mut signed_claims = claims();
+            signed_claims["preferred_username"] = claim_value;
+            let (token, jwk) = fixture(&json!({"alg": "RS256", "kid": "k1"}), &signed_claims);
+            let verified = verify_upstream_id_token_with_username_claim(
+                &token,
+                &serde_json::to_vec(&json!({"keys": [jwk]})).expect("JWKS"),
+                ISSUER,
+                CLIENT,
+                &asterius_domain::sha256_hex(NONCE.as_bytes()),
+                Some("preferred_username"),
+                OffsetDateTime::from_unix_timestamp(NOW).expect("time"),
+            )
+            .expect("valid signed token");
+            assert_eq!(verified.subject, "alice");
+            assert_eq!(verified.username.as_deref(), expected);
+        }
     }
 
     #[test]
@@ -342,6 +402,7 @@ mod tests {
                 check(token.as_str(), &jwk).expect("valid"),
                 VerifiedUpstreamIdToken {
                     subject: "alice".to_owned(),
+                    username: None,
                     issued_at: NOW,
                 }
             );

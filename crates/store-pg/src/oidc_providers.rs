@@ -17,6 +17,7 @@ pub struct OidcProvider {
     pub token_endpoint: String,
     pub jwks_uri: String,
     pub client_id: String,
+    pub username_claim: Option<String>,
     pub enabled: bool,
     pub allow_registration: bool,
     pub created_at: OffsetDateTime,
@@ -53,7 +54,7 @@ impl PgOidcProviders {
     pub async fn list(&self) -> Result<Vec<OidcProvider>, DomainError> {
         let rows = sqlx::query(
             "select provider_id, display_name, issuer, authorization_endpoint,
-                       token_endpoint, jwks_uri, client_id, enabled, allow_registration, created_at
+                       token_endpoint, jwks_uri, client_id, username_claim, enabled, allow_registration, created_at
                   from oidc_identity_providers where tenant_id = $1 order by provider_id",
         )
         .bind(self.tenant.as_str())
@@ -66,7 +67,7 @@ impl PgOidcProviders {
     pub async fn find(&self, id: &str) -> Result<Option<OidcProviderCredential>, DomainError> {
         let row = sqlx::query(
             "select provider_id, display_name, issuer, authorization_endpoint,
-                       token_endpoint, jwks_uri, client_id, enabled, allow_registration, created_at,
+                       token_endpoint, jwks_uri, client_id, username_claim, enabled, allow_registration, created_at,
                        client_secret_ciphertext, client_secret_nonce, kek_id
                   from oidc_identity_providers where tenant_id = $1 and provider_id = $2",
         )
@@ -176,8 +177,8 @@ impl PgOidcProviders {
             "insert into oidc_identity_providers
                  (tenant_id, provider_id, display_name, issuer, authorization_endpoint,
                   token_endpoint, jwks_uri, client_id, client_secret_ciphertext,
-                  client_secret_nonce, kek_id, enabled, allow_registration)
-               values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+                  client_secret_nonce, kek_id, enabled, allow_registration, username_claim)
+               values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
                on conflict (tenant_id, provider_id) do update set
                  display_name = excluded.display_name, issuer = excluded.issuer,
                  authorization_endpoint = excluded.authorization_endpoint,
@@ -186,7 +187,8 @@ impl PgOidcProviders {
                  client_secret_ciphertext = excluded.client_secret_ciphertext,
                  client_secret_nonce = excluded.client_secret_nonce, kek_id = excluded.kek_id,
                  enabled = excluded.enabled,
-                 allow_registration = excluded.allow_registration, updated_at = now()",
+                 allow_registration = excluded.allow_registration,
+                 username_claim = excluded.username_claim, updated_at = now()",
         )
         .bind(self.tenant.as_str())
         .bind(&provider.id)
@@ -201,6 +203,7 @@ impl PgOidcProviders {
         .bind(kek_id)
         .bind(provider.enabled)
         .bind(provider.allow_registration)
+        .bind(&provider.username_claim)
         .execute(&mut *tx)
         .await
         .map_err(to_domain_error)?;
@@ -231,6 +234,7 @@ fn provider_from_row(row: &sqlx::postgres::PgRow) -> Result<OidcProvider, Domain
         token_endpoint: row.try_get("token_endpoint").map_err(to_domain_error)?,
         jwks_uri: row.try_get("jwks_uri").map_err(to_domain_error)?,
         client_id: row.try_get("client_id").map_err(to_domain_error)?,
+        username_claim: row.try_get("username_claim").map_err(to_domain_error)?,
         enabled: row.try_get("enabled").map_err(to_domain_error)?,
         allow_registration: row.try_get("allow_registration").map_err(to_domain_error)?,
         created_at: row.try_get("created_at").map_err(to_domain_error)?,
