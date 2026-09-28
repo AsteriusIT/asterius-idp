@@ -18,9 +18,9 @@
  *
  * The API serves none. The port behind these routes answers with summaries
  * that carry no password hash, no public key, no signature counter and no
- * session lookup digest (`crates/domain/src/administration.rs`), so a session
- * is named here by the `sid` every participating relying party already holds
- * and a passkey by its credential row. There is nothing on this screen to be
+ * session lookup digest (`crates/domain/src/administration.rs`). Session IDs
+ * remain internal to row keys and revocation requests; operators identify a
+ * session by when and how the user signed in. There is nothing on this screen to be
  * careful with, which is a property of the port rather than of this file.
  *
  * # The confirmations are the destructive ones
@@ -515,7 +515,7 @@ function StatusBadge({ status }: Readonly<{ status: UserStatus }>): JSX.Element 
  * refused: there is no account to enumerate, and "refused" with no reason is
  * how somebody ends up trying six variations of the same weak passphrase.
  *
- * `email_verified` is deliberately absent: OIDC Core §5.1 makes it a statement
+ * `email_verified` is deliberately absent: the identity protocol makes it a statement
  * that the provider took affirmative steps to check the address, which nobody
  * has taken at the moment an account is typed in. It is on the claims tab,
  * where an operator asserts it about an address that already exists.
@@ -935,15 +935,15 @@ function Account({
         <GrantTable
           grants={grants}
           busy={busy}
-          onRevoke={(grant, client) =>
+          onRevoke={(grant, application) =>
             setConfirming({
               title: 'Withdraw this authorization?',
-              body: `The refresh tokens ${client} holds are revoked and its access tokens stop being accepted.`,
+              body: `The refresh tokens for ${application} are revoked and its access tokens stop being accepted.`,
               confirmLabel: 'Withdraw it',
               act: () =>
                 run(
                   () => mutate(`${base}/grants/${encodeURIComponent(grant)}`, 'DELETE', session),
-                  () => `The authorization ${client} held has been withdrawn.`,
+                  () => `The authorization for ${application} has been withdrawn.`,
                 ),
             })
           }
@@ -1355,7 +1355,6 @@ function SessionTable({
     <table>
       <thead>
         <tr>
-          <th scope="col">Session</th>
           <th scope="col">Signed in</th>
           <th scope="col">Last seen</th>
           <th scope="col">Expires</th>
@@ -1367,12 +1366,9 @@ function SessionTable({
         </tr>
       </thead>
       <tbody>
-        {sessions.length === 0 && <tr><td colSpan={7} className="table-empty">This user has no sessions.</td></tr>}
+        {sessions.length === 0 && <tr><td colSpan={6} className="table-empty">This user has no sessions.</td></tr>}
         {sessions.map((row) => (
           <tr key={row.sid}>
-            <td>
-              <code>{row.sid}</code>
-            </td>
             <td><Timestamp value={row.authenticated_at} /></td>
             <td><Timestamp value={row.last_seen_at} /></td>
             <td><Timestamp value={row.expires_at} /></td>
@@ -1404,7 +1400,7 @@ function GrantTable({
 }: Readonly<{
   grants: readonly GrantRow[];
   busy: boolean;
-  onRevoke: (grant: string, client: string) => void;
+  onRevoke: (grant: string, application: string) => void;
 }>): JSX.Element {
   return (
     <div className="table-wrap">
@@ -1422,10 +1418,10 @@ function GrantTable({
       </thead>
       <tbody>
         {grants.length === 0 && <tr><td colSpan={5} className="table-empty">This user has no authorizations.</td></tr>}
-        {grants.map((grant) => (
+        {grants.map((grant, index) => (
           <tr key={grant.grant_id}>
             <td>
-              <code>{grant.client_id}</code>
+              Application {index + 1}
             </td>
             <td>{grant.scopes.length === 0 ? '—' : grant.scopes.join(' ')}</td>
             <td><Timestamp value={grant.created_at} /></td>
@@ -1441,7 +1437,7 @@ function GrantTable({
                 <Button
                   small
                   disabled={busy}
-                  onClick={() => onRevoke(grant.grant_id, grant.client_id)}
+                  onClick={() => onRevoke(grant.grant_id, `Application ${index + 1}`)}
                 >
                   Withdraw
                 </Button>

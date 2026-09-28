@@ -119,7 +119,7 @@ export function FederationKeys({ session }: Readonly<{ session: Session }>): JSX
         {load.kind === 'loading' && <Skeleton rows={4} label="Reading Federation keys." />}
         {load.kind === 'failed' && <LoadFailure message={load.message} onRetry={refresh} />}
         {load.kind === 'disabled' && (
-          <p className="muted">No federation signing keys are configured for this tenant. These keys are provisioned when OpenID Federation is enabled in the deployment configuration.</p>
+          <p className="muted">No federation signing keys are configured for this tenant. These keys are provisioned when identity federation is enabled in the deployment configuration.</p>
         )}
         {ready !== null && (
           <>

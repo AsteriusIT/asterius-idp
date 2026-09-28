@@ -8578,6 +8578,13 @@ mod tests {
 
     #[async_trait::async_trait]
     impl ssf::SsfAdministration for Handle {
+        async fn upstream_peers(
+            &self,
+            _tenant: &TenantId,
+        ) -> Result<Vec<ssf::UpstreamPeerSummary>, ssf::UpstreamOperationError> {
+            Ok(Vec::new())
+        }
+
         async fn streams(&self, tenant: &TenantId) -> Result<Vec<ssf::StreamSummary>, DomainError> {
             let streams = self.0.streams.lock().expect("an uncontended lock");
             Ok(streams
@@ -9706,6 +9713,29 @@ mod tests {
                 terminated: self.terminate(tenant, user, "credential_change", now),
             })
         }
+
+        async fn reset_totp(
+            &self,
+            tenant: &TenantId,
+            user: UserId,
+            _now: OffsetDateTime,
+        ) -> Result<asterius_domain::TotpReset, DomainError> {
+            let exists = self
+                .0
+                .accounts
+                .lock()
+                .expect("an uncontended lock")
+                .iter()
+                .any(|held| &held.tenant == tenant && held.id == user);
+            if !exists {
+                return Err(DomainError::NotFound);
+            }
+            // The registry fixture has no TOTP factor to remove.
+            Ok(asterius_domain::TotpReset {
+                factor_removed: false,
+                terminated: asterius_domain::Terminated::default(),
+            })
+        }
     }
 
     impl Handle {
@@ -10045,6 +10075,15 @@ mod tests {
             &self,
             _tenant: &TenantId,
             _flow: uuid::Uuid,
+        ) -> Result<Vec<serde_json::Value>, DomainError> {
+            Ok(Vec::new())
+        }
+
+        async fn flow_origins(
+            &self,
+            _tenant: &TenantId,
+            _kind: &str,
+            _resource: &str,
         ) -> Result<Vec<serde_json::Value>, DomainError> {
             Ok(Vec::new())
         }
@@ -10513,6 +10552,14 @@ mod tests {
 
     #[async_trait::async_trait]
     impl crate::oidc_providers::ProviderAdministration for FakeOidcProviders {
+        async fn list_bindings(
+            &self,
+            _tenant: &TenantId,
+            _user: asterius_domain::UserId,
+        ) -> Result<Vec<crate::oidc_providers::IdentityBinding>, DomainError> {
+            Ok(Vec::new())
+        }
+
         async fn list(
             &self,
             tenant: &TenantId,
@@ -11264,6 +11311,11 @@ mod tests {
                     _ => SPARE_ROLE,
                 },
             );
+        let path = if operation.id() == crate::FLOW_ORIGINS_ID {
+            format!("{path}?kind=api&id={SEEDED_RESOURCE_PATH}")
+        } else {
+            path
+        };
         HttpRequest::builder()
             .method(operation.method().as_str())
             .uri(path)
@@ -13173,6 +13225,34 @@ mod tests {
         assert_ne!(revoking.status(), StatusCode::FORBIDDEN);
     }
 
+    fn registry_accepts_client_refusal(operation_id: &str) -> bool {
+        matches!(
+            operation_id,
+            crate::SSF_UPSTREAM_SETUP_ID
+                | crate::SSF_UPSTREAM_POLL_ID
+                | crate::SSF_UPSTREAM_VERIFY_ID
+                | crate::SSF_UPSTREAM_DELETE_ID
+                | crate::SSF_UPSTREAM_REQUEST_VERIFICATION_ID
+                | crate::SSF_RECEIVER_SUBJECT_BIND_ID
+                | crate::SSF_RECEIVER_SUBJECT_REMOVE_ID
+                | crate::ID_JAG_SUBJECT_BIND_ID
+                | crate::ID_JAG_SUBJECT_REMOVE_ID
+                | crate::OIDC_PROVIDERS_PUT_ID
+                | crate::OIDC_PROVIDERS_DELETE_ID
+                | crate::OIDC_BINDINGS_LINK_ID
+                | crate::OIDC_BINDINGS_UNLINK_ID
+                | crate::SAML_SP_LIST_ID
+                | crate::SAML_SP_PROVISION_ID
+                | crate::SAML_SP_REMOVE_ID
+                | crate::SAML_IDP_KEY_READ_ID
+                | crate::SAML_IDP_KEY_PROVISION_ID
+                | crate::SAML_IDP_KEY_ACTIVATE_ID
+                | crate::SAML_IDP_KEY_RETIRE_ID
+                | crate::USER_IDA_CREATE_ID
+                | crate::USER_IDA_REVOKE_ID
+        )
+    }
+
     /// Every mounted route has a handler. Without this the `match` in
     /// [`handle`] would answer 503 for a route somebody registered and forgot
     /// to wire, which looks like an outage rather than a mistake.
@@ -13253,20 +13333,10 @@ mod tests {
             );
             if operation.authority().reach() == Reach::AutomationTenant {
                 assert_eq!(response.status(), StatusCode::FORBIDDEN);
-            } else if matches!(
-                operation.id(),
-                crate::SAML_SP_LIST_ID
-                    | crate::SAML_SP_PROVISION_ID
-                    | crate::SAML_SP_REMOVE_ID
-                    | crate::SAML_IDP_KEY_READ_ID
-                    | crate::SAML_IDP_KEY_PROVISION_ID
-                    | crate::SAML_IDP_KEY_ACTIVATE_ID
-                    | crate::SAML_IDP_KEY_RETIRE_ID
-                    | crate::USER_IDA_CREATE_ID
-                    | crate::USER_IDA_REVOKE_ID
-            ) {
+            } else if registry_accepts_client_refusal(operation.id()) {
                 // This registry walk does not seed SAML keys or SP trusts,
-                // supply mutation documents, or step up the IDA session.
+                // supply upstream peer, subject binding, or OIDC provider
+                // documents, or step up the IDA session.
                 // Those endpoints have dedicated behavior tests; here a
                 // client refusal still proves the registered handler ran.
                 assert!(

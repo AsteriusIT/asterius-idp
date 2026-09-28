@@ -519,13 +519,13 @@ mod tests {
         }
     }
 
-    /// Absolute URLs that appear in a built bundle and are never fetched.
+    /// Absolute URLs that appear in a built bundle without making a fetch.
     ///
     /// Named one by one with the reason, rather than matched by a pattern: the
     /// point of the scan below is that adding a *new* off-origin URL has to be
     /// a deliberate line in this list that a reviewer sees, not a needle that
     /// happens to slip past a regular expression.
-    const INERT_URLS: &[(&str, &str)] = &[
+    const ALLOWED_BUNDLE_URLS: &[(&str, &str)] = &[
         (
             "http://www.w3.org/",
             "XML namespace identifiers, passed to createElementNS and compared \
@@ -535,6 +535,42 @@ mod tests {
             "https://react.dev/errors/",
             "React's production error messages point at its own documentation. \
              The URL is thrown as text for a developer to read",
+        ),
+        (
+            "https://reactflow.dev/",
+            "React Flow includes its documentation URL in error messages",
+        ),
+        (
+            "https://reactflow.dev?utm_source=attribution",
+            "React Flow renders an optional attribution link for user navigation",
+        ),
+        (
+            "https://${e}flow.dev/error#001",
+            "React Flow's error message constructs a documentation URL as text",
+        ),
+        (
+            "https://login.example.com",
+            "Example issuer shown as an input placeholder, not requested",
+        ),
+        (
+            "https://github.com/panva/openid-client/blob/main/docs/README.md",
+            "Developer guide documentation link opened only by the reader",
+        ),
+        (
+            "https://learn.microsoft.com/en-us/aspnet/core/security/authentication/configure-oidc-web-authentication",
+            "Developer guide documentation link opened only by the reader",
+        ),
+        (
+            "https://docs.spring.io/spring-security/reference/servlet/oauth2/resource-server/jwt.html",
+            "Developer guide documentation link opened only by the reader",
+        ),
+        (
+            "https://docs.authlib.org/en/latest/oauth2/client/web/flask.html",
+            "Developer guide documentation link opened only by the reader",
+        ),
+        (
+            "https://docs.rs/openidconnect/latest/openidconnect/",
+            "Developer guide documentation link opened only by the reader",
         ),
     ];
 
@@ -578,9 +614,11 @@ mod tests {
                 let found = &rest[at..];
                 if found.starts_with("http://") || found.starts_with("https://") {
                     assert!(
-                        INERT_URLS.iter().any(|(url, _)| found.starts_with(url)),
+                        ALLOWED_BUNDLE_URLS
+                            .iter()
+                            .any(|(url, _)| found.starts_with(url)),
                         "{} names {}, which is not on the list of URLs that are \
-                         never fetched; `connect-src 'self'` would refuse it",
+                         never fetched by the app; `connect-src 'self'` would refuse it",
                         asset.path,
                         found.split(['"', '\'', ' ', ')']).next().unwrap_or(found)
                     );
