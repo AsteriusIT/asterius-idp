@@ -28,6 +28,24 @@ on write and never returned by a read. Configuration changes and provider
 disabling are audited. Removing a provider does not silently delete users or
 their identity bindings.
 
+### Username claim
+
+The optional **Username claim** setting names one top-level string claim in the
+provider's signed ID token, for example `preferred_username` or a custom claim
+name. Use the exact claim name; nested paths and expressions are not supported.
+Leave it blank to preserve existing usernames and generate names for new accounts.
+
+When configured, the claim sets a new account's username and updates an already
+linked account's username on each successful sign-in. The account is first
+resolved through its tenant, provider, issuer, and subject binding. A missing,
+invalid, or already-used username refuses sign-in and leaves the accounts
+unchanged. A username match never creates a binding to another local account.
+Changes to linked usernames are audited. Disabling the mapping preserves the
+last stored username.
+
+The **External** column in Users lists the names of linked providers. An account
+can have external links and local sign-in methods at the same time.
+
 Discovery starts at the operator-pinned issuer. The returned `issuer` must
 match exactly; authorization, token, and JWK endpoints must be HTTPS and pass
 the existing outbound address and redirect guard. JWKs are fetched on the
@@ -90,6 +108,11 @@ and Keycloak success, disabled users, first login, link conflicts, key rotation,
 expired and forged ID tokens, wrong issuer or audience, replay, mixed-provider
 responses, and interrupted browser flows. Existing local password and passkey
 login must continue to work when an external provider is unavailable.
+
+Browser sign-in refusals display a tenant-themed error page with a support
+reference. A live browser-bound interaction offers **Return to sign-in**;
+an expired or missing interaction explains how to restart from the application.
+Upstream error descriptions, tokens, and callback state are never rendered.
 
 Sources: [OpenID Connect Core, Authorization Code Flow and ID Token validation](https://openid.net/specs/openid-connect-core-1_0.html),
 [Microsoft Entra OpenID Connect endpoints](https://learn.microsoft.com/en-us/entra/identity-platform/v2-protocols-oidc),

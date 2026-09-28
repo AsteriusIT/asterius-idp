@@ -87,6 +87,28 @@ async fn credentials_are_encrypted_and_tenant_bound() {
         .expect("find")
         .expect("provider");
     assert_eq!(credential.client_secret.as_slice(), b"secret-first");
+    assert_eq!(credential.provider.username_claim, None);
+    let mut mapped = provider.clone();
+    mapped.username_claim = Some("preferred_username".to_owned());
+    one.put(&mapped, None)
+        .await
+        .expect("configure username mapping");
+    assert_eq!(
+        one.list().await.expect("mapped list")[0]
+            .username_claim
+            .as_deref(),
+        Some("preferred_username")
+    );
+    let mapped_credential = one
+        .find("corporate")
+        .await
+        .expect("mapped read")
+        .expect("provider");
+    assert_eq!(
+        mapped_credential.provider.username_claim.as_deref(),
+        Some("preferred_username")
+    );
+    assert_eq!(mapped_credential.client_secret.as_slice(), b"secret-first");
     one.put(&provider, None)
         .await
         .expect("preserve secret on update");

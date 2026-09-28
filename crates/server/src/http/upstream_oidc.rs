@@ -3,7 +3,10 @@
 use crate::outbound::{HttpsPoster, PostRequest, ssrf};
 use asterius_domain::ports::{ClientUrlFetcher, InteractionRepository};
 use asterius_domain::{DomainError, OpaqueToken, TenantId, sha256_hex};
-use asterius_store_pg::{NewOidcPending, PgOidcProviders, PgOidcUpstreamPending};
+use asterius_store_pg::{
+    ConsumedOidcPending, NewOidcPending, OidcProviderCredential, PgOidcProviders,
+    PgOidcUpstreamPending,
+};
 use asterius_web::interaction::{self, InteractionId, Stage, StoredState};
 use axum::http::HeaderMap;
 use base64::Engine as _;
@@ -224,11 +227,48 @@ pub async fn callback(
         return Err(FlowError::Refused("provider_configuration_changed"));
     }
     let redirect_uri = asterius_admin_api::oidc_providers::callback_url(tenant_issuer, provider_id);
+    let id_token =
+        exchange_code_for_id_token(code, &redirect_uri, &transaction, &credential).await?;
+    let jwks = fetcher
+        .fetch(&transaction.jwks_uri)
+        .await
+        .map_err(|_| FlowError::Unavailable)?;
+    let verified = asterius_jose::upstream_id_token::verify_upstream_id_token_with_username_claim(
+        &id_token,
+        &jwks,
+        &transaction.issuer,
+        &transaction.client_id,
+        &transaction.nonce_digest,
+        provider.username_claim.as_deref(),
+        now,
+    )
+    .map_err(|_| FlowError::Refused("id_token_verification_failed"))?;
+    resolver
+        .resolve_or_create(
+            tenant,
+            provider_id,
+            &transaction.issuer,
+            &verified.subject,
+            provider.username_claim.as_deref(),
+            verified.username.as_deref(),
+        )
+        .await
+        .map_err(|_| FlowError::Unavailable)?
+        .ok_or(FlowError::Refused("upstream_identity_is_not_linked"))
+}
+
+/// Exchange only after state has been consumed and the provider snapshot checked.
+async fn exchange_code_for_id_token(
+    code: &str,
+    redirect_uri: &str,
+    transaction: &ConsumedOidcPending,
+    credential: &OidcProviderCredential,
+) -> Result<zeroize::Zeroizing<String>, FlowError> {
     let body = zeroize::Zeroizing::new(
         url::form_urlencoded::Serializer::new(String::new())
             .append_pair("grant_type", "authorization_code")
             .append_pair("code", code)
-            .append_pair("redirect_uri", &redirect_uri)
+            .append_pair("redirect_uri", redirect_uri)
             .append_pair(
                 "code_verifier",
                 std::str::from_utf8(&transaction.code_verifier)
@@ -237,7 +277,7 @@ pub async fn callback(
             .finish(),
     );
     let basic = client_secret_basic(
-        &provider.client_id,
+        &credential.provider.client_id,
         std::str::from_utf8(&credential.client_secret)
             .map_err(|_| FlowError::Refused("stored_client_secret_is_invalid"))?,
     );
@@ -261,32 +301,7 @@ pub async fn callback(
         .get("id_token")
         .and_then(serde_json::Value::as_str)
         .ok_or(FlowError::Refused("token_response_has_no_id_token"))?;
-    let jwks = fetcher
-        .fetch(&transaction.jwks_uri)
-        .await
-        .map_err(|_| FlowError::Unavailable)?;
-    let verified = asterius_jose::upstream_id_token::verify_upstream_id_token_with_username_claim(
-        id_token,
-        &jwks,
-        &transaction.issuer,
-        &transaction.client_id,
-        &transaction.nonce_digest,
-        provider.username_claim.as_deref(),
-        now,
-    )
-    .map_err(|_| FlowError::Refused("id_token_verification_failed"))?;
-    resolver
-        .resolve_or_create(
-            tenant,
-            provider_id,
-            &transaction.issuer,
-            &verified.subject,
-            provider.username_claim.as_deref(),
-            verified.username.as_deref(),
-        )
-        .await
-        .map_err(|_| FlowError::Unavailable)?
-        .ok_or(FlowError::Refused("upstream_identity_is_not_linked"))
+    Ok(zeroize::Zeroizing::new(id_token.to_owned()))
 }
 
 /// RFC 6749 §2.3.1 form-encodes both components before Basic framing.

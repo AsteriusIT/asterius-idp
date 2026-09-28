@@ -12,7 +12,7 @@ import { mutate, read, type Session } from './api';
 import { bffPreset, connectionLabel, contextOnlyNode, contextOnlyConnection, validConnection, type ArchitectureNode, type Flow, type Graph, type Kind, type Mode, type Plan, type ResourceLink } from './architecture-model';
 import { hrefOf, paramsOf } from './routes';
 import { toast } from './components/ui/toast';
-import { Button, Field, LoadFailure, Panel, Screen, Skeleton } from './ui';
+import { Button, ConfirmDialog, Field, LoadFailure, Panel, Screen, Skeleton } from './ui';
 
 const TYPES: Readonly<Record<Kind, string>> = {
   application: 'Web application', api: 'API', group: 'Group', role: 'Role',
@@ -103,6 +103,8 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
   const [graph, setGraph] = useState<Graph>(EMPTY);
   const [selected, setSelected] = useState<string | null>(null);
   const [selectedEdge, setSelectedEdge] = useState<string | null>(null);
+  const [pendingRemoval, setPendingRemoval] = useState<string | null>(null);
+  const [pendingNavigation, setPendingNavigation] = useState<string | null>(null);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [busy, setBusy] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -212,11 +214,11 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
   const updateSelected = (patch: Partial<ArchitectureNode>): void => {
     change({ ...graph, nodes: graph.nodes.map(node => node.id === selected ? { ...node, ...patch } : node) });
   };
-  const removeSelected = (): void => {
-    if (!selected) return;
-    change({ ...graph, nodes: graph.nodes.filter(node => node.id !== selected), edges: graph.edges.filter(edge => edge.source !== selected && edge.target !== selected) });
+  const removeNode = (id: string): void => {
+    change({ ...graph, nodes: graph.nodes.filter(node => node.id !== id), edges: graph.edges.filter(edge => edge.source !== id && edge.target !== id) });
     setSelected(null);
   };
+  const removalNode = graph.nodes.find(node => node.id === pendingRemoval);
 
   useEffect(() => {
     if (!dirty) return;
@@ -228,7 +230,7 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
     const handleKey = (event: KeyboardEvent): void => {
       if (event.defaultPrevented || event.isComposing || event.repeat || (flowId && !flow) || loadError) return;
       const target = event.target instanceof Element ? event.target : null;
-      if (target?.closest('[role="dialog"]')) return;
+      if (target?.closest('[role="dialog"], [role="alertdialog"]')) return;
       if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 's') {
         event.preventDefault(); save(); return;
       }
@@ -239,7 +241,7 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
       if (event.key === 'Delete' || event.key === 'Backspace') {
         if (selected || selectedEdge) {
           event.preventDefault();
-          if (selected) removeSelected();
+          if (selected) setPendingRemoval(selected);
           else change({ ...graph, edges: graph.edges.filter(edge => edge.id !== selectedEdge) });
           setSelectedEdge(null);
         }
@@ -253,7 +255,10 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
   });
-  const navigate = (href: string): void => { if (!dirty || window.confirm('Leave this architecture and discard unsaved changes?')) window.location.hash = href; };
+  const navigate = (href: string): void => {
+    if (dirty) setPendingNavigation(href);
+    else window.location.hash = href;
+  };
   if (loadError) return <Screen title="Architecture"><LoadFailure message={loadError} onRetry={() => window.location.reload()} /><a href={hrefOf('architecture')}>Back to architectures</a></Screen>;
   if (flowId && !flow) return <Skeleton rows={5} label="Loading architecture" />;
   return <section className="architecture-workspace" aria-label={editing ? 'Architecture editor' : 'Architecture viewer'}>
@@ -306,7 +311,7 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
           {selectedNode.kind === 'gateway' && <p>A gateway describes routing in your architecture. Connect applications or APIs to it, then connect it to downstream APIs. Apply does not deploy routes, credentials or access policies.</p>}
           {selectedNode.kind === 'application' && selectedNode.mode === 'managed' && <p className="muted">Creates a confidential FAPI client with private_key_jwt, PAR and DPoP. For a BFF, keep tokens and signing keys on the server and implement a browser session cookie in your application.</p>}
           {selectedNode.kind === 'role' && <p>A role is a leaf: one application defines it, and groups may grant it.</p>}
-          {canWrite && <Button variant="danger" onClick={removeSelected}><Trash2 size={16} />{links.some(link => link.node_id === selectedNode.id) ? 'Remove from diagram' : 'Delete draft object'}</Button>}
+          {canWrite && <Button variant="danger" onClick={() => setPendingRemoval(selectedNode.id)}><Trash2 size={16} />{links.some(link => link.node_id === selectedNode.id) ? 'Remove from diagram' : 'Delete draft object'}</Button>}
           {links.some(link => link.node_id === selectedNode.id) && <p className="muted">This object has a linked resource. Removing it from the diagram keeps the live resource.</p>}
         </div>}
         </div>}
@@ -340,6 +345,18 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
         {!flow && (tab === 'review' || tab === 'resources') && <p className="architecture-pane-content">Save this architecture first to review changes and track its resources.</p>}
       </aside>
     </div>
+    {pendingNavigation !== null && <ConfirmDialog title="Discard unsaved architecture changes?"
+      body="Leaving this architecture will discard changes that have not been saved as a draft."
+      confirmLabel="Discard and leave" onCancel={() => setPendingNavigation(null)}
+      onConfirm={() => { const href = pendingNavigation; setPendingNavigation(null); window.location.hash = href; }} />}
+    {removalNode !== undefined && <ConfirmDialog
+      title={links.some(link => link.node_id === removalNode.id) ? `Remove ${removalNode.label} from the diagram?` : `Delete ${removalNode.label} from the draft?`}
+      body={links.some(link => link.node_id === removalNode.id)
+        ? 'The linked live resource remains in place. This removes only the diagram object and its connections.'
+        : 'This removes the draft object and all its diagram connections. Save the draft afterward to keep the change.'}
+      confirmLabel={links.some(link => link.node_id === removalNode.id) ? 'Remove from diagram' : 'Delete draft object'}
+      onCancel={() => setPendingRemoval(null)}
+      onConfirm={() => { const id = removalNode.id; setPendingRemoval(null); removeNode(id); }} />}
   </section>;
 }
 

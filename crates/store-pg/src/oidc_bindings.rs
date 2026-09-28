@@ -59,17 +59,8 @@ impl PgOidcBindings {
         let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
         // Serialize first-login creation for the same provider. The provider
         // row lock also fences concurrent disable and issuer replacement.
-        let policy: Option<(bool, Option<String>)> = sqlx::query_as(
-            "select allow_registration, username_claim from oidc_identity_providers
-             where tenant_id = $1 and provider_id = $2 and issuer = $3 and enabled
-             for update",
-        )
-        .bind(self.tenant.as_str())
-        .bind(provider_id)
-        .bind(exact_issuer)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(to_domain_error)?;
+        let policy =
+            locked_provider_policy(&mut tx, &self.tenant, provider_id, exact_issuer).await?;
         let Some((allow_registration, username_claim)) = policy else {
             return Ok(OidcResolution::Refused(OidcRefusal::ProviderUnavailable));
         };
@@ -102,34 +93,10 @@ impl PgOidcBindings {
             if status != "active" {
                 return Ok(OidcResolution::Refused(OidcRefusal::DisabledUser));
             }
-            if let Some(username) = requested_username.filter(|name| *name != current_username) {
-                let renamed = sqlx::query(
-                    "update users set username = $3 where tenant_id = $1 and user_id = $2",
-                )
-                .bind(self.tenant.as_str())
-                .bind(user)
-                .bind(username)
-                .execute(&mut *tx)
-                .await;
-                if let Err(error) = renamed {
-                    if matches!(&error, sqlx::Error::Database(db) if db.code().as_deref() == Some("23505")) {
-                        return Ok(OidcResolution::Refused(OidcRefusal::UsernameUnavailable));
-                    }
-                    return Err(to_domain_error(error));
-                }
-                audit::append(
-                    tx.acquire().await.map_err(to_domain_error)?,
-                    AuditEvent::new(
-                        self.tenant.clone(),
-                        EventType::OIDC_USERNAME_SYNCED,
-                        Outcome::Success,
-                        Actor::System,
-                        OffsetDateTime::now_utc(),
-                    )
-                    .subject(user.to_string())
-                    .detail(Detail::new().text("provider_id", provider_id)),
-                )
-                .await?;
+            if let Some(username) = requested_username.filter(|name| *name != current_username)
+                && !sync_bound_username(&mut tx, &self.tenant, provider_id, user, username).await?
+            {
+                return Ok(OidcResolution::Refused(OidcRefusal::UsernameUnavailable));
             }
             tx.commit().await.map_err(to_domain_error)?;
             return Ok(OidcResolution::User(UserId::new(user)));
@@ -138,9 +105,8 @@ impl PgOidcBindings {
             return Ok(OidcResolution::Refused(OidcRefusal::Unlinked));
         }
         let id = Uuid::new_v4();
-        let username = requested_username
-            .map(str::to_owned)
-            .unwrap_or_else(|| format!("oidc-{}", id.simple()));
+        let username =
+            requested_username.map_or_else(|| format!("oidc-{}", id.simple()), str::to_owned);
         let inserted = sqlx::query(
             "insert into users (tenant_id, user_id, username, status)
              values ($1, $2, $3, 'active')
@@ -278,7 +244,10 @@ impl PgOidcBindings {
         .fetch_all(&self.pool)
         .await
         .map_err(to_domain_error)?;
-        Ok(rows.into_iter().map(|(id, name)| (UserId::new(id), name)).collect())
+        Ok(rows
+            .into_iter()
+            .map(|(id, name)| (UserId::new(id), name))
+            .collect())
     }
 
     pub async fn list_for_user(&self, user: UserId) -> Result<Vec<OidcBinding>, DomainError> {
@@ -346,6 +315,63 @@ impl PgOidcBindings {
         tx.commit().await.map_err(to_domain_error)?;
         Ok(true)
     }
+}
+
+async fn locked_provider_policy(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant: &TenantId,
+    provider_id: &str,
+    exact_issuer: &str,
+) -> Result<Option<(bool, Option<String>)>, DomainError> {
+    sqlx::query_as(
+        "select allow_registration, username_claim from oidc_identity_providers
+         where tenant_id = $1 and provider_id = $2 and issuer = $3 and enabled
+         for update",
+    )
+    .bind(tenant.as_str())
+    .bind(provider_id)
+    .bind(exact_issuer)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(to_domain_error)
+}
+
+/// Rename only the already locked binding target. The update and audit record
+/// use the caller's transaction, so a failed name collision rolls both back.
+async fn sync_bound_username(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant: &TenantId,
+    provider_id: &str,
+    user: Uuid,
+    username: &str,
+) -> Result<bool, DomainError> {
+    let renamed =
+        sqlx::query("update users set username = $3 where tenant_id = $1 and user_id = $2")
+            .bind(tenant.as_str())
+            .bind(user)
+            .bind(username)
+            .execute(&mut **tx)
+            .await;
+    if let Err(error) = renamed {
+        if matches!(&error, sqlx::Error::Database(db) if db.code().as_deref() == Some("23505")) {
+            return Ok(false);
+        }
+        return Err(to_domain_error(error));
+    }
+    audit::append(
+        tx.acquire().await.map_err(to_domain_error)?,
+        AuditEvent::new(
+            tenant.clone(),
+            EventType::OIDC_USERNAME_SYNCED,
+            Outcome::Success,
+            Actor::System,
+            OffsetDateTime::now_utc(),
+        )
+        .subject(user.to_string())
+        .detail(Detail::new().text("provider_id", provider_id)),
+    )
+    .await?;
+    Ok(true)
 }
 
 fn validate_identity(issuer: &str, subject: &str) -> Result<(), DomainError> {

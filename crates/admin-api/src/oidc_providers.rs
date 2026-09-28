@@ -285,7 +285,8 @@ mod tests {
         assert_eq!(
             parse_provider(configured.to_string().as_bytes())
                 .expect("configured provider")
-                .username_claim.as_deref(),
+                .username_claim
+                .as_deref(),
             Some("preferred_username")
         );
         for name in ["", " padded ", "bad\nclaim"] {

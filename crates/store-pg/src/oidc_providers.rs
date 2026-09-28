@@ -103,6 +103,8 @@ impl PgOidcProviders {
 
     /// Upsert one fully validated discovery snapshot. A missing secret is
     /// accepted only when the row exists; it leaves the old envelope untouched.
+    // Envelope reuse, issuer fencing and upsert share one transaction and lock.
+    #[allow(clippy::too_many_lines)]
     pub async fn put(
         &self,
         provider: &OidcProvider,

@@ -777,7 +777,7 @@ const CREATED_PASSWORD = 'a created account passphrase';
  */
 async function createAccount(page: Page): Promise<string> {
   const username = freshUsername();
-  await page.getByRole('button', { name: 'Add account' }).click();
+  await page.getByRole('button', { name: 'Add user' }).click();
   await page.getByLabel('Username').fill(username);
   // Deliberately *not* the username. The directory renders both in the same
   // row, and an account whose two columns carry one string makes every locator
@@ -785,7 +785,7 @@ async function createAccount(page: Page): Promise<string> {
   // on a strict-mode violation rather than on anything about the screen.
   await page.getByLabel('Email').fill(username.replace('created-', 'inbox-'));
   await page.getByLabel('Password').fill(CREATED_PASSWORD);
-  await page.getByRole('button', { name: 'Create account' }).click();
+  await page.getByRole('button', { name: 'Create user' }).click();
   await expect(page.getByRole('heading', { name: username })).toBeVisible();
   await page.getByRole('button', { name: 'Back to users' }).click();
   await expect(page.getByRole('cell', { name: username })).toBeVisible();
@@ -812,9 +812,11 @@ test('the users screen is reachable from the navigation and creates an account',
   const username = await createAccount(page);
 
   // Assert: the row is in the directory, and the search finds it.
+  await expect(page.getByRole('columnheader', { name: 'External', exact: true })).toBeVisible();
   await page.getByLabel('Search').fill(username);
   await page.getByRole('button', { name: 'Search' }).click();
   await expect(page.getByRole('cell', { name: username })).toBeVisible();
+  await expect(page.getByRole('row').filter({ has: page.getByRole('button', { name: username, exact: true }) }).getByRole('cell', { name: 'No', exact: true })).toBeVisible();
 });
 
 test('an account can be disabled from the console', async ({ page }) => {
@@ -923,8 +925,8 @@ test('a deployment administrator reaches the users screen', async ({ page }) => 
 
   // Assert: the directory answered rather than 403ing, so the screen shows its
   // list and its form rather than a refusal.
-  await page.getByRole('button', { name: 'Add account', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Add an account' })).toBeVisible();
+  await page.getByRole('button', { name: 'Add user', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Add a user' })).toBeVisible();
 });
 
 test('the users screen provokes no CSP violation and passes axe', async ({ context, page }) => {
@@ -1652,8 +1654,8 @@ test('a field says what the server would refuse, without refusing it', async ({ 
   // Arrange
   await signIn(page);
   await page.getByRole('link', { name: 'Users', exact: true }).click();
-  await page.getByRole('button', { name: 'Add account', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Add an account' })).toBeVisible();
+  await page.getByRole('button', { name: 'Add user', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Add a user' })).toBeVisible();
   const email = page.getByLabel('Email');
 
   // Act
@@ -1662,7 +1664,7 @@ test('a field says what the server would refuse, without refusing it', async ({ 
   // Assert
   await expect(page.getByText('An address carries an @.')).toBeVisible();
   await expect(email).toHaveAttribute('aria-invalid', 'true');
-  await expect(page.getByRole('button', { name: 'Create account' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Create user' })).toBeEnabled();
 
   // Act / Assert: and it goes away when the value would be taken.
   await email.fill('someone@example.test');
@@ -1983,4 +1985,66 @@ test('tenant rate limits save reload reject weakening and restore inheritance', 
     await page.getByRole('button', { name: 'Save settings', exact: true }).click();
     await expect(page.getByRole('status')).toContainText('Saved.');
   }
+});
+
+
+test('unavailable and unknown console routes explain the navigation failure', async ({ page }) => {
+  await page.route(`**${SESSION_ENDPOINT}`, async route => {
+    const response = await route.fetch();
+    const session = await response.json();
+    await route.fulfill({ response, json: { ...session, scopes: session.scopes.filter((scope: string) => scope !== 'admin.users:read') } });
+  });
+  await signIn(page);
+  await page.goto(`${CONSOLE_URL}#/users`);
+  await expect(page.getByRole('heading', { name: 'Access unavailable', exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Users', exact: true })).toHaveCount(0);
+  await page.goto(`${CONSOLE_URL}#/not-a-route`);
+  await expect(page.getByRole('heading', { name: 'Page not found', exact: true })).toBeVisible();
+});
+
+test('signing key readers see inventory without write controls', async ({ page }) => {
+  await page.route(`**${SESSION_ENDPOINT}`, async route => {
+    const response = await route.fetch();
+    const session = await response.json();
+    await route.fulfill({ response, json: { ...session, scopes: session.scopes.filter((scope: string) => scope !== 'admin.keys:write') } });
+  });
+  await signIn(page);
+  await openScreen(page, 'Signing keys', 'Signing keys');
+  await expect(page.getByRole('heading', { name: 'Published JWK Set', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Rotate|Retire|Apply the rotation/ })).toHaveCount(0);
+});
+
+test('linked identities require confirmation and send only accepted identity fields', async ({ page }) => {
+  const identity = { provider_id: 'corporate', issuer: 'https://login.example.test', upstream_subject: 'external-subject' };
+  let bindings = [{ ...identity, created_at: '2026-09-28T12:00:00Z' }];
+  const mutations: { method: string; body: unknown }[] = [];
+  await page.route('**/admin/api/v1/users/*/oidc-bindings', async route => {
+    const method = route.request().method();
+    if (method === 'GET') {
+      await route.fulfill({ json: { bindings } });
+    } else {
+      mutations.push({ method, body: route.request().postDataJSON() });
+      bindings = method === 'DELETE' ? [] : [{ ...identity, created_at: '2026-09-28T12:00:00Z' }];
+      await route.fulfill({ json: {} });
+    }
+  });
+  await signIn(page);
+  await openScreen(page, 'Users', 'Users');
+  await openAccount(page, USERNAME);
+  await page.getByRole('tab', { name: 'Sign-in methods', exact: true }).click();
+  await page.getByRole('button', { name: 'Unlink', exact: true }).click();
+  await expect(page.getByRole('alertdialog')).toBeVisible();
+  expect(mutations).toEqual([]);
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Unlink identity', exact: true }).click();
+  await expect(page.getByText('No upstream identities are linked to this account.')).toBeVisible();
+  expect(mutations).toEqual([{ method: 'DELETE', body: identity }]);
+  await page.getByLabel('Provider ID', { exact: true }).fill(identity.provider_id);
+  await page.getByLabel('Exact issuer URL', { exact: true }).fill(identity.issuer);
+  await page.getByLabel('Exact upstream subject', { exact: true }).fill(identity.upstream_subject);
+  await page.getByRole('button', { name: 'Link identity', exact: true }).click();
+  await expect(page.getByRole('alertdialog')).toBeVisible();
+  expect(mutations).toHaveLength(1);
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Link identity', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Unlink', exact: true })).toBeVisible();
+  expect(mutations[1]).toEqual({ method: 'PUT', body: identity });
 });

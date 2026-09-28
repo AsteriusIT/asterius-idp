@@ -55,6 +55,7 @@ test('group membership changes effective application roles', async ({ page }) =>
 
   await page.getByRole('tab', { name: 'Groups' }).click();
   await membership.getByRole('button', { name: new RegExp(`Remove ${displayName}`) }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Remove membership', exact: true }).click();
   await page.getByRole('tab', { name: 'Roles' }).click();
   await expect(page.getByRole('cell', { name: role, exact: true })).toHaveCount(0);
 });

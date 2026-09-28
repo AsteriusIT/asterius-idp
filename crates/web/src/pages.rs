@@ -1765,7 +1765,12 @@ mod tests {
             "{html}"
         );
         assert!(html.contains(r#"data-csrf="the-token""#), "{html}");
-        assert!(html.contains("Continue with &lt;Corporate&gt;"), "{html}");
+        assert!(
+            html.contains("Continue with &lt;Corporate&gt;")
+                || html.contains("Continue with &#60;Corporate&#62;"),
+            "the provider label must remain escaped: {html}"
+        );
+        assert!(!html.contains("<Corporate>"), "{html}");
         assert!(html.contains("/interaction/abc/upstream/corp"), "{html}");
     }
 
@@ -2807,7 +2812,10 @@ mod tests {
             );
         }
         // The reassurance a user needs, which is true either way.
-        assert!(html.contains("If there is an account"), "{html}");
+        assert!(
+            body.contains("If recovery is available for that account"),
+            "{body}"
+        );
     }
 
     /// The reset token travels in the body, not in the URL.

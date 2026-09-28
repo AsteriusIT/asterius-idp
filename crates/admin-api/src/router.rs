@@ -4090,20 +4090,32 @@ impl Handling<'_> {
             .await
             .map_err(|error| AdminError::from_storage(crate::USERS_LIST_ID, &error))?;
 
-        let user_ids: Vec<_> = rows.iter().take(request.limit).map(|user| user.id).collect();
-        let names = self.state.backend.users()
+        let user_ids: Vec<_> = rows
+            .iter()
+            .take(request.limit)
+            .map(|user| user.id)
+            .collect();
+        let names = self
+            .state
+            .backend
+            .users()
             .external_provider_names(&self.tenant.id, &user_ids)
             .await
             .map_err(|error| AdminError::from_storage(crate::USERS_LIST_ID, &error))?;
-        let mut providers: std::collections::HashMap<asterius_domain::UserId, Vec<String>> = std::collections::HashMap::new();
+        let mut providers: std::collections::HashMap<asterius_domain::UserId, Vec<String>> =
+            std::collections::HashMap::new();
         for (user, name) in names {
             providers.entry(user).or_default().push(name);
         }
-        let items: Vec<serde_json::Value> = rows.iter().map(|user| {
-            let mut row = users::summarise(user);
-            row["external_providers"] = serde_json::json!(providers.get(&user.id).cloned().unwrap_or_default());
-            row
-        }).collect();
+        let items: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|user| {
+                let mut row = users::summarise(user);
+                row["external_providers"] =
+                    serde_json::json!(providers.get(&user.id).cloned().unwrap_or_default());
+                row
+            })
+            .collect();
         let page = Page::from_overfetched(items, request.limit, |row| {
             row["username"].as_str().unwrap_or_default().to_owned()
         });
@@ -9343,8 +9355,13 @@ mod tests {
             tenant: &TenantId,
             users: &[UserId],
         ) -> Result<Vec<(UserId, String)>, DomainError> {
-            Ok(users.iter().filter(|user| tenant.as_str() == "acme" && user.as_uuid().to_string() == SEEDED_USER_ID)
-                .map(|user| (*user, "Corporate".to_owned())).collect())
+            Ok(users
+                .iter()
+                .filter(|user| {
+                    tenant.as_str() == "acme" && user.as_uuid().to_string() == SEEDED_USER_ID
+                })
+                .map(|user| (*user, "Corporate".to_owned()))
+                .collect())
         }
 
         async fn scim_replace_profile(
@@ -17768,7 +17785,10 @@ mod tests {
             page["items"][0]["username"],
             serde_json::json!("ada@example.test")
         );
-        assert_eq!(page["items"][0]["external_providers"], serde_json::json!(["Corporate"]));
+        assert_eq!(
+            page["items"][0]["external_providers"],
+            serde_json::json!(["Corporate"])
+        );
         let cursor = page["next_cursor"].as_str().expect("a cursor").to_owned();
         // Opaque: the console must not be able to start parsing it.
         assert!(!cursor.contains("ada@example.test"), "{cursor}");
@@ -17797,7 +17817,10 @@ mod tests {
             page["items"][0]["username"],
             serde_json::json!("carol@example.test")
         );
-        assert_eq!(page["items"][0]["external_providers"], serde_json::json!([]));
+        assert_eq!(
+            page["items"][0]["external_providers"],
+            serde_json::json!([])
+        );
     }
 
     /// OIDC Core §5.1, at the route: the claims and the verification flags are

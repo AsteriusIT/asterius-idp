@@ -70,12 +70,29 @@ async fn bindings_are_exact_and_registration_never_takes_over_email() {
     .expect("explicit link");
     let page_ids = [UserId::new(victim), UserId::generate()];
     assert_eq!(
-        one.provider_names_for_users(&page_ids).await.expect("provider names"),
+        one.provider_names_for_users(&page_ids)
+            .await
+            .expect("provider names"),
         vec![(UserId::new(victim), "Corp".to_owned())]
     );
-    assert!(two.provider_names_for_users(&page_ids).await.expect("tenant fence").is_empty());
-    assert!(one.provider_names_for_users(&[]).await.expect("empty page").is_empty());
-    assert!(one.provider_names_for_users(&[page_ids[1]]).await.expect("unlinked page").is_empty());
+    assert!(
+        two.provider_names_for_users(&page_ids)
+            .await
+            .expect("tenant fence")
+            .is_empty()
+    );
+    assert!(
+        one.provider_names_for_users(&[])
+            .await
+            .expect("empty page")
+            .is_empty()
+    );
+    assert!(
+        one.provider_names_for_users(&[page_ids[1]])
+            .await
+            .expect("unlinked page")
+            .is_empty()
+    );
     assert!(
         one.link(
             "corp",
@@ -173,63 +190,120 @@ async fn bindings_are_exact_and_registration_never_takes_over_email() {
     sqlx::query("update oidc_identity_providers set username_claim = 'preferred_username' where tenant_id = 'one'")
         .execute(&pool).await.expect("configure claim");
     assert_eq!(
-        one.resolve_or_create("corp", "https://login.example", "new-subject", Some("preferred_username"), None)
-            .await.expect("existing binding without username"),
+        one.resolve_or_create(
+            "corp",
+            "https://login.example",
+            "new-subject",
+            Some("preferred_username"),
+            None
+        )
+        .await
+        .expect("existing binding without username"),
         OidcResolution::Refused(OidcRefusal::UsernameUnavailable)
     );
     for name in [Some(""), Some(" hidden"), Some("existing")] {
         assert_eq!(
-            one.resolve_or_create("corp", "https://login.example", "new-subject", Some("preferred_username"), name)
-                .await.expect("refuse unsafe rename"),
+            one.resolve_or_create(
+                "corp",
+                "https://login.example",
+                "new-subject",
+                Some("preferred_username"),
+                name
+            )
+            .await
+            .expect("refuse unsafe rename"),
             OidcResolution::Refused(OidcRefusal::UsernameUnavailable)
         );
     }
-    let unchanged: String = sqlx::query_scalar(
-        "select username from users where tenant_id = 'one' and user_id = $1"
-    ).bind(created.as_uuid()).fetch_one(&pool).await.expect("unchanged username");
+    let unchanged: String =
+        sqlx::query_scalar("select username from users where tenant_id = 'one' and user_id = $1")
+            .bind(created.as_uuid())
+            .fetch_one(&pool)
+            .await
+            .expect("unchanged username");
     assert!(unchanged.starts_with("oidc-"));
     assert_eq!(
-        one.resolve_or_create("corp", "https://login.example", "new-subject", Some("preferred_username"), Some("mapped-name"))
-            .await.expect("rename bound account"),
+        one.resolve_or_create(
+            "corp",
+            "https://login.example",
+            "new-subject",
+            Some("preferred_username"),
+            Some("mapped-name")
+        )
+        .await
+        .expect("rename bound account"),
         OidcResolution::User(created)
     );
-    let renamed: String = sqlx::query_scalar(
-        "select username from users where tenant_id = 'one' and user_id = $1"
-    ).bind(created.as_uuid()).fetch_one(&pool).await.expect("renamed username");
+    let renamed: String =
+        sqlx::query_scalar("select username from users where tenant_id = 'one' and user_id = $1")
+            .bind(created.as_uuid())
+            .fetch_one(&pool)
+            .await
+            .expect("renamed username");
     assert_eq!(renamed, "mapped-name");
     sqlx::query("update oidc_identity_providers set username_claim = 'alternate_name' where tenant_id = 'one'")
         .execute(&pool).await.expect("change claim mapping");
     assert_eq!(
         one.resolve_or_create(
-            "corp", "https://login.example", "new-subject",
-            Some("preferred_username"), Some("stale-value")
-        ).await.expect("stale mapping refused"),
+            "corp",
+            "https://login.example",
+            "new-subject",
+            Some("preferred_username"),
+            Some("stale-value")
+        )
+        .await
+        .expect("stale mapping refused"),
         OidcResolution::Refused(OidcRefusal::ProviderUnavailable)
     );
-    let still_renamed: String = sqlx::query_scalar(
-        "select username from users where tenant_id = 'one' and user_id = $1"
-    ).bind(created.as_uuid()).fetch_one(&pool).await.expect("unchanged after stale mapping");
+    let still_renamed: String =
+        sqlx::query_scalar("select username from users where tenant_id = 'one' and user_id = $1")
+            .bind(created.as_uuid())
+            .fetch_one(&pool)
+            .await
+            .expect("unchanged after stale mapping");
     assert_eq!(still_renamed, "mapped-name");
     sqlx::query("update oidc_identity_providers set username_claim = 'preferred_username' where tenant_id = 'one'")
         .execute(&pool).await.expect("restore claim mapping");
-    let victim_name: String = sqlx::query_scalar(
-        "select username from users where tenant_id = 'one' and user_id = $1"
-    ).bind(victim).fetch_one(&pool).await.expect("victim username");
+    let victim_name: String =
+        sqlx::query_scalar("select username from users where tenant_id = 'one' and user_id = $1")
+            .bind(victim)
+            .fetch_one(&pool)
+            .await
+            .expect("victim username");
     assert_eq!(victim_name, "existing");
     for name in [None, Some(""), Some(" hidden"), Some("existing")] {
         assert_eq!(
-            one.resolve_or_create("corp", "https://login.example", "another-subject", Some("preferred_username"), name)
-                .await.expect("refuse unavailable username"),
+            one.resolve_or_create(
+                "corp",
+                "https://login.example",
+                "another-subject",
+                Some("preferred_username"),
+                name
+            )
+            .await
+            .expect("refuse unavailable username"),
             OidcResolution::Refused(OidcRefusal::UsernameUnavailable)
         );
     }
-    let named = one.resolve_or_create(
-        "corp", "https://login.example", "another-subject", Some("preferred_username"), Some("upstream-alice")
-    ).await.expect("create with verified username");
-    let OidcResolution::User(named_id) = named else { panic!("expected named user") };
-    let username: String = sqlx::query_scalar(
-        "select username from users where tenant_id = 'one' and user_id = $1"
-    ).bind(named_id.as_uuid()).fetch_one(&pool).await.expect("named account");
+    let named = one
+        .resolve_or_create(
+            "corp",
+            "https://login.example",
+            "another-subject",
+            Some("preferred_username"),
+            Some("upstream-alice"),
+        )
+        .await
+        .expect("create with verified username");
+    let OidcResolution::User(named_id) = named else {
+        panic!("expected named user")
+    };
+    let username: String =
+        sqlx::query_scalar("select username from users where tenant_id = 'one' and user_id = $1")
+            .bind(named_id.as_uuid())
+            .fetch_one(&pool)
+            .await
+            .expect("named account");
     assert_eq!(username, "upstream-alice");
     pool.close().await;
     let admin = PgPoolOptions::new()

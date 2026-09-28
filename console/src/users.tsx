@@ -495,7 +495,7 @@ function UserTable({
               ? <span className="muted">No</span>
               : <span title={row.external_providers.join(', ')}>{row.external_providers.join(', ')}</span>,
         },
-        { key: 'claims', header: 'Claims' , numeric: true, sortBy: (row) => row.claims, cell: (row) => row.claims },
+        { key: 'claims', header: 'Claims', numeric: true, sortBy: (row) => row.claims, cell: (row) => row.claims },
 
       ]}
     />
