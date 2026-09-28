@@ -1412,6 +1412,22 @@ pub struct ErrorPage<'a> {
     pub brand: crate::brand::Brand<'a>,
 }
 
+/// Tenant-branded sign-in failure with an optional validated recovery route.
+#[derive(Debug, Template)]
+#[template(path = "external_sign_in_error.html")]
+pub struct ExternalSignInErrorPage<'a> {
+    pub text: &'a Catalog,
+    pub tenant_name: &'a str,
+    /// Generic, localized copy; never an upstream response or diagnostic.
+    pub message: &'a str,
+    /// Same-origin route to an existing browser-bound login interaction.
+    pub retry_url: Option<&'a str>,
+    pub correlation_id: &'a str,
+    pub nonce_attribute: NonceAttribute,
+    pub theme_css: &'a str,
+    pub brand: crate::brand::Brand<'a>,
+}
+
 /// Renders a page, or an empty document if it somehow cannot.
 ///
 /// A template that fails to render is a bug, not a runtime condition: every
@@ -2210,6 +2226,46 @@ mod tests {
             "the conformance overrides wait on //p[@class='error'] with text in \
              it: {html}"
         );
+    }
+
+    #[test]
+    fn external_sign_in_errors_offer_only_the_supplied_retry_and_escape_branding() {
+        let html = render(&ExternalSignInErrorPage {
+            text: &ENGLISH,
+            tenant_name: "<script>tenant</script>",
+            message: ENGLISH.error_external_sign_in_failed(),
+            retry_url: Some("/t/demo/interaction/opaque-id"),
+            correlation_id: "support-reference",
+            nonce_attribute: nonce_attribute(&nonce()),
+            theme_css: "",
+            brand: brand(),
+        });
+        assert!(html.contains("We could not sign you in"));
+        assert!(html.contains(r#"href="/t/demo/interaction/opaque-id""#));
+        assert!(html.contains("Return to sign-in"));
+        assert!(html.contains("support-reference"));
+        assert!(!html.contains("<script>tenant</script>"));
+        assert!(!html.contains("javascript:"));
+    }
+
+    #[test]
+    fn external_sign_in_errors_without_a_live_interaction_explain_how_to_restart() {
+        let text = Catalog::new(asterius_domain::locale::Locale::French);
+        let html = render(&ExternalSignInErrorPage {
+            text: &text,
+            tenant_name: "Demo",
+            message: text.error_external_sign_in_unavailable(),
+            retry_url: None,
+            correlation_id: "support-reference",
+            nonce_attribute: nonce_attribute(&nonce()),
+            theme_css: "",
+            brand: brand(),
+        });
+        assert!(html.contains(r#"lang="fr""#));
+        assert!(html.contains("temporairement indisponible"));
+        assert!(html.contains("lancez une nouvelle demande de connexion"));
+        assert!(!html.contains("/interaction/"));
+        assert!(!html.contains("Return to sign-in"));
     }
 
     fn consent(scopes: Vec<ScopeLine>, offline: bool, resources: Vec<String>) -> String {
