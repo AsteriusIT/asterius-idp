@@ -5622,7 +5622,7 @@ async fn upstream_begin(
     .await
     {
         Ok(url) => axum::response::Redirect::to(&url).into_response(),
-        Err(upstream_oidc::FlowError::Refused) => StatusCode::BAD_REQUEST.into_response(),
+        Err(upstream_oidc::FlowError::Refused(_)) => StatusCode::BAD_REQUEST.into_response(),
         Err(upstream_oidc::FlowError::Unavailable) => unavailable(),
     }
 }
@@ -5647,11 +5647,13 @@ async fn upstream_callback(
     };
     let Some((state, code, response_issuer)) = upstream_callback_parameters(query.as_deref())
     else {
+        tracing::warn!(tenant = %tenant.id, provider_id, reason = "invalid_callback_parameters", "upstream sign-in callback refused");
         return StatusCode::BAD_REQUEST.into_response();
     };
     let Some(interaction_id) =
         asterius_web::interaction::id_from_cookie_header(&crate::http::cookies(&headers))
     else {
+        tracing::warn!(tenant = %tenant.id, provider_id, reason = "missing_interaction_cookie", "upstream sign-in callback refused");
         return StatusCode::BAD_REQUEST.into_response();
     };
     let now = time::OffsetDateTime::now_utc();
@@ -5674,7 +5676,15 @@ async fn upstream_callback(
     .await
     {
         Ok(user) => user,
-        Err(upstream_oidc::FlowError::Refused) => return StatusCode::BAD_REQUEST.into_response(),
+        Err(upstream_oidc::FlowError::Refused(reason)) => {
+            tracing::warn!(
+                tenant = %tenant.id,
+                provider_id,
+                reason,
+                "upstream sign-in callback refused"
+            );
+            return StatusCode::BAD_REQUEST.into_response();
+        }
         Err(upstream_oidc::FlowError::Unavailable) => return unavailable(),
     };
     let theme = crate::http::theme_of(theme.as_ref());

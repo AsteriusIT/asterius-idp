@@ -63,8 +63,11 @@ impl UpstreamIdentityResolver for StoreUpstreamIdentityResolver {
 
 #[derive(Debug, thiserror::Error)]
 pub enum FlowError {
-    #[error("upstream sign-in was refused")]
-    Refused,
+    /// This identifier is safe to give the operator in a log, but never to
+    /// reflect to the browser.  Its companion details (code, state, tokens,
+    /// cookies and upstream responses) remain deliberately absent.
+    #[error("upstream sign-in was refused: {0}")]
+    Refused(&'static str),
     #[error("upstream sign-in is temporarily unavailable")]
     Unavailable,
 }
@@ -86,33 +89,36 @@ pub async fn begin(
     let presented = InteractionId::from_presented(interaction_id.to_owned());
     let from_cookie = interaction::id_from_cookie_header(&crate::http::cookies(headers));
     asterius_web::Interaction::resume(&presented, from_cookie.as_ref())
-        .map_err(|_| FlowError::Refused)?;
+        .map_err(|_| FlowError::Refused("interaction_cookie_mismatch"))?;
     let record = requests
         .by_interaction(&presented.digest(), now)
         .await
         .map_err(|_| FlowError::Unavailable)?
-        .ok_or(FlowError::Refused)?;
+        .ok_or(FlowError::Refused("interaction_not_found_or_expired"))?;
     let interaction_stage = StoredState::from_stored(&record.state).stage;
     if !matches!(interaction_stage, Stage::Login | Stage::StepUp) {
-        return Err(FlowError::Refused);
+        return Err(FlowError::Refused("interaction_not_at_login_stage"));
     }
     let credential = providers
         .find(provider_id)
         .await
         .map_err(|_| FlowError::Unavailable)?
-        .ok_or(FlowError::Refused)?;
+        .ok_or(FlowError::Refused("provider_not_found"))?;
     let provider = &credential.provider;
     if !provider.enabled || ssrf::check_url(&provider.authorization_endpoint).is_err() {
-        return Err(FlowError::Refused);
+        return Err(FlowError::Refused(
+            "provider_disabled_or_invalid_authorization_endpoint",
+        ));
     }
     let state = OpaqueToken::generate_bits::<256>();
     let nonce = OpaqueToken::generate_bits::<256>();
     let verifier = OpaqueToken::generate_bits::<256>();
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.expose().as_bytes()));
     let redirect_uri = asterius_admin_api::oidc_providers::callback_url(tenant_issuer, provider_id);
-    let mut url = Url::parse(&provider.authorization_endpoint).map_err(|_| FlowError::Refused)?;
+    let mut url = Url::parse(&provider.authorization_endpoint)
+        .map_err(|_| FlowError::Refused("invalid_authorization_endpoint"))?;
     if url.query().is_some() {
-        return Err(FlowError::Refused);
+        return Err(FlowError::Refused("authorization_endpoint_has_query"));
     }
     url.query_pairs_mut()
         .append_pair("response_type", "code")
@@ -165,10 +171,10 @@ pub async fn callback(
     now: OffsetDateTime,
 ) -> Result<uuid::Uuid, FlowError> {
     if state.len() > 512 || code.is_empty() || code.len() > 4096 {
-        return Err(FlowError::Refused);
+        return Err(FlowError::Refused("invalid_callback_parameters"));
     }
     let from_cookie = interaction::id_from_cookie_header(&crate::http::cookies(headers))
-        .ok_or(FlowError::Refused)?;
+        .ok_or(FlowError::Refused("missing_interaction_cookie"))?;
     let transaction = pending
         .consume(
             &sha256_hex(state.as_bytes()),
@@ -178,26 +184,26 @@ pub async fn callback(
         )
         .await
         .map_err(|_| FlowError::Unavailable)?
-        .ok_or(FlowError::Refused)?;
+        .ok_or(FlowError::Refused("unknown_expired_or_replayed_state"))?;
     let record = requests
         .by_interaction(&from_cookie.digest(), now)
         .await
         .map_err(|_| FlowError::Unavailable)?
-        .ok_or(FlowError::Refused)?;
+        .ok_or(FlowError::Refused("interaction_not_found_or_expired"))?;
     if !matches!(
         StoredState::from_stored(&record.state).stage,
         Stage::Login | Stage::StepUp
     ) {
-        return Err(FlowError::Refused);
+        return Err(FlowError::Refused("interaction_not_at_login_stage"));
     }
     if response_issuer.is_some_and(|issuer| issuer != transaction.issuer) {
-        return Err(FlowError::Refused);
+        return Err(FlowError::Refused("response_issuer_mismatch"));
     }
     let credential = providers
         .find(provider_id)
         .await
         .map_err(|_| FlowError::Unavailable)?
-        .ok_or(FlowError::Refused)?;
+        .ok_or(FlowError::Refused("provider_not_found"))?;
     let provider = &credential.provider;
     if !provider.enabled
         || provider.issuer != transaction.issuer
@@ -205,7 +211,7 @@ pub async fn callback(
         || provider.token_endpoint != transaction.token_endpoint
         || provider.jwks_uri != transaction.jwks_uri
     {
-        return Err(FlowError::Refused);
+        return Err(FlowError::Refused("provider_configuration_changed"));
     }
     let redirect_uri = asterius_admin_api::oidc_providers::callback_url(tenant_issuer, provider_id);
     let body = zeroize::Zeroizing::new(
@@ -215,13 +221,15 @@ pub async fn callback(
             .append_pair("redirect_uri", &redirect_uri)
             .append_pair(
                 "code_verifier",
-                std::str::from_utf8(&transaction.code_verifier).map_err(|_| FlowError::Refused)?,
+                std::str::from_utf8(&transaction.code_verifier)
+                    .map_err(|_| FlowError::Refused("stored_verifier_is_invalid"))?,
             )
             .finish(),
     );
     let basic = client_secret_basic(
         &provider.client_id,
-        std::str::from_utf8(&credential.client_secret).map_err(|_| FlowError::Refused)?,
+        std::str::from_utf8(&credential.client_secret)
+            .map_err(|_| FlowError::Refused("stored_client_secret_is_invalid"))?,
     );
     let poster = HttpsPoster::new().map_err(|_| FlowError::Unavailable)?;
     let response = poster
@@ -235,14 +243,14 @@ pub async fn callback(
         .await
         .map_err(|_| FlowError::Unavailable)?;
     if response.truncated || response.status != 200 {
-        return Err(FlowError::Refused);
+        return Err(FlowError::Refused("token_exchange_failed"));
     }
-    let token: serde_json::Value =
-        serde_json::from_slice(&response.body).map_err(|_| FlowError::Refused)?;
+    let token: serde_json::Value = serde_json::from_slice(&response.body)
+        .map_err(|_| FlowError::Refused("token_response_is_invalid"))?;
     let id_token = token
         .get("id_token")
         .and_then(serde_json::Value::as_str)
-        .ok_or(FlowError::Refused)?;
+        .ok_or(FlowError::Refused("token_response_has_no_id_token"))?;
     let jwks = fetcher
         .fetch(&transaction.jwks_uri)
         .await
@@ -255,12 +263,12 @@ pub async fn callback(
         &transaction.nonce_digest,
         now,
     )
-    .map_err(|_| FlowError::Refused)?;
+    .map_err(|_| FlowError::Refused("id_token_verification_failed"))?;
     resolver
         .resolve_or_create(tenant, provider_id, &transaction.issuer, &verified.subject)
         .await
         .map_err(|_| FlowError::Unavailable)?
-        .ok_or(FlowError::Refused)
+        .ok_or(FlowError::Refused("upstream_identity_is_not_linked"))
 }
 
 /// RFC 6749 §2.3.1 form-encodes both components before Basic framing.
