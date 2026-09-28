@@ -204,6 +204,31 @@ impl PgOidcBindings {
         tx.commit().await.map_err(to_domain_error)
     }
 
+    /// Read only display names for a bounded directory page, with one tenant-fenced query.
+    pub async fn provider_names_for_users(
+        &self,
+        users: &[UserId],
+    ) -> Result<Vec<(UserId, String)>, DomainError> {
+        if users.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ids: Vec<Uuid> = users.iter().map(|user| *user.as_uuid()).collect();
+        let rows: Vec<(Uuid, String)> = sqlx::query_as(
+            "select distinct b.user_id, p.display_name
+             from oidc_identity_bindings b
+             join oidc_identity_providers p on p.tenant_id = b.tenant_id
+               and p.provider_id = b.provider_id and p.issuer = b.issuer
+             where b.tenant_id = $1 and b.user_id = any($2)
+             order by b.user_id, p.display_name",
+        )
+        .bind(self.tenant.as_str())
+        .bind(&ids)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+        Ok(rows.into_iter().map(|(id, name)| (UserId::new(id), name)).collect())
+    }
+
     pub async fn list_for_user(&self, user: UserId) -> Result<Vec<OidcBinding>, DomainError> {
         let rows = sqlx::query(
             "select provider_id, issuer, upstream_subject, user_id, created_at
