@@ -10,8 +10,6 @@
  * so one server-rendered entry document serves every screen and no server-side
  * catch-all route is needed.
  */
-import { DESTINATIONS } from './navigation';
-
 /** The screen shown when the fragment names nothing. */
 export const DEFAULT_ROUTE = 'overview';
 
@@ -34,12 +32,10 @@ function bodyOf(fragment: string): string {
   return fragment.replace(/^#\/?/, '');
 }
 
-/** The route named by a fragment, or the default if it names none of them. */
+/** The route named by a fragment, or the default if it names no route. */
 export function routeOf(fragment: string): string {
   const wanted = bodyOf(fragment).split('?')[0] ?? '';
-  return DESTINATIONS.some((destination) => destination.route === wanted)
-    ? wanted
-    : DEFAULT_ROUTE;
+  return wanted === '' ? DEFAULT_ROUTE : wanted;
 }
 
 /** The parameters a fragment carries, which is usually none. */

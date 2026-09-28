@@ -34,6 +34,7 @@ import {
   Actions,
   Badge,
   Button,
+  ConfirmDialog,
   DataTable,
   EmptyState,
   LoadFailure,
@@ -116,6 +117,7 @@ export function SharedSignals({ session }: Readonly<{ session: Session }>): JSX.
   const [notice, setNotice] = useState<string | null>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [dropping, setDropping] = useState<DeadLetterRow | null>(null);
   const mayReadLetters = session.scopes.includes('admin.outbox:read');
 
   const refresh = useCallback(() => {
@@ -271,10 +273,14 @@ export function SharedSignals({ session }: Readonly<{ session: Session }>): JSX.
             busy={busy}
             mayWrite={mayWrite(session, 'admin.outbox:write')}
             onRetry={retry}
-            onDrop={drop}
+            onDrop={setDropping}
           />
         </Panel>
       )}
+      {dropping !== null && <ConfirmDialog title={`Drop delivery ${dropping.id}?`}
+        body="This delivery will not be retried. Its audit record remains, but the queued message is removed."
+        confirmLabel="Drop delivery" busy={busy} onCancel={() => setDropping(null)}
+        onConfirm={() => { const letter = dropping; setDropping(null); drop(letter); }} />}
     </Screen>
   );
 }

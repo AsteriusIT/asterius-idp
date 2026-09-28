@@ -11,12 +11,14 @@ interface Guide {
   readonly route: string;
   readonly action: string;
   readonly steps: readonly string[];
+  readonly requiredScopes?: readonly string[];
 }
 
 const GUIDES: readonly Guide[] = [
   {
     title: 'Add a person', purpose: 'Create an account, then set up how it signs in and what it may access.',
     route: 'users', action: 'Open users',
+    requiredScopes: ['admin.users:write'],
     steps: [
       'Select Add user and enter a username. Add an email address if you have one.',
       'Open the new user to review their profile, credentials, sessions, and access.',
@@ -26,6 +28,7 @@ const GUIDES: readonly Guide[] = [
   {
     title: 'Connect an application', purpose: 'Register a client and collect the values its owner needs.',
     route: 'clients', action: 'Open applications',
+    requiredScopes: ['admin.clients:write'],
     steps: [
       'Create an application and choose the kind of client that matches its integration.',
       'Enter the redirect URI supplied by the application owner. Save the client before sharing its connection details.',
@@ -35,6 +38,7 @@ const GUIDES: readonly Guide[] = [
   {
     title: 'Build an access architecture', purpose: 'Draw and provision a web application, API, group, and roles together.',
     route: 'architecture', action: 'Open architecture builder',
+    requiredScopes: ['admin.flows:write'],
     steps: [
       'Choose View to inspect a saved architecture, or Edit to open its fullscreen workspace. Start from Web app + API, the BFF preset, or a blank diagram. BFF adds a sign-in app and an API with safe defaults; fill in their deployment-specific values. Open the builder using the network icon beside your account menu. Add objects from the toolbar; select one to edit its settings in the right pane. Click the canvas background for architecture settings.',
       'Enter application callback URLs and choose a public JWKS URL or paste public JWKS JSON. Enter the API audience and permissions. Connect applications to APIs and role leaves, and groups to roles, by dragging between their handles. Save draft preserves the diagram without changing live resources.',
@@ -45,6 +49,7 @@ const GUIDES: readonly Guide[] = [
   {
     title: 'Give a group access', purpose: 'Use one group to manage access for several people.',
     route: 'groups', action: 'Open groups',
+    requiredScopes: ['admin.groups:write', 'admin.memberships:write', 'admin.app_roles:write'],
     steps: [
       'Create a group with a clear display name and a stable machine name.',
       'In Members, add people by their exact username.',
@@ -72,6 +77,7 @@ const GUIDES: readonly Guide[] = [
   {
     title: 'Set up SCIM provisioning', purpose: 'Check whether an automation client is ready to create and update users.',
     route: 'scim', action: 'Open SCIM provisioning',
+    requiredScopes: ['admin.clients:write'],
     steps: [
       'Register an application for the external identity provider, then inspect it on the SCIM provisioning page.',
       'Follow the readiness checks for client credentials, DPoP, audience, and SCIM read and write scopes.',
@@ -81,6 +87,7 @@ const GUIDES: readonly Guide[] = [
   {
     title: 'Trust a SAML service provider', purpose: 'Allow one approved service provider to use this tenant’s SAML identity provider.',
     route: 'saml', action: 'Open SAML identity provider',
+    requiredScopes: ['admin.saml:write'],
     steps: [
       'Check that the tenant has an active IdP signing certificate.',
       'Under Trusted service providers, add the exact entity ID and HTTPS assertion consumer URL supplied by the service provider.',
@@ -90,11 +97,25 @@ const GUIDES: readonly Guide[] = [
   {
     title: 'Rotate signing keys', purpose: 'Publish a successor key while existing tokens finish their lifetime.',
     route: 'keys', action: 'Open signing keys',
+    requiredScopes: ['admin.keys:write'],
     steps: [
       'Review the active key and the rotation schedule for its algorithm.',
       'Rotate to create a successor. Check the public JWK set that applications fetch.',
       'Retire an older key only after its propagation and grace period has passed.',
     ],
+  },
+];
+
+const REVIEW_GUIDES: readonly Guide[] = [
+  {
+    title: 'Review a person', purpose: 'Inspect an account without changing its sign-in or access.',
+    route: 'users', action: 'Open users',
+    steps: ['Find the account by username.', 'Review its profile and current sign-in state. Actions that change the account require separate write access.'],
+  },
+  {
+    title: 'Review an application', purpose: 'Inspect a client registration and its configured connection details.',
+    route: 'clients', action: 'Open applications',
+    steps: ['Find the registered application.', 'Review its client type, redirect URIs, and token settings. Editing requires separate write access.'],
   },
 ];
 
@@ -117,13 +138,14 @@ function Term({ name, children }: Readonly<{ name: string; children: ReactNode }
 
 export function Help({ session }: Readonly<{ session: Session }>): JSX.Element {
   const allowed = new Set(visibleTo(session).map((destination) => destination.route));
-  const guides = GUIDES.filter((guide) => allowed.has(guide.route));
+  const guides = [...GUIDES, ...REVIEW_GUIDES].filter((guide) => allowed.has(guide.route)
+    && guide.requiredScopes?.every((scope) => session.scopes.includes(scope)) !== false);
   return (
     <Screen title="Help & guides" description="Common tasks in this console, with links you can use from this account.">
       <Panel title="Get something done" description="Choose a task. Each guide ends at the screen where you can do it.">
         {guides.length > 0
           ? <div className="guide-grid">{guides.map((guide) => <GuideCard key={guide.title} guide={guide} />)}</div>
-          : <p className="muted">Your current role has no management screens. Ask an administrator which access you need.</p>}
+          : <p className="muted">No task guides match the pages this session can use. Ask an administrator which access you need.</p>}
       </Panel>
       <DeveloperGuide />
       <Panel title="Words used here" description="A few terms you will see across the console.">
