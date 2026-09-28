@@ -142,6 +142,7 @@ const CSRF: &str = "snapshot-csrf";
 
 fn login(text: &Catalog) -> String {
     render(&LoginPage {
+        upstream_providers: &[],
         text,
         tenant_name: TENANT,
         step_up: false,
@@ -438,6 +439,7 @@ fn account(text: &Catalog) -> String {
         text,
         tenant_name: TENANT,
         username: USER,
+        identities: Vec::new(),
         passkeys_href: "/account/passkeys",
         totp_href: "/account/totp",
         password_href: "/account/password",

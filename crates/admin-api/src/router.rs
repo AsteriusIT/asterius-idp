@@ -53,8 +53,8 @@ use crate::operations::{Method, Operation};
 use crate::pagination::{Cursor, Page, PageRequest};
 use crate::{
     audit, authorization_details_types, clients, csrf, flows, groups, initial_access_tokens, keys,
-    openapi, outbox, policies, resource_servers, roles, saml, scim, scim_groups, ssf, throttle,
-    users,
+    oidc_providers, openapi, outbox, policies, resource_servers, roles, saml, scim, scim_groups,
+    ssf, throttle, users,
 };
 
 fn upstream_operation_error(error: ssf::UpstreamOperationError) -> AdminError {
@@ -428,6 +428,12 @@ async fn route_standard(
         crate::ID_JAG_SUBJECT_BIND_ID => context.bind_id_jag_subject(body).await,
         crate::ID_JAG_SUBJECT_REMOVE_ID => context.remove_id_jag_subject(body).await,
         crate::SAML_SP_LIST_ID => context.list_saml_sp_trust().await,
+        crate::OIDC_PROVIDERS_LIST_ID => context.list_oidc_providers().await,
+        crate::OIDC_PROVIDERS_PUT_ID => context.put_oidc_provider(body).await,
+        crate::OIDC_PROVIDERS_DELETE_ID => context.delete_oidc_provider(body).await,
+        crate::OIDC_BINDINGS_LIST_ID => context.list_oidc_bindings().await,
+        crate::OIDC_BINDINGS_LINK_ID => context.link_oidc_binding(body).await,
+        crate::OIDC_BINDINGS_UNLINK_ID => context.unlink_oidc_binding(body).await,
         crate::SAML_SP_PROVISION_ID => context.provision_saml_sp(body).await,
         crate::SAML_SP_REMOVE_ID => context.remove_saml_sp(body).await,
         crate::SAML_IDP_KEY_READ_ID => context.read_saml_idp_key().await,
@@ -3368,6 +3374,176 @@ impl Handling<'_> {
         Ok(json_no_store(
             StatusCode::OK,
             &serde_json::json!({ "service_providers": entries }),
+        ))
+    }
+
+    async fn list_oidc_providers(&self) -> Result<Response, AdminError> {
+        let administration = self
+            .state
+            .backend
+            .oidc_providers()
+            .ok_or(AdminError::NotFound)?;
+        let providers = administration
+            .list(&self.tenant.id, self.tenant.issuer.as_str())
+            .await
+            .map_err(|error| AdminError::from_storage(crate::OIDC_PROVIDERS_LIST_ID, &error))?;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({
+                "providers": providers,
+                "callback_url_template": oidc_providers::callback_url(self.tenant.issuer.as_str(), "{id}")
+            }),
+        ))
+    }
+
+    async fn put_oidc_provider(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let bytes = axum::body::to_bytes(body, oidc_providers::MAX_BODY_BYTES)
+            .await
+            .map_err(|_| AdminError::Invalid("the request body is too large".to_owned()))?;
+        let input = oidc_providers::parse_provider(&bytes)?;
+        let id = input.id.clone();
+        let administration = self
+            .state
+            .backend
+            .oidc_providers()
+            .ok_or(AdminError::NotFound)?;
+        let provider = administration
+            .put(&self.tenant.id, self.tenant.issuer.as_str(), input)
+            .await
+            .map_err(|error| match error {
+                DomainError::Invalid { .. } => {
+                    AdminError::Invalid("invalid OIDC identity provider or discovery".to_owned())
+                }
+                other => AdminError::from_storage(crate::OIDC_PROVIDERS_PUT_ID, &other),
+            })?;
+        self.record(
+            EventType::OIDC_PROVIDER_SAVED,
+            Detail::new()
+                .label("operation", crate::OIDC_PROVIDERS_PUT_ID)
+                .credential("provider_id", &id),
+        )
+        .await;
+        Ok(json_no_store(StatusCode::OK, &serde_json::json!(provider)))
+    }
+
+    async fn delete_oidc_provider(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let bytes = axum::body::to_bytes(body, oidc_providers::MAX_BODY_BYTES)
+            .await
+            .map_err(|_| AdminError::Invalid("the request body is too large".to_owned()))?;
+        let id = oidc_providers::parse_id(&bytes)?;
+        let administration = self
+            .state
+            .backend
+            .oidc_providers()
+            .ok_or(AdminError::NotFound)?;
+        let deleted =
+            administration
+                .delete(&self.tenant.id, &id)
+                .await
+                .map_err(|error| match error {
+                    DomainError::Conflict(_) => AdminError::Conflict(
+                        "unlink all identities before deleting this provider".to_owned(),
+                    ),
+                    other => AdminError::from_storage(crate::OIDC_PROVIDERS_DELETE_ID, &other),
+                })?;
+        if !deleted {
+            return Err(AdminError::NotFound);
+        }
+        self.record(
+            EventType::OIDC_PROVIDER_REMOVED,
+            Detail::new()
+                .label("operation", crate::OIDC_PROVIDERS_DELETE_ID)
+                .credential("provider_id", &id),
+        )
+        .await;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({"id":id,"removed":true}),
+        ))
+    }
+
+    async fn list_oidc_bindings(&self) -> Result<Response, AdminError> {
+        let user = self.user_in_path()?;
+        self.load_user(user, crate::OIDC_BINDINGS_LIST_ID).await?;
+        let administration = self
+            .state
+            .backend
+            .oidc_providers()
+            .ok_or(AdminError::NotFound)?;
+        let bindings = administration
+            .list_bindings(&self.tenant.id, user)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::OIDC_BINDINGS_LIST_ID, &error))?;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({"bindings": bindings}),
+        ))
+    }
+
+    async fn link_oidc_binding(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let user = self.user_in_path()?;
+        self.load_user(user, crate::OIDC_BINDINGS_LINK_ID).await?;
+        let bytes = axum::body::to_bytes(body, oidc_providers::MAX_BODY_BYTES)
+            .await
+            .map_err(|_| AdminError::Invalid("request body too large".into()))?;
+        let identity: oidc_providers::IdentityInput = serde_json::from_slice(&bytes)
+            .map_err(|_| AdminError::Invalid("invalid identity binding".into()))?;
+        let administration = self
+            .state
+            .backend
+            .oidc_providers()
+            .ok_or(AdminError::NotFound)?;
+        administration
+            .link_identity(
+                &self.tenant.id,
+                user,
+                identity,
+                Actor::Admin(self.principal.audit_actor()),
+            )
+            .await
+            .map_err(|error| match error {
+                DomainError::Conflict(_) => AdminError::Conflict(
+                    "this identity or provider account is already linked".into(),
+                ),
+                DomainError::Invalid { .. } => {
+                    AdminError::Invalid("invalid or inactive identity binding".into())
+                }
+                other => AdminError::from_storage(crate::OIDC_BINDINGS_LINK_ID, &other),
+            })?;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({"linked": true}),
+        ))
+    }
+
+    async fn unlink_oidc_binding(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let user = self.user_in_path()?;
+        self.load_user(user, crate::OIDC_BINDINGS_UNLINK_ID).await?;
+        let bytes = axum::body::to_bytes(body, oidc_providers::MAX_BODY_BYTES)
+            .await
+            .map_err(|_| AdminError::Invalid("request body too large".into()))?;
+        let identity: oidc_providers::IdentityInput = serde_json::from_slice(&bytes)
+            .map_err(|_| AdminError::Invalid("invalid identity binding".into()))?;
+        let administration = self
+            .state
+            .backend
+            .oidc_providers()
+            .ok_or(AdminError::NotFound)?;
+        let removed = administration
+            .unlink_identity(
+                &self.tenant.id,
+                user,
+                identity,
+                Actor::Admin(self.principal.audit_actor()),
+            )
+            .await
+            .map_err(|error| AdminError::from_storage(crate::OIDC_BINDINGS_UNLINK_ID, &error))?;
+        if !removed {
+            return Err(AdminError::NotFound);
+        }
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({"unlinked": true}),
         ))
     }
 
@@ -9862,6 +10038,9 @@ mod tests {
 
     #[async_trait::async_trait]
     impl AdminBackend for Handle {
+        fn oidc_providers(&self) -> Option<Arc<dyn crate::oidc_providers::ProviderAdministration>> {
+            Some(Arc::new(FakeOidcProviders))
+        }
         async fn flow_links(
             &self,
             _tenant: &TenantId,
@@ -10326,6 +10505,49 @@ mod tests {
 
         fn tenant_directory_changed(&self) {
             *self.0.invalidations.lock().expect("an uncontended lock") += 1;
+        }
+    }
+
+    #[derive(Debug)]
+    struct FakeOidcProviders;
+
+    #[async_trait::async_trait]
+    impl crate::oidc_providers::ProviderAdministration for FakeOidcProviders {
+        async fn list(
+            &self,
+            tenant: &TenantId,
+            issuer: &str,
+        ) -> Result<Vec<crate::oidc_providers::ProviderSummary>, DomainError> {
+            if tenant.as_str() != "acme" {
+                return Ok(Vec::new());
+            }
+            Ok(vec![crate::oidc_providers::ProviderSummary {
+                id: "corporate".to_owned(),
+                name: "Corporate".to_owned(),
+                issuer: "https://login.example.test".to_owned(),
+                authorization_endpoint: "https://login.example.test/authorize".to_owned(),
+                token_endpoint: "https://login.example.test/token".to_owned(),
+                jwks_uri: "https://login.example.test/keys".to_owned(),
+                client_id: "public-client-id".to_owned(),
+                enabled: true,
+                allow_registration: false,
+                secret_configured: true,
+                callback_url: crate::oidc_providers::callback_url(issuer, "corporate"),
+                created_at: OffsetDateTime::UNIX_EPOCH,
+            }])
+        }
+
+        async fn put(
+            &self,
+            _tenant: &TenantId,
+            _issuer: &str,
+            _input: crate::oidc_providers::ProviderInput,
+        ) -> Result<crate::oidc_providers::ProviderSummary, DomainError> {
+            Err(DomainError::invalid("oidc_provider", "not exercised"))
+        }
+
+        async fn delete(&self, _tenant: &TenantId, _id: &str) -> Result<bool, DomainError> {
+            Ok(false)
         }
     }
 
@@ -14612,6 +14834,52 @@ mod tests {
         let world = World::new().routed_at("asterius-admin");
         let cookie = world.sign_in("asterius-admin", &[Role::TenantAdmin]);
         (world, cookie)
+    }
+
+    #[tokio::test]
+    async fn oidc_provider_listing_is_tenant_scoped_redacted_and_role_gated() {
+        let world = World::new().routed_at("acme");
+        let auditor = world.sign_in("acme", &[Role::SecurityAuditor]);
+        let response = world
+            .send(
+                as_console(&crate::OIDC_PROVIDERS_LIST, &auditor)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let document = body_of(response).await;
+        assert_eq!(document["providers"][0]["id"], "corporate");
+        assert_eq!(document["providers"][0]["secret_configured"], true);
+        assert!(document["providers"][0].get("client_secret").is_none());
+        assert_eq!(
+            document["callback_url_template"],
+            format!("{ORIGIN}/t/acme/oidc/upstream/callback/{{id}}")
+        );
+
+        let unauthorised = world.sign_in("acme", &[Role::UserSupport]);
+        let denied = world
+            .send(
+                as_console(&crate::OIDC_PROVIDERS_LIST, &unauthorised)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await;
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+
+        let other = World::new().routed_at("other");
+        let admin = other.sign_in("other", &[Role::TenantAdmin]);
+        let other_response = other
+            .send(
+                as_console(&crate::OIDC_PROVIDERS_LIST, &admin)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await;
+        assert_eq!(
+            body_of(other_response).await["providers"],
+            serde_json::json!([])
+        );
     }
 
     async fn post_client(world: &World, cookie: &str, document: &serde_json::Value) -> Response {

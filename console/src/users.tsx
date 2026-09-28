@@ -61,6 +61,7 @@ import {
 import { emailAddress, username as usernameComplaint } from './validation';
 import { UserGroups, mayReadMemberships } from './groups';
 import { VerifiedClaims } from './verifiedClaims';
+import { OidcBindings } from './oidc-bindings';
 
 /** Whether an account may authenticate, mirroring `UserStatus`. */
 export type UserStatus = 'active' | 'disabled' | 'locked';
@@ -848,6 +849,7 @@ function Account({
           {mayReadMemberships(session) && <UserGroups session={session} userId={user.user_id} />}
         </TabsContent>
         <TabsContent value="credentials">
+      <OidcBindings session={session} userId={user.user_id} />
       <Panel className="flat-section"
         id="credentials"
         title="Sign-in methods"

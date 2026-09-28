@@ -592,6 +592,237 @@ struct DeploymentSamlSpTrust {
 }
 
 #[derive(Debug, Clone)]
+struct DeploymentOidcProviders {
+    store: Store,
+    kek: Arc<dyn asterius_jose::Kek>,
+    outbound: Arc<dyn ClientUrlFetcher>,
+}
+
+#[derive(serde::Deserialize)]
+struct OidcDiscovery {
+    issuer: String,
+    authorization_endpoint: String,
+    token_endpoint: String,
+    jwks_uri: String,
+    response_types_supported: Vec<String>,
+    token_endpoint_auth_methods_supported: Option<Vec<String>>,
+    id_token_signing_alg_values_supported: Vec<String>,
+}
+
+impl DeploymentOidcProviders {
+    fn summary(
+        provider: asterius_store_pg::OidcProvider,
+        tenant_issuer: &str,
+    ) -> asterius_admin_api::oidc_providers::ProviderSummary {
+        let callback_url =
+            asterius_admin_api::oidc_providers::callback_url(tenant_issuer, &provider.id);
+        asterius_admin_api::oidc_providers::ProviderSummary {
+            id: provider.id,
+            name: provider.name,
+            issuer: provider.issuer,
+            authorization_endpoint: provider.authorization_endpoint,
+            token_endpoint: provider.token_endpoint,
+            jwks_uri: provider.jwks_uri,
+            client_id: provider.client_id,
+            enabled: provider.enabled,
+            allow_registration: provider.allow_registration,
+            secret_configured: true,
+            callback_url,
+            created_at: provider.created_at,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl asterius_admin_api::oidc_providers::ProviderAdministration for DeploymentOidcProviders {
+    async fn list_bindings(
+        &self,
+        tenant: &TenantId,
+        user: asterius_domain::UserId,
+    ) -> Result<Vec<asterius_admin_api::oidc_providers::IdentityBinding>, DomainError> {
+        Ok(self
+            .store
+            .scope(tenant.clone())
+            .oidc_bindings()
+            .list_for_user(user)
+            .await?
+            .into_iter()
+            .map(
+                |binding| asterius_admin_api::oidc_providers::IdentityBinding {
+                    provider_id: binding.provider_id,
+                    issuer: binding.issuer,
+                    upstream_subject: binding.upstream_subject,
+                    created_at: binding.created_at,
+                },
+            )
+            .collect())
+    }
+
+    async fn link_identity(
+        &self,
+        tenant: &TenantId,
+        user: asterius_domain::UserId,
+        identity: asterius_admin_api::oidc_providers::IdentityInput,
+        actor: asterius_domain::audit::Actor,
+    ) -> Result<(), DomainError> {
+        self.store
+            .scope(tenant.clone())
+            .oidc_bindings()
+            .link(
+                &identity.provider_id,
+                &identity.issuer,
+                &identity.upstream_subject,
+                user,
+                actor,
+            )
+            .await
+    }
+
+    async fn unlink_identity(
+        &self,
+        tenant: &TenantId,
+        user: asterius_domain::UserId,
+        identity: asterius_admin_api::oidc_providers::IdentityInput,
+        actor: asterius_domain::audit::Actor,
+    ) -> Result<bool, DomainError> {
+        self.store
+            .scope(tenant.clone())
+            .oidc_bindings()
+            .unlink(
+                &identity.provider_id,
+                &identity.issuer,
+                &identity.upstream_subject,
+                user,
+                actor,
+            )
+            .await
+    }
+
+    async fn list(
+        &self,
+        tenant: &TenantId,
+        tenant_issuer: &str,
+    ) -> Result<Vec<asterius_admin_api::oidc_providers::ProviderSummary>, DomainError> {
+        Ok(self
+            .store
+            .scope(tenant.clone())
+            .oidc_providers(Arc::clone(&self.kek))
+            .list()
+            .await?
+            .into_iter()
+            .map(|provider| Self::summary(provider, tenant_issuer))
+            .collect())
+    }
+
+    async fn put(
+        &self,
+        tenant: &TenantId,
+        tenant_issuer: &str,
+        input: asterius_admin_api::oidc_providers::ProviderInput,
+    ) -> Result<asterius_admin_api::oidc_providers::ProviderSummary, DomainError> {
+        use asterius_admin_api::oidc_providers::{discovery_url, validate_https_url};
+        crate::outbound::ssrf::check_url(&input.issuer).map_err(|_| {
+            DomainError::invalid("oidc_provider", "issuer is not a public HTTPS URL")
+        })?;
+        let url = discovery_url(&input.issuer);
+        let bytes =
+            self.outbound.fetch_json(&url).await.map_err(|_| {
+                DomainError::invalid("oidc_provider", "discovery could not be fetched")
+            })?;
+        let document: OidcDiscovery = serde_json::from_slice(&bytes)
+            .map_err(|_| DomainError::invalid("oidc_provider", "invalid discovery document"))?;
+        if document.issuer != input.issuer
+            || !document
+                .response_types_supported
+                .iter()
+                .any(|value| value == "code")
+        {
+            return Err(DomainError::invalid(
+                "oidc_provider",
+                "discovery issuer or response type mismatch",
+            ));
+        }
+        if document
+            .token_endpoint_auth_methods_supported
+            .as_ref()
+            .is_some_and(|methods| !methods.iter().any(|method| method == "client_secret_basic"))
+        {
+            return Err(DomainError::invalid(
+                "oidc_provider",
+                "discovery does not support client_secret_basic",
+            ));
+        }
+        if !document
+            .id_token_signing_alg_values_supported
+            .iter()
+            .any(|algorithm| matches!(algorithm.as_str(), "RS256" | "ES256" | "PS256"))
+        {
+            return Err(DomainError::invalid(
+                "oidc_provider",
+                "discovery has no supported ID token signing algorithm (RS256, ES256 or PS256)",
+            ));
+        }
+        if url::Url::parse(&document.authorization_endpoint).is_ok_and(|url| url.query().is_some())
+        {
+            return Err(DomainError::invalid(
+                "oidc_provider",
+                "authorization endpoint must not contain a query",
+            ));
+        }
+        for endpoint in [
+            &document.authorization_endpoint,
+            &document.token_endpoint,
+            &document.jwks_uri,
+        ] {
+            validate_https_url(endpoint)?;
+            crate::outbound::ssrf::check_url(endpoint).map_err(|_| {
+                DomainError::invalid(
+                    "oidc_provider",
+                    "discovery endpoint is not a public HTTPS URL",
+                )
+            })?;
+        }
+        let repository = self
+            .store
+            .scope(tenant.clone())
+            .oidc_providers(Arc::clone(&self.kek));
+        let provider = asterius_store_pg::OidcProvider {
+            id: input.id,
+            name: input.name,
+            issuer: input.issuer,
+            authorization_endpoint: document.authorization_endpoint,
+            token_endpoint: document.token_endpoint,
+            jwks_uri: document.jwks_uri,
+            client_id: input.client_id,
+            enabled: input.enabled,
+            allow_registration: input.allow_registration,
+            created_at: time::OffsetDateTime::now_utc(),
+        };
+        repository
+            .put(
+                &provider,
+                input.client_secret.as_ref().map(|secret| secret.as_bytes()),
+            )
+            .await?;
+        let stored = repository
+            .list()
+            .await?
+            .into_iter()
+            .find(|row| row.id == provider.id)
+            .ok_or_else(|| DomainError::invalid("oidc_provider", "stored provider missing"))?;
+        Ok(Self::summary(stored, tenant_issuer))
+    }
+
+    async fn delete(&self, tenant: &TenantId, id: &str) -> Result<bool, DomainError> {
+        self.store
+            .scope(tenant.clone())
+            .oidc_providers(Arc::clone(&self.kek))
+            .delete(id)
+            .await
+    }
+}
+
+#[derive(Debug, Clone)]
 struct DeploymentSamlIdpKey {
     store: Store,
     kek: Arc<dyn asterius_jose::Kek>,
@@ -3086,6 +3317,16 @@ impl AdminBackend for Deployment {
     fn saml_sp_trust(&self) -> Option<Arc<dyn asterius_admin_api::saml::SpAdministration>> {
         Some(Arc::new(DeploymentSamlSpTrust {
             store: self.store.clone(),
+        }))
+    }
+
+    fn oidc_providers(
+        &self,
+    ) -> Option<Arc<dyn asterius_admin_api::oidc_providers::ProviderAdministration>> {
+        Some(Arc::new(DeploymentOidcProviders {
+            store: self.store.clone(),
+            kek: Arc::clone(&self.kek),
+            outbound: Arc::clone(&self.outbound),
         }))
     }
 

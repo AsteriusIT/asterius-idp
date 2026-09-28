@@ -29,6 +29,7 @@ import { FederationKeys } from './federation-keys';
 import { SamlIdpKey } from './saml-idp-key';
 import { Help } from './help';
 import { ArchitectureFlows } from './architecture-flows';
+import { OidcProviders } from './oidc-providers';
 
 /**
  * What the shell is doing, as one value.
@@ -176,6 +177,7 @@ function RouteScreen({
   if (route === 'clients') {
     return <Clients session={session} />;
   }
+  if (route === 'oidc-providers') return <OidcProviders session={session} />;
   if (route === 'resources') {
     return <ResourceServers session={session} />;
   }

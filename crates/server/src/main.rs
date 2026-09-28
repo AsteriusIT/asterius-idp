@@ -394,6 +394,11 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
         )?);
 
         let client_endpoints = Arc::new(ClientEndpoints {
+            upstream_identity_resolver: Some(Arc::new(
+                asterius_server::http::upstream_oidc::StoreUpstreamIdentityResolver::new(
+                    store.clone(),
+                ),
+            )),
             fapi_message_signing_clients: Arc::new(
                 config
                     .tenants

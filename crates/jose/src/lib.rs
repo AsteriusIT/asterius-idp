@@ -22,6 +22,7 @@ pub mod key;
 pub mod oid4vci_proof;
 pub mod oid4vp;
 pub mod store;
+pub mod upstream_id_token;
 pub mod verify;
 
 pub use client_keys::{

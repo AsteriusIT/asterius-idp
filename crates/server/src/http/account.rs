@@ -54,7 +54,7 @@ use asterius_domain::{
 };
 use asterius_web::i18n::Catalog;
 use asterius_web::interaction::{self, InteractionId};
-use asterius_web::pages::{self, AccountPage, ErrorPage, nonce_attribute};
+use asterius_web::pages::{self, AccountIdentity, AccountPage, ErrorPage, nonce_attribute};
 use asterius_web::{Document, csp::Nonce};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -353,6 +353,7 @@ pub async fn emit_signal(
 pub async fn page(
     context: &AccountContext<'_>,
     users: &dyn asterius_domain::UserDirectory,
+    bindings: Option<&asterius_store_pg::PgOidcBindings>,
     headers: &HeaderMap,
     now: OffsetDateTime,
 ) -> Response {
@@ -374,6 +375,28 @@ pub async fn page(
             tracing::error!(%error, tenant = %context.tenant.id, "cannot read an account");
             String::new()
         }
+    };
+
+    let identities = if let Some(bindings) = bindings {
+        match bindings
+            .list_for_user(asterius_domain::UserId::new(session.user))
+            .await
+        {
+            Ok(rows) => rows
+                .into_iter()
+                .map(|row| AccountIdentity {
+                    provider_id: row.provider_id,
+                    issuer: row.issuer,
+                    subject: row.upstream_subject,
+                })
+                .collect(),
+            Err(error) => {
+                tracing::error!(%error, tenant = %context.tenant.id, "cannot read linked sign-in identities");
+                return error_page(context, StatusCode::SERVICE_UNAVAILABLE);
+            }
+        }
+    } else {
+        Vec::new()
     };
 
     let font_url = crate::http::font_url(&context.mount);
@@ -409,6 +432,7 @@ pub async fn page(
             text: context.text,
             tenant_name: &context.tenant.display_name,
             username: &username,
+            identities,
             passkeys_href: &passkeys_href,
             totp_href: &totp_href,
             password_href: &password_href,

@@ -73,6 +73,15 @@
 <div class="actions"><button type="submit">{{ text.login_submit() }}</button></div>
 </form>
 
+{% if !upstream_providers.is_empty() %}
+<div class="stack" aria-label="Other ways to sign in">
+  <p class="separator">{{ text.login_or() }}</p>
+  {% for provider in upstream_providers %}
+  <p class="link-row"><a href="{{ provider.href }}">Continue with {{ provider.name }}</a></p>
+  {% endfor %}
+</div>
+{% endif %}
+
 {% if step_up %}
 {# Cancellation is an ordinary synchronised POST. It must work when scripts do
    not: refusing stronger authentication is part of the protocol flow, not a

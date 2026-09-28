@@ -613,6 +613,7 @@ fn context_with<'a>(
     static THEME: std::sync::LazyLock<asterius_domain::Theme> =
         std::sync::LazyLock::new(asterius_domain::Theme::default);
     InteractionContext {
+        upstream_providers: &[],
         tenant,
         signer: None,
         theme: &THEME,
@@ -1703,7 +1704,7 @@ async fn a_first_party_login_ends_at_its_destination() {
 
     // Assert
     assert_eq!(response.status().as_u16(), SEE_OTHER);
-    assert_eq!(location(&response), "../admin/");
+    assert_eq!(location(&response), "/admin/");
     assert!(
         store.was_completed(&digest),
         "the interaction was not spent: a second submission could open a second session"
@@ -1731,7 +1732,7 @@ async fn nothing_the_browser_sends_can_move_the_destination() {
         assert_eq!(response.status().as_u16(), SEE_OTHER, "for {hostile}");
         assert_eq!(
             location(&response),
-            "../admin/",
+            "/admin/",
             "a request field reached the destination: {hostile}"
         );
     }

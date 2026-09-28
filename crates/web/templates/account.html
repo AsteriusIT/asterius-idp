@@ -16,7 +16,16 @@
 <p class="muted">{{ text.account_intro() }}</p>
 </div>
 
+{% if !identities.is_empty() %}<section class="stack tight">
+<h3>{{ text.account_identities_heading() }}</h3>
 <ul class="scopes">
+{% for identity in identities %}
+<li><strong>{{ identity.provider_id }}</strong><br><span class="muted">{{ text.account_identity_issuer() }}: {{ identity.issuer }} · {{ text.account_identity_subject() }}: {{ identity.subject }}</span></li>
+{% endfor %}
+</ul>
+</section>
+
+{% endif %}<ul class="scopes">
 <li>
   <a href="{{ passkeys_href }}">{{ text.account_passkeys_link() }}</a>
   <br><span class="muted">{{ text.account_passkeys_explains() }}</span>

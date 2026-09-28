@@ -553,6 +553,15 @@ catalogue! {
             en: "What you sign in with, where you are signed in, and what you have allowed.",
             fr: "Ce avec quoi vous vous connectez, où vous êtes connecté, et ce que vous avez \
                  autorisé.";
+        AccountIdentitiesHeading => account_identities_heading, "account.identities-heading",
+            en: "Linked sign-in identities",
+            fr: "Identités de connexion liées";
+        AccountIdentityIssuer => account_identity_issuer, "account.identity-issuer",
+            en: "Issuer",
+            fr: "Émetteur";
+        AccountIdentitySubject => account_identity_subject, "account.identity-subject",
+            en: "Subject",
+            fr: "Sujet";
         AccountPasskeysLink => account_passkeys_link, "account.passkeys-link",
             en: "Passkeys",
             fr: "Clés d'accès";

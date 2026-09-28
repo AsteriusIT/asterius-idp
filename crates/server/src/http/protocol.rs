@@ -42,6 +42,7 @@ use crate::http::ssf_management::REMOVE_SUBJECT_PATH as SSF_REMOVE_SUBJECT_PATH;
 use crate::http::ssf_management::STATUS_PATH as SSF_STATUS_PATH;
 use crate::http::ssf_management::VERIFICATION_PATH as SSF_VERIFICATION_PATH;
 use crate::http::token::{self, TokenContext};
+use crate::http::upstream_oidc;
 use crate::http::userinfo;
 use crate::http::verify_email;
 use crate::http::{
@@ -119,6 +120,9 @@ pub struct ProtocolState {
 /// Separate from [`ProtocolState`] so that the discovery and JWKS handlers —
 /// which need none of it — can be tested without a database.
 pub struct ClientEndpoints {
+    /// Identity binding for verified upstream issuer/subject pairs. Absent
+    /// until account binding is configured; upstream login then fails closed.
+    pub upstream_identity_resolver: Option<Arc<dyn upstream_oidc::UpstreamIdentityResolver>>,
     /// Operator-selected clients that must use signed FAPI JAR at PAR.
     pub fapi_message_signing_clients:
         Arc<std::collections::HashMap<String, std::collections::BTreeSet<String>>>,
@@ -564,6 +568,14 @@ pub fn routes(state: ProtocolState) -> Router {
                 get(interaction_show)
                     .post(interaction_submit)
                     .with_state(Arc::clone(&endpoints)),
+            )
+            .route(
+                "/interaction/{id}/upstream/{provider_id}",
+                get(upstream_begin).with_state(Arc::clone(&endpoints)),
+            )
+            .route(
+                "/oidc/upstream/callback/{provider_id}",
+                get(upstream_callback).with_state(Arc::clone(&endpoints)),
             )
             // Passkey enrolment (`ast-2vk.15`). Not in the endpoint registry,
             // for the same reason the interaction pages are not: this is the
@@ -5316,6 +5328,8 @@ async fn end_session_form(
 // anything. The query is here for one link — the sign-up page's way to the
 // sign-in page (`interaction::SIGN_IN_QUERY`).
 #[allow(clippy::too_many_arguments)]
+// This handler assembles the tenant-scoped stores required to render a login interaction.
+#[allow(clippy::too_many_lines)]
 async fn interaction_show(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
@@ -5386,10 +5400,23 @@ async fn interaction_show(
             return unavailable();
         }
     };
+    let upstream_providers = if endpoints.upstream_identity_resolver.is_some() {
+        match scope
+            .oidc_providers(Arc::clone(&endpoints.kek))
+            .list()
+            .await
+        {
+            Ok(providers) => providers,
+            Err(_) => return unavailable(),
+        }
+    } else {
+        Vec::new()
+    };
     let verification_tokens = scope.email_verification_tokens();
     let mail = scope.mail();
     interaction::show(
         InteractionContext {
+            upstream_providers: &upstream_providers,
             tenant: &tenant,
             signer: Some(endpoints.signer.as_ref()),
             theme,
@@ -5438,6 +5465,8 @@ async fn interaction_show(
 // bundling `tenant` and `mount` behind one `FromRequestParts` — is worth
 // doing when a third handler needs it, not for the second (`ast-295`).
 #[allow(clippy::too_many_arguments)]
+// This handler keeps the interaction stage and its response assembly together.
+#[allow(clippy::too_many_lines)]
 async fn interaction_submit(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
@@ -5512,10 +5541,23 @@ async fn interaction_submit(
             return unavailable();
         }
     };
+    let upstream_providers = if endpoints.upstream_identity_resolver.is_some() {
+        match scope
+            .oidc_providers(Arc::clone(&endpoints.kek))
+            .list()
+            .await
+        {
+            Ok(providers) => providers,
+            Err(_) => return unavailable(),
+        }
+    } else {
+        Vec::new()
+    };
     let verification_tokens = scope.email_verification_tokens();
     let mail = scope.mail();
     interaction::submit(
         InteractionContext {
+            upstream_providers: &upstream_providers,
             tenant: &tenant,
             signer: Some(endpoints.signer.as_ref()),
             theme,
@@ -5554,6 +5596,195 @@ async fn interaction_submit(
         time::OffsetDateTime::now_utc(),
     )
     .await
+}
+
+/// Starts an upstream login from the existing browser-bound interaction.
+async fn upstream_begin(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Path((id, provider_id)): Path<(String, String)>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if endpoints.upstream_identity_resolver.is_none() {
+        return unavailable();
+    }
+    let scope = endpoints.store.scope(tenant.id.clone());
+    match upstream_oidc::begin(
+        &provider_id,
+        &id,
+        &headers,
+        tenant.issuer.as_str(),
+        &scope.auth_requests(),
+        &scope.oidc_providers(Arc::clone(&endpoints.kek)),
+        &scope.oidc_upstream_pending(Arc::clone(&endpoints.kek)),
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+    {
+        Ok(url) => axum::response::Redirect::to(&url).into_response(),
+        Err(upstream_oidc::FlowError::Refused) => StatusCode::BAD_REQUEST.into_response(),
+        Err(upstream_oidc::FlowError::Unavailable) => unavailable(),
+    }
+}
+
+/// Receives a single-use state and a code from the configured provider.
+#[allow(clippy::too_many_arguments)]
+// The callback completes verification and then builds the ordinary login session.
+#[allow(clippy::too_many_lines)]
+async fn upstream_callback(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Path(provider_id): Path<String>,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    theme: Option<Extension<Arc<asterius_domain::Theme>>>,
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let Some(resolver) = endpoints.upstream_identity_resolver.as_ref() else {
+        return unavailable();
+    };
+    let Some((state, code, response_issuer)) = upstream_callback_parameters(query.as_deref())
+    else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let Some(interaction_id) =
+        asterius_web::interaction::id_from_cookie_header(&crate::http::cookies(&headers))
+    else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let now = time::OffsetDateTime::now_utc();
+    let scope = endpoints.store.scope(tenant.id.clone());
+    let user = match upstream_oidc::callback(
+        &provider_id,
+        &state,
+        &code,
+        response_issuer.as_deref(),
+        &headers,
+        &tenant.id,
+        tenant.issuer.as_str(),
+        &scope.auth_requests(),
+        &scope.oidc_providers(Arc::clone(&endpoints.kek)),
+        &scope.oidc_upstream_pending(Arc::clone(&endpoints.kek)),
+        endpoints.outbound.as_ref(),
+        resolver.as_ref(),
+        now,
+    )
+    .await
+    {
+        Ok(user) => user,
+        Err(upstream_oidc::FlowError::Refused) => return StatusCode::BAD_REQUEST.into_response(),
+        Err(upstream_oidc::FlowError::Unavailable) => return unavailable(),
+    };
+    let theme = crate::http::theme_of(theme.as_ref());
+    let Ok(settings) = settings_for_directory(endpoints.tenant_settings.as_ref(), &tenant.id).await
+    else {
+        return unavailable();
+    };
+    let requests = scope.auth_requests();
+    let totp_credentials = scope.totp_credentials(Arc::clone(&endpoints.kek));
+    let sessions = scope.sessions();
+    let clients = scope.clients(endpoints.capabilities);
+    let grants = scope.grants();
+    let codes = scope.codes();
+    let detail_types = scope.authorization_details_types();
+    let users = scope.users(Arc::clone(&endpoints.kek));
+    let passwords = endpoints.passwords(&tenant.id);
+    let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
+    let Ok(lifetimes) = lifetimes_for(&endpoints, &tenant).await else {
+        return unavailable();
+    };
+    let Ok(memory) = memory_policy_for(&endpoints, &tenant).await else {
+        return unavailable();
+    };
+    let Ok(capabilities) = capabilities_for(&endpoints, &tenant).await else {
+        return unavailable();
+    };
+    let grant_amendments: Option<&dyn asterius_domain::GrantAmendments> = capabilities
+        .is_enabled(asterius_domain::Feature::GrantManagement)
+        .then_some(&grants);
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let Ok(gated) = requires_a_verified_email(&endpoints, &tenant).await else {
+        return unavailable();
+    };
+    let upstream_providers = if endpoints.upstream_identity_resolver.is_some() {
+        match scope
+            .oidc_providers(Arc::clone(&endpoints.kek))
+            .list()
+            .await
+        {
+            Ok(providers) => providers,
+            Err(_) => return unavailable(),
+        }
+    } else {
+        Vec::new()
+    };
+    let verification_tokens = scope.email_verification_tokens();
+    let mail = scope.mail();
+    interaction::complete_external(
+        InteractionContext {
+            upstream_providers: &upstream_providers,
+            tenant: &tenant,
+            signer: Some(endpoints.signer.as_ref()),
+            theme,
+            language: &language,
+            requests: &requests,
+            credentials: passwords
+                .as_ref()
+                .map(|v| v as &dyn asterius_domain::CredentialVerifier),
+            sessions: &sessions,
+            lifetimes: endpoints.session_lifetimes,
+            acr: settings.acr_policy(),
+            clients: &clients,
+            grants: &grants,
+            grant_amendments,
+            memory,
+            ephemeral_subjects_allowed: settings.allows_ephemeral_subjects(),
+            authorization_details_types: Some(&detail_types),
+            codes: &codes,
+            subjects: &users,
+            code_lifetime: lifetimes.authorization_code(),
+            nonce: &nonce,
+            throttle: throttle(&endpoints, &limiter, client.as_deref()),
+            audit: endpoints.audit.as_ref(),
+            mount: mount_of(mount),
+            registrar: registrar(&users, passwords.as_ref(), capabilities),
+            directory: &users,
+            verification: gated.then_some(crate::http::verify_email::Gate {
+                tokens: &verification_tokens,
+                mail: &mail,
+            }),
+            totp_credentials: &totp_credentials,
+        },
+        interaction_id.expose(),
+        &headers,
+        user,
+        now,
+    )
+    .await
+}
+
+/// Rejects duplicate and ambiguous callback parameters before consuming state.
+fn upstream_callback_parameters(query: Option<&str>) -> Option<(String, String, Option<String>)> {
+    let query = query?;
+    if query.len() > 8192 {
+        return None;
+    }
+    let mut state = None;
+    let mut code = None;
+    let mut issuer = None;
+    for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+        match key.as_ref() {
+            "state" if state.is_none() => state = Some(value.into_owned()),
+            "code" if code.is_none() => code = Some(value.into_owned()),
+            "iss" if issuer.is_none() => issuer = Some(value.into_owned()),
+            "state" | "code" | "iss" | "error" => return None,
+            // OIDC permits response extensions. Keycloak sends session_state.
+            _ => {}
+        }
+    }
+    Some((state?, code?, issuer))
 }
 
 /// The per-endpoint limiter for one request (`ast-p2l.3`).
@@ -7004,6 +7235,7 @@ async fn account_home(
     crate::http::account::page(
         &account_context(&tenant, &parts, &text, &nonce, mount),
         &parts.users,
+        Some(&endpoints.store.scope(tenant.id.clone()).oidc_bindings()),
         &headers,
         time::OffsetDateTime::now_utc(),
     )
@@ -7621,8 +7853,36 @@ fn device_context<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::{Endpoint, gated_endpoint};
+    use super::{Endpoint, gated_endpoint, upstream_callback_parameters};
     use asterius_domain::LimitedEndpoint;
+
+    #[test]
+    fn upstream_callback_rejects_duplicate_and_error_parameters() {
+        assert_eq!(
+            upstream_callback_parameters(Some("state=abc&code=xyz&iss=https%3A%2F%2Fid.example")),
+            Some((
+                "abc".to_owned(),
+                "xyz".to_owned(),
+                Some("https://id.example".to_owned())
+            ))
+        );
+        assert_eq!(
+            upstream_callback_parameters(Some("state=abc&code=xyz&session_state=keycloak-session")),
+            Some(("abc".to_owned(), "xyz".to_owned(), None))
+        );
+        for query in [
+            "state=abc&state=evil&code=xyz",
+            "state=abc&code=xyz&code=evil",
+            "state=abc&code=xyz&error=access_denied",
+            "state=abc&code=xyz&iss=one&iss=two",
+            "state=abc",
+        ] {
+            assert!(
+                upstream_callback_parameters(Some(query)).is_none(),
+                "{query}"
+            );
+        }
+    }
 
     /// The guard must recognise every endpoint a tenant can switch off, and
     /// only those: an endpoint it fails to recognise is one whose route stays

@@ -1347,6 +1347,7 @@ fn assemble(
         tenant_settings: Some(settings.clone()),
         signed_metadata: None,
         clients: Some(Arc::new(ClientEndpoints {
+            upstream_identity_resolver: None,
             ipsie_https_only_clients: Arc::default(),
             ipsie_identity_only_clients: Arc::default(),
             ipsie_rp_session_lifetimes: Arc::default(),

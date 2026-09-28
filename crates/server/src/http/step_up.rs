@@ -33,13 +33,12 @@
 //! * the interaction must already be at [`Stage::StepUp`], which only
 //!   `/authorize` can set and only after [`asterius_oidc::decision::decide`]
 //!   asked for it; and
-//! * the session named by the interaction must belong to **the same user** as
-//!   the credential that just verified. Anything else — no session, a session
-//!   that has expired or been revoked, a session about somebody else — starts a
-//!   fresh one instead. That is the failing-closed reading: the worst outcome
-//!   of getting it wrong is a person signed in as themselves twice, and the
-//!   worst outcome of the alternative is one account's authentication being
-//!   written onto another account's session.
+//! * a usable session named by the interaction must belong to **the same
+//!   user** as the credential that just verified before it can be rotated.
+//!   A different federated user cannot satisfy this step-up; local credentials
+//!   retain their established fresh-login fallback. A missing, expired or
+//!   revoked session can start a fresh login, as happens when an initial login
+//!   advances to step-up.
 //!
 //! See `docs/threat-model.md`, "Step-up authentication".
 
@@ -114,26 +113,32 @@ pub(crate) async fn establish(
         && let Some(digest) = existing
         && let Some(session) = context.sessions.find(digest).await?
         && session.status(now).is_usable()
-        && session.user == user
     {
-        let methods = merged(&session.amr, &proved);
-        let acr = context
-            .acr
-            .assign(&methods, &requested.essential_acr, &requested.acr_values);
-        if !essential_satisfied(acr.as_deref(), requested) {
+        // A federated callback for another account cannot complete this
+        // browser's step-up or silently switch the account in its interaction.
+        // Local credentials retain the established fresh-login fallback.
+        if session.user == user {
+            let methods = merged(&session.amr, &proved);
+            let acr = context
+                .acr
+                .assign(&methods, &requested.essential_acr, &requested.acr_values);
+            if !essential_satisfied(acr.as_deref(), requested) {
+                return Ok(Establishment::Insufficient);
+            }
+            let id = SessionId::generate();
+            context
+                .sessions
+                .rotate(digest, &id.digest(), &methods, acr.as_deref(), now)
+                .await?;
+            let digest = id.digest();
+            return Ok(Establishment::Established(Established {
+                id,
+                digest,
+                essential_satisfied: true,
+            }));
+        } else if proved.contains(&AuthenticationMethod::FederatedOidc) {
             return Ok(Establishment::Insufficient);
         }
-        let id = SessionId::generate();
-        context
-            .sessions
-            .rotate(digest, &id.digest(), &methods, acr.as_deref(), now)
-            .await?;
-        let digest = id.digest();
-        return Ok(Establishment::Established(Established {
-            id,
-            digest,
-            essential_satisfied: true,
-        }));
     }
 
     let acr = context
@@ -195,6 +200,148 @@ fn merged(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use asterius_domain::{ClientId, Participant, SessionRevocation};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Debug)]
+    struct Sessions {
+        existing: Option<Session>,
+        begins: AtomicUsize,
+        rotations: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl SessionRepository for Sessions {
+        async fn begin(&self, _session: &Session) -> Result<(), DomainError> {
+            self.begins.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn find(&self, _digest: &str) -> Result<Option<Session>, DomainError> {
+            Ok(self.existing.clone())
+        }
+
+        async fn touch(
+            &self,
+            _digest: &str,
+            _now: OffsetDateTime,
+            _idle: time::Duration,
+        ) -> Result<(), DomainError> {
+            Ok(())
+        }
+
+        async fn rotate(
+            &self,
+            _old_digest: &str,
+            _new_digest: &str,
+            _methods: &[AuthenticationMethod],
+            _acr: Option<&str>,
+            _now: OffsetDateTime,
+        ) -> Result<(), DomainError> {
+            self.rotations.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn revoke(
+            &self,
+            _digest: &str,
+            _reason: SessionRevocation,
+            _now: OffsetDateTime,
+        ) -> Result<(), DomainError> {
+            Ok(())
+        }
+
+        async fn revoke_all_for_user(
+            &self,
+            _user: uuid::Uuid,
+            _reason: SessionRevocation,
+            _now: OffsetDateTime,
+        ) -> Result<u64, DomainError> {
+            Ok(0)
+        }
+
+        async fn record_participant(
+            &self,
+            _digest: &str,
+            _client: &ClientId,
+            _now: OffsetDateTime,
+        ) -> Result<(), DomainError> {
+            Ok(())
+        }
+
+        async fn participants(&self, _digest: &str) -> Result<Vec<Participant>, DomainError> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_different_account_cannot_replace_a_usable_step_up_session() {
+        let now = OffsetDateTime::UNIX_EPOCH;
+        let tenant = TenantId::new("demo");
+        let original = Session::begin(
+            tenant.clone(),
+            &SessionId::generate(),
+            uuid::Uuid::from_u128(1),
+            vec![AuthenticationMethod::Password],
+            now,
+            Lifetimes::default(),
+        );
+        let digest = original.id_digest.clone();
+        let sessions = Sessions {
+            existing: Some(original),
+            begins: AtomicUsize::new(0),
+            rotations: AtomicUsize::new(0),
+        };
+        let result = establish(
+            Authentication {
+                sessions: &sessions,
+                tenant: &tenant,
+                acr: &AcrPolicy::default(),
+                lifetimes: Lifetimes::default(),
+            },
+            Stage::StepUp,
+            Some(&digest),
+            uuid::Uuid::from_u128(2),
+            vec![AuthenticationMethod::FederatedOidc],
+            &Requirements::default(),
+            now,
+        )
+        .await
+        .expect("the store is available");
+        assert!(matches!(result, Establishment::Insufficient));
+        assert_eq!(sessions.begins.load(Ordering::SeqCst), 0);
+        assert_eq!(sessions.rotations.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn step_up_without_a_usable_session_can_start_a_login() {
+        let now = OffsetDateTime::UNIX_EPOCH;
+        let tenant = TenantId::new("demo");
+        let sessions = Sessions {
+            existing: None,
+            begins: AtomicUsize::new(0),
+            rotations: AtomicUsize::new(0),
+        };
+        let result = establish(
+            Authentication {
+                sessions: &sessions,
+                tenant: &tenant,
+                acr: &AcrPolicy::default(),
+                lifetimes: Lifetimes::default(),
+            },
+            Stage::StepUp,
+            None,
+            uuid::Uuid::from_u128(2),
+            vec![AuthenticationMethod::FederatedOidc],
+            &Requirements::default(),
+            now,
+        )
+        .await
+        .expect("the store is available");
+        assert!(matches!(result, Establishment::Established(_)));
+        assert_eq!(sessions.begins.load(Ordering::SeqCst), 1);
+        assert_eq!(sessions.rotations.load(Ordering::SeqCst), 0);
+    }
 
     /// OIDC Core §2: `amr` is the methods used. A step-up adds to them, so a
     /// rung phrased as a combination becomes reachable.

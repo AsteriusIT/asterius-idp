@@ -38,6 +38,9 @@ mod native_sso;
 mod notifications;
 mod oid4vci_nonces;
 mod oid4vp_transactions;
+mod oidc_bindings;
+mod oidc_providers;
+mod oidc_upstream_pending;
 mod outbox;
 mod overview;
 mod passkeys;
@@ -116,6 +119,9 @@ pub use oid4vp_transactions::{
     ConsumedOid4vpTransaction, NewOid4vpTransaction, Oid4vpTransactionResult, PgOid4vpTransactions,
     TRANSACTION_LIFETIME as OID4VP_TRANSACTION_LIFETIME,
 };
+pub use oidc_bindings::{OidcBinding, OidcRefusal, OidcResolution, PgOidcBindings};
+pub use oidc_providers::{OidcProvider, OidcProviderCredential, PgOidcProviders};
+pub use oidc_upstream_pending::{ConsumedOidcPending, NewOidcPending, PgOidcUpstreamPending};
 pub use outbox::{
     Backoff, DEFAULT_LEASE, DEFAULT_MAX_ATTEMPTS, NewOutboxEntry, Outcome, PgOutbox, PgTransaction,
     Verdict, enqueue,

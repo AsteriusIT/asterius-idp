@@ -189,6 +189,9 @@ pub enum AuthenticationMethod {
     Passkey,
     /// A one-time code (RFC 8176 `otp`).
     OneTimeCode,
+    /// Authentication by a verified external OIDC identity. This alone makes
+    /// no claim about the upstream authenticator's factors or user presence.
+    FederatedOidc,
     /// The user was verified, not merely present (RFC 8176 `user`).
     ///
     /// Never on its own: it qualifies the method beside it. A passkey whose
@@ -213,6 +216,7 @@ impl AuthenticationMethod {
             Self::Password => "pwd",
             Self::Passkey => "pop",
             Self::OneTimeCode => "otp",
+            Self::FederatedOidc => "federated_oidc",
             Self::UserVerified => "user",
             Self::ExistingSession => "session",
         }
@@ -230,8 +234,8 @@ impl AuthenticationMethod {
             Self::Password => Some("pwd"),
             Self::Passkey => Some("pop"),
             Self::OneTimeCode => Some("otp"),
+            Self::FederatedOidc | Self::ExistingSession => None,
             Self::UserVerified => Some("user"),
-            Self::ExistingSession => None,
         }
     }
 
@@ -245,6 +249,7 @@ impl AuthenticationMethod {
             Self::Password,
             Self::Passkey,
             Self::OneTimeCode,
+            Self::FederatedOidc,
             Self::UserVerified,
             Self::ExistingSession,
         ]

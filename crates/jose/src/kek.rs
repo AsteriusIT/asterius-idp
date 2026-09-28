@@ -191,6 +191,10 @@ pub enum RowSecret {
     FederationSigningKey,
     /// RSA private key for a tenant's SAML `IdP` certificate fingerprint.
     SamlIdpSigningKey,
+    /// A tenant OIDC identity provider's client credential, bound to provider ID.
+    OidcProviderClientSecret,
+    /// The PKCE verifier for a one-use upstream OIDC browser transaction.
+    OidcUpstreamPkce,
     /// A Claims Provider signed UserInfo JWT for one user and issuer.
     ClaimsProviderUserInfo,
     /// The PKCE verifier of one pending Claims Provider authorization.
@@ -203,12 +207,14 @@ pub enum RowSecret {
 
 impl RowSecret {
     /// Every secret this enum names, so a test can be exhaustive over them.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 11] = [
         Self::SsfPushAuthorization,
         Self::CibaPing,
         Self::TotpSeed,
         Self::FederationSigningKey,
         Self::SamlIdpSigningKey,
+        Self::OidcProviderClientSecret,
+        Self::OidcUpstreamPkce,
         Self::ClaimsProviderUserInfo,
         Self::ClaimsProviderPkce,
         Self::ClaimsProviderAccessToken,
@@ -224,6 +230,8 @@ impl RowSecret {
             Self::TotpSeed => "totp-seed",
             Self::FederationSigningKey => "federation-signing-key",
             Self::SamlIdpSigningKey => "saml-idp-signing-key",
+            Self::OidcProviderClientSecret => "oidc-provider-client-secret",
+            Self::OidcUpstreamPkce => "oidc-upstream-pkce",
             Self::ClaimsProviderUserInfo => "claims-provider-userinfo",
             Self::ClaimsProviderPkce => "claims-provider-pkce",
             Self::ClaimsProviderAccessToken => "claims-provider-access-token",
