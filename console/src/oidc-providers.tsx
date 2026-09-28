@@ -1,4 +1,4 @@
-/** Tenant-managed upstream OpenID Connect providers. */
+/** Tenant-managed upstream sign-in providers. */
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { mutate, read, type Session } from './api';
@@ -77,16 +77,16 @@ export function OidcProviders({ session }: Readonly<{ session: Session }>): JSX.
   const ready = load.kind === 'ready' ? load.inventory : null;
   const change = (patch: Partial<ProviderDraft>): void => setDraft((current) => current === null ? null : { ...current, ...patch });
 
-  return <Screen title="Sign-in providers" description="Register upstream OpenID Connect providers for this tenant. Each provider has its own callback URL.">
-    <Message tone="info">Provider setup stores connection details. Upstream sign-in and account linking are separate features under development.</Message>
+  return <Screen title="Sign-in providers" description="Register external sign-in providers for this tenant. Each provider has its own callback URL.">
+    <Message tone="info">Provider setup stores connection details. Users can then sign in through an enabled provider and link their account.</Message>
     {error !== null && <Message tone="error">{error}</Message>}
-    <Panel title="OpenID Connect providers" description="Endpoint metadata is discovered from the exact issuer and checked before it is stored."
+    <Panel title="External sign-in providers" description="Endpoint metadata is discovered from the exact issuer and checked before it is stored."
       actions={canWrite && draft === null ? <Button variant="primary" onClick={() => { setDraft(EMPTY); setEditing(false); setError(null); }}>Add provider</Button> : undefined}>
       {load.kind === 'loading' && <Skeleton rows={3} label="Reading sign-in providers." />}
       {load.kind === 'failed' && <LoadFailure message={load.message} onRetry={refresh} />}
       {ready !== null && (ready.providers.length === 0 ? <p className="muted">No upstream sign-in providers are configured.</p> :
         <div className="overflow-x-auto"><table>
-          <caption className="visually-hidden">Upstream OpenID Connect providers</caption>
+          <caption className="visually-hidden">External sign-in providers</caption>
           <thead><tr><th>Provider</th><th>Issuer</th><th>Status</th><th>Callback URL</th>{canWrite && <th>Actions</th>}</tr></thead>
           <tbody>{ready.providers.map((provider) => <tr key={provider.id}>
             <td><strong>{provider.name}</strong><br /><small>{provider.id}</small></td>
@@ -104,7 +104,7 @@ export function OidcProviders({ session }: Readonly<{ session: Session }>): JSX.
       <fieldset disabled={busy} className="flex flex-col gap-3">
         <Field label="Provider ID" required hint="A stable URL-safe name for this provider and its callback path.">{props => <input {...props} value={draft.id} disabled={editing} autoComplete="off" onChange={event => change({ id: event.target.value })} />}</Field>
         <Field label="Display name" required>{props => <input {...props} value={draft.name} onChange={event => change({ name: event.target.value })} />}</Field>
-        <Field label="Issuer URL" required hint="Exact HTTPS issuer from the provider's OpenID Connect discovery document.">{props => <input {...props} type="url" value={draft.issuer} placeholder="https://login.example.com" onChange={event => change({ issuer: event.target.value })} />}</Field>
+        <Field label="Issuer URL" required hint="Exact HTTPS issuer from the provider's discovery document.">{props => <input {...props} type="url" value={draft.issuer} placeholder="https://login.example.com" onChange={event => change({ issuer: event.target.value })} />}</Field>
         <Field label="Client ID" required hint="Register this tenant as a client at the external provider first.">{props => <input {...props} value={draft.clientId} autoComplete="off" onChange={event => change({ clientId: event.target.value })} />}</Field>
         <Field label={editing ? 'Replace client secret' : 'Client secret'} required={!editing} hint={editing ? 'Leave blank to keep the existing secret. Existing secrets are never shown.' : 'Saved encrypted; it cannot be read back.'}>{props => <input {...props} type="password" value={draft.clientSecret} autoComplete="new-password" onChange={event => change({ clientSecret: event.target.value })} />}</Field>
         <label className="flex items-center gap-2"><input type="checkbox" checked={draft.enabled} onChange={event => change({ enabled: event.target.checked })} /> Enable this provider</label>

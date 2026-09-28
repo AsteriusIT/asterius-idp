@@ -19,7 +19,7 @@ function label(key: string): string {
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
-/** Loads and presents the tenant's live OIDC Discovery URL members. */
+/** Loads and presents the tenant's live sign-in discovery URL members. */
 export function OidcDetails({ tenant }: Readonly<{ tenant: string }>): JSX.Element {
   const [load, setLoad] = useState<Load>({ kind: 'loading' });
   const [attempt, setAttempt] = useState(0);
