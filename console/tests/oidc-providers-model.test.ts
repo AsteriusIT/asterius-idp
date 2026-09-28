@@ -8,6 +8,7 @@ test('editing a provider does not send a replacement secret unless entered', () 
       authorization_endpoint: 'https://login.example.com/authorize',
       token_endpoint: 'https://login.example.com/token',
       jwks_uri: 'https://login.example.com/jwks', client_id: 'asterius',
+      username_claim: 'preferred_username',
       enabled: true, allow_registration: false, secret_configured: true,
       callback_url: 'https://id.example.com/t/acme/oidc/upstream/callback/workforce',
       created_at: '2026-09-28T00:00:00Z',
@@ -17,4 +18,6 @@ test('editing a provider does not send a replacement secret unless entered', () 
     assert.equal(Object.hasOwn(providerCommand(draft), 'client_secret'), false);
     assert.equal(providerCommand({ ...draft, clientSecret: 'replacement' }).client_secret, 'replacement');
     assert.equal(providerCommand(draft).allow_registration, false);
+    assert.equal(providerCommand(draft).username_claim, 'preferred_username');
+    assert.equal(providerCommand({ ...draft, usernameClaim: '' }).username_claim, null);
 });

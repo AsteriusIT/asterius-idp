@@ -584,6 +584,8 @@ impl EventType {
     pub const OIDC_IDENTITY_LINKED: Self = Self("oidc.identity_linked");
     /// An authenticated user or operator removed an identity binding.
     pub const OIDC_IDENTITY_UNLINKED: Self = Self("oidc.identity_unlinked");
+    /// A verified upstream username claim changed a linked local username.
+    pub const OIDC_USERNAME_SYNCED: Self = Self("oidc.username_synced");
     /// An administrator imported a tenant SAML `IdP` signing key/certificate.
     pub const SAML_IDP_KEY_PROVISIONED: Self = Self("saml.idp_key_provisioned");
     /// A staged tenant SAML certificate became the signing key.
@@ -595,7 +597,7 @@ impl EventType {
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 96] = [
+    pub const ALL: [Self; 97] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -685,6 +687,7 @@ impl EventType {
         Self::OIDC_IDENTITY_CREATED,
         Self::OIDC_IDENTITY_LINKED,
         Self::OIDC_IDENTITY_UNLINKED,
+        Self::OIDC_USERNAME_SYNCED,
         Self::SAML_IDP_KEY_PROVISIONED,
         Self::SAML_IDP_KEY_ACTIVATED,
         Self::SAML_IDP_KEY_RETIRED,

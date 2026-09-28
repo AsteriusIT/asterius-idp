@@ -48,13 +48,13 @@ async fn bindings_are_exact_and_registration_never_takes_over_email() {
     sqlx::query("insert into users (tenant_id,user_id,username,email) values ('one',$1,'existing','person@example.test')")
         .bind(victim).execute(&pool).await.expect("existing user");
     assert_eq!(
-        one.resolve_or_create("corp", "https://login.example", "subject")
+        one.resolve_or_create("corp", "https://login.example", "subject", None, None)
             .await
             .expect("resolve"),
         OidcResolution::Refused(OidcRefusal::Unlinked)
     );
     assert_eq!(
-        one.resolve_or_create("corp", "https://login.example/", "subject")
+        one.resolve_or_create("corp", "https://login.example/", "subject", None, None)
             .await
             .expect("exact issuer"),
         OidcResolution::Refused(OidcRefusal::ProviderUnavailable)
@@ -93,13 +93,13 @@ async fn bindings_are_exact_and_registration_never_takes_over_email() {
         "one provider cannot assign two subjects to one user"
     );
     assert_eq!(
-        one.resolve_or_create("corp", "https://login.example", "subject")
+        one.resolve_or_create("corp", "https://login.example", "subject", None, None)
             .await
             .expect("linked"),
         OidcResolution::User(UserId::new(victim))
     );
     assert_eq!(
-        two.resolve_or_create("corp", "https://login.example", "subject")
+        two.resolve_or_create("corp", "https://login.example", "subject", None, None)
             .await
             .expect("tenant fence"),
         OidcResolution::Refused(OidcRefusal::Unlinked)
@@ -110,7 +110,7 @@ async fn bindings_are_exact_and_registration_never_takes_over_email() {
         .await
         .expect("disable user");
     assert_eq!(
-        one.resolve_or_create("corp", "https://login.example", "subject")
+        one.resolve_or_create("corp", "https://login.example", "subject", None, None)
             .await
             .expect("disabled"),
         OidcResolution::Refused(OidcRefusal::DisabledUser)
@@ -120,7 +120,7 @@ async fn bindings_are_exact_and_registration_never_takes_over_email() {
         .await
         .expect("disable provider");
     assert_eq!(
-        one.resolve_or_create("corp", "https://login.example", "subject")
+        one.resolve_or_create("corp", "https://login.example", "subject", None, None)
             .await
             .expect("provider disabled"),
         OidcResolution::Refused(OidcRefusal::ProviderUnavailable)
@@ -148,7 +148,7 @@ async fn bindings_are_exact_and_registration_never_takes_over_email() {
     sqlx::query("update oidc_identity_providers set enabled = true, allow_registration = true where tenant_id = 'one'")
         .execute(&pool).await.expect("enable registration");
     let result = one
-        .resolve_or_create("corp", "https://login.example", "new-subject")
+        .resolve_or_create("corp", "https://login.example", "new-subject", None, None)
         .await
         .expect("create");
     let OidcResolution::User(created) = result else {
@@ -162,6 +162,67 @@ async fn bindings_are_exact_and_registration_never_takes_over_email() {
             .await
             .expect("new account");
     assert_eq!(email, None);
+    sqlx::query("update oidc_identity_providers set username_claim = 'preferred_username' where tenant_id = 'one'")
+        .execute(&pool).await.expect("configure claim");
+    assert_eq!(
+        one.resolve_or_create("corp", "https://login.example", "new-subject", Some("preferred_username"), None)
+            .await.expect("existing binding without username"),
+        OidcResolution::Refused(OidcRefusal::UsernameUnavailable)
+    );
+    for name in [Some(""), Some(" hidden"), Some("existing")] {
+        assert_eq!(
+            one.resolve_or_create("corp", "https://login.example", "new-subject", Some("preferred_username"), name)
+                .await.expect("refuse unsafe rename"),
+            OidcResolution::Refused(OidcRefusal::UsernameUnavailable)
+        );
+    }
+    let unchanged: String = sqlx::query_scalar(
+        "select username from users where tenant_id = 'one' and user_id = $1"
+    ).bind(created.as_uuid()).fetch_one(&pool).await.expect("unchanged username");
+    assert!(unchanged.starts_with("oidc-"));
+    assert_eq!(
+        one.resolve_or_create("corp", "https://login.example", "new-subject", Some("preferred_username"), Some("mapped-name"))
+            .await.expect("rename bound account"),
+        OidcResolution::User(created)
+    );
+    let renamed: String = sqlx::query_scalar(
+        "select username from users where tenant_id = 'one' and user_id = $1"
+    ).bind(created.as_uuid()).fetch_one(&pool).await.expect("renamed username");
+    assert_eq!(renamed, "mapped-name");
+    sqlx::query("update oidc_identity_providers set username_claim = 'alternate_name' where tenant_id = 'one'")
+        .execute(&pool).await.expect("change claim mapping");
+    assert_eq!(
+        one.resolve_or_create(
+            "corp", "https://login.example", "new-subject",
+            Some("preferred_username"), Some("stale-value")
+        ).await.expect("stale mapping refused"),
+        OidcResolution::Refused(OidcRefusal::ProviderUnavailable)
+    );
+    let still_renamed: String = sqlx::query_scalar(
+        "select username from users where tenant_id = 'one' and user_id = $1"
+    ).bind(created.as_uuid()).fetch_one(&pool).await.expect("unchanged after stale mapping");
+    assert_eq!(still_renamed, "mapped-name");
+    sqlx::query("update oidc_identity_providers set username_claim = 'preferred_username' where tenant_id = 'one'")
+        .execute(&pool).await.expect("restore claim mapping");
+    let victim_name: String = sqlx::query_scalar(
+        "select username from users where tenant_id = 'one' and user_id = $1"
+    ).bind(victim).fetch_one(&pool).await.expect("victim username");
+    assert_eq!(victim_name, "existing");
+    for name in [None, Some(""), Some(" hidden"), Some("existing")] {
+        assert_eq!(
+            one.resolve_or_create("corp", "https://login.example", "another-subject", Some("preferred_username"), name)
+                .await.expect("refuse unavailable username"),
+            OidcResolution::Refused(OidcRefusal::UsernameUnavailable)
+        );
+    }
+    let named = one.resolve_or_create(
+        "corp", "https://login.example", "another-subject", Some("preferred_username"), Some("upstream-alice")
+    ).await.expect("create with verified username");
+    let OidcResolution::User(named_id) = named else { panic!("expected named user") };
+    let username: String = sqlx::query_scalar(
+        "select username from users where tenant_id = 'one' and user_id = $1"
+    ).bind(named_id.as_uuid()).fetch_one(&pool).await.expect("named account");
+    assert_eq!(username, "upstream-alice");
     pool.close().await;
     let admin = PgPoolOptions::new()
         .max_connections(1)
