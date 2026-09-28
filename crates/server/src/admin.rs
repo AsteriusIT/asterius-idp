@@ -2021,6 +2021,14 @@ impl DeploymentUsers {
 
 #[async_trait::async_trait]
 impl asterius_domain::UserAdministration for DeploymentUsers {
+    async fn external_provider_names(
+        &self,
+        tenant: &TenantId,
+        users: &[asterius_domain::UserId],
+    ) -> Result<Vec<(asterius_domain::UserId, String)>, DomainError> {
+        self.store.scope(tenant.clone()).oidc_bindings().provider_names_for_users(users).await
+    }
+
     async fn scim_replace_profile(
         &self,
         replacement: asterius_domain::ScimProfileReplacement,

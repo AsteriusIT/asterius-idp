@@ -211,6 +211,14 @@ pub struct ScimProfileReplacement {
 /// and forget the second.
 #[async_trait::async_trait]
 pub trait UserAdministration: Debug + Send + Sync {
+    /// Provider display names linked to the requested accounts in this tenant.
+    /// Only directory metadata is returned, never upstream subjects or credentials.
+    async fn external_provider_names(
+        &self,
+        tenant: &TenantId,
+        users: &[UserId],
+    ) -> Result<Vec<(UserId, String)>, DomainError>;
+
     /// Replaces only approved profile fields when the account version still
     /// matches; the store commits the account and external ID in one transaction.
     async fn scim_replace_profile(
