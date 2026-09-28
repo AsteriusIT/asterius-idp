@@ -219,7 +219,7 @@ async fn the_home_page_sends_an_unauthenticated_visitor_into_this_tenants_intera
     };
 
     // Act
-    let response = account::page(&context, &NoUsers, &HeaderMap::new(), epoch()).await;
+    let response = account::page(&context, &NoUsers, None, &HeaderMap::new(), epoch()).await;
 
     // Assert
     assert_eq!(response.status().as_u16(), SEE_OTHER);

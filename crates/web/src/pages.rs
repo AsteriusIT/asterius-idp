@@ -147,6 +147,8 @@ pub struct DetailLine {
 #[derive(Debug, Template)]
 #[template(path = "login.html")]
 pub struct LoginPage<'a> {
+    /// Enabled tenant identity providers offered for this interaction.
+    pub upstream_providers: &'a [UpstreamProviderLink],
     /// The words this page is rendered with, and the language they are in.
     ///
     /// The `lang` attribute comes out of the same value as the text under it
@@ -206,6 +208,12 @@ pub struct LoginPage<'a> {
     /// See [`crate::brand`]: the mark is inline SVG chosen from a closed
     /// enumeration, and the font URL carries this request's mount prefix.
     pub brand: crate::brand::Brand<'a>,
+}
+
+#[derive(Debug)]
+pub struct UpstreamProviderLink {
+    pub name: String,
+    pub href: String,
 }
 
 /// The second-factor page shown after a password has been proved.
@@ -862,6 +870,8 @@ pub struct AccountPage<'a> {
     /// Who is signed in, as this server knows them. Their own text, escaped
     /// like anyone else's.
     pub username: &'a str,
+    /// Exact upstream identities connected to this signed-in account.
+    pub identities: Vec<AccountIdentity>,
     /// Where the passkey list lives.
     pub passkeys_href: &'a str,
     /// Where the authenticator settings live.
@@ -889,6 +899,14 @@ pub struct AccountPage<'a> {
     pub theme_css: &'a str,
     /// The tenant's mark and the URL of the face this server hosts.
     pub brand: crate::brand::Brand<'a>,
+}
+
+/// Display-only upstream identity, escaped by the account template.
+#[derive(Debug)]
+pub struct AccountIdentity {
+    pub provider_id: String,
+    pub issuer: String,
+    pub subject: String,
 }
 
 /// A signed-in email change form or its confirmation result.
@@ -1496,6 +1514,7 @@ mod tests {
         for hostile in HOSTILE {
             let nonce = nonce();
             let page = LoginPage {
+                upstream_providers: &[],
                 text: &ENGLISH,
                 tenant_name: hostile,
                 step_up: false,
@@ -1688,7 +1707,12 @@ mod tests {
     #[test]
     fn the_sign_in_script_interpolates_nothing() {
         let nonce = nonce();
+        let providers = [UpstreamProviderLink {
+            name: "<Corporate>".to_owned(),
+            href: "/interaction/abc/upstream/corp".to_owned(),
+        }];
         let html = LoginPage {
+            upstream_providers: &providers,
             text: &ENGLISH,
             tenant_name: "Demo",
             step_up: false,
@@ -1725,6 +1749,8 @@ mod tests {
             "{html}"
         );
         assert!(html.contains(r#"data-csrf="the-token""#), "{html}");
+        assert!(html.contains("Continue with &lt;Corporate&gt;"), "{html}");
+        assert!(html.contains("/interaction/abc/upstream/corp"), "{html}");
     }
 
     /// `ast-2vk.4`: the passkey path is the enhancement and the password form
@@ -1733,6 +1759,7 @@ mod tests {
     fn without_javascript_the_sign_in_page_still_has_its_password_form() {
         let nonce = nonce();
         let html = LoginPage {
+            upstream_providers: &[],
             text: &ENGLISH,
             tenant_name: "Demo",
             step_up: false,
@@ -1785,6 +1812,7 @@ mod tests {
     fn the_username_field_asks_for_conditional_mediation() {
         let nonce = nonce();
         let html = LoginPage {
+            upstream_providers: &[],
             text: &ENGLISH,
             tenant_name: "Demo",
             step_up: false,
@@ -2041,6 +2069,7 @@ mod tests {
         let nonce = nonce();
         for html in [
             LoginPage {
+                upstream_providers: &[],
                 text: &ENGLISH,
                 tenant_name: "Demo",
                 step_up: false,
@@ -2785,6 +2814,7 @@ mod tests {
         for html in [
             device(None, Some("That code did not work.")),
             render(&LoginPage {
+                upstream_providers: &[],
                 text: &ENGLISH,
                 tenant_name: "Demo",
                 step_up: false,

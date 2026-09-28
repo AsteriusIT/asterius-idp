@@ -60,6 +60,7 @@ export const NAVIGATION_ICONS: Readonly<Record<string, LucideIcon>> = {
   preferences: Settings2Icon,
   scim: RefreshCwIcon,
   federation: NetworkIcon,
+  'oidc-providers': WaypointsIcon,
   saml: WaypointsIcon,
   mail: MailIcon,
   help: BookOpenIcon,

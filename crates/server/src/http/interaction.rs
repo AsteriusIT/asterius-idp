@@ -71,6 +71,8 @@ pub const SIGN_IN_QUERY: &str = "signin";
 
 /// What the handlers need.
 pub struct InteractionContext<'a> {
+    /// Enabled provider choices loaded from this tenant's public config.
+    pub upstream_providers: &'a [asterius_store_pg::OidcProvider],
     /// The tenant the request arrived at.
     pub tenant: &'a Tenant,
     /// Tenant key service for signed JARM responses.
@@ -1122,6 +1124,42 @@ async fn authenticated(
     response
 }
 
+/// Completes an upstream OIDC proof through the same session, assurance,
+/// consent and first-party continuation path as local authentication.
+pub async fn complete_external(
+    context: InteractionContext<'_>,
+    id: &str,
+    headers: &HeaderMap,
+    user: uuid::Uuid,
+    now: OffsetDateTime,
+) -> Response {
+    let (presented, mut state, record) = match resume(&context, id, headers, now).await {
+        Ok(resumed) => resumed,
+        Err(response) => return *response,
+    };
+    if !matches!(state.stage, Stage::Login | Stage::StepUp) {
+        return error_page(
+            &context,
+            StatusCode::BAD_REQUEST,
+            InteractionError::NotAvailable,
+        );
+    }
+    state.signed_in_as("External account");
+    authenticated(
+        &context,
+        &presented,
+        state,
+        SuccessfulAuthentication {
+            id,
+            record: &record,
+            user,
+            methods: vec![AuthenticationMethod::FederatedOidc],
+            now,
+        },
+    )
+    .await
+}
+
 /// Chooses the page after a valid credential without losing an essential ACR
 /// that still needs another factor.
 fn advance_after_authentication(
@@ -2127,11 +2165,22 @@ async fn arrive(
         );
     }
 
-    let Ok(redirect) =
-        crate::http::redirect::SeeOther::to(crate::http::console::location_of(destination))
+    // This continuation can complete on the interaction page or on an
+    // upstream provider's deeper callback path. Resolve the compiled-in
+    // destination against the tenant mount, not the current request URL.
+    let Some(handler_path) = crate::http::console::location_of(destination).strip_prefix("..")
     else {
-        // Unreachable: the location is a `&'static str` in this crate with no
-        // control character in it.
+        tracing::error!(tenant = %context.tenant.id, "a compiled-in destination is not tenant-relative");
+        return error_page(
+            context,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            InteractionError::NotAvailable,
+        );
+    };
+    let location = context.mount.absolute(handler_path);
+    let Ok(redirect) = crate::http::redirect::SeeOther::to(&location) else {
+        // Unreachable: the location is assembled from a compiled-in path and
+        // the validated tenant mount, neither of which contains controls.
         tracing::error!(
             tenant = %context.tenant.id,
             "a compiled-in destination is not a usable Location"
@@ -2516,9 +2565,18 @@ async fn record_signed_in(
     now: OffsetDateTime,
 ) {
     let subject = user.to_string();
+    let primary = methods
+        .first()
+        .copied()
+        .unwrap_or(AuthenticationMethod::ExistingSession);
+    let kind = if primary == AuthenticationMethod::Password {
+        "password"
+    } else {
+        primary.as_str()
+    };
     let mut detail = Detail::new()
-        .label("kind", "password")
-        .label("method", AuthenticationMethod::Password.as_str());
+        .label("kind", kind)
+        .label("method", primary.as_str());
     if methods.contains(&AuthenticationMethod::OneTimeCode) {
         detail = detail.label("factor", AuthenticationMethod::OneTimeCode.as_str());
     }
@@ -2952,8 +3010,18 @@ fn totp_challenge_page(context: &InteractionContext<'_>, page: &TotpPage<'_>) ->
 /// Draws the sign-in page, which is also the step-up page.
 fn sign_in_page(context: &InteractionContext<'_>, page: &SignInPage<'_>) -> Response {
     let presentation = crate::http::ThemeChrome::new(context.theme, &context.mount);
+    let links: Vec<pages::UpstreamProviderLink> = context
+        .upstream_providers
+        .iter()
+        .filter(|provider| provider.enabled)
+        .map(|provider| pages::UpstreamProviderLink {
+            name: provider.name.clone(),
+            href: format!("{}/upstream/{}", page.action, provider.id),
+        })
+        .collect();
     Document::render(context.nonce, |nonce| {
         pages::render(&LoginPage {
+            upstream_providers: &links,
             text: page.text,
             tenant_name: &context.tenant.display_name,
             step_up: page.step_up,

@@ -574,6 +574,16 @@ impl EventType {
     pub const SAML_SP_PROVISIONED: Self = Self("saml.sp_provisioned");
     /// An administrator removed an exact SAML SP trust entry.
     pub const SAML_SP_REMOVED: Self = Self("saml.sp_removed");
+    /// An administrator saved an upstream OIDC identity provider.
+    pub const OIDC_PROVIDER_SAVED: Self = Self("oidc.provider_saved");
+    /// An administrator removed an upstream OIDC identity provider.
+    pub const OIDC_PROVIDER_REMOVED: Self = Self("oidc.provider_removed");
+    /// A local account was created after verified upstream authentication.
+    pub const OIDC_IDENTITY_CREATED: Self = Self("oidc.identity_created");
+    /// An authenticated user or operator explicitly linked an identity.
+    pub const OIDC_IDENTITY_LINKED: Self = Self("oidc.identity_linked");
+    /// An authenticated user or operator removed an identity binding.
+    pub const OIDC_IDENTITY_UNLINKED: Self = Self("oidc.identity_unlinked");
     /// An administrator imported a tenant SAML `IdP` signing key/certificate.
     pub const SAML_IDP_KEY_PROVISIONED: Self = Self("saml.idp_key_provisioned");
     /// A staged tenant SAML certificate became the signing key.
@@ -585,7 +595,7 @@ impl EventType {
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 91] = [
+    pub const ALL: [Self; 96] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -670,6 +680,11 @@ impl EventType {
         Self::ID_JAG_SUBJECT_UNBOUND,
         Self::SAML_SP_PROVISIONED,
         Self::SAML_SP_REMOVED,
+        Self::OIDC_PROVIDER_SAVED,
+        Self::OIDC_PROVIDER_REMOVED,
+        Self::OIDC_IDENTITY_CREATED,
+        Self::OIDC_IDENTITY_LINKED,
+        Self::OIDC_IDENTITY_UNLINKED,
         Self::SAML_IDP_KEY_PROVISIONED,
         Self::SAML_IDP_KEY_ACTIVATED,
         Self::SAML_IDP_KEY_RETIRED,

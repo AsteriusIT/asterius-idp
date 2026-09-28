@@ -127,6 +127,7 @@ pub mod throttle;
 pub mod tls;
 pub mod token;
 pub mod token_exchange;
+pub mod upstream_oidc;
 pub mod userinfo;
 pub mod verify_email;
 

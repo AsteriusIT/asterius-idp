@@ -29,8 +29,25 @@ pub struct TenantScope<'a> {
 }
 
 impl<'a> TenantScope<'a> {
+    /// Exact upstream OIDC subject bindings and first-login policy.
+    #[must_use]
+    pub fn oidc_bindings(&self) -> crate::PgOidcBindings {
+        crate::PgOidcBindings::new(self.pool.clone(), self.tenant.clone())
+    }
     pub(crate) const fn new(pool: &'a PgPool, tenant: TenantId) -> Self {
         Self { pool, tenant }
+    }
+
+    /// Upstream OIDC registrations and KEK-sealed client credentials.
+    #[must_use]
+    pub fn oidc_providers(&self, kek: Arc<dyn Kek>) -> crate::PgOidcProviders {
+        crate::PgOidcProviders::new(self.pool.clone(), self.tenant.clone(), kek)
+    }
+
+    /// One-use upstream authorization-code transactions.
+    #[must_use]
+    pub fn oidc_upstream_pending(&self, kek: Arc<dyn Kek>) -> crate::PgOidcUpstreamPending {
+        crate::PgOidcUpstreamPending::new(self.pool.clone(), self.tenant.clone(), kek)
     }
 
     /// Explicit SAML SP trust and `AuthnRequest` replay reservations.

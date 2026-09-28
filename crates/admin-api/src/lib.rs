@@ -56,6 +56,7 @@ pub mod id_jag;
 pub mod idempotency;
 pub mod initial_access_tokens;
 pub mod keys;
+pub mod oidc_providers;
 pub mod openapi;
 pub mod operations;
 pub mod outbox;
@@ -205,6 +206,12 @@ pub const SSF_RECEIVER_SUBJECT_REMOVE_ID: &str = "ssf.receiver.subject.remove";
 pub const ID_JAG_SUBJECT_BIND_ID: &str = "id_jag.subject.bind";
 pub const ID_JAG_SUBJECT_REMOVE_ID: &str = "id_jag.subject.remove";
 pub const SAML_SP_LIST_ID: &str = "saml.sp.list";
+pub const OIDC_PROVIDERS_LIST_ID: &str = "oidc.providers.list";
+pub const OIDC_PROVIDERS_PUT_ID: &str = "oidc.providers.put";
+pub const OIDC_PROVIDERS_DELETE_ID: &str = "oidc.providers.delete";
+pub const OIDC_BINDINGS_LIST_ID: &str = "oidc.bindings.list";
+pub const OIDC_BINDINGS_LINK_ID: &str = "oidc.bindings.link";
+pub const OIDC_BINDINGS_UNLINK_ID: &str = "oidc.bindings.unlink";
 pub const SAML_SP_PROVISION_ID: &str = "saml.sp.provision";
 pub const SAML_SP_REMOVE_ID: &str = "saml.sp.remove";
 pub const SAML_IDP_KEY_READ_ID: &str = "saml.idp_key.read";
@@ -1045,6 +1052,54 @@ pub const SAML_SP_LIST: Operation = Operation::read(
     S::Get,
     A::new(R::Tenant, "admin.saml:read"),
     "Lists tenant SAML SP trust",
+);
+
+pub const OIDC_PROVIDERS_LIST: Operation = Operation::read(
+    OIDC_PROVIDERS_LIST_ID,
+    "/oidc/providers",
+    S::Get,
+    A::new(R::Tenant, "admin.oidc_providers:read"),
+    "Lists tenant OIDC identity providers without client credentials",
+);
+
+pub const OIDC_PROVIDERS_PUT: Operation = Operation::mutation(
+    OIDC_PROVIDERS_PUT_ID,
+    "/oidc/providers",
+    M::Put,
+    A::new(R::Tenant, "admin.oidc_providers:write"),
+    "Creates or updates a tenant OIDC identity provider after guarded discovery",
+);
+
+pub const OIDC_PROVIDERS_DELETE: Operation = Operation::mutation(
+    OIDC_PROVIDERS_DELETE_ID,
+    "/oidc/providers",
+    M::Delete,
+    A::new(R::Tenant, "admin.oidc_providers:write"),
+    "Deletes a tenant OIDC identity provider",
+);
+
+pub const OIDC_BINDINGS_LIST: Operation = Operation::read(
+    OIDC_BINDINGS_LIST_ID,
+    "/users/{user_id}/oidc-bindings",
+    S::Get,
+    A::new(R::Tenant, "admin.users:read"),
+    "Lists a local user's exact upstream OIDC bindings",
+);
+
+pub const OIDC_BINDINGS_LINK: Operation = Operation::mutation(
+    OIDC_BINDINGS_LINK_ID,
+    "/users/{user_id}/oidc-bindings",
+    M::Put,
+    A::new(R::Tenant, "admin.users:write"),
+    "Operator-asserted binding of an exact upstream identity to a local user",
+);
+
+pub const OIDC_BINDINGS_UNLINK: Operation = Operation::mutation(
+    OIDC_BINDINGS_UNLINK_ID,
+    "/users/{user_id}/oidc-bindings",
+    M::Delete,
+    A::new(R::Tenant, "admin.users:write"),
+    "Unlinks an exact upstream identity from a local user",
 );
 
 /// Provisions an exact SP entity ID and HTTPS ACS.
@@ -1912,7 +1967,7 @@ pub const SCIM_BULK: Operation = Operation::mutation(
     "SCIM Bulk is unsupported by this service",
 );
 
-static REGISTRY: [Operation; 143] = [
+static REGISTRY: [Operation; 149] = [
     SESSION_READ,
     SESSION_END,
     OVERVIEW_USERS,
@@ -1975,6 +2030,12 @@ static REGISTRY: [Operation; 143] = [
     ID_JAG_SUBJECT_BIND,
     ID_JAG_SUBJECT_REMOVE,
     SAML_SP_LIST,
+    OIDC_PROVIDERS_LIST,
+    OIDC_PROVIDERS_PUT,
+    OIDC_PROVIDERS_DELETE,
+    OIDC_BINDINGS_LIST,
+    OIDC_BINDINGS_LINK,
+    OIDC_BINDINGS_UNLINK,
     SAML_SP_PROVISION,
     SAML_SP_REMOVE,
     SAML_IDP_KEY_READ,
