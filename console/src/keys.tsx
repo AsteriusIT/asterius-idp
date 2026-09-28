@@ -38,6 +38,7 @@ import { toast } from './components/ui/toast';
 import {
   Badge,
   Button,
+  ConfirmDialog,
   DataTable,
   EmptyState,
   LoadFailure,
@@ -180,8 +181,11 @@ export function humanise(seconds: number): string {
 
 export function Keys({ session }: Readonly<{ session: Session }>): JSX.Element {
   const [load, setLoad] = useState<Load>({ kind: 'loading' });
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ tone: 'success' | 'error'; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [retiringKid, setRetiringKid] = useState<string | null>(null);
+  const [immediateAlg, setImmediateAlg] = useState<string | null>(null);
+  const canWrite = session.scopes.includes('admin.keys:write');
 
   const refresh = useCallback(() => {
     setLoad({ kind: 'loading' });
@@ -211,14 +215,14 @@ export function Keys({ session }: Readonly<{ session: Session }>): JSX.Element {
       action().then(
         (value) => {
           const said = describeResult(value);
-          setNotice(said);
+          setNotice({ tone: 'success', text: said });
           toast.success('The signing keys changed', said);
           setBusy(false);
           refresh();
         },
         (error: unknown) => {
           const said = error instanceof Error ? error.message : 'the change was refused';
-          setNotice(said);
+          setNotice({ tone: 'error', text: said });
           toast.error('The keys were not changed', said);
           setBusy(false);
         },
@@ -269,16 +273,16 @@ export function Keys({ session }: Readonly<{ session: Session }>): JSX.Element {
       title="Signing keys"
       description="What this tenant signs with, what it still publishes, and when the next key arrives."
     >
-      {notice !== null && <Message tone="success">{notice}</Message>}
+      {notice !== null && <Message tone={notice.tone}>{notice.text}</Message>}
       {load.inventory.algorithms.map((group) => (
         <Panel
           key={group.alg}
           id={`alg-${group.alg}`}
           title={group.alg}
           description="Rotating stages a new key and publishes it. It starts signing after the propagation period, so a client holding a cached JWK Set has time to fetch it. Signing immediately skips that wait — for a key you no longer trust."
-          actions={
+          actions={canWrite &&
             <>
-              <Button disabled={busy} onClick={() => rotate(group.alg, true)}>
+              <Button disabled={busy} onClick={() => setImmediateAlg(group.alg)}>
                 Rotate and sign immediately
               </Button>
               <Button variant="primary" disabled={busy} onClick={() => rotate(group.alg, false)}>
@@ -288,13 +292,13 @@ export function Keys({ session }: Readonly<{ session: Session }>): JSX.Element {
           }
         >
           {group.schedule !== null && <SchedulePanel schedule={group.schedule} />}
-          <KeyTable group={group} busy={busy} onRetire={retire} />
+          <KeyTable group={group} busy={busy} onRetire={setRetiringKid} writable={canWrite} />
         </Panel>
       ))}
       <Panel
         id="schedule-sweep"
         title="Rotation schedule"
-        actions={
+        actions={canWrite &&
           <Button disabled={busy} onClick={applySchedule}>
             Apply the rotation schedule now
           </Button>
@@ -314,6 +318,14 @@ export function Keys({ session }: Readonly<{ session: Session }>): JSX.Element {
       >
         <JsonView value={load.jwks} label="Published JWK Set JSON" />
       </Panel>
+      {retiringKid !== null && <ConfirmDialog title={`Retire signing key ${retiringKid}?`}
+        body="This key will stop being published according to its retirement state. Clients holding older tokens may still depend on it."
+        confirmLabel="Retire key" busy={busy} onCancel={() => setRetiringKid(null)}
+        onConfirm={() => { const kid = retiringKid; setRetiringKid(null); retire(kid); }} />}
+      {immediateAlg !== null && <ConfirmDialog title={`Sign immediately with a new ${immediateAlg} key?`}
+        body="This skips the propagation period. Clients with a cached JWK Set may reject newly issued tokens until they refresh it."
+        confirmLabel="Rotate and sign immediately" busy={busy} onCancel={() => setImmediateAlg(null)}
+        onConfirm={() => { const alg = immediateAlg; setImmediateAlg(null); rotate(alg, true); }} />}
     </Screen>
   );
 }
@@ -347,10 +359,12 @@ function KeyTable({
   group,
   busy,
   onRetire,
+  writable,
 }: Readonly<{
   group: AlgorithmGroup;
   busy: boolean;
   onRetire: (kid: string) => void;
+  writable: boolean;
 }>): JSX.Element {
   const keyTone = (state: KeyState): 'neutral' | 'ok' | 'info' => {
     if (state === 'active') return 'ok';
@@ -404,7 +418,7 @@ function KeyTable({
           sortBy: (key) => key.created_at,
           cell: (key) => <Timestamp value={key.created_at} />,
         },
-        {
+        ...(writable ? [{
           key: 'retire',
           header: '',
           actions: true,
@@ -414,13 +428,13 @@ function KeyTable({
             agree because they are two statements of one rule, not because this
             file is trusted.
           */
-          cell: (key) =>
+          cell: (key: KeyRow) =>
             key.state === 'active' || key.state === 'retired' || key.state === 'purged' ? null : (
               <Button small disabled={busy} onClick={() => onRetire(key.kid)}>
                 Retire <span className="visually-hidden">{key.kid}</span>
               </Button>
             ),
-        },
+        }] : []),
       ]}
     />
   );

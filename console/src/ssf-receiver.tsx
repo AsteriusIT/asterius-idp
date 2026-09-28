@@ -3,7 +3,7 @@ import { useState } from 'react';
 import type { JSX } from 'react';
 import { mutate, read, type Session } from './api';
 import { toast } from './components/ui/toast';
-import { Actions, Button, Message, Panel } from './ui';
+import { Actions, Button, ConfirmDialog, Message, Panel } from './ui';
 import { userIdForUsername } from './user-lookup';
 import type { Directory } from './users';
 
@@ -17,6 +17,7 @@ export function SsfReceiverSubjects({ session }: Readonly<{ session: Session }>)
   const [subjectText, setSubjectText] = useState('{"format":"opaque","id":""}');
   const [user, setUser] = useState('');
   const [busy, setBusy] = useState(false);
+  const [confirmingRemove, setConfirmingRemove] = useState(false);
   const [message, setMessage] = useState<{ tone: 'success' | 'error'; text: string } | null>(null);
   const writable = session.scopes.includes('admin.ssf:write');
 
@@ -67,6 +68,7 @@ export function SsfReceiverSubjects({ session }: Readonly<{ session: Session }>)
       toast.error('Mapping unchanged', text);
     } finally {
       setBusy(false);
+      setConfirmingRemove(false);
     }
   };
 
@@ -126,7 +128,7 @@ export function SsfReceiverSubjects({ session }: Readonly<{ session: Session }>)
           </label>
           <Actions>
             <Button type="submit" disabled={busy}>Bind subject</Button>
-            <Button type="button" disabled={busy} onClick={() => { void change('remove'); }}>
+            <Button type="button" variant="danger" disabled={busy} onClick={() => setConfirmingRemove(true)}>
               Remove mapping
             </Button>
           </Actions>
@@ -134,6 +136,14 @@ export function SsfReceiverSubjects({ session }: Readonly<{ session: Session }>)
       ) : (
         <p className="muted">You need Shared Signals write access and user directory access to change subject mappings by username.</p>
       )}
+      {confirmingRemove && <ConfirmDialog
+        title="Remove inbound subject mapping?"
+        body={`Security events for the entered peer and subject will no longer resolve to ${user.trim() || 'this local user'}. Check the peer, subject, and username before continuing.`}
+        confirmLabel="Remove mapping"
+        busy={busy}
+        onCancel={() => setConfirmingRemove(false)}
+        onConfirm={() => { void change('remove'); }}
+      />}
     </Panel>
   );
 }

@@ -9,7 +9,7 @@ import { Clients } from './clients';
 import { AppSidebar } from './components/app-sidebar';
 import { AppTopbar } from './components/app-topbar';
 import { SidebarInset, SidebarProvider } from './components/ui/sidebar';
-import { Toaster, toast } from './components/ui/toast';
+import { Toaster } from './components/ui/toast';
 import { Keys } from './keys';
 import { DESTINATIONS, visibleTo } from './navigation';
 import { Policy } from './policy';
@@ -41,7 +41,7 @@ import { OidcProviders } from './oidc-providers';
 type Shell =
   | { readonly kind: 'loading' }
   | { readonly kind: 'ready'; readonly session: Session }
-  | { readonly kind: 'signed-out' }
+  | { readonly kind: 'signed-out'; readonly warning?: string }
   | { readonly kind: 'failed'; readonly message: string };
 
 export function App(): JSX.Element {
@@ -91,10 +91,7 @@ export function App(): JSX.Element {
     setShell({ kind: 'loading' });
     endSession(session).then(
       () => setShell({ kind: 'signed-out' }),
-      () => {
-        toast.error('The server did not confirm the sign-out', 'The console was left anyway.');
-        setShell({ kind: 'signed-out' });
-      },
+      () => setShell({ kind: 'signed-out', warning: 'The server did not confirm sign-out. Check the session before leaving this browser.' }),
     );
   }, []);
 
@@ -111,23 +108,23 @@ export function App(): JSX.Element {
     );
   }
   if (shell.kind === 'signed-out') {
-    return <SignedOut onRetry={probe} />;
+    return <SignedOut onRetry={probe} warning={shell.warning} />;
   }
   if (shell.kind === 'failed') {
     return (
       <CenteredCard heading="The console could not start">
         <p className="muted">{shell.message}</p>
+        <Button variant="primary" onClick={probe}>Try again</Button>
       </CenteredCard>
     );
   }
 
   const destinations = visibleTo(shell.session);
-  const current = destinations.some((destination) => destination.route === route)
-    ? route
-    : (destinations[0]?.route ?? route);
-  const here = DESTINATIONS.find((destination) => destination.route === current);
+  const current = route;
+  const allowed = destinations.some((destination) => destination.route === route);
+  const here = DESTINATIONS.find((destination) => destination.route === route);
 
-  if (current === 'architecture' && (paramsOf(fragment).has('flow') || paramsOf(fragment).get('mode') === 'new')) {
+  if (allowed && current === 'architecture' && (paramsOf(fragment).has('flow') || paramsOf(fragment).get('mode') === 'new')) {
     return <><main id="content"><ArchitectureFlows session={shell.session} fragment={fragment} /></main><Toaster /></>;
   }
 
@@ -135,13 +132,20 @@ export function App(): JSX.Element {
     <SidebarProvider defaultOpen>
       <AppTopbar
         session={shell.session}
-        page={here?.label ?? 'Not found'}
+        page={allowed ? (here?.label ?? 'Not found') : (here === undefined ? 'Not found' : 'Access unavailable')}
         onSignOut={() => signOut(shell.session)}
       />
       <AppSidebar session={shell.session} current={current} />
       <SidebarInset>
         <main id="content" tabIndex={-1} className="content">
-          <RouteScreen route={current} fragment={fragment} session={shell.session} />
+          {allowed ? <RouteScreen route={current} fragment={fragment} session={shell.session} /> : (
+            <Screen title={here === undefined ? 'Page not found' : 'Access unavailable'}
+              description={here === undefined ? 'This console has no page at this address.' : `Your current access does not include ${here.label}.`}>
+              <Panel title="Choose another page">
+                <p className="muted">Use the navigation to open a page available to this session.</p>
+              </Panel>
+            </Screen>
+          )}
         </main>
       </SidebarInset>
       <Toaster />
@@ -260,10 +264,12 @@ function RouteScreen({
  * A session that ends mid-visit is the case that gets here now; a visitor with
  * no session never sees the shell at all.
  */
-function SignedOut({ onRetry }: Readonly<{ onRetry: () => void }>): JSX.Element {
+function SignedOut({ onRetry, warning }: Readonly<{ onRetry: () => void; warning: string | undefined }>): JSX.Element {
   return (
-    <CenteredCard heading="Signed out">
-      <p className="muted">This console has no session. Sign in again to continue.</p>
+    <CenteredCard heading={warning === undefined ? 'Signed out' : 'Sign-out not confirmed'}>
+      {warning === undefined
+        ? <p className="muted">This console has no session. Sign in again to continue.</p>
+        : <p role="alert" className="message error">{warning}</p>}
       <Button variant="primary" onClick={() => window.location.reload()}>
         Sign in
       </Button>

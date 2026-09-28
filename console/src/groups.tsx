@@ -175,6 +175,7 @@ function GroupMembers({ session, group }: Readonly<{ session: Session; group: Gr
   const [user, setUser] = useState('');
   const [busy, setBusy] = useState(false);
   const [refusal, setRefusal] = useState<string | null>(null);
+  const [removingMember, setRemovingMember] = useState<{ user_id: string; username: string } | null>(null);
   const writable = session.scopes.includes(MEMBERS_WRITE);
   const refresh = useCallback(() => {
     setLoad({ kind: 'loading' });
@@ -183,9 +184,10 @@ function GroupMembers({ session, group }: Readonly<{ session: Session; group: Gr
   }, [cursor, group.id]);
   useEffect(refresh, [refresh]);
   const change = (id: string, add: boolean, label: string): void => {
+    setBusy(true);
     setRefusal(null); mutate(memberPath(group.id, id), add ? 'PUT' : 'DELETE', session).then(
-      () => { setUser(''); setBusy(false); toast.success(add ? 'Member added' : 'Member removed', label); refresh(); },
-      error => { setBusy(false); setRefusal(failure(error, 'Membership could not be changed')); },
+      () => { setUser(''); setBusy(false); setRemovingMember(null); toast.success(add ? 'Member added' : 'Member removed', label); refresh(); },
+      error => { setBusy(false); setRemovingMember(null); setRefusal(failure(error, 'Membership could not be changed')); },
     );
   };
   const addUsername = (): void => {
@@ -212,8 +214,12 @@ function GroupMembers({ session, group }: Readonly<{ session: Session; group: Gr
     {load.kind === 'ready' && <><DataTable rows={load.value.items} rowKey={row => row.user_id}
       empty={<EmptyState title="No members yet." body="Add a user to make group roles effective." />}
       columns={[{ key: 'user', header: 'User', cell: row => <><strong>{row.username}</strong>{row.email && <span className="muted block">{row.email}</span>}</> }, ...(writable ? [{ key: 'remove', header: 'Remove', actions: true,
-        cell: (row: { user_id: string; username: string }) => <Button small variant="danger" onClick={() => change(row.user_id, false, row.username)}>Remove <span className="visually-hidden">{row.username}</span></Button> }] : [])]} />
+        cell: (row: { user_id: string; username: string }) => <Button small variant="danger" disabled={busy} onClick={() => setRemovingMember(row)}>Remove <span className="visually-hidden">{row.username}</span></Button> }] : [])]} />
       <Actions><Button disabled={cursor === null} onClick={() => setCursor(null)}>First page</Button><Button disabled={load.value.next_cursor === null} onClick={() => setCursor(load.value.next_cursor)}>Next page</Button></Actions></>}
+    {removingMember !== null && <ConfirmDialog title={`Remove ${removingMember.username} from ${group.display_name}?`}
+      body="The user will lose access inherited from this group in new authorization decisions and tokens."
+      confirmLabel="Remove member" busy={busy} onCancel={() => setRemovingMember(null)}
+      onConfirm={() => change(removingMember.user_id, false, removingMember.username)} />}
   </Panel>;
 }
 
@@ -223,6 +229,8 @@ function GroupRoles({ session, group }: Readonly<{ session: Session; group: Grou
   const [clients, setClients] = useState<readonly string[]>([]);
   const [owner, setOwner] = useState('');
   const [role, setRole] = useState('');
+  const [withdrawing, setWithdrawing] = useState<{ role: string; clientId: string | null } | null>(null);
+  const [changing, setChanging] = useState(false);
   const [refusal, setRefusal] = useState<string | null>(null);
   const writable = session.scopes.includes(ROLES_WRITE);
   const refresh = useCallback(() => { setLoad({ kind: 'loading' }); read(groupRolesPath(group.id)).then(
@@ -236,6 +244,14 @@ function GroupRoles({ session, group }: Readonly<{ session: Session; group: Grou
   const assign = (): void => { const body: Record<string, string> = { name: role }; if (owner !== '') body.client_id = owner;
     setRefusal(null); mutate(groupRolesPath(group.id), 'POST', session, body).then(() => { setRole(''); toast.success('Role assigned', role); refresh(); },
       error => setRefusal(failure(error, 'The role was not assigned'))); };
+  const withdraw = (row: { role: string; clientId: string | null }): void => {
+    setChanging(true);
+    setRefusal(null);
+    mutate(groupRoleWithdrawPath(group.id, row.role, row.clientId), 'DELETE', session).then(
+      () => { setChanging(false); setWithdrawing(null); refresh(); },
+      error => { setChanging(false); setWithdrawing(null); setRefusal(failure(error, 'The role was not withdrawn')); },
+    );
+  };
   return <Panel title="Application roles" description="Every member inherits these roles. Group roles can never grant console administrator authority.">
     {refusal !== null && <Message tone="error">{refusal}</Message>}
     {writable && <form className="group-role-form" onSubmit={event => { event.preventDefault(); if (role !== '') assign(); }}>
@@ -247,9 +263,10 @@ function GroupRoles({ session, group }: Readonly<{ session: Session; group: Grou
     {load.kind === 'ready' && <DataTable rows={rows} rowKey={row => `${row.clientId ?? ''}:${row.role}`}
       empty={<EmptyState title="No roles assigned." body="Members inherit no application access from this group." />}
       columns={[{ key: 'role', header: 'Role', cell: row => <code>{row.role}</code> }, { key: 'application', header: 'Application', cell: row => row.clientId ?? 'Workspace' },
-        ...(writable ? [{ key: 'withdraw', header: 'Withdraw', actions: true, cell: (row: { role: string; clientId: string | null }) => <Button small variant="danger" onClick={() => {
-          setRefusal(null); mutate(groupRoleWithdrawPath(group.id, row.role, row.clientId), 'DELETE', session).then(() => refresh(), error => setRefusal(failure(error, 'The role was not withdrawn')));
-        }}>Withdraw <span className="visually-hidden">{row.role}</span></Button> }] : [])]} />}
+        ...(writable ? [{ key: 'withdraw', header: 'Withdraw', actions: true, cell: (row: { role: string; clientId: string | null }) => <Button small variant="danger" disabled={changing} onClick={() => setWithdrawing(row)}>Withdraw <span className="visually-hidden">{row.role}</span></Button> }] : [])]} />}
+    {withdrawing !== null && <ConfirmDialog title={`Withdraw ${withdrawing.role} from ${group.display_name}?`}
+      body="Every group member will lose this inherited role in new authorization decisions and tokens."
+      confirmLabel="Withdraw role" busy={changing} onCancel={() => setWithdrawing(null)} onConfirm={() => withdraw(withdrawing)} />}
   </Panel>;
 }
 
@@ -261,6 +278,7 @@ export function UserGroups({ session, userId }: Readonly<{ session: Session; use
   const [chosen, setChosen] = useState<GroupRow | null>(null);
   const [saving, setSaving] = useState(false);
   const [refusal, setRefusal] = useState<string | null>(null);
+  const [removingGroup, setRemovingGroup] = useState<GroupRow | null>(null);
   const writable = session.scopes.includes(MEMBERS_WRITE);
   const searchable = writable && session.scopes.includes(GROUPS_READ);
   const refresh = useCallback(() => { setLoad({ kind: 'loading' }); read(`users/${encodeURIComponent(userId)}/groups${cursor === null ? '' : `?cursor=${encodeURIComponent(cursor)}`}`).then(
@@ -284,6 +302,13 @@ export function UserGroups({ session, userId }: Readonly<{ session: Session; use
       setSaving(false); setChosen(null); setMatches(null); setTyped(''); refresh();
     }, error => { setSaving(false); setRefusal(failure(error, 'Membership could not be added')); });
   };
+  const remove = (row: GroupRow): void => {
+    setSaving(true); setRefusal(null);
+    mutate(memberPath(row.id, userId), 'DELETE', session).then(() => {
+      setSaving(false); setRemovingGroup(null);
+      window.dispatchEvent(new CustomEvent(GROUP_MEMBERSHIP_CHANGED_EVENT, { detail: { userId } })); refresh();
+    }, error => { setSaving(false); setRemovingGroup(null); setRefusal(failure(error, 'Membership could not be removed')); });
+  };
   return <Panel title="Groups" description="Direct managed-group memberships. Role inheritance is shown on the Roles tab with its source.">
     {refusal !== null && <Message tone="error">{refusal}</Message>}
     {searchable && <form onSubmit={event => { event.preventDefault(); search(); }}>
@@ -304,12 +329,11 @@ export function UserGroups({ session, userId }: Readonly<{ session: Session; use
     {load.kind === 'loading' && <Skeleton rows={3} label="Reading user groups." />}{load.kind === 'failed' && <LoadFailure message={load.message} onRetry={refresh} />}
     {load.kind === 'ready' && <><DataTable rows={load.value.items} rowKey={row => row.id} empty={<EmptyState title="No group memberships." body="Add this user from a group’s Members tab." />}
       columns={[{ key: 'group', header: 'Group', cell: row => <><strong>{row.display_name}</strong><br /><code>{row.name}</code></> },
-        ...(writable ? [{ key: 'remove', header: 'Remove', actions: true, cell: (row: GroupRow) => <Button small variant="danger" onClick={() => {
-          setRefusal(null); mutate(memberPath(row.id, userId), 'DELETE', session).then(() => {
-            window.dispatchEvent(new CustomEvent(GROUP_MEMBERSHIP_CHANGED_EVENT, { detail: { userId } })); refresh();
-          }, error => setRefusal(failure(error, 'Membership could not be removed')));
-        }}>Remove <span className="visually-hidden">{row.display_name}</span></Button> }] : [])]} />
+        ...(writable ? [{ key: 'remove', header: 'Remove', actions: true, cell: (row: GroupRow) => <Button small variant="danger" disabled={saving} onClick={() => setRemovingGroup(row)}>Remove <span className="visually-hidden">{row.display_name}</span></Button> }] : [])]} />
       <Actions><Button disabled={cursor === null} onClick={() => setCursor(null)}>First page</Button><Button disabled={load.value.next_cursor === null} onClick={() => setCursor(load.value.next_cursor)}>Next page</Button></Actions></>}
+    {removingGroup !== null && <ConfirmDialog title={`Remove user from ${removingGroup.display_name}?`}
+      body="The user will lose access inherited from this group in new authorization decisions and tokens."
+      confirmLabel="Remove membership" busy={saving} onCancel={() => setRemovingGroup(null)} onConfirm={() => remove(removingGroup)} />}
   </Panel>;
 }
 
