@@ -74,6 +74,8 @@ export interface UserRow {
   readonly email_verified: boolean;
   readonly status: UserStatus;
   readonly can_authenticate: boolean;
+  /** Linked provider names; absent when an older server cannot report them. */
+  readonly external_providers?: readonly string[];
   readonly claims: number;
   readonly created_at: number;
   readonly updated_at: number;
@@ -482,6 +484,16 @@ function UserTable({
           header: 'Status',
           sortBy: (row) => row.status,
           cell: (row) => <StatusBadge status={row.status} />,
+        },
+        {
+          key: 'external',
+          header: 'External',
+          sortBy: (row) => row.external_providers?.join(', ') ?? '',
+          cell: (row) => row.external_providers === undefined
+            ? <span className="muted">Unknown</span>
+            : row.external_providers.length === 0
+              ? <span className="muted">No</span>
+              : <span title={row.external_providers.join(', ')}>{row.external_providers.join(', ')}</span>,
         },
         { key: 'claims', header: 'Claims', numeric: true, sortBy: (row) => row.claims, cell: (row) => row.claims },
 

@@ -7,6 +7,7 @@ export interface OidcProvider {
   readonly token_endpoint: string;
   readonly jwks_uri: string;
   readonly client_id: string;
+  readonly username_claim: string | null;
   readonly enabled: boolean;
   readonly allow_registration: boolean;
   readonly secret_configured: boolean;
@@ -19,18 +20,20 @@ export interface ProviderDraft {
   readonly name: string;
   readonly issuer: string;
   readonly clientId: string;
+  readonly usernameClaim: string;
   readonly clientSecret: string;
   readonly enabled: boolean;
   readonly allowRegistration: boolean;
 }
 
 /** Omitted secret means preserve the stored credential during an edit. */
-export function providerCommand(draft: ProviderDraft): Record<string, string | boolean> {
+export function providerCommand(draft: ProviderDraft): Record<string, string | boolean | null> {
   return {
     id: draft.id.trim(),
     name: draft.name.trim(),
     issuer: draft.issuer.trim(),
     client_id: draft.clientId.trim(),
+    username_claim: draft.usernameClaim.trim() || null,
     enabled: draft.enabled,
     allow_registration: draft.allowRegistration,
     ...(draft.clientSecret ? { client_secret: draft.clientSecret } : {}),
@@ -43,6 +46,7 @@ export function draftFor(provider: OidcProvider): ProviderDraft {
     name: provider.name,
     issuer: provider.issuer,
     clientId: provider.client_id,
+    usernameClaim: provider.username_claim ?? '',
     clientSecret: '',
     enabled: provider.enabled,
     allowRegistration: provider.allow_registration,

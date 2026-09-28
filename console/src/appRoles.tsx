@@ -36,6 +36,7 @@ import { toast } from './components/ui/toast';
 import {
   Actions,
   Button,
+  ConfirmDialog,
   DataTable,
   Field,
   LoadFailure,
@@ -185,6 +186,7 @@ export function RoleCatalogue({
   const [notice, setNotice] = useState<string | null>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [deleting, setDeleting] = useState<string | null>(null);
   const writable = mayWrite(session);
 
   const refresh = useCallback(() => {
@@ -230,12 +232,14 @@ export function RoleCatalogue({
     mutate(`${path}/${encodeURIComponent(role)}`, 'DELETE', session).then(
       () => {
         setBusy(false);
+        setDeleting(null);
         setNotice(`${role} is no longer in the catalogue.`);
         toast.success('Role removed', `${role} is no longer in the catalogue.`);
         refresh();
       },
       (error: unknown) => {
         setBusy(false);
+        setDeleting(null);
         // A 409 says the role is still held. The server's sentence names the
         // remedy — withdraw it first — so it is shown as it was written.
         setRefusal(failure(error, 'the role was not deleted'));
@@ -283,7 +287,7 @@ export function RoleCatalogue({
                     header: 'Delete',
                     actions: true,
                     cell: (role: AppRole) => (
-                      <Button small disabled={busy} onClick={() => remove(role.name)}>
+                      <Button small variant="danger" disabled={busy} onClick={() => setDeleting(role.name)}>
                         Delete <span className="visually-hidden">{role.name}</span>
                       </Button>
                     ),
@@ -353,6 +357,9 @@ export function RoleCatalogue({
           </fieldset>
         </form></DialogContent></Dialog>
       )}
+      {deleting !== null && <ConfirmDialog title={`Delete ${deleting}?`}
+        body="This removes the role from the catalogue. A role still assigned to someone will be refused; withdraw those assignments first."
+        confirmLabel="Delete role" busy={busy} onCancel={() => setDeleting(null)} onConfirm={() => remove(deleting)} />}
     </section>
   );
 }
@@ -386,6 +393,7 @@ export function UserAppRoles({
   const [refusal, setRefusal] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [assigning, setAssigning] = useState(false);
+  const [withdrawing, setWithdrawing] = useState<{ role: string; clientId: string | null } | null>(null);
   const [search, setSearch] = useState('');
   const writable = mayWrite(session);
   const path = heldPath(userId);
@@ -467,11 +475,13 @@ export function UserAppRoles({
     mutate(withdrawPath(userId, role, clientId), 'DELETE', session).then(
       () => {
         setSaving(false);
+        setWithdrawing(null);
         onChanged(`${role} was withdrawn.`);
         refresh();
       },
       (error: unknown) => {
         setSaving(false);
+        setWithdrawing(null);
         setRefusal(failure(error, 'the role was not withdrawn'));
       },
     );
@@ -543,7 +553,7 @@ export function UserAppRoles({
                       <Button
                         small
                         disabled={busy || saving}
-                        onClick={() => withdraw(assignment.role, assignment.clientId)}
+                        onClick={() => setWithdrawing({ role: assignment.role, clientId: assignment.clientId })}
                       >
                         Withdraw <span className="visually-hidden">{assignment.role}</span>
                       </Button>
@@ -576,6 +586,10 @@ export function UserAppRoles({
           </form>
         </DialogContent>
       </Dialog>
+      {withdrawing !== null && <ConfirmDialog title={`Withdraw ${withdrawing.role} from this user?`}
+        body="This direct assignment will stop contributing to new authorization decisions and tokens. Group-inherited access, if any, remains."
+        confirmLabel="Withdraw role" busy={saving} onCancel={() => setWithdrawing(null)}
+        onConfirm={() => withdraw(withdrawing.role, withdrawing.clientId)} />}
 
     </Panel>
   );

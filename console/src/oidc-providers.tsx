@@ -11,7 +11,7 @@ interface Inventory {
   readonly callback_url_template: string;
 }
 
-const EMPTY: ProviderDraft = { id: '', name: '', issuer: '', clientId: '', clientSecret: '', enabled: true, allowRegistration: false };
+const EMPTY: ProviderDraft = { id: '', name: '', issuer: '', clientId: '', usernameClaim: '', clientSecret: '', enabled: true, allowRegistration: false };
 
 type Load =
   | { readonly kind: 'loading' }
@@ -90,7 +90,7 @@ export function OidcProviders({ session }: Readonly<{ session: Session }>): JSX.
           <thead><tr><th>Provider</th><th>Issuer</th><th>Status</th><th>Callback URL</th>{canWrite && <th>Actions</th>}</tr></thead>
           <tbody>{ready.providers.map((provider) => <tr key={provider.id}>
             <td><strong>{provider.name}</strong><br /><small>{provider.id}</small></td>
-            <td><code>{provider.issuer}</code><br /><small>Client: {provider.client_id}</small></td>
+            <td><code>{provider.issuer}</code><br /><small>Client: {provider.client_id}</small><br /><small>Username claim: {provider.username_claim ?? 'Generated name'}</small></td>
             <td><Badge tone={provider.enabled ? 'ok' : 'neutral'}>{provider.enabled ? 'Enabled' : 'Disabled'}</Badge><br /><small>{provider.secret_configured ? 'Secret configured' : 'Secret needed'}</small><br /><small>{provider.allow_registration ? 'First login creates an account' : 'Existing linked accounts only'}</small></td>
             <td><code className="break-all">{provider.callback_url}</code></td>
             {canWrite && <td><div className="flex flex-wrap gap-2">
@@ -106,6 +106,7 @@ export function OidcProviders({ session }: Readonly<{ session: Session }>): JSX.
         <Field label="Display name" required>{props => <input {...props} value={draft.name} onChange={event => change({ name: event.target.value })} />}</Field>
         <Field label="Issuer URL" required hint="Exact HTTPS issuer from the provider's discovery document.">{props => <input {...props} type="url" value={draft.issuer} placeholder="https://login.example.com" onChange={event => change({ issuer: event.target.value })} />}</Field>
         <Field label="Client ID" required hint="Register this tenant as a client at the external provider first.">{props => <input {...props} value={draft.clientId} autoComplete="off" onChange={event => change({ clientId: event.target.value })} />}</Field>
+        <Field label="Username claim" hint="Optional top-level ID token claim. New accounts use it, and linked account usernames sync on every sign-in. A missing or already used name blocks sign-in. Leave blank to keep generated names.">{props => <input {...props} value={draft.usernameClaim} placeholder="preferred_username" autoComplete="off" onChange={event => change({ usernameClaim: event.target.value })} />}</Field>
         <Field label={editing ? 'Replace client secret' : 'Client secret'} required={!editing} hint={editing ? 'Leave blank to keep the existing secret. Existing secrets are never shown.' : 'Saved encrypted; it cannot be read back.'}>{props => <input {...props} type="password" value={draft.clientSecret} autoComplete="new-password" onChange={event => change({ clientSecret: event.target.value })} />}</Field>
         <label className="flex items-center gap-2"><input type="checkbox" checked={draft.enabled} onChange={event => change({ enabled: event.target.checked })} /> Enable this provider</label>
         <label className="flex items-center gap-2"><input type="checkbox" checked={draft.allowRegistration} onChange={event => change({ allowRegistration: event.target.checked })} /> Create a new local account on first verified sign-in</label>

@@ -109,6 +109,7 @@ test('rotating from the console signs with a new kid and keeps publishing the pr
   // rotation only *stages* a key — it starts signing after the propagation
   // period, which is hours away and is not what this asserts.
   await section.getByRole('button', { name: 'Rotate and sign immediately' }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Rotate and sign immediately', exact: true }).click();
   await expect(page.getByRole('status')).toContainText('is now signing');
 
   // Assert: the screen agrees a different key is signing…

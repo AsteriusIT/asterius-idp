@@ -62,6 +62,7 @@ import {
   Actions,
   Badge,
   Button,
+  ConfirmDialog,
   DataTable,
   EmptyState,
   Field,
@@ -799,6 +800,7 @@ function Editor({
   onRevokeSecret: () => void;
   onClose: () => void;
 }>): JSX.Element {
+  const [confirmingRevoke, setConfirmingRevoke] = useState(false);
   const heading =
     editing.kind === 'existing' ? `Editing ${editing.document.client_id}` : 'New client';
   const toggleGrant = (name: string, on: boolean): void =>
@@ -971,7 +973,7 @@ function Editor({
             <p className="muted">Rotate to issue a replacement once, or revoke to stop shared-secret authentication until a new secret is issued.</p>
             <Actions>
               <Button type="button" disabled={busy} onClick={onRotateSecret}>Rotate secret</Button>
-              <Button type="button" variant="danger" disabled={busy} onClick={onRevokeSecret}>Revoke secret</Button>
+              <Button type="button" variant="danger" disabled={busy} onClick={() => setConfirmingRevoke(true)}>Revoke secret</Button>
             </Actions>
           </div>}
           {draft.token_endpoint_auth_method !== 'none' && editing.kind === 'existing' && editing.document.jwks !== undefined && (
@@ -1174,6 +1176,14 @@ function Editor({
           </Button>}
         </Actions>
       </form>
+      {confirmingRevoke && editing.kind === 'existing' && <ConfirmDialog
+        title={`Revoke ${editing.document.client_id}'s secret?`}
+        body="Clients using this shared secret will be unable to authenticate until a new secret is issued and deployed."
+        confirmLabel="Revoke secret"
+        busy={busy}
+        onCancel={() => setConfirmingRevoke(false)}
+        onConfirm={() => { setConfirmingRevoke(false); onRevokeSecret(); }}
+      />}
     </Panel>
   );
 }

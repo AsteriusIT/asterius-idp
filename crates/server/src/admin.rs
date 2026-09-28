@@ -624,6 +624,7 @@ impl DeploymentOidcProviders {
             token_endpoint: provider.token_endpoint,
             jwks_uri: provider.jwks_uri,
             client_id: provider.client_id,
+            username_claim: provider.username_claim,
             enabled: provider.enabled,
             allow_registration: provider.allow_registration,
             secret_configured: true,
@@ -794,6 +795,7 @@ impl asterius_admin_api::oidc_providers::ProviderAdministration for DeploymentOi
             token_endpoint: document.token_endpoint,
             jwks_uri: document.jwks_uri,
             client_id: input.client_id,
+            username_claim: input.username_claim,
             enabled: input.enabled,
             allow_registration: input.allow_registration,
             created_at: time::OffsetDateTime::now_utc(),
@@ -2021,6 +2023,18 @@ impl DeploymentUsers {
 
 #[async_trait::async_trait]
 impl asterius_domain::UserAdministration for DeploymentUsers {
+    async fn external_provider_names(
+        &self,
+        tenant: &TenantId,
+        users: &[asterius_domain::UserId],
+    ) -> Result<Vec<(asterius_domain::UserId, String)>, DomainError> {
+        self.store
+            .scope(tenant.clone())
+            .oidc_bindings()
+            .provider_names_for_users(users)
+            .await
+    }
+
     async fn scim_replace_profile(
         &self,
         replacement: asterius_domain::ScimProfileReplacement,

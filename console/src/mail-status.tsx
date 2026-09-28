@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { mutate, read, type Session } from './api';
-import { Badge, Button, DataTable, EmptyState, LoadFailure, Panel, Screen, Skeleton, Timestamp } from './ui';
+import { Badge, Button, ConfirmDialog, DataTable, EmptyState, LoadFailure, Message, Panel, Screen, Skeleton, Timestamp } from './ui';
 
 interface MailRow {
   readonly id: number;
@@ -35,7 +35,8 @@ type Load =
 export function MailStatus({ session }: Readonly<{ session: Session }>): JSX.Element {
   const [load, setLoad] = useState<Load>({ kind: 'loading' });
   const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ tone: 'success' | 'error'; text: string } | null>(null);
+  const [revoking, setRevoking] = useState<InvitationRow | null>(null);
   const refresh = useCallback(() => {
     setLoad({ kind: 'loading' });
     Promise.all([read('notifications/status'), read('invitations')]).then(
@@ -61,16 +62,17 @@ export function MailStatus({ session }: Readonly<{ session: Session }>): JSX.Ele
         await mutate(`invitations/${row.id}/resend`, 'POST', session, {
           expires_at: Math.floor(Date.now() / 1000) + 24 * 60 * 60,
         });
-        setNotice(`A fresh one-use invitation link was queued for ${row.email}. The previous link no longer works.`);
+        setNotice({ tone: 'success', text: `A fresh one-use invitation link was queued for ${row.email}. The previous link no longer works.` });
       } else {
         await mutate(`invitations/${row.id}`, 'DELETE', session);
-        setNotice(`The invitation for ${row.email} was revoked.`);
+        setNotice({ tone: 'success', text: `The invitation for ${row.email} was revoked.` });
       }
       refresh();
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : 'The invitation action failed');
+      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'The invitation action failed' });
     } finally {
       setBusy(false);
+      setRevoking(null);
     }
   };
 
@@ -80,7 +82,7 @@ export function MailStatus({ session }: Readonly<{ session: Session }>): JSX.Ele
       description={`Recent account messages for ${session.workspace}. Sent means the provider accepted a message; inbox delivery is not confirmed.`}
       actions={<Button onClick={refresh}>Refresh</Button>}
     >
-      {notice !== null && <p role="status" className="muted">{notice}</p>}
+      {notice !== null && <Message tone={notice.tone}>{notice.text}</Message>}
       <Panel title="Recent invitations" description="Expired links cannot be used. Resending rotates the token and invalidates every earlier link. No token or message content is shown.">
         {load.kind === 'loading' && <Skeleton label="Loading invitation status" />}
         {load.kind === 'ready' && (
@@ -97,14 +99,14 @@ export function MailStatus({ session }: Readonly<{ session: Session }>): JSX.Ele
                 key: 'actions', header: 'Actions', cell: (row: InvitationRow) => row.status === 'pending' || row.status === 'expired' ? (
                   <span className="row">
                     <Button disabled={busy} onClick={() => void actOnInvitation(row, 'resend')}>Resend</Button>
-                    <Button variant="danger" disabled={busy} onClick={() => void actOnInvitation(row, 'revoke')}>Revoke</Button>
+                    <Button variant="danger" disabled={busy} onClick={() => setRevoking(row)}>Revoke</Button>
                   </span>
                 ) : '—',
               }] : []),
             ]}
           />
         )}
-        {load.kind === 'failed' && <p className="muted">Invitation status could not be loaded.</p>}
+        {load.kind === 'failed' && <LoadFailure message={load.message} onRetry={refresh} />}
       </Panel>
       <Panel title="Recent messages" description="Recipient addresses and message contents are never shown here.">
         {load.kind === 'loading' && <Skeleton label="Loading mail status" />}
@@ -133,6 +135,14 @@ export function MailStatus({ session }: Readonly<{ session: Session }>): JSX.Ele
           />
         )}
       </Panel>
+      {revoking !== null && <ConfirmDialog
+        title={`Revoke invitation for ${revoking.username}?`}
+        body="The existing one-use link will stop working. The user will need a new invitation to finish setup."
+        confirmLabel="Revoke invitation"
+        busy={busy}
+        onCancel={() => setRevoking(null)}
+        onConfirm={() => void actOnInvitation(revoking, 'revoke')}
+      />}
     </Screen>
   );
 }
