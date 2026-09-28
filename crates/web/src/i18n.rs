@@ -304,6 +304,24 @@ catalogue! {
         ErrorGeneric => error_generic, "error.generic",
             en: "We could not complete that request.",
             fr: "Nous n'avons pas pu traiter cette demande.";
+        ErrorExternalSignInTitle => error_external_sign_in_title, "error.external-sign-in-title",
+            en: "We could not sign you in",
+            fr: "La connexion n'a pas abouti";
+        ErrorExternalSignInFailed => error_external_sign_in_failed, "error.external-sign-in-failed",
+            en: "Sign-in was cancelled or could not be completed. Your sign-in request may have expired.",
+            fr: "La connexion a été annulée ou n'a pas pu aboutir. Votre demande a peut-être expiré.";
+        ErrorExternalSignInUnavailable => error_external_sign_in_unavailable, "error.external-sign-in-unavailable",
+            en: "Sign-in is temporarily unavailable. Please try again later.",
+            fr: "La connexion est temporairement indisponible. Veuillez réessayer plus tard.";
+        ErrorExternalSignInRetryHint => error_external_sign_in_retry_hint, "error.external-sign-in-retry-hint",
+            en: "Return to sign-in to try again or choose another available method.",
+            fr: "Revenez à la connexion pour réessayer ou choisir une autre méthode disponible.";
+        ErrorExternalSignInRetry => error_external_sign_in_retry, "error.external-sign-in-retry",
+            en: "Return to sign-in",
+            fr: "Revenir à la connexion";
+        ErrorExternalSignInRestart => error_external_sign_in_restart, "error.external-sign-in-restart",
+            en: "Return to the application you were trying to access and start a new sign-in request.",
+            fr: "Revenez à l'application souhaitée et lancez une nouvelle demande de connexion.";
         ErrorTryAgain => error_try_again, "error.try-again",
             en: "Something went wrong. Please try again.",
             fr: "Une erreur est survenue. Veuillez réessayer.";

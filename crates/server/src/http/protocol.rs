@@ -51,7 +51,7 @@ use crate::http::{
 };
 use crate::tenancy::MountPrefix;
 use crate::tenant_settings::SettingsDirectory;
-use asterius_domain::ports::{ClientMetadataDocumentCache as _, ThemeRepository as _};
+use asterius_domain::ports::{ClientMetadataDocumentCache as _, InteractionRepository as _, ThemeRepository as _};
 use asterius_domain::{Capabilities, DomainError, KeyStore, Tenant, TokenLifetimes};
 use asterius_oidc::client_auth::{AssertionRules, Attempt};
 use asterius_oidc::metadata::{self, Endpoint};
@@ -5599,14 +5599,21 @@ async fn interaction_submit(
 }
 
 /// Starts an upstream login from the existing browser-bound interaction.
+#[allow(clippy::too_many_arguments)]
+// Browser error pages require the same tenant presentation as the login page.
 async fn upstream_begin(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
     Path((id, provider_id)): Path<(String, String)>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    theme: Option<Extension<Arc<asterius_domain::Theme>>>,
+    mount: Option<Extension<MountPrefix>>,
     headers: axum::http::HeaderMap,
 ) -> Response {
+    let theme = crate::http::theme_of(theme.as_ref());
+    let mount = mount_of(mount);
     if endpoints.upstream_identity_resolver.is_none() {
-        return unavailable();
+        return upstream_sign_in_error(&endpoints, &tenant, &headers, &nonce, theme, &mount, StatusCode::SERVICE_UNAVAILABLE).await;
     }
     let scope = endpoints.store.scope(tenant.id.clone());
     match upstream_oidc::begin(
@@ -5622,8 +5629,8 @@ async fn upstream_begin(
     .await
     {
         Ok(url) => axum::response::Redirect::to(&url).into_response(),
-        Err(upstream_oidc::FlowError::Refused(_)) => StatusCode::BAD_REQUEST.into_response(),
-        Err(upstream_oidc::FlowError::Unavailable) => unavailable(),
+        Err(upstream_oidc::FlowError::Refused(_)) => upstream_sign_in_error(&endpoints, &tenant, &headers, &nonce, theme, &mount, StatusCode::BAD_REQUEST).await,
+        Err(upstream_oidc::FlowError::Unavailable) => upstream_sign_in_error(&endpoints, &tenant, &headers, &nonce, theme, &mount, StatusCode::SERVICE_UNAVAILABLE).await,
     }
 }
 
@@ -5642,19 +5649,21 @@ async fn upstream_callback(
     mount: Option<Extension<MountPrefix>>,
     headers: axum::http::HeaderMap,
 ) -> Response {
+    let theme = crate::http::theme_of(theme.as_ref());
+    let mount = mount_of(mount);
     let Some(resolver) = endpoints.upstream_identity_resolver.as_ref() else {
-        return unavailable();
+        return upstream_sign_in_error(&endpoints, &tenant, &headers, &nonce, theme, &mount, StatusCode::SERVICE_UNAVAILABLE).await;
     };
     let Some((state, code, response_issuer)) = upstream_callback_parameters(query.as_deref())
     else {
         tracing::warn!(tenant = %tenant.id, provider_id, reason = "invalid_callback_parameters", "upstream sign-in callback refused");
-        return StatusCode::BAD_REQUEST.into_response();
+        return upstream_sign_in_error(&endpoints, &tenant, &headers, &nonce, theme, &mount, StatusCode::BAD_REQUEST).await;
     };
     let Some(interaction_id) =
         asterius_web::interaction::id_from_cookie_header(&crate::http::cookies(&headers))
     else {
         tracing::warn!(tenant = %tenant.id, provider_id, reason = "missing_interaction_cookie", "upstream sign-in callback refused");
-        return StatusCode::BAD_REQUEST.into_response();
+        return upstream_sign_in_error(&endpoints, &tenant, &headers, &nonce, theme, &mount, StatusCode::BAD_REQUEST).await;
     };
     let now = time::OffsetDateTime::now_utc();
     let scope = endpoints.store.scope(tenant.id.clone());
@@ -5683,14 +5692,13 @@ async fn upstream_callback(
                 reason,
                 "upstream sign-in callback refused"
             );
-            return StatusCode::BAD_REQUEST.into_response();
+            return upstream_sign_in_error(&endpoints, &tenant, &headers, &nonce, theme, &mount, StatusCode::BAD_REQUEST).await;
         }
-        Err(upstream_oidc::FlowError::Unavailable) => return unavailable(),
+        Err(upstream_oidc::FlowError::Unavailable) => return upstream_sign_in_error(&endpoints, &tenant, &headers, &nonce, theme, &mount, StatusCode::SERVICE_UNAVAILABLE).await,
     };
-    let theme = crate::http::theme_of(theme.as_ref());
     let Ok(settings) = settings_for_directory(endpoints.tenant_settings.as_ref(), &tenant.id).await
     else {
-        return unavailable();
+        return upstream_sign_in_error(&endpoints, &tenant, &headers, &nonce, theme, &mount, StatusCode::SERVICE_UNAVAILABLE).await;
     };
     let requests = scope.auth_requests();
     let totp_credentials = scope.totp_credentials(Arc::clone(&endpoints.kek));
@@ -5703,20 +5711,20 @@ async fn upstream_callback(
     let passwords = endpoints.passwords(&tenant.id);
     let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
     let Ok(lifetimes) = lifetimes_for(&endpoints, &tenant).await else {
-        return unavailable();
+        return upstream_sign_in_error(&endpoints, &tenant, &headers, &nonce, theme, &mount, StatusCode::SERVICE_UNAVAILABLE).await;
     };
     let Ok(memory) = memory_policy_for(&endpoints, &tenant).await else {
-        return unavailable();
+        return upstream_sign_in_error(&endpoints, &tenant, &headers, &nonce, theme, &mount, StatusCode::SERVICE_UNAVAILABLE).await;
     };
     let Ok(capabilities) = capabilities_for(&endpoints, &tenant).await else {
-        return unavailable();
+        return upstream_sign_in_error(&endpoints, &tenant, &headers, &nonce, theme, &mount, StatusCode::SERVICE_UNAVAILABLE).await;
     };
     let grant_amendments: Option<&dyn asterius_domain::GrantAmendments> = capabilities
         .is_enabled(asterius_domain::Feature::GrantManagement)
         .then_some(&grants);
     let language = page_language(&endpoints, &tenant, &headers).await;
     let Ok(gated) = requires_a_verified_email(&endpoints, &tenant).await else {
-        return unavailable();
+        return upstream_sign_in_error(&endpoints, &tenant, &headers, &nonce, theme, &mount, StatusCode::SERVICE_UNAVAILABLE).await;
     };
     let upstream_providers = if endpoints.upstream_identity_resolver.is_some() {
         match scope
@@ -5725,7 +5733,7 @@ async fn upstream_callback(
             .await
         {
             Ok(providers) => providers,
-            Err(_) => return unavailable(),
+            Err(_) => return upstream_sign_in_error(&endpoints, &tenant, &headers, &nonce, theme, &mount, StatusCode::SERVICE_UNAVAILABLE).await,
         }
     } else {
         Vec::new()
@@ -5758,7 +5766,7 @@ async fn upstream_callback(
             nonce: &nonce,
             throttle: throttle(&endpoints, &limiter, client.as_deref()),
             audit: endpoints.audit.as_ref(),
-            mount: mount_of(mount),
+            mount,
             registrar: registrar(&users, passwords.as_ref(), capabilities),
             directory: &users,
             verification: gated.then_some(crate::http::verify_email::Gate {
@@ -5773,6 +5781,64 @@ async fn upstream_callback(
         now,
     )
     .await
+}
+
+/// Only the browser cookie can select a retry interaction. Callback parameters
+/// and provider errors are never used as page text or navigation targets.
+async fn upstream_sign_in_error(
+    endpoints: &ClientEndpoints,
+    tenant: &Tenant,
+    headers: &axum::http::HeaderMap,
+    nonce: &asterius_web::csp::Nonce,
+    theme: &asterius_domain::Theme,
+    mount: &MountPrefix,
+    status: StatusCode,
+) -> Response {
+    let language = page_language(endpoints, tenant, headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    let mut retry_url = None;
+    if let Some(id) = asterius_web::interaction::id_from_cookie_header(&crate::http::cookies(headers))
+        && let Ok(Some(record)) = endpoints.store.scope(tenant.id.clone()).auth_requests()
+            .by_interaction(&id.digest(), time::OffsetDateTime::now_utc()).await
+        {
+            let stage = asterius_web::interaction::StoredState::from_stored(&record.state).stage;
+            retry_url = upstream_retry_url(id.expose(), stage, mount);
+    }
+    let correlation_id = asterius_web::interaction::correlation_id();
+    tracing::warn!(tenant = %tenant.id, %correlation_id, %status, "external sign-in error page");
+    let chrome = crate::http::ThemeChrome::new(theme, mount);
+    let font_url = crate::http::font_url(mount);
+    let mut response = asterius_web::Document::render(nonce, |nonce| {
+        asterius_web::pages::render(&asterius_web::pages::ExternalSignInErrorPage {
+            text: &text,
+            tenant_name: &tenant.display_name,
+            message: if status == StatusCode::SERVICE_UNAVAILABLE {
+                text.error_external_sign_in_unavailable()
+            } else {
+                text.error_external_sign_in_failed()
+            },
+            retry_url: retry_url.as_deref(),
+            correlation_id: &correlation_id,
+            nonce_attribute: asterius_web::pages::nonce_attribute(nonce),
+            theme_css: &chrome.css,
+            brand: chrome.brand(&font_url),
+        })
+    }).into_response();
+    *response.status_mut() = status;
+    response
+}
+
+fn upstream_retry_url(
+    id: &str,
+    stage: asterius_web::interaction::Stage,
+    mount: &MountPrefix,
+) -> Option<String> {
+    use asterius_web::interaction::Stage;
+    (matches!(stage, Stage::Login | Stage::StepUp)
+        && !id.is_empty()
+        && id.len() <= 512
+        && id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_'))
+        .then(|| mount.absolute(&format!("/interaction/{id}")))
 }
 
 /// Rejects duplicate and ambiguous callback parameters before consuming state.
@@ -7865,6 +7931,19 @@ fn device_context<'a>(
 mod tests {
     use super::{Endpoint, gated_endpoint, upstream_callback_parameters};
     use asterius_domain::LimitedEndpoint;
+
+    #[test]
+    fn upstream_retry_links_stay_at_the_login_stage_and_inside_the_tenant_mount() {
+        use asterius_web::interaction::Stage;
+        use crate::tenancy::MountPrefix;
+        let mount = MountPrefix::for_tenant(&asterius_domain::TenantId::new("demo"));
+        assert_eq!(super::upstream_retry_url("safe_id-123", Stage::Login, &mount).as_deref(), Some("/t/demo/interaction/safe_id-123"));
+        assert!(super::upstream_retry_url("safe", Stage::StepUp, &mount).is_some());
+        assert!(super::upstream_retry_url("safe", Stage::Consent, &mount).is_none());
+        for hostile in ["", "//evil.example", "../callback", "safe?code=secret", "safe#fragment", "<script>"] {
+            assert!(super::upstream_retry_url(hostile, Stage::Login, &mount).is_none());
+        }
+    }
 
     #[test]
     fn upstream_callback_rejects_duplicate_and_error_parameters() {
