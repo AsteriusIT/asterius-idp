@@ -130,30 +130,30 @@ rather than a hidden claim of completion. The single Bead records acceptance.
 | Recommendation | Implementation / disposition |
 | --- | --- |
 | R01 | Converted all three inline account pages to shared templates. New page chrome/actions are EN/FR; existing server refusal messages remain as previously supplied. |
-| R02 | Shared guard for user identity/create, applications, settings, branding, providers, policy, schemas and group/resource dialogs. Existing architecture guard retained. Other short role/assignment dialogs retain existing behavior; extending them requires per-editor dirty semantics. |
+| R02 | Shared draft guards include administrative role, application-role creation and assignment dialogs; Cancel, Escape and outside dismissal use the same inline discard choice. |
 | R03 | Resource/type withdrawal confirmed; shared dialog failure behavior fixed. New account removal disclosure/acknowledgement chosen instead of an extra GET/POST confirmation endpoint. Existing passkey/session security constraints retained. |
 | R04 | Central 401 shell recovery and distinct fallback guidance for access/conflict/throttling/service/network failure. Writes are never automatically retried. Request URLs are explicitly restricted to the current-origin workspace API or read-only discovery documents. No expiry countdown without authoritative expiry data; no new return-URL parameter. |
-| R05 | User/client ID and tab URLs, page titles and heading focus delivered. List scroll/filter history and links for every other entity are deferred; personal search terms are not persisted. |
+| R05 | User/application IDs and tabs and audit event links are addressable. Users/Applications preserve search, server order, cursor and scroll in authenticated-shell memory, cleared on sign-out; personal search terms are not stored or put in URLs. |
 | R06 | New labelled grouping and Architecture destination. Existing workspace/account menus retained; optional command palette declined to avoid competing Ctrl/Cmd+K shortcuts. |
-| R07 | Loaded-row labels, contained accessible table scrolling and mobile minimum widths. Existing server pagination remains authoritative; global sort/search and alternative mobile cards require endpoint-specific work. |
-| R08 | Existing Field associations retained; persistent errors and failed-dialog behavior fixed. Full field-linked public error summaries require typed backend field errors and are deferred. |
-| R09 | Passkey live region, TOTP error-focus fix, route title/focus, dialog focus return and non-drag architecture controls delivered. Automated checks are limited evidence; real screen-reader/forced-colors/zoom checks remain acceptance work. |
-| R10 | Tenant Help/Privacy/Terms connected end to end; new account templates translated. Console deliberately remains English; wider public translation and server-message catalogue migration are deferred, not labelled complete. |
+| R07 | Users and Applications now search and sort before server pagination. Applications expose next/first page controls. Existing contained, keyboard-accessible table scrolling is retained. Other catalogues retain their existing loading/filter behavior, per the agreed first scope. |
+| R08 | Persistent form errors and failed-dialog behavior are retained. Registration now maps typed backend validation failures to field links beside the shared error summary. Generic credential and account-conflict responses remain generic. Other public forms retain existing error handling. |
+| R09 | Passkey live status, TOTP error focus, route heading focus, dialog focus return and non-drag architecture controls. Automated axe, keyboard and reflow/document-zoom checks cover representative new screens. Human screen-reader and moderated usability testing remain outstanding by agreement. |
+| R10 | Tenant Help/Privacy/Terms and EN/FR public account templates retained. Console English only, as requested; no console language selector. |
 | R11 | Shared final-layer dimensions and documentation reconciled; existing Geist/tenant palette preserved. No framework replacement. |
 | R12 | Gutters, bottom clearance, modal viewport limits, reduced motion and a measured dark-hover contrast correction. Focused viewport/theme checks cover the schema editor; all-screen/palette qualification remains acceptance work. |
-| R13 | Existing role-aware shortcuts, independent metrics and drill-downs retained; received timestamp added and oversized identity header reduced. Optional checklist deferred until real completion data exists. |
-| R14 | Group member search replaces exact-username lookup; user summary width reduced. Existing role provenance and disable/identity confirmation retained. Effective access/last sign-in/cross-links are not inferred from incomplete data. |
-| R15 | Existing expert creation/setup guide retained; optional additional wizard declined in this change. Secret copy feedback and exit warning delivered. Local checks remain distinct from actual sign-in. |
-| R16 | Full-page schema editor, safe wording preview and withdrawal confirmations. Existing JSON validation remains; sample-payload evaluation and authorized client picker are deferred. Resource lifetime still shows exact seconds versus tenant default. |
-| R17 | Existing provider callbacks, mapping instructions, SAML metadata and SCIM limitations retained. No new import/test/status endpoint or assumed connectivity. |
+| R13 | Role-aware shortcuts, independent metrics and drill-downs plus an optional setup checklist based on authorized account, application and signing-key counts. Checklist completion is not a production-readiness claim. |
+| R14 | User access overview links grants and direct/group-inherited roles, and reads the latest successful recorded sign-in with audit permission. The scan is bounded to the latest 1,000 sign-in attempts and states when older inspection is needed. This is not an effective-policy evaluator. |
+| R15 | Optional six-step application setup wizard, review before registration, switch to full editor without losing the draft. Existing expert setup, one-time secret warning and connection configuration remain. |
+| R16 | Schema sample evaluation uses the production backend validator without saving. Application Access & grants includes a registered authorization-detail type picker and preserves unknown existing types. |
+| R17 | OIDC public discovery/JWKS checks run automatically once per minute while the provider page is visible, with manual retry. SAML, federation and email provide manual saved-configuration/status checks; SCIM retains configuration inspection. No client-secret exchange, live SAML/SCIM transaction or email delivery is claimed. |
 | R18 | Existing API-backed lifecycle and confirmations retained. Timeline/expiry forecasting declined without authoritative overlap/expiry data. |
-| R19 | Dirty-state guard added; existing evaluator/rule/document editor and keyboard assurance ordering retained. Versioned publish/history/rollback and authoritative impact preview require backend work. |
-| R20 | Audit UTC presets, export explanation and read-only inspection drawer delivered. Existing mail/signal retry/drop/resend behavior retained. Shareable event/delivery pages, cross-links and server-wide export progress are deferred. |
-| R21 | Guarded tenant switching/settings/branding delivered. Existing capability tabs, creation next steps, suspend controls and local preferences retained. Additional production-rendered branding preview modes are deferred. |
+| R19 | Policy saves publish immediately. A database trigger atomically records every publication, including clear/restore, retaining the latest 100 versions per tenant. Existing policy is backfilled at migration; prior history cannot be reconstructed. Restore requires confirmation and publishes a new version. No policy-impact prediction is claimed. |
+| R20 | Audit details have reloadable tenant-scoped links and copy-link action. Existing UTC filters, export and mail/signal operations remain. Dedicated mail-delivery URLs and asynchronous export progress are outside this implementation. |
+| R21 | Saved branding can be previewed through the actual production login template in login, invalid-credentials and step-up modes. Preview controls are inert; saving is required before preview reflects changes. |
 | R22 | Object/connection list offers inspect/add/remove without drag, preserving review/apply semantics. Existing responsive stacked inspector retained; full mobile editor qualification remains manual acceptance. |
 | R23 | Existing role-aware guides retained. No extra documentation product area or optional navigation search. |
 | R24 | Provider button treatment, passkey live status and existing password fallback retained. Optional password reveal and identifier-first flow declined; no new credential collection step. |
-| R25 | Local QR, manual key, confirm step, pending/restart and existing recovery constraints. No recovery-code capability invented. |
+| R25 | Local QR/manual enrollment, confirmation/restart and removal retained. Settings → Authentication exposes authenticator policy activation, preserving existing assurance levels; the account page states whether tenant policy uses TOTP. Enrollment alone does not activate tenant policy. |
 | R26 | Invitation completion continuation delivered. Existing anti-enumerating recovery responses and policy-driven entry paths retained; no unsupported cooldown or duration invented. |
 | R27 | Absolute approval expiry added. Existing permission review, origin warnings, deny and terminal states retained. No auto-approval or assumed verified client display name. |
 | R28 | Account links grouped and outlier security pages branded. Existing passkey/session/grant controls retained; no invented security score or device/IP facts. |
@@ -179,7 +179,7 @@ review. Real assistive-technology checks and the full critical-journey acceptanc
 against a running configured tenant remain explicit acceptance gates. Existing
 `e2e` backend journeys remain CI/deployment evidence, not claimed local results.
 
-### Local verification, 2026-09-29
+### Initial local verification, 2026-09-29
 
 - Console production build/typecheck and 35 focused model/API tests passed.
 - 13 focused browser scenarios passed: nine console behaviors plus the five new
@@ -202,3 +202,36 @@ npm --prefix console run build
 E2E_SHOTS=docs/console/experience-review ./e2e/node_modules/.bin/playwright test \
   --config=e2e/playwright.config.ts console-experience.spec.ts account-experience.spec.ts
 ```
+
+### Follow-up scope agreed with the administrator
+
+Keep the current brand and English console. Include backend support for the
+application wizard, schema samples, policy versions, audit links and directory
+sorting. Publish policy saves immediately; restore is another publication.
+Start global directory search/order with Users and Applications. Use automatic
+OIDC metadata checks and manual configuration checks for other integrations.
+Keep human screen-reader and moderated usability testing explicitly outstanding.
+
+Migration `0150` adds bounded policy history without changing the active policy.
+The TOTP activation control changes a draft; **Save settings** publishes it.
+Deployment does not automatically change any tenant's authenticator policy.
+The latest verification counts and local deployment are recorded in `ast-1k13`.
+
+Follow-up local evidence (2026-09-29): production console build/typecheck and
+17 focused model tests passed. Twenty-five focused browser scenarios passed
+across the main run and corrected targeted reruns, including tenant TOTP policy
+save/reload, audit links, rollback refusal, guided setup, search/order memory,
+OIDC automatic checks, manual configuration checks, and last-successful-sign-in
+selection. Axe checks passed in both themes at 320/1440px for the wizard and
+assurance settings; keyboard tab navigation and 200% document zoom also passed.
+The earlier account/schema responsive checks remain covered.
+
+All-target Clippy passed. The broad targeted Rust selection passed 502 tests;
+the two failures (shared error-summary audit and missing-provider response)
+were corrected, and the final 39-test selection passed, including exact golden
+snapshots, whole-tree audits and application sorting before pagination.
+Both new PostgreSQL tests passed against a migrated disposable PostgreSQL 16
+instance: policy-history atomicity/retention/tenant isolation and descending
+user search with tenant-scoped pagination. JSON sentinel inspection passed.
+No full local Rust suite was run; remote CI was not invoked for this local-only
+follow-up. Human screen-reader and moderated usability testing remain open.

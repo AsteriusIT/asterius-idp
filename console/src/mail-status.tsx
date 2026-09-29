@@ -1,3 +1,4 @@
+import { ConfigurationCheck } from './configuration-check';
 /** Account mail delivery metadata. The API never supplies recipient or body. */
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
@@ -82,6 +83,13 @@ export function MailStatus({ session }: Readonly<{ session: Session }>): JSX.Ele
       description={`Recent account messages for ${session.workspace}. Sent means the provider accepted a message; inbox delivery is not confirmed.`}
       actions={<Button onClick={refresh}>Refresh</Button>}
     >
+      <ConfigurationCheck paths={['notifications/status']} evaluate={documents => {
+        const rows = (documents[0] as MailResponse).items;
+        return [
+          { pass: rows.length > 0, message: 'Recent delivery status records are available.', failureMessage: 'No delivery records are available; mail transport readiness is unverified.' },
+          { pass: !rows.some(row => row.status === 'failed' || row.status === 'abandoned'), message: 'No failed or abandoned deliveries in the returned status records.', failureMessage: 'Failed or abandoned deliveries need review in the returned status records.' },
+        ];
+      }} />
       {notice !== null && <Message tone={notice.tone}>{notice.text}</Message>}
       <Panel title="Recent invitations" description="Expired links cannot be used. Resending rotates the token and invalidates every earlier link. No token or message content is shown.">
         {load.kind === 'loading' && <Skeleton label="Loading invitation status" />}

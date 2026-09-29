@@ -15791,3 +15791,52 @@ mod email_change {
         }
     }
 }
+
+db_test! {
+    #[ignore = "requires PostgreSQL; exercises publication history and tenant isolation"]
+    async fn policy_history_is_atomic_bounded_and_tenant_scoped(db) {
+        use asterius_domain::ports::PolicyStore;
+        use asterius_domain::policy::RuleSet;
+        seed_tenant(&db.pool, "history-a").await;
+        seed_tenant(&db.pool, "history-b").await;
+        let store = asterius_store_pg::PgPolicies::new(db.pool.clone());
+        let a = TenantId::new("history-a");
+        let b = TenantId::new("history-b");
+        let now = OffsetDateTime::now_utc();
+        for _ in 0..102 { store.replace(&a, &RuleSet::deny_all(), now).await.expect("publish"); }
+        let history = store.history(&a).await.expect("history");
+        assert_eq!(history.len(), 100);
+        assert!(history.windows(2).all(|pair| pair[0].id > pair[1].id));
+        assert!(store.history(&b).await.expect("other tenant").is_empty());
+        store.replace(&a, &history[99].policy.rules, now).await.expect("restore");
+        assert!(store.history(&a).await.expect("restored")[0].id > history[0].id);
+        store.clear(&a).await.expect("clear");
+        assert_eq!(store.history(&a).await.expect("deletion retained").len(), 100);
+        assert!(store.load(&a).await.expect("load").is_none());
+        let mut tx = db.pool.begin().await.expect("transaction");
+        sqlx::query("insert into tenant_policies (tenant_id, document) values ($1, '{\"version\":1,\"rules\":[]}'::jsonb)")
+            .bind(b.as_str()).execute(&mut *tx).await.expect("transactional publish");
+        tx.rollback().await.expect("rollback");
+        assert!(store.history(&b).await.expect("rolled back history").is_empty());
+        sqlx::query("delete from tenants where tenant_id = $1").bind(a.as_str()).execute(&db.pool).await.expect("delete tenant");
+        assert!(store.history(&a).await.expect("deleted tenant history").is_empty());
+    }
+}
+
+db_test! {
+    #[ignore = "requires PostgreSQL: sorted directory range scans"]
+    async fn descending_user_search_pages_globally_and_stays_in_tenant(db) {
+        seed_tenant(&db.pool, "sort-a").await;
+        seed_tenant(&db.pool, "sort-b").await;
+        for name in ["alice", "zara", "mila"] { seed_user(&db.pool, "sort-a", name).await; }
+        seed_user(&db.pool, "sort-b", "zulu").await;
+        let store = Store::from_pool(db.pool.clone());
+        let users = store.scope(TenantId::new("sort-a")).users(kek());
+        let first = users.search_ordered("", None, 2, true).await.expect("first page");
+        assert_eq!(first.iter().map(|user| user.username.as_str()).collect::<Vec<_>>(), vec!["zara", "mila"]);
+        let second = users.search_ordered("", Some("mila"), 2, true).await.expect("second page");
+        assert_eq!(second[0].username, "alice");
+        assert_eq!(second.len(), 1);
+        assert_eq!(users.search_ordered("ar", None, 2, true).await.expect("filtered")[0].username, "zara");
+    }
+}

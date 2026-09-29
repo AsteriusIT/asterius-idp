@@ -636,6 +636,34 @@ impl DeploymentOidcProviders {
 
 #[async_trait::async_trait]
 impl asterius_admin_api::oidc_providers::ProviderAdministration for DeploymentOidcProviders {
+    async fn check(&self, tenant: &TenantId, id: &str) -> Result<serde_json::Value, DomainError> {
+        let provider = self
+            .store
+            .scope(tenant.clone())
+            .oidc_providers(Arc::clone(&self.kek))
+            .list()
+            .await?
+            .into_iter()
+            .find(|provider| provider.id == id)
+            .ok_or(DomainError::NotFound)?;
+        let (issuer, keys, discovery) =
+            issuer_health_checks(self.outbound.as_ref(), &provider.issuer).await;
+        let endpoints_match = discovery.as_ref().is_some_and(|document| {
+            document["authorization_endpoint"].as_str()
+                == Some(provider.authorization_endpoint.as_str())
+                && document["token_endpoint"].as_str() == Some(provider.token_endpoint.as_str())
+                && document["jwks_uri"].as_str() == Some(provider.jwks_uri.as_str())
+        });
+        Ok(serde_json::json!({
+            "checked_at": time::OffsetDateTime::now_utc().unix_timestamp(),
+            "checks": [issuer, keys, {
+                "name": "stored_endpoints", "status": if endpoints_match { "pass" } else { "fail" },
+                "message": if endpoints_match { "Discovery endpoints match the saved registration." }
+                    else { "Discovery is unavailable or its endpoints differ from the saved registration. Review and save the provider configuration." }
+            }],
+        }))
+    }
+
     async fn list_bindings(
         &self,
         tenant: &TenantId,
@@ -2023,6 +2051,26 @@ impl DeploymentUsers {
 
 #[async_trait::async_trait]
 impl asterius_domain::UserAdministration for DeploymentUsers {
+    async fn search_ordered(
+        &self,
+        tenant: &TenantId,
+        term: &str,
+        after: Option<&str>,
+        limit: usize,
+        descending: bool,
+    ) -> Result<Vec<asterius_domain::User>, DomainError> {
+        self.store
+            .scope(tenant.clone())
+            .users(Arc::clone(&self.kek))
+            .search_ordered(
+                term,
+                after,
+                i64::try_from(limit).unwrap_or(i64::MAX),
+                descending,
+            )
+            .await
+    }
+
     async fn external_provider_names(
         &self,
         tenant: &TenantId,

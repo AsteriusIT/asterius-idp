@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block title %}{% if step_up %}{{ text.step_up_title() }}{% else %}{{ text.login_title() }}{% endif %} — {{ tenant_name }}{% endblock %}
-{% block content %}
+{% block content %}{% if preview %}<p role="status">Saved branding preview — sign-in controls are disabled.</p><fieldset disabled>{% endif %}
 {# The second page in this tree that runs script, and the reason
    `crates/web/src/source_audit.rs` carries a named exemption for it:
    `navigator.credentials.get()` is a JavaScript API, so a WebAuthn assertion
@@ -108,7 +108,7 @@
 <p class="muted">{{ text.login_no_script() }}</p>
 </noscript>
 
-<script {{ nonce_attribute }}>
+{% if !preview %}<script {{ nonce_attribute }}>
 (() => {
   "use strict";
   const root = document.getElementById("passkey-signin");
@@ -222,5 +222,5 @@
       .catch(() => null);
   }
 })();
-</script>
-{% endblock %}
+</script>{% endif %}
+{% if preview %}</fieldset>{% endif %}{% endblock %}

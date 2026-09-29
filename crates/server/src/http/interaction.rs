@@ -2344,7 +2344,8 @@ async fn create_account(
             .find(|(k, _)| k == name)
             .map(|(_, v)| v.as_str())
     };
-    let typed = TypedSignup {
+    let mut typed = TypedSignup {
+        error_field: None,
         username: field("username").unwrap_or_default().to_owned(),
         display_name: field("display_name").unwrap_or_default().to_owned(),
         email: field("email").unwrap_or_default().to_owned(),
@@ -2391,6 +2392,17 @@ async fn create_account(
         // (WCAG 2.2 SC 3.3.1) and says nothing about any account: every one of
         // these is a statement about what was typed.
         Err(refusal) => {
+            use asterius_domain::RegistrationError;
+            typed.error_field = match &refusal {
+                RegistrationError::UsernameMissing
+                | RegistrationError::UsernameTooLong
+                | RegistrationError::UsernameUnreadable => Some("username"),
+                RegistrationError::DisplayNameTooLong
+                | RegistrationError::DisplayNameUnreadable => Some("display_name"),
+                RegistrationError::EmailMissing | RegistrationError::EmailUnusable => Some("email"),
+                RegistrationError::Password(_) => Some("password"),
+                _ => None,
+            };
             return retry_signup(
                 context,
                 presented,
@@ -2866,6 +2878,7 @@ struct Screen<'a> {
 /// and in any proxy that logs bodies. Retyping it is the cost.
 #[derive(Debug, Default)]
 struct TypedSignup {
+    error_field: Option<&'static str>,
     /// The login identifier they chose.
     username: String,
     /// The display name, if they gave one.
@@ -3021,6 +3034,7 @@ fn sign_in_page(context: &InteractionContext<'_>, page: &SignInPage<'_>) -> Resp
         .collect();
     Document::render(context.nonce, |nonce| {
         pages::render(&LoginPage {
+            preview: false,
             upstream_providers: &links,
             text: page.text,
             tenant_name: &context.tenant.display_name,
@@ -3080,6 +3094,7 @@ fn sign_up_page(context: &InteractionContext<'_>, page: &SignUpPage<'_>) -> Resp
     let presentation = crate::http::ThemeChrome::new(context.theme, &context.mount);
     Document::render(context.nonce, |nonce| {
         pages::render(&pages::RegistrationPage {
+            error_field: page.typed.and_then(|typed| typed.error_field),
             text: page.text,
             tenant_name: &context.tenant.display_name,
             action: page.action,

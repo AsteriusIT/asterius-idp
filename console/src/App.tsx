@@ -1,3 +1,4 @@
+import { ViewMemoryProvider } from './view-memory';
 import { useUnsavedChanges } from './navigation-guard';
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
@@ -136,7 +137,7 @@ export function App(): JSX.Element {
   }
 
   return (
-    <SidebarProvider defaultOpen>
+    <ViewMemoryProvider key={`${shell.session.user}:${shell.session.workspace}`}><SidebarProvider defaultOpen>
       <AppTopbar
         session={shell.session}
         page={allowed ? (here?.label ?? 'Not found') : (here === undefined ? 'Not found' : 'Access unavailable')}
@@ -156,7 +157,7 @@ export function App(): JSX.Element {
         </main>
       </SidebarInset>
       <Toaster />
-    </SidebarProvider>
+    </SidebarProvider></ViewMemoryProvider>
   );
 }
 

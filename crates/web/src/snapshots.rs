@@ -142,6 +142,7 @@ const CSRF: &str = "snapshot-csrf";
 
 fn login(text: &Catalog) -> String {
     render(&LoginPage {
+        preview: false,
         upstream_providers: &[],
         text,
         tenant_name: TENANT,
@@ -563,6 +564,7 @@ fn account_sessions(text: &Catalog) -> String {
 
 fn registration(text: &Catalog) -> String {
     render(&RegistrationPage {
+        error_field: None,
         text,
         tenant_name: TENANT,
         action: "/register",
@@ -685,6 +687,7 @@ fn account_totp(text: &Catalog, state: &str) -> String {
         csrf: CSRF,
         message: None,
         active: state == "active",
+        login_enabled: state != "active",
         pending: state == "pending",
         provisioning: (state == "setup").then_some(("JBSWY3DPEHPK3PXP", uri)),
         qr: if state == "setup" {

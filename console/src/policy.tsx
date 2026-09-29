@@ -1,3 +1,4 @@
+import { PolicyHistory } from './policy-history';
 import { useUnsavedChanges } from './navigation-guard';
 /**
  * The Policy screen (`ast-f7m.9`): the tenant's AuthZEN rule document, and a
@@ -477,6 +478,7 @@ export function Policy({ session }: Readonly<{ session: Session }>): JSX.Element
         )}
       </Panel>
 
+      <PolicyHistory session={session} dirty={busy || draft !== baseline} onRestored={refresh} />
       <TestBench session={session} />
 
       {removing && (

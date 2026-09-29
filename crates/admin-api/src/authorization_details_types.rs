@@ -48,10 +48,51 @@ pub fn render(kind: &AuthorizationDetailsType) -> serde_json::Value {
     })
 }
 
+/// A bounded request evaluated by the same schema implementation as authorization.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SampleDocument {
+    pub schema: serde_json::Value,
+    pub sample: serde_json::Value,
+}
+
+pub fn validate_sample(document: &SampleDocument) -> Result<serde_json::Value, AdminError> {
+    let schema = JsonSchema::parse(&document.schema)
+        .map_err(|failure| AdminError::Invalid(format!("schema: {failure}")))?;
+    Ok(match schema.validate(&document.sample) {
+        Ok(()) => serde_json::json!({"valid": true}),
+        Err(error) => serde_json::json!({"valid": false, "message": error.to_string()}),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn samples_use_the_authorization_validator_without_reflecting_values() {
+        let result = validate_sample(&SampleDocument {
+            schema: json!({"type":"object","properties":{"amount":{"type":"string","maxLength":3}}}),
+            sample: json!({"amount":"private-value"}),
+        }).expect("valid schema");
+        assert_eq!(result["valid"], false);
+        assert!(
+            result["message"]
+                .as_str()
+                .expect("message")
+                .contains("amount")
+        );
+        assert!(!result.to_string().contains("private-value"));
+        assert_eq!(
+            validate_sample(&SampleDocument {
+                schema: json!({"type":"object"}),
+                sample: json!({})
+            })
+            .expect("valid sample")["valid"],
+            true
+        );
+    }
 
     #[test]
     fn unsupported_schema_keywords_are_explained() {

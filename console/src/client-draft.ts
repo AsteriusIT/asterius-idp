@@ -67,6 +67,7 @@ export function profilePresentation(profile: 'fapi' | 'oidc' | 'public'): {
 
 /** What the form holds while it is being edited. */
 export interface Draft {
+  readonly authorization_details_types: readonly string[];
   readonly compliance_profile: 'fapi' | 'oidc' | 'public';
   readonly token_endpoint_auth_method: string;
   readonly dpop_bound_access_tokens: boolean | null;
@@ -121,6 +122,7 @@ export function listFrom(value: string): string[] {
 /** The draft a freshly read document starts as. */
 export function draftOf(document: ClientDocument): Draft {
   return {
+    authorization_details_types: document.authorization_details_types ?? [],
     compliance_profile: document.compliance_profile ?? 'fapi',
     token_endpoint_auth_method: document.token_endpoint_auth_method,
     dpop_bound_access_tokens: document.dpop_bound_access_tokens ?? null,
@@ -161,6 +163,7 @@ export function draftOf(document: ClientDocument): Draft {
 /** The draft a new client starts as: this profile's defaults, spelled out. */
 export function emptyDraft(): Draft {
   return {
+    authorization_details_types: [],
     compliance_profile: 'fapi',
     token_endpoint_auth_method: 'private_key_jwt',
     dpop_bound_access_tokens: true,
@@ -298,6 +301,7 @@ export function documentFrom(draft: Draft): Record<string, unknown> {
     redirect_uris: listFrom(draft.redirect_uris),
     post_logout_redirect_uris: listFrom(draft.post_logout_redirect_uris),
     grant_types: [...draft.grant_types],
+    authorization_details_types: [...draft.authorization_details_types],
     scope: draft.scope,
     id_token_signed_response_alg: draft.id_token_signed_response_alg,
     subject_type: draft.subject_type,

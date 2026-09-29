@@ -8,10 +8,12 @@ import {
   LockKeyhole,
   Plus,
   ShieldCheck,
+  Smartphone,
   Trash2,
 } from 'lucide-react';
 import {
   moveAssuranceLevel,
+  enableAuthenticator,
   type AssuranceLevel,
   type AssurancePolicy,
 } from './assurance-policy-model';
@@ -20,6 +22,7 @@ import { Button, Field } from './ui';
 export type { AssuranceLevel, AssurancePolicy } from './assurance-policy-model';
 
 const METHODS = [
+  { value: 'otp', label: 'Authenticator code', detail: 'TOTP second factor after password', Icon: Smartphone },
   { value: 'pwd', label: 'Password', detail: 'Knowledge factor', Icon: LockKeyhole },
   { value: 'swk', label: 'Passkey', detail: 'Phishing-resistant', Icon: KeyRound },
   { value: 'user', label: 'User verification', detail: 'Biometric or PIN', Icon: Fingerprint },
@@ -27,6 +30,7 @@ const METHODS = [
 
 function displayName(level: AssuranceLevel): string {
   if (level.value === '') return 'New assurance level';
+  if (level.amr.includes('pwd') && level.amr.includes('otp')) return 'Password + authenticator';
   if (level.value === 'phr') return 'Phishing-resistant';
   if (level.amr.includes('swk') && level.amr.includes('user')) return 'Verified passkey';
   if (level.amr.length === 1 && level.amr.includes('swk')) return 'Passkey';
@@ -88,6 +92,18 @@ export function AssuranceEditor({ policy, onChange, disabled }: Readonly<{
   return <fieldset className="settings-section assurance-editor" disabled={disabled}>
     <legend>Authentication assurance</legend>
     <p className="muted">Build the assurance flow applications can request. Levels are evaluated from weakest to strongest; drag a card or use its arrow buttons to change the order.</p>
+
+    <section className="assurance-card authenticator-policy" aria-labelledby="authenticator-policy-title">
+      <h3 id="authenticator-policy-title">Authenticator app (TOTP)</h3>
+      <p role="status">{policy.levels.some(level => level.amr.includes('otp'))
+        ? 'Enabled in this configuration. Save changes to apply.'
+        : 'Disabled in this configuration. Enrolling an authenticator alone does not enable code challenges.'}</p>
+      <p>When enabled, accounts with an active authenticator must enter a code after their password on fresh sign-ins. This does not require unenrolled users to set one up, replace passkeys, or end existing sessions.</p>
+      {!policy.levels.some(level => level.amr.includes('otp')) && <Button
+        disabled={policy.levels.length >= 32}
+        onClick={() => onChange(enableAuthenticator(policy))}>Enable authenticator codes</Button>}
+      <p className="muted">To disable code challenges, remove Authenticator code from every assurance level below and save. Applications that require those levels may then be unable to sign in. Codes do not satisfy phishing-resistant requirements.</p>
+    </section>
 
     <label className="assurance-release-row">
       <span className="assurance-release-icon"><ShieldCheck aria-hidden="true" /></span>

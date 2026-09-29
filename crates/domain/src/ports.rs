@@ -2221,6 +2221,17 @@ pub trait PolicyEngine: Debug + Send + Sync {
 /// accept anything a handler happened to build.
 #[async_trait::async_trait]
 pub trait PolicyStore: Debug + Send + Sync {
+    /// Latest published snapshots, newest first, capped at 100 per tenant.
+    /// Stores without revision support explicitly refuse this optional operation.
+    async fn history(
+        &self,
+        _tenant: &TenantId,
+    ) -> Result<Vec<crate::policy::PolicyRevision>, DomainError> {
+        Err(DomainError::Conflict(
+            "policy history is unavailable in this store".to_owned(),
+        ))
+    }
+
     /// The tenant's policy, or `None` if it has never written one.
     ///
     /// `None` is not an empty policy dressed up: "no document" and "a document

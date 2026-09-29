@@ -10,7 +10,7 @@
    Every field is labelled and the browser is told what each one is for
    (`autocomplete`), which is WCAG 2.2 SC 1.3.5 and also the difference between
    a password manager offering to generate a passphrase and not. #}
-{% include "error_summary.html" %}
+{% include "error_summary.html" %}{% if let Some(field) = error_field %}<p><a href="#{{ field }}">Correct the {{ field }} field</a></p>{% endif %}
 
 <h2>Create an account</h2>
 

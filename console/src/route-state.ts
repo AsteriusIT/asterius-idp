@@ -27,6 +27,7 @@ export function sameEditor(left: string, right: string): boolean {
   if (routeOf(a.hash) !== routeOf(b.hash) || !['users', 'clients'].includes(routeOf(a.hash))) return false;
   const x = paramsOf(a.hash), y = paramsOf(b.hash);
   x.delete('tab'); y.delete('tab');
+  x.delete('guided'); y.delete('guided');
   return x.toString() === y.toString();
 }
 

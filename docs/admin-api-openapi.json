@@ -910,6 +910,86 @@
         "x-asterius-scope": "admin.audit:read"
       }
     },
+    "/admin/api/v1/audit/events/{id}": {
+      "get": {
+        "operationId": "audit.events.read",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.audit:read"
+            ]
+          }
+        ],
+        "summary": "Reads one audit event in the active tenant",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.audit:read"
+      }
+    },
     "/admin/api/v1/authorization-details-types": {
       "get": {
         "operationId": "authorization_details_types.list",
@@ -978,6 +1058,76 @@
         "summary": "Lists this tenant's registered authorization-details types",
         "x-asterius-reach": "tenant",
         "x-asterius-scope": "admin.authorization_details_types:read"
+      }
+    },
+    "/admin/api/v1/authorization-details-types/validate-sample": {
+      "post": {
+        "operationId": "authorization_details_types.sample",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.authorization_details_types:write"
+            ]
+          }
+        ],
+        "summary": "Validates a sample against a draft schema without saving it",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.authorization_details_types:write"
       }
     },
     "/admin/api/v1/authorization-details-types/{type}": {
@@ -1167,6 +1317,30 @@
           },
           {
             "$ref": "#/components/parameters/limit"
+          },
+          {
+            "description": "Server order applied before pagination. Reuse the same search and order with each cursor.",
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "enum": [
+                "id",
+                "-id",
+                "name",
+                "-name"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Directory search applied before pagination.",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -5792,6 +5966,76 @@
         "x-asterius-scope": "admin.oidc_providers:write"
       }
     },
+    "/admin/api/v1/oidc/providers/check": {
+      "post": {
+        "operationId": "oidc.providers.check",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.oidc_providers:read"
+            ]
+          }
+        ],
+        "summary": "Checks stored provider discovery and public keys without using client credentials",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.oidc_providers:read"
+      }
+    },
     "/admin/api/v1/openapi.json": {
       "get": {
         "operationId": "openapi.read",
@@ -6768,6 +7012,76 @@
         "summary": "Replaces the tenant's AuthZEN policy document after validating it",
         "x-asterius-reach": "tenant",
         "x-asterius-scope": "admin.policies:write"
+      }
+    },
+    "/admin/api/v1/policies/history": {
+      "get": {
+        "operationId": "policies.history",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.policies:read"
+            ]
+          }
+        ],
+        "summary": "Lists the last 100 published policy versions for this tenant",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.policies:read"
       }
     },
     "/admin/api/v1/policies/try": {
@@ -11469,6 +11783,76 @@
         "x-asterius-scope": "admin.theme:write"
       }
     },
+    "/admin/api/v1/theme/preview": {
+      "get": {
+        "operationId": "theme.preview",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.theme:read"
+            ]
+          }
+        ],
+        "summary": "Renders the saved branding with disabled production sign-in controls",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.theme:read"
+      }
+    },
     "/admin/api/v1/users": {
       "get": {
         "operationId": "users.list",
@@ -11478,6 +11862,28 @@
           },
           {
             "$ref": "#/components/parameters/limit"
+          },
+          {
+            "description": "Server order applied before pagination. Reuse the same search and order with each cursor.",
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "enum": [
+                "username",
+                "-username"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Directory search applied before pagination.",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {

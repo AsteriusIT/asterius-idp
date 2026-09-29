@@ -147,6 +147,8 @@ pub struct DetailLine {
 #[derive(Debug, Template)]
 #[template(path = "login.html")]
 pub struct LoginPage<'a> {
+    /// Disables credentials and scripting in the authenticated branding preview.
+    pub preview: bool,
     /// Enabled tenant identity providers offered for this interaction.
     pub upstream_providers: &'a [UpstreamProviderLink],
     /// The words this page is rendered with, and the language they are in.
@@ -1148,6 +1150,8 @@ pub struct AccountSessionsPage<'a> {
 #[derive(Debug, Template)]
 #[template(path = "register.html")]
 pub struct RegistrationPage<'a> {
+    /// A typed, server-selected input ID; never parsed from an error message.
+    pub error_field: Option<&'a str>,
     /// The words this page is rendered with, and the language they are in.
     ///
     /// The `lang` attribute comes out of the same value as the text under it
@@ -1390,6 +1394,7 @@ pub struct AccountTotpPage<'a> {
     pub csrf: &'a str,
     pub message: Option<&'a str>,
     pub active: bool,
+    pub login_enabled: bool,
     pub pending: bool,
     pub provisioning: Option<(&'a str, &'a str)>,
     pub qr: Option<crate::qr::SetupQr>,
@@ -1611,6 +1616,7 @@ mod tests {
         for hostile in HOSTILE {
             let nonce = nonce();
             let page = LoginPage {
+                preview: false,
                 upstream_providers: &[],
                 text: &ENGLISH,
                 tenant_name: hostile,
@@ -1809,6 +1815,7 @@ mod tests {
             href: "/interaction/abc/upstream/corp".to_owned(),
         }];
         let html = LoginPage {
+            preview: false,
             upstream_providers: &providers,
             text: &ENGLISH,
             tenant_name: "Demo",
@@ -1861,6 +1868,7 @@ mod tests {
     fn without_javascript_the_sign_in_page_still_has_its_password_form() {
         let nonce = nonce();
         let html = LoginPage {
+            preview: false,
             upstream_providers: &[],
             text: &ENGLISH,
             tenant_name: "Demo",
@@ -1914,6 +1922,7 @@ mod tests {
     fn the_username_field_asks_for_conditional_mediation() {
         let nonce = nonce();
         let html = LoginPage {
+            preview: false,
             upstream_providers: &[],
             text: &ENGLISH,
             tenant_name: "Demo",
@@ -2171,6 +2180,7 @@ mod tests {
         let nonce = nonce();
         for html in [
             LoginPage {
+                preview: false,
                 upstream_providers: &[],
                 text: &ENGLISH,
                 tenant_name: "Demo",
@@ -2801,6 +2811,7 @@ mod tests {
 
     fn registration<'a>(username: Option<&'a str>, email: Option<&'a str>) -> String {
         render(&RegistrationPage {
+            error_field: None,
             text: &ENGLISH,
             tenant_name: "Demo",
             action: "/register",
@@ -2959,6 +2970,7 @@ mod tests {
         for html in [
             device(None, Some("That code did not work.")),
             render(&LoginPage {
+                preview: false,
                 upstream_providers: &[],
                 text: &ENGLISH,
                 tenant_name: "Demo",
@@ -3015,7 +3027,7 @@ mod experience_tests {
         for locale in [Locale::English, Locale::French] {
             let catalog = Catalog::new(locale);
             let nonce = Nonce::fixed_for_test("experience-test");
-            let page = AccountTotpPage {
+            let mut page = AccountTotpPage {
                 text: &catalog,
                 tenant_name: "Tenant <script>",
                 action: "/t/review/account/totp",
@@ -3023,6 +3035,7 @@ mod experience_tests {
                 csrf: "token",
                 message: None,
                 active: false,
+                login_enabled: false,
                 pending: true,
                 provisioning: Some((
                     "PRIVATE-SETUP-KEY",
@@ -3035,6 +3048,12 @@ mod experience_tests {
             };
             let html = render(&page);
             assert!(html.contains(catalog.authenticator_scan()));
+            assert!(html.contains(catalog.authenticator_policy_disabled()));
+            assert!(!html.contains(catalog.authenticator_policy_enabled()));
+            page.login_enabled = true;
+            let enabled = render(&page);
+            assert!(enabled.contains(catalog.authenticator_policy_enabled()));
+            assert!(!enabled.contains(catalog.authenticator_policy_disabled()));
             assert!(html.contains("Tenant &#60;script&#62;"));
             assert!(html.contains("name=\"csrf\""));
             assert!(html.contains("class=\"setup-qr\""));

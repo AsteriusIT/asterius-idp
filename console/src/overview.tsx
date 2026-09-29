@@ -78,6 +78,18 @@ export function Overview({ session }: Readonly<{ session: Session }>): JSX.Eleme
       actions={<Button onClick={reload}>Refresh summaries</Button>}
     >
       {collectedAt && <p className="muted">Latest summary received: <Timestamp value={collectedAt} />. Cards may finish updating at different times.</p>}
+      <details className="setup-checklist"><summary>Workspace setup checklist</summary>
+        <p className="muted">Configuration milestones from the authorized summaries below. These do not certify production readiness.</p>
+        <ul>{[
+          { path: 'overview/users', route: 'users', label: 'At least one active account' },
+          { path: 'overview/applications', route: 'clients', label: 'At least one registered application' },
+          { path: 'overview/keys', route: 'keys', label: 'At least one active signing key' },
+        ].filter(item => available.has(item.route)).map(item => {
+          const state = metrics.get(item.path);
+          const status = state?.kind === 'ready' ? (state.document.value > 0 ? 'Present' : 'Needs setup') : 'Not yet verified';
+          return <li key={item.path}><a href={hrefOf(item.route)}>{item.label}</a> — {status}</li>;
+        })}</ul>
+      </details>
       <div className="overview-bento">
         <Panel title="What would you like to do?" description="Go straight to a common task in this tenant.">
           <div className="quick-link-grid">

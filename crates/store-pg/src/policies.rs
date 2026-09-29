@@ -41,6 +41,26 @@ impl PgPolicies {
 
 #[async_trait::async_trait]
 impl PolicyStore for PgPolicies {
+    async fn history(
+        &self,
+        tenant: &TenantId,
+    ) -> Result<Vec<asterius_domain::policy::PolicyRevision>, DomainError> {
+        let rows: Vec<(i64, serde_json::Value, OffsetDateTime)> = sqlx::query_as(
+            "select id, document, published_at from tenant_policy_revisions where tenant_id = $1 order by id desc limit 100"
+        ).bind(tenant.as_str()).fetch_all(&self.pool).await.map_err(to_domain_error)?;
+        rows.into_iter()
+            .map(|(id, document, updated_at)| {
+                let rules = RuleSet::from_json(&document).map_err(|error| {
+                    DomainError::invalid("tenant_policy_revisions.document", error.to_string())
+                })?;
+                Ok(asterius_domain::policy::PolicyRevision {
+                    id,
+                    policy: StoredPolicy { rules, updated_at },
+                })
+            })
+            .collect()
+    }
+
     async fn load(&self, tenant: &TenantId) -> Result<Option<StoredPolicy>, DomainError> {
         let row = sqlx::query!(
             "select document, updated_at from tenant_policies where tenant_id = $1",

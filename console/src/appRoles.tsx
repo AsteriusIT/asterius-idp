@@ -1,3 +1,4 @@
+import { useDialogDraft } from './dialog-draft';
 /**
  * Application roles: the two catalogues, and what one account holds
  * (`ast-095`, `ast-mqt`).
@@ -188,6 +189,7 @@ export function RoleCatalogue({
   const [busy, setBusy] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
   const writable = mayWrite(session);
+  const creationDraft = useDialogDraft(creating && (name !== '' || description !== ''), busy, () => setCreating(false));
 
   const refresh = useCallback(() => {
     setLoad({ kind: 'loading' });
@@ -298,7 +300,7 @@ export function RoleCatalogue({
         />
       )}
       {writable && (
-        <Dialog open={creating} onOpenChange={(open) => { if (!busy) setCreating(open); }}><DialogContent>
+        <Dialog open={creating} onOpenChange={open => { if (!open) creationDraft.requestClose(); }}><DialogContent>{creationDraft.confirmation}
         <DialogHeader><DialogTitle>New role</DialogTitle><DialogDescription>Define an access role that you can assign to users.</DialogDescription></DialogHeader>
         {refusal !== null && <Message tone="error">{refusal}</Message>}
         <form
@@ -349,7 +351,7 @@ export function RoleCatalogue({
               )}
             </Field>
             <Actions>
-              <Button onClick={() => setCreating(false)} disabled={busy}>Cancel</Button>
+              <Button onClick={creationDraft.requestClose} disabled={busy}>Cancel</Button>
               <Button type="submit" variant="primary" disabled={busy || name.trim() === ''}>
                 Create role
               </Button>
@@ -393,6 +395,7 @@ export function UserAppRoles({
   const [refusal, setRefusal] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [assigning, setAssigning] = useState(false);
+  const assignmentDraft = useDialogDraft(assigning && (chosen !== '' || owner !== ''), busy || saving, () => setAssigning(false));
   const [withdrawing, setWithdrawing] = useState<{ role: string; clientId: string | null } | null>(null);
   const [search, setSearch] = useState('');
   const writable = mayWrite(session);
@@ -564,8 +567,9 @@ export function UserAppRoles({
           ]}
         />
       )}
-      <Dialog open={assigning} onOpenChange={setAssigning}>
+      <Dialog open={assigning} onOpenChange={open => { if (!open) assignmentDraft.requestClose(); }}>
         <DialogContent>
+          {assignmentDraft.confirmation}
           <DialogHeader><DialogTitle>Assign application role</DialogTitle><DialogDescription>Choose a catalogue, then select the access to grant.</DialogDescription></DialogHeader>
           {refusal !== null && <Message tone="error">{refusal}</Message>}
           <form onSubmit={(event) => { event.preventDefault(); assign(); }}>
@@ -582,7 +586,7 @@ export function UserAppRoles({
               ))}
               {offered.length === 0 && <p className="muted">No unassigned roles in this catalogue. Create roles in tenant or application settings.</p>}
             </div>
-            <Actions end><Button onClick={() => setAssigning(false)}>Cancel</Button><Button type="submit" variant="primary" disabled={!writable || busy || saving || chosen === ''}>Assign role</Button></Actions>
+            <Actions end><Button onClick={assignmentDraft.requestClose}>Cancel</Button><Button type="submit" variant="primary" disabled={!writable || busy || saving || chosen === ''}>Assign role</Button></Actions>
           </form>
         </DialogContent>
       </Dialog>
