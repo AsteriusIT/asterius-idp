@@ -68,6 +68,8 @@ impl GrantChoice {
 
 fn capabilities(flags: u8) -> Capabilities {
     Capabilities {
+        advanced_claims: flags & 0b0000_0001 != 0,
+        id_jag: flags & 0b0001_0000 != 0,
         mtls: flags & 0b0000_0001 != 0,
         grant_management: flags & 0b0000_0010 != 0,
         ciba: flags & 0b0000_0100 != 0,
@@ -106,6 +108,8 @@ fn registration(grants: &[GrantType]) -> Option<ClientRegistration> {
         }))
         .ok()?,
         Capabilities {
+            advanced_claims: true,
+            id_jag: true,
             mtls: true,
             grant_management: true,
             ciba: true,

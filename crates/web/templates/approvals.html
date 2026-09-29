@@ -43,7 +43,7 @@
    The `<time>` element carries the instant in machine-readable form so that a
    user agent or an assistive technology can present it its own way. #}
 <p class="muted">
-  <time datetime="{{ approval.expires_at }}">{{ text.approvals_expires_in(approval.expires_in) }}</time>
+  <time datetime="{{ approval.expires_at }}">{{ text.approvals_expires_in(approval.expires_in) }} · {{ approval.expires_at }} UTC</time>
 </p>
 
 {% if !approval.scopes.is_empty() %}

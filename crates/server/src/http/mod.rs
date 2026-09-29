@@ -21,6 +21,7 @@ pub struct ThemeChrome {
     pub css: String,
     pub logo_url: String,
     pub icon: asterius_domain::TenantIcon,
+    pub support: asterius_domain::entities::theme::SupportLinks,
 }
 
 impl ThemeChrome {
@@ -33,12 +34,15 @@ impl ThemeChrome {
             css: asterius_web::theme::custom_properties(theme),
             logo_url,
             icon: theme.icon(),
+            support: theme.support().clone(),
         }
     }
 
     #[must_use]
     pub fn brand<'a>(&'a self, font_url: &'a str) -> asterius_web::Brand<'a> {
-        let brand = asterius_web::Brand::new(font_url).with_icon(self.icon);
+        let brand = asterius_web::Brand::new(font_url)
+            .with_icon(self.icon)
+            .with_support(&self.support);
         if self.logo_url.is_empty() {
             brand
         } else {

@@ -295,6 +295,7 @@ for (const theme of ['light', 'dark'] as const) {
         }
         await expect(page.getByRole('heading', { name: screen, exact: true }).first()).toBeVisible();
         await page.waitForLoadState('networkidle');
+        await expect(page.locator('[data-slot=popover-content]')).toHaveCount(0);
         expect(
           await page.evaluate(() => document.documentElement.scrollWidth),
           `${screen} widened the ${width}px viewport`,
@@ -625,10 +626,11 @@ test('the console cannot register a client dynamic registration would refuse', a
   // asserted against the same validator in
   // `crates/admin-api/src/router.rs`, where a table costs one test rather than
   // one browser round trip each.
-  for (const dismiss of await page.getByRole('button', { name: 'Dismiss', exact: true }).all()) {
-    await dismiss.click();
+  while (await page.getByRole('button', { name: 'Dismiss', exact: true }).count()) {
+    await page.getByRole('button', { name: 'Dismiss', exact: true }).first().click();
   }
-  await page.getByRole('button', { name: 'Close' }).click();
+  await page.getByRole('button', { name: 'Back to applications' }).click();
+  await page.getByRole('button', { name: 'Discard changes', exact: true }).click();
   await page.getByLabel('Search clients').fill('Refused by the validator');
   await page.getByRole('button', { name: 'Search', exact: true }).click();
   await expect(page.getByText('No client matches.')).toBeVisible();
@@ -659,17 +661,17 @@ test('a valid client can be registered, found and saved again unchanged', async 
   await expect(page.getByRole('alert')).toHaveCount(0);
 
   // It is in the inventory, and it is what the search finds.
-  for (const dismiss of await page.getByRole('button', { name: 'Dismiss', exact: true }).all()) {
-    await dismiss.click();
+  while (await page.getByRole('button', { name: 'Dismiss', exact: true }).count()) {
+    await page.getByRole('button', { name: 'Dismiss', exact: true }).first().click();
   }
-  await page.getByRole('button', { name: 'Close' }).click();
+  await page.getByRole('button', { name: 'Back to applications' }).click();
   await page.getByLabel('Search clients').fill(name);
   await page.getByRole('button', { name: 'Search', exact: true }).click();
   await expect(page.getByRole('cell', { name, exact: true })).toBeVisible();
 
   // And an unedited save is accepted.
   await page.getByRole('button', { name: `Edit ${name}` }).click();
-  await expect(page.getByRole('heading', { name: `Edit ${name}`, exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name, exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Save client' }).click();
   await expect(page.getByRole('status')).toContainText('Saved.');
   await expect(page.getByRole('alert')).toHaveCount(0);
@@ -1079,7 +1081,9 @@ test('the audit layout is compactable, collapsible and responsive', async ({ pag
   await page.getByRole('button', { name: 'Apply filters' }).click();
   const row = page.getByRole('row').filter({ hasText: 'key.rotated' }).first();
   await expect(row.locator('time')).toHaveText(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
-  await expect(row.locator('details.audit-detail')).toBeVisible();
+  await row.getByRole('button', { name: /Inspect event/ }).click();
+  await expect(page.getByRole('dialog')).toContainText('key.rotated');
+  await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click();
 
   await page.getByRole('button', { name: 'Account menu', exact: true }).click();
   await page.getByRole('menuitem', { name: 'Preferences', exact: true }).click();
@@ -1731,13 +1735,13 @@ test('account tabs preserve drafts and fit narrow screens without a scrollbar', 
   await search.fill(USERNAME);
   await searchButton.click();
   await page.getByRole('button', { name: USERNAME, exact: true }).click();
-  await page.getByRole('tab', { name: 'Claims', exact: true }).click();
+  await page.getByRole('tab', { name: 'Identity data', exact: true }).click();
   await page.getByLabel('Email', { exact: true }).fill('unsaved-draft@example.test');
   await page.getByRole('tab', { name: 'Sessions', exact: true }).click();
   await expect(page.getByLabel('Email', { exact: true })).toBeHidden();
   await expect(page.getByRole('tabpanel')).toHaveCount(1);
   await expect(page.getByRole('heading', { name: 'Sessions', exact: true })).toHaveCount(0);
-  await page.getByRole('tab', { name: 'Claims', exact: true }).click();
+  await page.getByRole('tab', { name: 'Identity data', exact: true }).click();
   await expect(page.getByLabel('Email', { exact: true })).toHaveValue('unsaved-draft@example.test');
   await page.setViewportSize({ width: 390, height: 844 });
   const dimensions = await page.getByRole('tablist').evaluate((element) => ({
@@ -1748,7 +1752,7 @@ test('account tabs preserve drafts and fit narrow screens without a scrollbar', 
   expect(dimensions.page).toBe(dimensions.viewport);
   await page.getByRole('tab', { name: 'Sessions', exact: true }).focus();
   await page.keyboard.press('ArrowRight');
-  await expect(page.getByRole('tab', { name: 'Authorizations', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('tab', { name: 'Connected apps', exact: true })).toHaveAttribute('aria-selected', 'true');
 });
 
 test('application tabs retain edits and selects support keyboard choice', async ({ page }) => {
@@ -1851,7 +1855,7 @@ test('guided application onboarding creates, reloads and copies only saved confi
   await page.getByRole('tab', { name: 'Configuration JSON', exact: true }).click();
   expect(JSON.parse(await region.innerText())).toEqual(configuration);
   await page.reload();
-  await page.getByRole('button', { name: `Edit ${name}`, exact: true }).click();
+  await expect(page.getByRole('heading', { name, exact: true })).toBeVisible();
   await page.getByRole('tab', { name: 'Configuration JSON', exact: true }).click();
   expect(JSON.parse(await region.innerText())).toEqual(configuration);
 });

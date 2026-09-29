@@ -27,6 +27,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { setNonce } from 'get-nonce';
 import { App } from './App';
+import { NavigationGuard } from './navigation-guard';
 import { startTheme } from './theme';
 // The tokens first, then Tailwind (whose theme maps onto them), then the
 // console's own rules: Vite concatenates the entry's stylesheets in import
@@ -55,7 +56,7 @@ const mount = document.getElementById('console');
 if (mount) {
   createRoot(mount).render(
     <StrictMode>
-      <App />
+      <NavigationGuard><App /></NavigationGuard>
     </StrictMode>,
   );
 }

@@ -43,6 +43,27 @@ with sentinels (name) as (
 -- hash-chained, so editing a member would invalidate every record after it.
 -- Those findings are reported for a human to decide.
 docs (table_name, column_name, repairable, row_key, doc) as (
+    select 'architecture_flows', 'graph', false, jsonb_build_object('tenant_id', tenant_id, 'flow_id', flow_id), graph
+    from architecture_flows
+    union all
+    select 'architecture_flows', 'applied_graph', false, jsonb_build_object('tenant_id', tenant_id, 'flow_id', flow_id), applied_graph
+    from architecture_flows
+    union all
+    select 'federation_signing_keys', 'public_jwk', false, jsonb_build_object('tenant_id', tenant_id, 'kid', kid), public_jwk
+    from federation_signing_keys
+    union all
+    select 'legacy_session_expiry_claims', 'claim_value', false, jsonb_build_object('tenant_id', tenant_id, 'user_id', user_id, 'claim_name', claim_name), claim_value
+    from legacy_session_expiry_claims
+    union all
+    select 'oid4vp_transactions', 'verified_claims', false, jsonb_build_object('tenant_id', tenant_id, 'state_digest', encode(state_digest, 'hex')), verified_claims
+    from oid4vp_transactions
+    union all
+    select 'verified_claim_bundles', 'claims', false, jsonb_build_object('tenant_id', tenant_id, 'bundle_id', bundle_id), claims
+    from verified_claim_bundles
+    union all
+    select 'verified_claim_bundles', 'evidence', false, jsonb_build_object('tenant_id', tenant_id, 'bundle_id', bundle_id), evidence
+    from verified_claim_bundles
+    union all
     select 'tenants', 'settings', true,
            jsonb_build_object('tenant_id', tenant_id), settings
     from tenants
@@ -186,7 +207,14 @@ docs (table_name, column_name, repairable, row_key, doc) as (
 -- inlined: referenced twice, PostgreSQL would materialise every JSONB value in
 -- the database before filtering any of them.
 inventory (table_name, column_name) as (
-    values ('tenants', 'settings'),
+    values ('architecture_flows', 'graph'),
+           ('architecture_flows', 'applied_graph'),
+           ('federation_signing_keys', 'public_jwk'),
+           ('legacy_session_expiry_claims', 'claim_value'),
+           ('oid4vp_transactions', 'verified_claims'),
+           ('verified_claim_bundles', 'claims'),
+           ('verified_claim_bundles', 'evidence'),
+           ('tenants', 'settings'),
            ('tenant_themes', 'document'),
            ('tenant_policies', 'document'),
            ('clients', 'jwks'),

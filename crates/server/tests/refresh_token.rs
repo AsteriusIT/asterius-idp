@@ -131,6 +131,15 @@ impl Fixture {
             .upsert(&tenant)
             .await
             .expect("create tenant");
+        PgResourceServers::new(store.pool().clone(), tenant.id.clone())
+            .register(&asterius_domain::ResourceServer {
+                identifier: asterius_domain::ResourceIdentifier::parse(RESOURCE).expect("resource"),
+                scopes: None,
+                default_token_lifetime: None,
+                introspection_clients: std::collections::BTreeSet::new(),
+            })
+            .await
+            .expect("register default resource");
 
         let keys = TenantKeyStore::new(
             store.pool().clone(),
@@ -181,7 +190,7 @@ impl Fixture {
 
     /// A client registered for this grant, stored so the endpoint can load it.
     async fn client(&self, id: &str) -> Client {
-        let client = Client {
+        let mut client = Client {
             tenant: self.tenant.id.clone(),
             id: ClientId::new(id),
             registration: ClientRegistration::from_json(
@@ -200,6 +209,7 @@ impl Fixture {
             created_at: self.now,
             updated_at: self.now,
         };
+        client.registration.resources.insert(RESOURCE.to_owned());
         self.store
             .scope(self.tenant.id.clone())
             .clients(Capabilities::default())
@@ -214,7 +224,7 @@ impl Fixture {
     /// because the member is refused without the flag on the way in and on the
     /// way back out.
     async fn certificate_bound_client(&self, id: &str) -> Client {
-        let client = Client {
+        let mut client = Client {
             tenant: self.tenant.id.clone(),
             id: ClientId::new(id),
             registration: ClientRegistration::from_json(
@@ -235,6 +245,7 @@ impl Fixture {
             created_at: self.now,
             updated_at: self.now,
         };
+        client.registration.resources.insert(RESOURCE.to_owned());
         self.store
             .scope(self.tenant.id.clone())
             .clients(mtls_on())

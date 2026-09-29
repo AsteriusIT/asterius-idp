@@ -642,7 +642,7 @@ fn new_password(text: &Catalog) -> String {
 /// `ast-ndk.5` moved the authorization journey. Everything else in
 /// [`every_page`] is still English under whatever `lang` it is handed; see this
 /// module's documentation.
-const TRANSLATED: [&str; 16] = [
+const TRANSLATED: [&str; 21] = [
     "login",
     "consent",
     "error",
@@ -668,7 +668,83 @@ const TRANSLATED: [&str; 16] = [
     "account_password.set",
     "account_password.change",
     "account_sessions",
+    "account_totp.setup",
+    "account_totp.active",
+    "account_totp.pending",
+    "account_providers",
+    "account_external_approvals",
 ];
+
+fn account_totp(text: &Catalog, state: &str) -> String {
+    let uri = "otpauth://totp/Review?secret=JBSWY3DPEHPK3PXP";
+    render(&crate::pages::AccountTotpPage {
+        text,
+        tenant_name: TENANT,
+        action: "/account/totp",
+        account_href: "/account",
+        csrf: CSRF,
+        message: None,
+        active: state == "active",
+        pending: state == "pending",
+        provisioning: (state == "setup").then_some(("JBSWY3DPEHPK3PXP", uri)),
+        qr: if state == "setup" {
+            crate::qr::SetupQr::new(uri)
+        } else {
+            None
+        },
+        nonce_attribute: nonce(),
+        theme_css: &theme(),
+        brand: brand(),
+    })
+}
+
+fn account_providers(text: &Catalog) -> String {
+    render(&crate::pages::AccountProvidersPage {
+        text,
+        tenant_name: TENANT,
+        action: "/account/claims-providers",
+        account_href: "/account",
+        csrf: CSRF,
+        message: None,
+        providers: vec![crate::pages::AccountProviderLine {
+            issuer: "https://identity.example.test".into(),
+            policy_url: "https://identity.example.test/privacy".into(),
+            configured: true,
+            connected: true,
+            credential: true,
+            allowed: "email, name".into(),
+            expires: "2026-10-01 12:00 UTC".into(),
+            connection_expires: "2026-10-02 12:00 UTC".into(),
+            claims: vec![("name".into(), "Alex Example".into())],
+        }],
+        nonce_attribute: nonce(),
+        theme_css: &theme(),
+        brand: brand(),
+    })
+}
+
+fn account_external_approvals(text: &Catalog) -> String {
+    render(&crate::pages::AccountExternalApprovalsPage {
+        text,
+        tenant_name: TENANT,
+        action: "/account/id-jag",
+        account_href: "/account",
+        csrf: CSRF,
+        message: None,
+        consents: vec![crate::pages::ExternalApprovalLine {
+            issuer: "https://identity.example.test".into(),
+            actor: "https://actor.example.test".into(),
+            client: "reports".into(),
+            resource: "https://api.example.test".into(),
+            scopes: vec!["read".into()],
+            expires: "2026-10-01 12:00 UTC".into(),
+        }],
+        options: Vec::new(),
+        nonce_attribute: nonce(),
+        theme_css: &theme(),
+        brand: brand(),
+    })
+}
 
 /// Every snapshot this crate keeps, as `(name, locale, rendering)`.
 ///
@@ -702,6 +778,14 @@ fn every_page(locale: Locale) -> Vec<(&'static str, String)> {
         ("password_reset_sent", password_reset_sent(text)),
         ("password_new", new_password(text)),
         ("account", account(text)),
+        ("account_totp.setup", account_totp(text, "setup")),
+        ("account_totp.active", account_totp(text, "active")),
+        ("account_totp.pending", account_totp(text, "pending")),
+        ("account_providers", account_providers(text)),
+        (
+            "account_external_approvals",
+            account_external_approvals(text),
+        ),
         ("account_passkeys", account_passkeys(text, true)),
         ("account_passkeys.empty", account_passkeys(text, false)),
         ("account_password.set", account_password(text, false)),

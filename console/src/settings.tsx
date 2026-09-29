@@ -1,3 +1,4 @@
+import { useUnsavedChanges } from './navigation-guard';
 /**
  * The tenant settings screen (`ast-bfn`).
  *
@@ -145,6 +146,7 @@ export function TenantSettings({
   const [notice, setNotice] = useState<string | null>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  useUnsavedChanges(load.kind === 'ready' && draft !== null && JSON.stringify(draft) !== JSON.stringify(draftOf(load.settings)));
   const subject = tenant ?? session.workspace;
   const elsewhere = subject !== session.workspace;
   const path = settingsPath(subject);

@@ -70,6 +70,13 @@
 <main class="card{% block card_class %}{% endblock %}">
 {% block content %}{% endblock %}
 </main>
+{% if brand.help_url().is_some() || brand.privacy_url().is_some() || brand.terms_url().is_some() %}
+<footer class="support-links">
+{% if let Some(url) = brand.help_url() %}<a href="{{ url }}" rel="noreferrer">{{ text.support_help() }}</a>{% endif %}
+{% if let Some(url) = brand.privacy_url() %}<a href="{{ url }}" rel="noreferrer">{{ text.support_privacy() }}</a>{% endif %}
+{% if let Some(url) = brand.terms_url() %}<a href="{{ url }}" rel="noreferrer">{{ text.support_terms() }}</a>{% endif %}
+</footer>
+{% endif %}
 </div>
 </div>
 </body>

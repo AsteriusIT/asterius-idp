@@ -2330,7 +2330,7 @@ impl ClientMetadata {
         {
             return Err(ClientMetadataError::rejected(
                 FIELD,
-                "client_secret_basic is available only to a client explicitly configured \
+                "shared-secret authentication is available only to a client explicitly configured \
                  with the non-FAPI OIDC profile",
             ));
         }
@@ -2340,7 +2340,7 @@ impl ClientMetadata {
                 if profile.is_public() {
                     "a public client must use `none`"
                 } else {
-                    "`none` is available only to a client explicitly configured with the public profile"
+                    "unauthenticated access is available only to a client explicitly configured with the public profile"
                 },
             ));
         }

@@ -11,6 +11,7 @@
 
 /** Where the admin API sits, relative to the entry document. */
 const API_BASE = 'api/v1/';
+export const SESSION_EXPIRED = 'asterius:session-expired';
 
 /** The header the synchroniser token travels in (`crates/admin-api/src/csrf.rs`). */
 const CSRF_HEADER = 'X-CSRF-Token';
@@ -96,7 +97,15 @@ export class ApiError extends Error {
  * not recognise is not text to render.
  */
 async function refusalMessage(response: Response, method: string, path: string): Promise<string> {
-  const fallback = `${method} ${path} failed (${response.status})`;
+  const guidance: Record<number, string> = {
+    401: 'Your session has expired. Sign in again to continue.',
+    403: 'Your current access does not permit this action.',
+    409: 'This item changed. Reload it before applying your changes.',
+    429: 'Too many requests. Wait a moment before trying again.',
+  };
+  const fallback = guidance[response.status] ?? (response.status >= 500
+    ? 'The service could not complete this request. Check the current state before retrying a change.'
+    : `${method} ${path} failed (${response.status})`);
   try {
     const body = (await response.json()) as { error?: { message?: unknown } };
     const message = body.error?.message;
@@ -107,6 +116,19 @@ async function refusalMessage(response: Response, method: string, path: string):
 }
 
 async function request(target: string, init: RequestInit, label = target): Promise<unknown> {
+  const endpoint = new URL(target, window.location.href);
+  const api = new URL(API_BASE, window.location.href);
+  const isDiscovery = init.method === 'GET'
+    && endpoint.pathname.endsWith('/.well-known/openid-configuration')
+    && endpoint.search === '';
+  // Enforce the boundary before fetch rather than relying solely on CSP. Only
+  // the current workspace API and read-only same-origin Discovery are allowed.
+  if (endpoint.origin !== window.location.origin || endpoint.username || endpoint.password
+      || endpoint.hash || (!endpoint.pathname.startsWith(api.pathname) && !isDiscovery)) {
+    throw new ApiError(0, 'This request does not belong to the current console workspace.');
+  }
+  // Fetch the supplied relative path after validation; never derive a request
+  // from the document fragment or query string.
   const response = await fetch(target, {
     ...init,
     // The session cookie is the credential. `same-origin` rather than
@@ -114,9 +136,14 @@ async function request(target: string, init: RequestInit, label = target): Promi
     credentials: 'same-origin',
     redirect: 'error',
     headers: { Accept: 'application/json', ...init.headers },
+  }).catch(() => {
+    throw new ApiError(0, init.method === 'GET'
+      ? 'The service could not be reached. Check your connection and try again.'
+      : 'The connection was interrupted. This change may have reached the server; check its current state before trying again.');
   });
 
   if (!response.ok) {
+    if (response.status === 401) window.dispatchEvent(new Event(SESSION_EXPIRED));
     throw new ApiError(response.status, await refusalMessage(response, init.method ?? 'GET', label));
   }
   // A 204 is an answer, not a body. `Response.json()` on an empty one throws

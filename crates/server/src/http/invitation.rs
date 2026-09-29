@@ -262,6 +262,7 @@ fn page(
     let presentation = crate::http::ThemeChrome::new(context.theme, &context.mount);
     let mut response = Document::render(context.nonce, |nonce| {
         pages::render(&InvitationPage {
+            sign_in_href: &context.mount.absolute(crate::http::account::PAGE_PATH),
             text: &crate::http::i18n::UNTRANSLATED,
             tenant_name: &context.tenant.display_name,
             username,

@@ -1080,7 +1080,7 @@ mod tests {
                 event
                     .as_str()
                     .chars()
-                    .all(|c| c.is_ascii_lowercase() || c == '.' || c == '_'),
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '_'),
                 "{event} is not lower snake case"
             );
         }

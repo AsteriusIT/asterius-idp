@@ -190,6 +190,7 @@ pub struct Brand<'a> {
     logo_url: &'a str,
     /// The mark drawn when it has not.
     icon: TenantIcon,
+    support: Option<&'a asterius_domain::entities::theme::SupportLinks>,
 }
 
 impl<'a> Brand<'a> {
@@ -205,7 +206,33 @@ impl<'a> Brand<'a> {
             font_url,
             logo_url: "",
             icon: TenantIcon::Shield,
+            support: None,
         }
+    }
+
+    /// Validated HTTPS destinations supplied by the tenant.
+    #[must_use]
+    pub const fn with_support(
+        mut self,
+        support: &'a asterius_domain::entities::theme::SupportLinks,
+    ) -> Self {
+        self.support = Some(support);
+        self
+    }
+
+    #[must_use]
+    pub fn help_url(&self) -> Option<&str> {
+        self.support.and_then(|s| s.help_url()).map(AsRef::as_ref)
+    }
+    #[must_use]
+    pub fn privacy_url(&self) -> Option<&str> {
+        self.support
+            .and_then(|s| s.privacy_url())
+            .map(AsRef::as_ref)
+    }
+    #[must_use]
+    pub fn terms_url(&self) -> Option<&str> {
+        self.support.and_then(|s| s.terms_url()).map(AsRef::as_ref)
     }
 
     /// The same chrome with the tenant's chosen mark.

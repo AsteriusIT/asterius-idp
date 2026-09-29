@@ -1,6 +1,7 @@
+import { useUnsavedChanges } from './navigation-guard';
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
-import { ApiError, endSession, loadSession, type Session } from './api';
+import { SESSION_EXPIRED, ApiError, endSession, loadSession, type Session } from './api';
 import { AuditExplorer } from './audit';
 import { Branding } from './branding';
 import { AuthorizationDetailsTypes } from './authorizationDetailsTypes';
@@ -45,6 +46,7 @@ type Shell =
   | { readonly kind: 'failed'; readonly message: string };
 
 export function App(): JSX.Element {
+  const leave = useUnsavedChanges(false);
   const [shell, setShell] = useState<Shell>({ kind: 'loading' });
   // The whole fragment and not just the route it names: a fragment may carry
   // parameters (`#/settings?tenant=acme`, `ast-l5bl`), and a state that held
@@ -76,6 +78,11 @@ export function App(): JSX.Element {
   }, []);
 
   useEffect(probe, [probe]);
+  useEffect(() => {
+    const expired = () => setShell({ kind: 'signed-out' });
+    window.addEventListener(SESSION_EXPIRED, expired);
+    return () => window.removeEventListener(SESSION_EXPIRED, expired);
+  }, []);
 
   /**
    * Ends the session, then shows the signed-out screen.
@@ -133,7 +140,7 @@ export function App(): JSX.Element {
       <AppTopbar
         session={shell.session}
         page={allowed ? (here?.label ?? 'Not found') : (here === undefined ? 'Not found' : 'Access unavailable')}
-        onSignOut={() => signOut(shell.session)}
+        onSignOut={() => leave(() => signOut(shell.session))}
       />
       <AppSidebar session={shell.session} current={current} />
       <SidebarInset>

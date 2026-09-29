@@ -93,6 +93,15 @@ function ArchitectureDirectory({ session }: { session: Session }): JSX.Element {
     </Panel>
   </Screen>;
 }
+
+/** Flow identifiers are UUIDs, never arbitrary URL segments from a response or hash. */
+function flowPath(id: string): string {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+    throw new Error('Invalid architecture identifier');
+  }
+  return `flows/${encodeURIComponent(id)}`;
+}
+const PANE_LABELS = { object: 'Settings', review: 'Review', resources: 'Resources' };
 const EMPTY: Graph = { schema_version: 1, nodes: [], edges: [] };
 
 function ArchitectureWorkspace({ session, flowId, editing, templateRequested, initialNode }: { session: Session; flowId: string | null; editing: boolean; templateRequested: string | null; initialNode: string | null }): JSX.Element {
@@ -103,6 +112,9 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
   const [graph, setGraph] = useState<Graph>(EMPTY);
   const [selected, setSelected] = useState<string | null>(null);
   const [selectedEdge, setSelectedEdge] = useState<string | null>(null);
+  const [listView, setListView] = useState(false);
+  const [connectionSource, setConnectionSource] = useState('');
+  const [connectionTarget, setConnectionTarget] = useState('');
   const [pendingRemoval, setPendingRemoval] = useState<string | null>(null);
   const [pendingNavigation, setPendingNavigation] = useState<string | null>(null);
   const [showShortcuts, setShowShortcuts] = useState(false);
@@ -122,7 +134,7 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
     if (!flowId) { if (templateRequested === 'bff') { setName('Backend for frontend'); setGraph(bffPreset()); setDirty(true); } else if (templateRequested === 'web') template(); else create(); return; }
     const target = flowId;
     let active = true;
-    read(`flows/${encodeURIComponent(target)}`).then(value => {
+    Promise.resolve().then(() => read(flowPath(target))).then(value => {
       if (!active) return;
       const item = value as Flow;
       setFlow(item); setName(item.name); setGraph(item.graph); setDirty(false); setPlan(null);
@@ -134,7 +146,7 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
   useEffect(() => {
     if (!flow) { setLinks([]); return; }
     let active = true;
-    read(`flows/${encodeURIComponent(flow.id)}/links`).then(
+    read(flowPath(flow.id) + '/links').then(
       value => { if (active) setLinks((value as { items: ResourceLink[] }).items); },
       () => { if (active) setLinks([]); },
     );
@@ -164,7 +176,7 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
   const save = (): void => {
     if (!canWrite || hasInvalidKeys || !name.trim() || (!dirty && flow)) return;
     setBusy(true);
-    const path = flow ? `flows/${encodeURIComponent(flow.id)}` : 'flows';
+    const path = flow ? flowPath(flow.id) : 'flows';
     const method = flow ? 'PUT' : 'POST';
     mutate(path, method, session, { name: name.trim(), graph, ...(flow ? { revision: flow.revision } : {}) }).then(value => {
       const saved = value as Flow;
@@ -175,32 +187,30 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
   const preview = (): void => {
     if (!flow) return;
     setPlanning(true); setPlan(null);
-    mutate(`flows/${encodeURIComponent(flow.id)}/plan`, 'POST', session, { revision: flow.revision }).then(value => {
+    mutate(flowPath(flow.id) + '/plan', 'POST', session, { revision: flow.revision }).then(value => {
       setPlan(value as Plan);
     }, error => toast.error('Preview could not be built', error instanceof Error ? error.message : 'Try again')).finally(() => setPlanning(false));
   };
   const apply = (): void => {
     if (!flow || !plan?.applicable) return;
     setApplying(true);
-    mutate(`flows/${encodeURIComponent(flow.id)}/apply`, 'POST', session, { revision: plan.revision, digest: plan.digest }).then(() => {
+    mutate(flowPath(flow.id) + '/apply', 'POST', session, { revision: plan.revision, digest: plan.digest }).then(() => {
       setLinkRefresh(value => value + 1);
       toast.success('Architecture applied', 'Created resources are now linked to this flow.');
-      read(`flows/${encodeURIComponent(flow.id)}`).then(value => open(value as Flow), () => refresh());
+      read(flowPath(flow.id)).then(value => open(value as Flow), () => refresh());
       refresh();
     }, error => {
       setLinkRefresh(value => value + 1);
       setPlan(null);
       toast.error('Apply stopped', error instanceof Error ? error.message : 'Preview the flow again to inspect partial progress.');
-      read(`flows/${encodeURIComponent(flow.id)}`).then(value => open(value as Flow), () => refresh());
+      read(flowPath(flow.id)).then(value => open(value as Flow), () => refresh());
     }).finally(() => setApplying(false));
   };
   const addNode = (kind: Kind): void => {
     setSelectedEdge(null);
     const id = crypto.randomUUID();
     const index = graph.nodes.length;
-    const settings = kind === 'application' ? { redirect_uris: [], jwks_uri: '' }
-      : kind === 'api' ? { scopes: [], default_token_lifetime_seconds: 300 }
-      : kind === 'role' ? { description: '' } : {};
+    const settings = initialSettings(kind);
     change({ ...graph, nodes: [...graph.nodes, { id, kind, label: TYPES[kind], identifier: '', mode: kind === 'stream' || kind === 'identity_provider' || kind === 'user' || kind === 'gateway' ? 'reference' : 'managed', x: 60 + (index % 4) * 230, y: 80 + Math.floor(index / 4) * 150, settings }] });
     setSelected(id);
   };
@@ -227,26 +237,25 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
     return () => window.removeEventListener('beforeunload', prevent);
   }, [dirty]);
   useEffect(() => {
+    const deleteSelection = (event: KeyboardEvent): void => {
+      if (!selected && !selectedEdge) return;
+      event.preventDefault();
+      if (selected) setPendingRemoval(selected);
+      else change({ ...graph, edges: graph.edges.filter(edge => edge.id !== selectedEdge) });
+      setSelectedEdge(null);
+    };
     const handleKey = (event: KeyboardEvent): void => {
       if (event.defaultPrevented || event.isComposing || event.repeat || (flowId && !flow) || loadError) return;
       const target = event.target instanceof Element ? event.target : null;
       if (target?.closest('[role="dialog"], [role="alertdialog"]')) return;
-      if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 's') {
+      if (isSaveShortcut(event)) {
         event.preventDefault(); save(); return;
       }
       if (event.ctrlKey || event.metaKey || event.altKey || target?.closest('input, textarea, select, [contenteditable="true"], [role="textbox"], [role="combobox"]')) return;
       if (event.key === '?') { event.preventDefault(); setShowShortcuts(value => !value); return; }
       if (event.key === 'Escape') { event.preventDefault(); setSelected(null); setSelectedEdge(null); setTab('object'); setShowShortcuts(false); return; }
       if (!canWrite) return;
-      if (event.key === 'Delete' || event.key === 'Backspace') {
-        if (selected || selectedEdge) {
-          event.preventDefault();
-          if (selected) setPendingRemoval(selected);
-          else change({ ...graph, edges: graph.edges.filter(edge => edge.id !== selectedEdge) });
-          setSelectedEdge(null);
-        }
-        return;
-      }
+      if (event.key === 'Delete' || event.key === 'Backspace') { deleteSelection(event); return; }
       if (event.shiftKey) return;
       const kind = ({ a: 'application', i: 'api', g: 'gateway' } as const)[event.key.toLowerCase() as 'a' | 'i' | 'g'];
       if (kind) { event.preventDefault(); addNode(kind); setTab('object'); setSelectedEdge(null); }
@@ -262,74 +271,40 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
   if (loadError) return <Screen title="Architecture"><LoadFailure message={loadError} onRetry={() => window.location.reload()} /><a href={hrefOf('architecture')}>Back to architectures</a></Screen>;
   if (flowId && !flow) return <Skeleton rows={5} label="Loading architecture" />;
   return <section className="architecture-workspace" aria-label={editing ? 'Architecture editor' : 'Architecture viewer'}>
-    <header className="architecture-workspace-header">
-      <Button variant="ghost" className="architecture-icon-button" title="Back to architectures" aria-label="Back to architectures" onClick={() => navigate(hrefOf('architecture'))} disabled={applying || busy}><ArrowLeft size={18} /></Button>
-      <div className="architecture-title"><strong>{name}</strong><small>{session.workspace} · {editing ? dirty ? 'Unsaved changes' : 'Editing draft' : 'Viewing saved architecture'}</small></div>
-      {editing ? <><Button disabled={!canWrite || hasInvalidKeys || !name.trim() || !dirty && Boolean(flow)} aria-keyshortcuts="Control+s Meta+s" title="Save draft (Ctrl/Cmd+S)" onClick={save}>{busy ? 'Saving…' : 'Save draft'}</Button>{flow && <Button variant="ghost" className="architecture-icon-button" disabled={busy || applying} title="View architecture" aria-label="View architecture" onClick={() => navigate(hrefOf('architecture', { flow: flow.id }))}><Eye size={18} /></Button>}</> : session.scopes.includes('admin.flows:write') && flow && <Button onClick={() => navigate(hrefOf('architecture', { flow: flow.id, mode: 'edit' }))}><Pencil size={16} />Edit architecture</Button>}
-      {flow && <Button disabled={dirty || planning || applying} onClick={() => { setSelected(null); setTab('review'); preview(); }}>{planning ? 'Checking…' : 'Review changes'}</Button>}
-      <Button variant="ghost" className="architecture-icon-button" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts" aria-expanded={showShortcuts} onClick={() => setShowShortcuts(value => !value)}><Keyboard size={18} /></Button>
-    </header>
+    <WorkspaceHeader name={name} session={session} editing={editing} dirty={dirty} applying={applying} busy={busy}
+      canWrite={canWrite} hasInvalidKeys={hasInvalidKeys} flow={flow} planning={planning} showShortcuts={showShortcuts}
+      save={save} navigate={navigate} onReview={() => { setSelected(null); setTab('review'); preview(); }}
+      onShortcuts={() => setShowShortcuts(value => !value)} />
     {showShortcuts && <div className="architecture-shortcuts" role="region" aria-label="Keyboard shortcuts guide"><span><kbd>Ctrl/Cmd + S</kbd> Save draft</span><span><kbd>A</kbd> Web app</span><span><kbd>I</kbd> API</span><span><kbd>G</kbd> Gateway</span><span><kbd>B</kbd> BFF</span><span><kbd>Delete / Backspace</kbd> Remove selected object or connection from diagram</span><span><kbd>Escape</kbd> Architecture settings</span><span><kbd>?</kbd> Toggle this guide</span><small>Single-key shortcuts pause while typing. Editing shortcuts require edit access. Removing a linked object keeps its live resource.</small></div>}
     <div className="architecture-workspace-body">
       <div className="architecture-stage">
         {canWrite && <div className="architecture-palette" aria-label="Add an object"><Button variant="ghost" small title="Add backend for frontend preset (B)" aria-keyshortcuts="B" onClick={addBff}><Layers size={18} />BFF</Button>{(Object.keys(TYPES) as Kind[]).map(kind => { const Icon = ICONS[kind]; return <Button variant="ghost" key={kind} small title={`Add ${TYPES[kind].toLowerCase()}`} aria-label={`Add ${TYPES[kind].toLowerCase()}`} onClick={() => { addNode(kind); setTab('object'); }}><Icon size={18} />{(kind === 'identity_provider' || kind === 'stream' || kind === 'gateway') && TYPES[kind]}</Button>; })}</div>}
-        <div className="architecture-stage-canvas"><FlowCanvas graph={graph} writable={canWrite} selected={selected} selectedEdge={selectedEdge} onEdgeSelect={setSelectedEdge} onSelect={id => { setSelected(id); setTab('object'); }} onChange={change} /></div>
+        <div className="architecture-view-switch"><Button small aria-pressed={listView} onClick={() => setListView(value => !value)}>{listView ? 'Show canvas' : 'Show object list'}</Button></div>
+        {listView ? <div className="architecture-object-list" aria-label="Architecture objects">
+          <p className="muted">Select an object to configure it. Changes affect this draft until reviewed and applied.</p>
+          <ul>{graph.nodes.map(node => <li key={node.id}><Button aria-pressed={selected === node.id} onClick={() => { setSelected(node.id); setTab('object'); }}>{node.label} · {TYPES[node.kind]}</Button>{canWrite && <Button small variant="danger" onClick={() => setPendingRemoval(node.id)}>Remove {node.label}</Button>}</li>)}</ul>
+          <h2>Connections</h2>
+          <ul>{graph.edges.map(edge => <li key={edge.id}><span>{graph.nodes.find(node => node.id === edge.source)?.label} → {graph.nodes.find(node => node.id === edge.target)?.label}</span>{canWrite && <Button small onClick={() => change({ ...graph, edges: graph.edges.filter(item => item.id !== edge.id) })}>Remove connection</Button>}</li>)}</ul>
+          {canWrite && <form onSubmit={event => { event.preventDefault(); if (validConnection(graph, connectionSource, connectionTarget)) { change({ ...graph, edges: [...graph.edges, { id: crypto.randomUUID(), source: connectionSource, target: connectionTarget }] }); setConnectionTarget(''); } }}>
+            <Field label="Connect from">{props => <select {...props} value={connectionSource} onChange={event => { setConnectionSource(event.target.value); setConnectionTarget(''); }}><option value="">Choose an object</option>{graph.nodes.map(node => <option key={node.id} value={node.id}>{node.label}</option>)}</select>}</Field>
+            <Field label="Connect to">{props => <select {...props} value={connectionTarget} onChange={event => setConnectionTarget(event.target.value)}><option value="">Choose a compatible object</option>{graph.nodes.filter(node => validConnection(graph, connectionSource, node.id)).map(node => <option key={node.id} value={node.id}>{node.label}</option>)}</select>}</Field>
+            <Button type="submit" disabled={!validConnection(graph, connectionSource, connectionTarget)}>Add connection</Button>
+          </form>}
+        </div> : <div className="architecture-stage-canvas"><FlowCanvas graph={graph} writable={canWrite} selected={selected} selectedEdge={selectedEdge} onEdgeSelect={setSelectedEdge} onSelect={id => { setSelected(id); setTab('object'); }} onChange={change} /></div>}
       </div>
       <aside className="architecture-sidepane" aria-label="Architecture details">
         {graph.edges.some(edge => !validConnection({ ...graph, edges: graph.edges.filter(item => item.id !== edge.id) }, edge.source, edge.target)) && <p role="alert" className="architecture-pane-content">This diagram has an unsupported link. Select the link on the canvas to remove it. Identity providers can connect only to groups or users.</p>}
         {selectedNode ? <div className="architecture-pane-heading"><strong>{TYPES[selectedNode.kind]}</strong><Button variant="ghost" className="architecture-icon-button" small title="Architecture settings (Escape)" aria-label="Architecture settings" onClick={() => { setSelected(null); setTab('object'); }}><X size={18} /></Button></div> :
-          <nav className="architecture-pane-tabs" aria-label="Architecture settings sections">{(['object', 'review', 'resources'] as const).map(value => <button type="button" key={value} aria-pressed={tab === value} onClick={() => setTab(value)}>{value === 'object' ? 'Settings' : value === 'review' ? 'Review' : 'Resources'}</button>)}</nav>}
+          <nav className="architecture-pane-tabs" aria-label="Architecture settings sections">{(['object', 'review', 'resources'] as const).map(value => <button type="button" key={value} aria-pressed={tab === value} onClick={() => setTab(value)}>{PANE_LABELS[value]}</button>)}</nav>}
         {tab === 'object' && <div className="architecture-pane-content">
           {!selectedNode && <><h2>Architecture settings</h2><Field label="Architecture name">{props => <input {...props} value={name} maxLength={120} disabled={!canWrite} onChange={event => { setName(event.target.value); setDirty(true); setPlan(null); }} />}</Field>
             <p className="muted">BFF adds a sign-in application and API with bff.access permission and a five-minute token lifetime. Add callbacks, public keys and the API audience before applying. API chains and gateways are context only. Select an object to edit it. Drag between handles to connect objects. Select a connection to remove it. Click the canvas background to return here.</p><Button onClick={() => navigate(hrefOf('help'))}>Developer integration guide</Button></>}
-        {selectedNode && <div className="architecture-inspector">
-          <Field label="Display name">{props => <input {...props} value={selectedNode.label} disabled={!canWrite} onChange={event => updateSelected({ label: event.target.value })} />}</Field>
-          {(selectedNode.kind !== 'application' || selectedNode.mode === 'reference') &&
-            <Field label={selectedNode.kind === 'user' ? 'Username' : selectedNode.kind === 'gateway' ? 'Gateway address (optional)' : selectedNode.kind === 'api' ? 'API audience URL' : selectedNode.kind === 'role' ? 'Role name' : selectedNode.kind === 'group' ? 'Group machine name' : 'Identifier'}>{props => <input {...props} value={selectedNode.identifier} disabled={!canWrite} onChange={event => updateSelected({ identifier: event.target.value })} />}</Field>}
-          <Field label="Ownership">{props => <select {...props} value={selectedNode.mode} disabled={!canWrite || selectedNode.kind === 'stream' || selectedNode.kind === 'identity_provider' || selectedNode.kind === 'user' || selectedNode.kind === 'gateway'} onChange={event => updateSelected({ mode: event.target.value as Mode })}>
-            <option value="managed">Create with flow</option><option value="reference">{selectedNode.kind === 'stream' || selectedNode.kind === 'identity_provider' || selectedNode.kind === 'user' || selectedNode.kind === 'gateway' ? 'Diagram context only' : 'Existing reference'}</option>
-          </select>}</Field>
-          {(selectedNode.kind === 'stream' || selectedNode.kind === 'identity_provider' || selectedNode.kind === 'user' || selectedNode.kind === 'gateway') &&
-            <p className="muted">Shown for architecture context. Apply does not configure or verify this integration.</p>}
-          {selectedNode.kind === 'application' && selectedNode.mode === 'managed' && <>
-            <LinesField key={`${selectedNode.id}:redirects`} label="Sign-in callback URLs" values={asStrings(selectedNode.settings.redirect_uris)} disabled={!canWrite} onChange={values => updateSelected({ settings: { ...selectedNode.settings, redirect_uris: values } })} />
-            <KeySource key={selectedNode.id} node={selectedNode} draft={keyDrafts[selectedNode.id]} onDraft={text => setKeyDrafts(current => ({ ...current, [selectedNode.id]: text }))} disabled={!canWrite} onValidity={valid => setInvalidKeys(current => ({ ...current, [selectedNode.id]: !valid }))} onChange={settings => updateSelected({ settings })} />
-          </>}
-          {selectedNode.kind === 'api' && selectedNode.mode === 'managed' && <>
-            <LinesField key={`${selectedNode.id}:scopes`} label="API permissions (one per line)" values={asStrings(selectedNode.settings.scopes)} disabled={!canWrite} onChange={values => updateSelected({ settings: { ...selectedNode.settings, scopes: values } })} />
-            <Field label="Default token lifetime (seconds)">{props => <input {...props} type="number" min={1} max={86400} disabled={!canWrite}
-              value={Number(selectedNode.settings.default_token_lifetime_seconds ?? 300)}
-              onChange={event => updateSelected({ settings: { ...selectedNode.settings, default_token_lifetime_seconds: Number(event.target.value) } })} />}</Field>
-          </>}
-          {selectedNode.kind === 'role' && <Field label="What this role permits">{props => <textarea {...props} rows={2} disabled={!canWrite}
-            value={String(selectedNode.settings.description ?? '')}
-            onChange={event => updateSelected({ settings: { ...selectedNode.settings, description: event.target.value } })} />}</Field>}
-          {selectedNode.kind === 'group' && <p className="muted">Use a lowercase machine name such as <code>engineering</code> as the stable identifier.</p>}
-          {selectedNode.kind === 'api' && <p className="muted">Use the exact HTTPS audience URL. API-to-API and API-to-gateway links describe calls only; they do not grant access or configure token exchange.</p>}
-          {selectedNode.kind === 'application' && selectedNode.mode === 'reference' && <p className="muted">Enter the existing application client ID as its identifier.</p>}
-          {selectedNode.kind === 'identity_provider' && <p>Connect this provider to a group or user. This describes where identities come from; it does not configure sign-in.</p>}
-          {selectedNode.kind === 'gateway' && <p>A gateway describes routing in your architecture. Connect applications or APIs to it, then connect it to downstream APIs. Apply does not deploy routes, credentials or access policies.</p>}
-          {selectedNode.kind === 'application' && selectedNode.mode === 'managed' && <p className="muted">Creates a confidential FAPI client with private_key_jwt, PAR and DPoP. For a BFF, keep tokens and signing keys on the server and implement a browser session cookie in your application.</p>}
-          {selectedNode.kind === 'role' && <p>A role is a leaf: one application defines it, and groups may grant it.</p>}
-          {canWrite && <Button variant="danger" onClick={() => setPendingRemoval(selectedNode.id)}><Trash2 size={16} />{links.some(link => link.node_id === selectedNode.id) ? 'Remove from diagram' : 'Delete draft object'}</Button>}
-          {links.some(link => link.node_id === selectedNode.id) && <p className="muted">This object has a linked resource. Removing it from the diagram keeps the live resource.</p>}
+        {selectedNode && <NodeInspector selectedNode={selectedNode} canWrite={canWrite} links={links}
+          keyDraft={keyDrafts[selectedNode.id]} onKeyDraft={text => setKeyDrafts(current => ({ ...current, [selectedNode.id]: text }))}
+          onKeyValidity={valid => setInvalidKeys(current => ({ ...current, [selectedNode.id]: !valid }))}
+          updateSelected={updateSelected} onRemove={() => setPendingRemoval(selectedNode.id)} />}
         </div>}
-        </div>}
-      {tab === 'review' && flow && <Panel title="Preview and apply" description="Preview checks every object, connection and required permission. Applying uses this exact saved revision.">
-        <div className="architecture-toolbar">
-          <Button disabled={dirty || planning || applying} onClick={preview}>{planning ? 'Checking…' : 'Preview changes'}</Button>
-          {canWrite && plan?.applicable && <Button variant="primary" disabled={dirty || applying} onClick={apply}>{applying ? 'Applying…' : 'Apply this plan'}</Button>}
-        </div>
-        {dirty && <p className="muted">Save the diagram before previewing it.</p>}
-        {flow.applied_revision != null && <p className="muted">Last fully applied revision: {flow.applied_revision}.</p>}
-        {flow.last_apply_error && <p role="alert">Last apply stopped: {flow.last_apply_error}. Preview again to inspect progress.</p>}
-        {plan && <>
-          <p role="status">{plan.applicable ? 'Ready to apply.' : 'Resolve the conflicts below before applying.'} {plan.steps.length} planned items.</p>
-          <ul className="architecture-plan-list">{plan.steps.map(step => <li key={step.id}>
-            <strong>{step.label}</strong><span>{step.action}</span><span className="muted">{step.explanation || step.scope}</span>
-          </li>)}</ul>
-        </>}
-      </Panel>}
+      {tab === 'review' && flow && <ReviewPanel flow={flow} dirty={dirty} planning={planning} applying={applying} canWrite={canWrite} plan={plan} preview={preview} apply={apply} />}
       {tab === 'resources' && flow && <Panel title="Linked resources" description="Created resources keep this flow as their origin. Removing an object from the diagram never deletes its live resource.">
         {links.length === 0 ? <p className="muted">No resources linked yet. Apply a plan to create or attach them.</p> :
           <ul className="architecture-object-list">{links.map(link => <li key={link.node_id}>
@@ -402,4 +377,97 @@ function resourceHref(link: ResourceLink): string {
     } catch { return hrefOf('roles'); }
   }
   return hrefOf('architecture');
+}
+
+const IDENTIFIER_LABELS: Record<Kind, string> = { user: 'Username', gateway: 'Gateway address (optional)', api: 'API audience URL', role: 'Role name', group: 'Group machine name', application: 'Identifier', identity_provider: 'Identifier', stream: 'Identifier' };
+function NodeInspector({ selectedNode, canWrite, links, keyDraft, onKeyDraft, onKeyValidity, updateSelected, onRemove }: Readonly<{
+  selectedNode: ArchitectureNode; canWrite: boolean; links: ResourceLink[]; keyDraft: string | undefined;
+  onKeyDraft: (text: string) => void; onKeyValidity: (valid: boolean) => void;
+  updateSelected: (patch: Partial<ArchitectureNode>) => void; onRemove: () => void;
+}>): JSX.Element {
+  return <div className="architecture-inspector">
+          <Field label="Display name">{props => <input {...props} value={selectedNode.label} disabled={!canWrite} onChange={event => updateSelected({ label: event.target.value })} />}</Field>
+          {(selectedNode.kind !== 'application' || selectedNode.mode === 'reference') &&
+            <Field label={IDENTIFIER_LABELS[selectedNode.kind]}>{props => <input {...props} value={selectedNode.identifier} disabled={!canWrite} onChange={event => updateSelected({ identifier: event.target.value })} />}</Field>}
+          <Field label="Ownership">{props => <select {...props} value={selectedNode.mode} disabled={!canWrite || contextOnlyNode(selectedNode.kind)} onChange={event => updateSelected({ mode: event.target.value as Mode })}>
+            <option value="managed">Create with flow</option><option value="reference">{contextOnlyNode(selectedNode.kind) ? 'Diagram context only' : 'Existing reference'}</option>
+          </select>}</Field>
+          {(contextOnlyNode(selectedNode.kind)) &&
+            <p className="muted">Shown for architecture context. Apply does not configure or verify this integration.</p>}
+          {selectedNode.kind === 'application' && selectedNode.mode === 'managed' && <>
+            <LinesField key={`${selectedNode.id}:redirects`} label="Sign-in callback URLs" values={asStrings(selectedNode.settings.redirect_uris)} disabled={!canWrite} onChange={values => updateSelected({ settings: { ...selectedNode.settings, redirect_uris: values } })} />
+            <KeySource key={selectedNode.id} node={selectedNode} draft={keyDraft} onDraft={onKeyDraft} disabled={!canWrite} onValidity={onKeyValidity} onChange={settings => updateSelected({ settings })} />
+          </>}
+          {selectedNode.kind === 'api' && selectedNode.mode === 'managed' && <>
+            <LinesField key={`${selectedNode.id}:scopes`} label="API permissions (one per line)" values={asStrings(selectedNode.settings.scopes)} disabled={!canWrite} onChange={values => updateSelected({ settings: { ...selectedNode.settings, scopes: values } })} />
+            <Field label="Default token lifetime (seconds)">{props => <input {...props} type="number" min={1} max={86400} disabled={!canWrite}
+              value={Number(selectedNode.settings.default_token_lifetime_seconds ?? 300)}
+              onChange={event => updateSelected({ settings: { ...selectedNode.settings, default_token_lifetime_seconds: Number(event.target.value) } })} />}</Field>
+          </>}
+          {selectedNode.kind === 'role' && <Field label="What this role permits">{props => <textarea {...props} rows={2} disabled={!canWrite}
+            value={String(selectedNode.settings.description ?? '')}
+            onChange={event => updateSelected({ settings: { ...selectedNode.settings, description: event.target.value } })} />}</Field>}
+          {selectedNode.kind === 'group' && <p className="muted">Use a lowercase machine name such as <code>engineering</code> as the stable identifier.</p>}
+          {selectedNode.kind === 'api' && <p className="muted">Use the exact HTTPS audience URL. API-to-API and API-to-gateway links describe calls only; they do not grant access or configure token exchange.</p>}
+          {selectedNode.kind === 'application' && selectedNode.mode === 'reference' && <p className="muted">Enter the existing application client ID as its identifier.</p>}
+          {selectedNode.kind === 'identity_provider' && <p>Connect this provider to a group or user. This describes where identities come from; it does not configure sign-in.</p>}
+          {selectedNode.kind === 'gateway' && <p>A gateway describes routing in your architecture. Connect applications or APIs to it, then connect it to downstream APIs. Apply does not deploy routes, credentials or access policies.</p>}
+          {selectedNode.kind === 'application' && selectedNode.mode === 'managed' && <p className="muted">Creates a confidential FAPI client with private_key_jwt, PAR and DPoP. For a BFF, keep tokens and signing keys on the server and implement a browser session cookie in your application.</p>}
+          {selectedNode.kind === 'role' && <p>A role is a leaf: one application defines it, and groups may grant it.</p>}
+          {canWrite && <Button variant="danger" onClick={onRemove}><Trash2 size={16} />{links.some(link => link.node_id === selectedNode.id) ? 'Remove from diagram' : 'Delete draft object'}</Button>}
+          {links.some(link => link.node_id === selectedNode.id) && <p className="muted">This object has a linked resource. Removing it from the diagram keeps the live resource.</p>}
+        </div>;
+}
+
+function workspaceState(editing: boolean, dirty: boolean): string {
+  if (!editing) return 'Viewing saved architecture';
+  return dirty ? 'Unsaved changes' : 'Editing draft';
+}
+
+function WorkspaceHeader({ name, session, editing, dirty, applying, busy, canWrite, hasInvalidKeys, flow, planning, showShortcuts, save, navigate, onReview, onShortcuts }: Readonly<{
+  name: string; session: Session; editing: boolean; dirty: boolean; applying: boolean; busy: boolean;
+  canWrite: boolean; hasInvalidKeys: boolean; flow: Flow | null; planning: boolean; showShortcuts: boolean;
+  save: () => void; navigate: (href: string) => void; onReview: () => void; onShortcuts: () => void;
+}>): JSX.Element {
+  return <header className="architecture-workspace-header">
+      <Button variant="ghost" className="architecture-icon-button" title="Back to architectures" aria-label="Back to architectures" onClick={() => navigate(hrefOf('architecture'))} disabled={applying || busy}><ArrowLeft size={18} /></Button>
+      <div className="architecture-title"><strong>{name}</strong><small>{session.workspace} · {workspaceState(editing, dirty)}</small></div>
+      {editing ? <><Button disabled={!canWrite || hasInvalidKeys || !name.trim() || !dirty && Boolean(flow)} aria-keyshortcuts="Control+s Meta+s" title="Save draft (Ctrl/Cmd+S)" onClick={save}>{busy ? 'Saving…' : 'Save draft'}</Button>{flow && <Button variant="ghost" className="architecture-icon-button" disabled={busy || applying} title="View architecture" aria-label="View architecture" onClick={() => navigate(hrefOf('architecture', { flow: flow.id }))}><Eye size={18} /></Button>}</> : session.scopes.includes('admin.flows:write') && flow && <Button onClick={() => navigate(hrefOf('architecture', { flow: flow.id, mode: 'edit' }))}><Pencil size={16} />Edit architecture</Button>}
+      {flow && <Button disabled={dirty || planning || applying} onClick={onReview}>{planning ? 'Checking…' : 'Review changes'}</Button>}
+      <Button variant="ghost" className="architecture-icon-button" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts" aria-expanded={showShortcuts} onClick={onShortcuts}><Keyboard size={18} /></Button>
+    </header>;
+}
+
+function isSaveShortcut(event: KeyboardEvent): boolean {
+  return (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 's';
+}
+
+function initialSettings(kind: Kind): Record<string, unknown> {
+  switch (kind) {
+    case 'application': return { redirect_uris: [], jwks_uri: '' };
+    case 'api': return { scopes: [], default_token_lifetime_seconds: 300 };
+    case 'role': return { description: '' };
+    default: return {};
+  }
+}
+
+function ReviewPanel({ flow, dirty, planning, applying, canWrite, plan, preview, apply }: Readonly<{
+  flow: Flow; dirty: boolean; planning: boolean; applying: boolean; canWrite: boolean;
+  plan: Plan | null; preview: () => void; apply: () => void;
+}>): JSX.Element {
+  return <Panel title="Preview and apply" description="Preview checks every object, connection and required permission. Applying uses this exact saved revision.">
+        <div className="architecture-toolbar">
+          <Button disabled={dirty || planning || applying} onClick={preview}>{planning ? 'Checking…' : 'Preview changes'}</Button>
+          {canWrite && plan?.applicable && <Button variant="primary" disabled={dirty || applying} onClick={apply}>{applying ? 'Applying…' : 'Apply this plan'}</Button>}
+        </div>
+        {dirty && <p className="muted">Save the diagram before previewing it.</p>}
+        {flow.applied_revision != null && <p className="muted">Last fully applied revision: {flow.applied_revision}.</p>}
+        {flow.last_apply_error && <p role="alert">Last apply stopped: {flow.last_apply_error}. Preview again to inspect progress.</p>}
+        {plan && <>
+          <p role="status">{plan.applicable ? 'Ready to apply.' : 'Resolve the conflicts below before applying.'} {plan.steps.length} planned items.</p>
+          <ul className="architecture-plan-list">{plan.steps.map(step => <li key={step.id}>
+            <strong>{step.label}</strong><span>{step.action}</span><span className="muted">{step.explanation || step.scope}</span>
+          </li>)}</ul>
+        </>}
+      </Panel>;
 }

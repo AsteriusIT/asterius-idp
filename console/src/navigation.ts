@@ -26,15 +26,16 @@ export type Reach = 'tenant' | 'deployment';
  * `Overview` is a group of one, drawn without a heading: it is where the
  * console opens, and a heading above a single item says the item's name twice.
  */
-export type Group = 'Overview' | 'Directory' | 'Trust' | 'Observability' | 'Deployment' | 'Help';
+export type Group = 'Overview' | 'People' | 'Applications' | 'Sign-in & trust' | 'Operations' | 'Workspace' | 'Help';
 
 /** The order the groups appear in, top to bottom. */
 export const GROUPS: readonly Group[] = [
   'Overview',
-  'Directory',
-  'Trust',
-  'Observability',
-  'Deployment',
+  'People',
+  'Applications',
+  'Sign-in & trust',
+  'Operations',
+  'Workspace',
   'Help',
 ];
 
@@ -94,15 +95,15 @@ export const DESTINATIONS: readonly Destination[] = [
   // beneath it has an independently authorized endpoint and is omitted when
   // this session lacks that resource's read scope (`ast-6uqw.8`).
   { route: 'overview', label: 'Overview', reach: 'tenant', scope: 'admin.session:read', bead: 'ast-6uqw.8', group: 'Overview' },
-  { route: 'users', label: 'Users', reach: 'tenant', scope: 'admin.users:read', bead: 'ast-f7m.6', group: 'Directory' },
-  { route: 'groups', label: 'Groups', reach: 'tenant', scope: 'admin.groups:read', bead: 'ast-6uqw.13', group: 'Directory' },
-  { route: 'scim', label: 'SCIM provisioning', reach: 'tenant', scope: 'admin.clients:read', bead: 'ast-s36.13.5', group: 'Directory' },
-  { route: 'clients', label: 'Applications', reach: 'tenant', scope: 'admin.clients:read', bead: 'ast-f7m.5', group: 'Directory' },
-  { route: 'oidc-providers', label: 'Sign-in providers', reach: 'tenant', scope: 'admin.oidc_providers:read', bead: 'ast-7vbr.1', group: 'Directory' },
-  { route: 'resources', label: 'Resource servers', reach: 'tenant', scope: 'admin.resource_servers:read', bead: 'ast-f7m.12', group: 'Directory' },
-  { route: 'architecture', label: 'Architecture builder', reach: 'tenant', scope: 'admin.flows:read', bead: 'ast-q0af.1', group: 'Directory' },
-  { route: 'authorization-details', label: 'Authorization details', reach: 'tenant', scope: 'admin.authorization_details_types:read', bead: 'ast-f7m.14', group: 'Trust' },
-  { route: 'roles', label: 'Roles', reach: 'tenant', scope: 'admin.app_roles:read', bead: 'ast-7fvb', group: 'Directory' },
+  { route: 'users', label: 'Users', reach: 'tenant', scope: 'admin.users:read', bead: 'ast-f7m.6', group: 'People' },
+  { route: 'groups', label: 'Groups', reach: 'tenant', scope: 'admin.groups:read', bead: 'ast-6uqw.13', group: 'People' },
+  { route: 'scim', label: 'SCIM provisioning', reach: 'tenant', scope: 'admin.clients:read', bead: 'ast-s36.13.5', group: 'Applications' },
+  { route: 'clients', label: 'Applications', reach: 'tenant', scope: 'admin.clients:read', bead: 'ast-f7m.5', group: 'Applications' },
+  { route: 'oidc-providers', label: 'Sign-in providers', reach: 'tenant', scope: 'admin.oidc_providers:read', bead: 'ast-7vbr.1', group: 'Sign-in & trust' },
+  { route: 'resources', label: 'Resource servers', reach: 'tenant', scope: 'admin.resource_servers:read', bead: 'ast-f7m.12', group: 'Applications' },
+  { route: 'architecture', label: 'Architecture builder', reach: 'tenant', scope: 'admin.flows:read', bead: 'ast-q0af.1', group: 'Applications' },
+  { route: 'authorization-details', label: 'Authorization details', reach: 'tenant', scope: 'admin.authorization_details_types:read', bead: 'ast-f7m.14', group: 'Sign-in & trust' },
+  { route: 'roles', label: 'Roles', reach: 'tenant', scope: 'admin.app_roles:read', bead: 'ast-7fvb', group: 'People' },
   // Built by `ast-l5bl`, so the tag is historical like the four around it.
   // The line kept the *epic* while it was a placeholder, because no child
   // ticket carried a tenants screen and a placeholder naming a closed or
@@ -115,30 +116,30 @@ export const DESTINATIONS: readonly Destination[] = [
   // tenant and suspending one ask for `admin.tenants:write` at the same reach,
   // and the screen hides those controls itself — the server refuses them
   // either way.
-  { route: 'tenants', label: 'Tenants', reach: 'deployment', scope: 'admin.tenants:read', bead: 'ast-l5bl', group: 'Deployment' },
-  { route: 'keys', label: 'Signing keys', reach: 'tenant', scope: 'admin.keys:read', bead: 'ast-f7m.7', group: 'Trust' },
-  { route: 'federation', label: 'Federation keys', reach: 'tenant', scope: 'admin.keys:read', bead: 'ast-s36.14.4', group: 'Trust' },
-  { route: 'saml', label: 'SAML IdP key', reach: 'tenant', scope: 'admin.saml:read', bead: 'ast-s36.28.7', group: 'Trust' },
+  { route: 'tenants', label: 'Tenants', reach: 'deployment', scope: 'admin.tenants:read', bead: 'ast-l5bl', group: 'Workspace' },
+  { route: 'keys', label: 'Signing keys', reach: 'tenant', scope: 'admin.keys:read', bead: 'ast-f7m.7', group: 'Sign-in & trust' },
+  { route: 'federation', label: 'Federation keys', reach: 'tenant', scope: 'admin.keys:read', bead: 'ast-s36.14.4', group: 'Sign-in & trust' },
+  { route: 'saml', label: 'SAML IdP key', reach: 'tenant', scope: 'admin.saml:read', bead: 'ast-s36.28.7', group: 'Sign-in & trust' },
   // The screen opens by listing the streams (`admin.ssf:read`); the
   // dead-letter table beneath them is shown when the caller also holds
   // `admin.outbox:read`, and the buttons when it holds the write scopes.
-  { route: 'ssf', label: 'Shared signals', reach: 'tenant', scope: 'admin.ssf:read', bead: 'ast-f7m.8', group: 'Observability' },
-  { route: 'mail', label: 'Mail delivery', reach: 'tenant', scope: 'admin.lifecycle:read', bead: 'ast-fdxx.6', group: 'Observability' },
+  { route: 'ssf', label: 'Shared signals', reach: 'tenant', scope: 'admin.ssf:read', bead: 'ast-f7m.8', group: 'Operations' },
+  { route: 'mail', label: 'Mail delivery', reach: 'tenant', scope: 'admin.lifecycle:read', bead: 'ast-fdxx.6', group: 'Operations' },
   // The trail and its export share one scope, `admin.audit:read`, held by the
   // auditor and the administrators and by nobody else (`ast-lh3.9`).
-  { route: 'audit', label: 'Audit trail', reach: 'tenant', scope: 'admin.audit:read', bead: 'ast-f7m.8', group: 'Observability' },
+  { route: 'audit', label: 'Audit trail', reach: 'tenant', scope: 'admin.audit:read', bead: 'ast-f7m.8', group: 'Operations' },
   // The policy has its own scope: reading a tenant's lifetimes is not reading
   // its authorization model (`ast-pj0.4`). The screen opens by reading the
   // document, so `admin.policies:read` is what it asks for — an auditor holds
   // it, and the editor's buttons ask for `admin.policies:write` separately.
-  { route: 'policy', label: 'Access policy', reach: 'tenant', scope: 'admin.policies:read', bead: 'ast-f7m.9', group: 'Trust' },
+  { route: 'policy', label: 'Access policy', reach: 'tenant', scope: 'admin.policies:read', bead: 'ast-f7m.9', group: 'Sign-in & trust' },
   // A form nobody may save is worse than an absent link, so the settings
   // screen asks for the write scope its only button needs.
-  { route: 'settings', menuOnly: true, label: 'Tenant settings', reach: 'tenant', scope: 'admin.tenants:write', bead: 'ast-bfn', group: 'Deployment' },
-  { route: 'branding', menuOnly: true, label: 'Branding', reach: 'tenant', scope: 'admin.theme:read', bead: 'ast-6uqw.7', group: 'Deployment' },
+  { route: 'settings', menuOnly: true, label: 'Tenant settings', reach: 'tenant', scope: 'admin.tenants:write', bead: 'ast-bfn', group: 'Workspace' },
+  { route: 'branding', menuOnly: true, label: 'Branding', reach: 'tenant', scope: 'admin.theme:read', bead: 'ast-6uqw.7', group: 'Workspace' },
   // Local-only browser preferences. It makes no API call, so there is no
   // server scope to require and every signed-in console user can reach it.
-  { route: 'preferences', menuOnly: true, label: 'Preferences', reach: 'tenant', scope: null, bead: 'ast-f7m.10', group: 'Deployment' },
+  { route: 'preferences', menuOnly: true, label: 'Preferences', reach: 'tenant', scope: null, bead: 'ast-f7m.10', group: 'Workspace' },
   { route: 'help', label: 'Help & guides', reach: 'tenant', scope: null, bead: 'ast-p2mm', group: 'Help' },
 ];
 

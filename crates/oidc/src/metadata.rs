@@ -1167,7 +1167,7 @@ mod tests {
         let object = document.as_object().expect("object");
         let lists: Vec<&String> = object
             .keys()
-            .filter(|key| key.ends_with("_alg_values_supported"))
+            .filter(|key| key.ends_with("_signing_alg_values_supported"))
             .collect();
         assert!(
             lists.len() >= 5,

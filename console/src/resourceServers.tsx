@@ -1,3 +1,4 @@
+import { useDialogDraft } from './dialog-draft';
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { PencilIcon, PlusIcon } from 'lucide-react';
@@ -20,7 +21,7 @@ import {
   parseScopes,
   scopesError,
 } from './resource-server-model';
-import { Button, Field, LoadFailure, Message, Panel, Screen, Skeleton } from './ui';
+import { Button, ConfirmDialog, Field, LoadFailure, Message, Panel, Screen, Skeleton } from './ui';
 
 interface ResourceServer {
   readonly identifier: string;
@@ -46,9 +47,12 @@ export function ResourceServers({ session }: Readonly<{ session: Session }>): JS
   const [introspectionClients, setIntrospectionClients] = useState('');
   const [editorOpen, setEditorOpen] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [withdrawing, setWithdrawing] = useState<string | null>(null);
+  const [baseline, setBaseline] = useState('');
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const { requestClose, confirmation } = useDialogDraft(editorOpen && JSON.stringify([audience, scopes, unrestricted, lifetime, introspectionClients]) !== baseline, busy, () => { setEditorOpen(false); clearDraft(); });
   const mayWrite = session.scopes.includes('admin.resource_servers:write');
 
   const refresh = useCallback(() => {
@@ -72,10 +76,12 @@ export function ResourceServers({ session }: Readonly<{ session: Session }>): JS
 
   const openCreate = (): void => {
     clearDraft();
+    setBaseline(JSON.stringify(['', '', false, '', '']));
     setEditorOpen(true);
   };
 
   const openEdit = (item: ResourceServer): void => {
+    setBaseline(JSON.stringify([item.identifier, item.scopes?.join(' ') ?? '', item.scopes === null, item.default_token_lifetime_seconds?.toString() ?? '', item.introspection_clients.join('\n')]));
     setAudience(item.identifier);
     setScopes(item.scopes?.join(' ') ?? '');
     setUnrestricted(item.scopes === null);
@@ -110,7 +116,7 @@ export function ResourceServers({ session }: Readonly<{ session: Session }>): JS
     setBusy(true); setError(null); setNotice(null);
     try {
       await mutate(`resource-servers/${encodeURIComponent(identifier)}`, 'DELETE', session);
-      setNotice(`${identifier} was withdrawn.`); refresh();
+      setNotice(`${identifier} was withdrawn.`); setWithdrawing(null); refresh();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'The resource server could not be withdrawn.');
     } finally { setBusy(false); }
@@ -123,20 +129,22 @@ export function ResourceServers({ session }: Readonly<{ session: Session }>): JS
   >
     {notice !== null && <Message tone="success">{notice}</Message>}
     {error !== null && !editorOpen && <Message tone="error">{error}</Message>}
+    {withdrawing !== null && <ConfirmDialog title={`Withdraw ${withdrawing}?`}
+      body={<><p>This removes the registration from {session.workspace}. Applications depending on it may no longer obtain the expected access. Already issued tokens retain their existing validity.</p>{error && <Message tone="error">{error}</Message>}</>}
+      confirmLabel="Withdraw registration" busy={busy} onCancel={() => { setWithdrawing(null); setError(null); }} onConfirm={() => void withdraw(withdrawing)} />}
     <Panel title="Registered audiences">
       {load.kind === 'loading' && <Skeleton rows={3} label="Reading the resource servers." />}
       {load.kind === 'failed' && <LoadFailure message={load.message} onRetry={refresh} />}
       {load.kind === 'ready' && (load.items.length === 0 ? <p className="muted">No resource servers are registered.</p> :
-        <table><caption className="visually-hidden">Registered resource servers</caption><thead><tr><th>Audience</th><th>Supported scopes</th><th>Token lifetime</th><th>Introspection clients</th>{mayWrite && <th>Actions</th>}</tr></thead>
+        <div className="table-wrap"><table><caption className="visually-hidden">Registered resource servers</caption><thead><tr><th>Audience</th><th>Supported scopes</th><th>Token lifetime</th><th>Introspection clients</th>{mayWrite && <th>Actions</th>}</tr></thead>
           <tbody>{load.items.map(item => <tr key={item.identifier}><td><code>{item.identifier}</code><FlowOrigin session={session} kind="api" resource={item.identifier} /></td><td>{scopeDescription(item.scopes)}</td>
             <td>{item.default_token_lifetime_seconds === null ? 'Tenant default' : `${item.default_token_lifetime_seconds} seconds`}</td>
             <td>{item.introspection_clients.length === 0 ? 'None' : item.introspection_clients.join(', ')}</td>
-            {mayWrite && <td><Button small className="size-8 p-0" disabled={busy} aria-label={`Edit ${item.identifier}`} title="Edit" onClick={() => openEdit(item)}><PencilIcon aria-hidden="true" /></Button> <Button small variant="danger" disabled={busy} onClick={() => void withdraw(item.identifier)}>Withdraw</Button></td>}</tr>)}</tbody></table>)}
+            {mayWrite && <td><Button small className="size-8 p-0" disabled={busy} aria-label={`Edit ${item.identifier}`} title="Edit" onClick={() => openEdit(item)}><PencilIcon aria-hidden="true" /></Button> <Button small variant="danger" disabled={busy} onClick={() => setWithdrawing(item.identifier)}>Withdraw</Button></td>}</tr>)}</tbody></table></div>)}
     </Panel>
     {mayWrite && <Dialog open={editorOpen} onOpenChange={(open) => {
       if (busy) return;
-      setEditorOpen(open);
-      if (!open) clearDraft();
+      if (!open) requestClose();
     }}>
       <DialogContent className="max-h-[calc(100vh-2rem)] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
@@ -149,8 +157,9 @@ export function ResourceServers({ session }: Readonly<{ session: Session }>): JS
         <label><input type="checkbox" checked={unrestricted} onChange={event => setUnrestricted(event.target.checked)} /> Do not restrict granted scopes</label>
         <Field label="Default token lifetime" hint="Optional, in seconds (1–86400). The tenant default applies when empty.">{props => <input {...props} type="number" min="1" max="86400" step="1" value={lifetime} onChange={event => setLifetime(event.target.value)} placeholder="300" />}</Field>
         <Field label="Introspection clients" hint="Optional. Enter one client id per line; only these clients may introspect tokens for this audience.">{props => <textarea {...props} rows={3} value={introspectionClients} onChange={event => setIntrospectionClients(event.target.value)} placeholder={'c.gateway\nc.reports'} />}</Field>
+        {confirmation}
         <DialogFooter>
-          <Button disabled={busy} onClick={() => { setEditorOpen(false); clearDraft(); }}>Cancel</Button>
+          <Button disabled={busy} onClick={requestClose}>Cancel</Button>
           <Button variant="primary" disabled={busy} onClick={() => void save()}>{busy ? 'Saving…' : editing ? 'Save changes' : 'Register resource server'}</Button>
         </DialogFooter>
       </DialogContent>

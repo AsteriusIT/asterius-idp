@@ -9,7 +9,7 @@
 <label>
   <span>{{ text.login_totp_code() }}</span>
   <input type="text" name="totp_code" inputmode="numeric" autocomplete="one-time-code"
-         pattern="[0-9]{6}" maxlength="6" autofocus required>
+         pattern="[0-9]{6}" maxlength="6" {% if message.is_none() %}autofocus{% endif %} required>
 </label>
 <div class="actions"><button type="submit">{{ text.login_totp_submit() }}</button></div>
 </form>

@@ -1,3 +1,4 @@
+import { useUnsavedChanges } from './navigation-guard';
 /**
  * The Policy screen (`ast-f7m.9`): the tenant's AuthZEN rule document, and a
  * bench for asking what it decides.
@@ -245,6 +246,8 @@ type Load =
 export function Policy({ session }: Readonly<{ session: Session }>): JSX.Element {
   const [load, setLoad] = useState<Load>({ kind: 'loading' });
   const [draft, setDraft] = useState('');
+  const [baseline, setBaseline] = useState('');
+  useUnsavedChanges(draft !== baseline);
   const [notice, setNotice] = useState<string | null>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -259,6 +262,7 @@ export function Policy({ session }: Readonly<{ session: Session }>): JSX.Element
         const policy = value as PolicyDocument;
         setLoad({ kind: 'ready', policy });
         setDraft(`${JSON.stringify(policy.document, null, 2)}\n`);
+        setBaseline(`${JSON.stringify(policy.document, null, 2)}\n`);
       },
       (error: unknown) =>
         setLoad({

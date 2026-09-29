@@ -1,6 +1,7 @@
-import type { JSX } from 'react';
+import { useState, type JSX } from 'react';
 import {
   NetworkIcon,
+  CopyIcon,
   ChevronDownIcon,
   FingerprintIcon,
   LogOutIcon,
@@ -56,7 +57,12 @@ function AccountMenu({
   session: Session;
   onSignOut: () => void;
 }>): JSX.Element {
-  return (
+  const [copyNotice, setCopyNotice] = useState('');
+  const copyIdentifier = async () => {
+    try { await navigator.clipboard.writeText(session.user); setCopyNotice('Account identifier copied.'); }
+    catch { setCopyNotice(`Copy unavailable. Account identifier: ${session.user}`); }
+  };
+  return <><span className="sr-only" aria-live="polite">{copyNotice}</span>
     <DropdownMenu.Root modal={false}>
       <DropdownMenu.Trigger asChild>
         <Button variant="ghost" className="topbar-account" aria-label="Account menu">
@@ -81,12 +87,14 @@ function AccountMenu({
               <Settings2Icon aria-hidden="true" />Preferences
             </a>
           </DropdownMenu.Item>
+          <DropdownMenu.Item className="account-menu-item" onSelect={() => void copyIdentifier()}>
+            <CopyIcon aria-hidden="true" />Copy account identifier
+          </DropdownMenu.Item>
           <DropdownMenu.Separator className="account-menu-separator" />
           <DropdownMenu.Item className="account-menu-item" onSelect={onSignOut}>
             <LogOutIcon aria-hidden="true" />Sign out
           </DropdownMenu.Item>
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
-    </DropdownMenu.Root>
-  );
+    </DropdownMenu.Root></>;
 }

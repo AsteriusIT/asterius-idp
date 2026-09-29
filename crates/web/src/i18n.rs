@@ -147,6 +147,54 @@ macro_rules! catalogue {
 
 catalogue! {
     plain {
+        AuthenticatorTitle => authenticator_title, "experience.authenticator-title", en: "Authenticator app", fr: "Application d’authentification";
+        AuthenticatorActive => authenticator_active, "experience.authenticator-active", en: "Your authenticator is active.", fr: "Votre application d’authentification est active.";
+        AuthenticatorPending => authenticator_pending, "experience.authenticator-pending", en: "Setup is pending. If you no longer have the setup key, start again.", fr: "La configuration est en attente. Si vous n’avez plus la clé, recommencez.";
+        AuthenticatorStart => authenticator_start, "experience.authenticator-start", en: "Start authenticator setup", fr: "Configurer une application d’authentification";
+        AuthenticatorRestart => authenticator_restart, "experience.authenticator-restart", en: "Start a new setup key", fr: "Générer une nouvelle clé";
+        AuthenticatorScan => authenticator_scan, "experience.authenticator-scan", en: "1. Scan the code or enter the setup key", fr: "1. Scannez le code ou saisissez la clé";
+        AuthenticatorSecret => authenticator_secret, "experience.authenticator-secret", en: "Keep this setup key private. It is shown only during setup.", fr: "Gardez cette clé secrète. Elle est affichée uniquement pendant la configuration.";
+        AuthenticatorManual => authenticator_manual, "experience.authenticator-manual", en: "Manual setup details", fr: "Détails de configuration manuelle";
+        AuthenticatorConfirm => authenticator_confirm, "experience.authenticator-confirm", en: "2. Enter the code from your app", fr: "2. Saisissez le code de votre application";
+        AuthenticatorFinish => authenticator_finish, "experience.authenticator-finish", en: "Confirm setup", fr: "Confirmer la configuration";
+        AuthenticatorRemove => authenticator_remove, "experience.authenticator-remove", en: "Remove authenticator", fr: "Supprimer l’application d’authentification";
+        AuthenticatorRemoval => authenticator_removal, "experience.authenticator-removal", en: "Removing this method stops its codes from working. Make sure you have another approved way to sign in.", fr: "Les codes de cette méthode ne fonctionneront plus. Assurez-vous de disposer d’une autre méthode de connexion autorisée.";
+        AuthenticatorCurrent => authenticator_current, "experience.authenticator-current", en: "Current six-digit code (unless you have already verified your identity)", fr: "Code actuel à six chiffres (sauf si votre identité est déjà vérifiée)";
+        AuthenticatorRecovery => authenticator_recovery, "experience.authenticator-recovery", en: "Lost your authenticator? Use an existing approved sign-in or recovery method, or contact your organization’s administrator.", fr: "Application perdue ? Utilisez une autre méthode de connexion ou de récupération autorisée, ou contactez votre administrateur.";
+        ProvidersTitle => providers_title, "experience.providers-title", en: "Connected information providers", fr: "Fournisseurs d’informations connectés";
+        ProvidersIntro => providers_intro, "experience.providers-intro", en: "Connect a provider to collect verified information. Each application needs your separate approval before receiving it.", fr: "Connectez un fournisseur pour obtenir des informations vérifiées. Chaque application nécessite votre accord avant de les recevoir.";
+        ProvidersEmpty => providers_empty, "experience.providers-empty", en: "No information providers are configured.", fr: "Aucun fournisseur d’informations n’est configuré.";
+        ProvidersPolicy => providers_policy, "experience.providers-policy", en: "Connection policy", fr: "Politique de connexion";
+        ProvidersMissing => providers_missing, "experience.providers-missing", en: "This provider is no longer configured. You can still remove its stored connection.", fr: "Ce fournisseur n’est plus configuré. Vous pouvez toujours supprimer sa connexion enregistrée.";
+        ProvidersNone => providers_none, "experience.providers-none", en: "No verified information stored.", fr: "Aucune information vérifiée enregistrée.";
+        ProvidersAllowed => providers_allowed, "experience.providers-allowed", en: "Available information", fr: "Informations disponibles";
+        ProvidersStored => providers_stored, "experience.providers-stored", en: "Stored information", fr: "Informations enregistrées";
+        ProvidersRefresh => providers_refresh, "experience.providers-refresh", en: "Refresh information", fr: "Actualiser les informations";
+        ProvidersConnect => providers_connect, "experience.providers-connect", en: "Connect and approve information", fr: "Connecter et approuver les informations";
+        ProvidersReconnect => providers_reconnect, "experience.providers-reconnect", en: "Reconnect provider", fr: "Reconnecter le fournisseur";
+        ProvidersRemove => providers_remove, "experience.providers-remove", en: "Remove connection and information", fr: "Supprimer la connexion et les informations";
+        ProvidersRemoval => providers_removal, "experience.providers-removal", en: "This erases the connection and information stored here. The provider is also notified when it supports revocation.", fr: "Cette action efface la connexion et les informations enregistrées ici. Le fournisseur est aussi informé s’il prend en charge la révocation.";
+        ExternalApprovalsTitle => external_approvals_title, "experience.external-approvals-title", en: "External identity approvals", fr: "Autorisations d’identité externe";
+        ExternalApprovalsCurrent => external_approvals_current, "experience.external-approvals-current", en: "Current approvals", fr: "Autorisations actuelles";
+        ExternalApprovalsEmpty => external_approvals_empty, "experience.external-approvals-empty", en: "No active approvals.", fr: "Aucune autorisation active.";
+        ExternalApprovalsNew => external_approvals_new, "experience.external-approvals-new", en: "New approval", fr: "Nouvelle autorisation";
+        ExternalApprovalsIntro => external_approvals_intro, "experience.external-approvals-intro", en: "Approvals last at most 30 days. Only issuers linked to your account by an administrator appear here.", fr: "Les autorisations durent au maximum 30 jours. Seuls les émetteurs liés à votre compte par un administrateur sont affichés.";
+        ExternalApprovalsUnavailable => external_approvals_unavailable, "experience.external-approvals-unavailable", en: "No linked, configured issuer is available for approval.", fr: "Aucun émetteur lié et configuré n’est disponible.";
+        ExternalApprovalsGrant => external_approvals_grant, "experience.external-approvals-grant", en: "Approve selected permissions", fr: "Approuver les permissions sélectionnées";
+        ExternalApprovalsRevoke => external_approvals_revoke, "experience.external-approvals-revoke", en: "Revoke approval", fr: "Révoquer l’autorisation";
+        ExternalApprovalsImpact => external_approvals_impact, "experience.external-approvals-impact", en: "Revoke future access through this approval. Already issued tokens may remain valid until they expire.", fr: "Révoquer les accès futurs via cette autorisation. Les jetons déjà émis peuvent rester valides jusqu’à leur expiration.";
+        SecurityDetails => security_details, "experience.security-details", en: "Connection details", fr: "Détails de connexion";
+        SecurityExpires => security_expires, "experience.security-expires", en: "Expires (UTC)", fr: "Expiration (UTC)";
+        SecurityPermissions => security_permissions, "experience.security-permissions", en: "Permissions", fr: "Autorisations";
+        SecurityConfirm => security_confirm, "experience.security-confirm", en: "I understand the effect of this action", fr: "Je comprends les conséquences de cette action";
+        AccountSigninGroup => account_signin_group, "experience.account-signin-group", en: "Sign-in and recovery", fr: "Connexion et récupération";
+        AccountSessionsGroup => account_sessions_group, "experience.account-sessions-group", en: "Sessions and activity", fr: "Sessions et activité";
+        AccountAccessGroup => account_access_group, "experience.account-access-group", en: "Applications and permissions", fr: "Applications et permissions";
+        AccountConnectionsGroup => account_connections_group, "experience.account-connections-group", en: "Connected providers", fr: "Fournisseurs connectés";
+        SupportHelp => support_help, "experience.support-help", en: "Help", fr: "Aide";
+        SupportPrivacy => support_privacy, "experience.support-privacy", en: "Privacy", fr: "Confidentialité";
+        SupportTerms => support_terms, "experience.support-terms", en: "Terms", fr: "Conditions";
+
         // ---- shared -------------------------------------------------------
         ErrorSummaryHeading => error_summary_heading, "error-summary.heading",
             en: "There is a problem",

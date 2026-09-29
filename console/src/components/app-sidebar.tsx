@@ -74,7 +74,7 @@ export function AppSidebar({
   session: Session;
   current: string;
 }>): JSX.Element {
-  const sections = sectionsFor(session).map(section => ({ ...section, destinations: section.destinations.filter(item => item.route !== 'architecture') })).filter(section => section.destinations.length > 0);
+  const sections = sectionsFor(session);
   const { setOpenMobile } = useSidebar();
 
   return (

@@ -522,7 +522,22 @@ input.code {
   font-size: 1.5rem;
   letter-spacing: .15em;
   text-align: center;
-}:root{--bg:#ffffff;--fg:#18181b;--muted:#71717a;--line:#71717a;--accent:#3f3fbf;--accent-fg:#ffffff;--danger:#b42318;--radius:8px;--space:8px;--font:Geist, system-ui, -apple-system, Segoe UI, sans-serif;}</style>
+}
+
+/* Account tools share the sign-in shell, including on script-free browsers. */
+.account-section { border-top: 1px solid var(--line); padding-block: 24px; display: grid; gap: 16px; }
+.account-section h3, .account-section p, .account-section dd { overflow-wrap: anywhere; }
+.account-section dl { margin: 0; }
+.account-section dt { font-weight: 600; margin-top: 12px; }
+.account-section dd { margin: 4px 0 0; }
+.danger-section { border: 1px solid var(--line); border-radius: var(--ctl); padding: 16px; }
+summary { cursor: pointer; min-height: 44px; padding-block: 12px; }
+.setup-qr { width: 240px; max-width: 100%; height: auto; display: block; margin-inline: auto; shape-rendering: crispEdges; }
+.setup-key { overflow-wrap: anywhere; user-select: all; }
+pre { overflow-x: auto; max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; }
+fieldset { min-width: 0; border: 1px solid var(--line); border-radius: var(--ctl); padding: 12px; }
+.support-links { display: flex; flex-wrap: wrap; justify-content: center; gap: 16px; margin-top: 16px; }
+.support-links a { display: inline-flex; align-items: center; min-height: 44px; }:root{--bg:#ffffff;--fg:#18181b;--muted:#71717a;--line:#71717a;--accent:#3f3fbf;--accent-fg:#ffffff;--danger:#b42318;--radius:8px;--space:8px;--font:Geist, system-ui, -apple-system, Segoe UI, sans-serif;}</style>
 </head>
 <body>
 
@@ -542,6 +557,7 @@ input.code {
 <p class="muted">What you sign in with, where you are signed in, and what you have allowed.</p>
 </div>
 
+<h3>Sign-in and recovery</h3>
 <ul class="scopes">
 <li>
   <a href="/account/passkeys">Passkeys</a>
@@ -559,6 +575,8 @@ input.code {
   <a href="/account/email">Email address</a>
   <br><span class="muted">Change your address after confirming the new mailbox.</span>
 </li>
+</ul><h3>Sessions and activity</h3>
+<ul class="scopes">
 <li>
   <a href="/account/sessions">Where you are signed in</a>
   <br><span class="muted">See the sessions open on your account, and close any you do not recognise.</span>
@@ -567,6 +585,8 @@ input.code {
   <a href="/account/activity">Security activity</a>
   <br><span class="muted">Review recent changes to your account.</span>
 </li>
+</ul><h3>Applications and permissions</h3>
+<ul class="scopes">
 <li>
   <a href="/account/approvals">Requests waiting for you</a>
   <br><span class="muted">Answer something that is asking to act as you.</span>
@@ -575,17 +595,20 @@ input.code {
   <a href="/account/grants">Access you have allowed</a>
   <br><span class="muted">See what has standing access to your account, and withdraw it.</span>
 </li>
+</ul><h3>Connected providers</h3>
+<ul class="scopes">
 <li>
-  <a href="/account/claims-providers">Claims Providers</a>
-  <br><span class="muted">View, connect or remove signed claims from configured providers.</span>
+  <a href="/account/claims-providers">Connected information providers</a>
+  <br><span class="muted">Connect a provider to collect verified information. Each application needs your separate approval before receiving it.</span>
 </li>
 <li>
   <a href="/account/id-jag">External identity approvals</a>
-  <br><span class="muted">Review and revoke access granted through a linked external identity.</span>
+  <br><span class="muted">Approvals last at most 30 days. Only issuers linked to your account by an administrator appear here.</span>
 </li>
 </ul>
 
 </main>
+
 </div>
 </div>
 </body>

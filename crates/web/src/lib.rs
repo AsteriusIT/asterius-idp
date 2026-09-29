@@ -18,6 +18,7 @@ pub mod document;
 pub mod i18n;
 pub mod interaction;
 pub mod pages;
+pub mod qr;
 pub mod recovery;
 pub mod session;
 mod snapshots;

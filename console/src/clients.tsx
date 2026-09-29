@@ -1,3 +1,6 @@
+import { CopyValue } from './components/copy-value';
+import { useRouteParameters, setRouteParameters, replaceSavedRoute } from './route-state';
+import { useUnsavedChanges } from './navigation-guard';
 import { hrefOf } from './routes';
 import { FlowOrigin } from './flow-origin';
 /**
@@ -52,7 +55,7 @@ import { FlowOrigin } from './flow-origin';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from './components/ui/tabs';
 import { FormSelect } from './components/ui/select';
 import { ArrowRightLeftIcon, KeyRoundIcon, MonitorSmartphoneIcon, PencilIcon, RefreshCwIcon, ServerIcon, SmartphoneIcon } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { JSX } from 'react';
 import { ApiError, mutate, read, type Session } from './api';
 import { mayRead as mayReadAppRoles } from './appRoles';
@@ -241,11 +244,20 @@ type Editing =
 export function Clients({ session }: Readonly<{ session: Session }>): JSX.Element {
   const [load, setLoad] = useState<Load>({ kind: 'loading' });
   const [query, setQuery] = useState('');
-  const [tab, setTab] = useState('settings');
+  const parameters = useRouteParameters();
+  const wantedId = parameters.get('id');
+  const wantedMode = parameters.get('mode');
+  const wantedTab = parameters.get('tab') ?? 'settings';
+  const tab = ['settings', 'callbacks', 'credentials', 'grants', 'resources', 'tokens', 'configuration'].includes(wantedTab) ? wantedTab : 'settings';
+  const setTab = useCallback((value: string) => setRouteParameters('clients', { tab: value }), []);
   const [editing, setEditing] = useState<Editing>({ kind: 'none' });
   const [draft, setDraft] = useState<Draft | null>(null);
   const [gate, setGate] = useState<RegistrationGate | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const openedClient = useRef<string | null>(null);
+  const requestNumber = useRef(0);
+  useEffect(() => () => { requestNumber.current++; }, []);
+  const [secretCopied, setSecretCopied] = useState(false);
   const [issuedSecret, setIssuedSecret] = useState<string | null>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -256,6 +268,7 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
   const [health, setHealth] = useState<HealthReport | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
   const [healthBusy, setHealthBusy] = useState(false);
+  const leave = useUnsavedChanges(draft !== null && (JSON.stringify(draft) !== JSON.stringify(editing.kind === 'existing' ? draftOf(editing.document) : emptyDraft()) || (editing.kind === 'existing' && JSON.stringify(selectedResources) !== JSON.stringify(editing.document.resources)) || (issuedSecret !== null && !secretCopied)));
   const canWrite = session.scopes.includes('admin.clients:write');
   const canReadResources = session.scopes.includes('admin.resource_servers:read');
   useEffect(() => {
@@ -320,23 +333,26 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
   }, []);
 
   const openNew = useCallback(() => {
+    requestNumber.current++; openedClient.current = null;
     setNotice(null);
     setRefusal(null);
     setIssuedSecret(null);
-    setTab('settings');
+    setBusy(false);
     setEditing({ kind: 'new' });
     setDraft(emptyDraft());
   }, []);
 
   const openExisting = useCallback((clientId: string) => {
+    const number = ++requestNumber.current;
+    openedClient.current = clientId;
     setNotice(null);
     setRefusal(null);
     setIssuedSecret(null);
     setBusy(true);
     read(clientPath(clientId)).then(
       (body) => {
+        if (number !== requestNumber.current) return;
         const document = body as ClientDocument;
-        setTab('settings');
         setEditing({ kind: 'existing', document });
         setDraft(draftOf(document));
         setSelectedResources(document.resources);
@@ -344,6 +360,7 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
         setBusy(false);
       },
       (error: unknown) => {
+        if (number !== requestNumber.current) return;
         setRefusal(error instanceof Error ? error.message : 'the client could not be read');
         setBusy(false);
       },
@@ -351,7 +368,8 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
   }, [loadResourceServers]);
 
   const close = useCallback(() => {
-    setTab('settings');
+    requestNumber.current++; openedClient.current = null;
+    setBusy(false);
     setEditing({ kind: 'none' });
     setDraft(null);
     setResourceLoad({ kind: 'idle' });
@@ -360,6 +378,12 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
     setHealth(null);
     setHealthError(null);
   }, []);
+
+  useEffect(() => {
+    if (wantedId) { if (openedClient.current !== wantedId) openExisting(wantedId); }
+    else if (wantedMode === 'new') openNew();
+    else close();
+  }, [wantedId, wantedMode, openExisting, openNew, close]);
 
   const checkHealth = useCallback((clientId: string) => {
     const requestId = crypto.randomUUID();
@@ -384,7 +408,6 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
         (body) => {
           const stored = body as ClientDocument;
           setEditing({ kind: 'existing', document: stored });
-          setDraft(draftOf(stored));
           setSelectedResources(stored.resources);
           setNotice('Authorized resources saved.');
           toast.success('Resource access saved', stored.client_id);
@@ -429,6 +452,7 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
       setBusy(true);
       setNotice(null);
       setRefusal(null);
+      const number = requestNumber.current;
       const request =
         where.kind === 'existing'
           ? mutate(clientPath(where.document.client_id), 'PUT', session, document)
@@ -436,13 +460,16 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
 
       request.then(
         (body) => {
+          if (number !== requestNumber.current) return;
           // Re-read from the answer rather than from the form: the server's
           // document is the client that exists, including the members it
           // provisioned itself.
           const response = body as ClientDocument;
           const { client_secret: issuedSecret, ...stored } = response;
-          setIssuedSecret(issuedSecret ?? null);
-          if (issuedSecret !== undefined) setTab('credentials');
+          setIssuedSecret(previous => issuedSecret ?? (secretCommand === 'revoke' ? null : previous));
+          if (issuedSecret !== undefined) setSecretCopied(false);
+          openedClient.current = stored.client_id;
+          replaceSavedRoute('clients', { id: stored.client_id, tab: issuedSecret !== undefined ? 'credentials' : tab });
           // Keep the one-time plaintext only in the dedicated panel state. The
           // editable registration and saved-configuration state never need it.
           setEditing({ kind: 'existing', document: stored });
@@ -477,7 +504,7 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
         },
       );
     },
-    [canWrite, loadResourceServers, query, refresh, session],
+    [canWrite, loadResourceServers, query, refresh, session, tab],
   );
 
   if (draft !== null && editing.kind !== 'none') {
@@ -494,7 +521,7 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
         identity={editing.kind === 'existing' ? editing.document.client_name : undefined}
         description={editing.kind === 'existing' ? 'Connection information and configuration for this application.' : 'Configure authentication, callbacks, and access for your application.'}
         actions={<Badge tone={profile.fapiBadge ? 'ok' : 'warn'}>{profile.label}</Badge>}
-        back={{ label: 'Back to applications', onClick: close }}
+        back={{ label: 'Back to applications', onClick: () => leave(() => setRouteParameters('clients', { id: null, mode: null, tab: null })) }}
       >
         {editing.kind === 'existing' && mayReadAppRoles(session) && <a className="application-roles-link" href={hrefOf('roles', { client: editing.document.client_id })}>Manage application roles →</a>}
         {editing.kind === 'existing' && <FlowOrigin session={session} kind="application" resource={editing.document.client_id} />}
@@ -525,7 +552,7 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
                   <span><strong>{check.name.replaceAll('_', ' ')}</strong><small>{check.message}</small></span>
                 </li>)}
               </ul>
-              <p>Request ID <code>{health.request_id}</code> <Button onClick={() => void navigator.clipboard.writeText(health.request_id)}>Copy ID</Button> · audit event <code>{health.audit_event}</code>{session.scopes.includes('admin.audit:read') ? <> in <a href={hrefOf('audit')}>Audit</a>.</> : ' (viewing the event requires admin.audit:read).'}</p>
+              <p>Request ID <code>{health.request_id}</code> <CopyValue value={health.request_id} label="Copy ID" /> · audit event <code>{health.audit_event}</code>{session.scopes.includes('admin.audit:read') ? <> in <a href={hrefOf('audit')}>Audit</a>.</> : ' (viewing the event requires admin.audit:read).'}</p>
             </>}
           </div>
         </Panel>}
@@ -550,11 +577,12 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
           discovery={discovery}
           refusal={refusal}
           issuedSecret={issuedSecret}
+          onSecretCopied={() => setSecretCopied(true)}
           onChange={setDraft}
           onSubmit={() => save(draft, editing)}
           onRotateSecret={() => save(draft, editing, 'rotate')}
           onRevokeSecret={() => save(draft, editing, 'revoke')}
-          onClose={close}
+          onClose={() => leave(() => setRouteParameters('clients', { id: null, mode: null, tab: null }))}
         /></div>
         {editing.kind === 'existing' && <TabsContent value="resources"><ResourceAllowList
           load={resourceLoad}
@@ -586,7 +614,7 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
         </>
       }
       actions={
-        canWrite ? <Button variant="primary" onClick={openNew}>
+        canWrite ? <Button variant="primary" onClick={() => setRouteParameters('clients', { mode: 'new', id: null, tab: null })}>
           Register a client
         </Button> : undefined
       }
@@ -618,7 +646,7 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
           <Button type="submit">Search</Button>
         </form>
 
-        <Inventory load={load} onOpen={openExisting} onRetry={() => refresh(query)} busy={busy} />
+        <Inventory load={load} onOpen={(id) => setRouteParameters('clients', { id, mode: null, tab: null })} onRetry={() => refresh(query)} busy={busy} />
       </Panel>
 
       {gate !== null && <Gate gate={gate} />}
@@ -781,6 +809,7 @@ function Editor({
   discovery,
   refusal,
   issuedSecret,
+  onSecretCopied,
   onChange,
   onSubmit,
   onRotateSecret,
@@ -794,6 +823,7 @@ function Editor({
   discovery: ClientDiscovery | null;
   refusal: string | null;
   issuedSecret: string | null;
+  onSecretCopied: () => void;
   onChange: (draft: Draft) => void;
   onSubmit: () => void;
   onRotateSecret: () => void;
@@ -964,6 +994,8 @@ function Editor({
           {issuedSecret !== null && <Panel className="credential-secret-panel" title="New client secret — shown once">
             <Message tone="info">Copy this value into the application&rsquo;s secret manager now. Asterius stores only its SHA-256 digest and cannot show it again.</Message>
             <p className="credential-secret-value"><code>{issuedSecret}</code></p>
+            <CopyValue key={issuedSecret} value={issuedSecret} label="Copy secret" onCopied={onSecretCopied} />
+            <Button small onClick={onSecretCopied}>I have saved the secret</Button>
           </Panel>}
           <fieldset disabled={busy || !canWrite}>
           <legend id="client-keys-subjects">Keys and subjects</legend>

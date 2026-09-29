@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}{{ text.providers_title() }} — {{ tenant_name }}{% endblock %}
+{% block content %}
+<h2>{{ text.providers_title() }}</h2>
+<p>{{ text.providers_intro() }}</p>
+{% include "error_summary.html" %}
+{% if providers.is_empty() %}<p class="muted">{{ text.providers_empty() }}</p>{% endif %}
+{% for provider in providers %}
+<section class="account-section">
+<h3>{{ provider.issuer }}</h3>
+{% if provider.configured %}
+<p>{{ text.providers_allowed() }}: {{ provider.allowed }}</p>
+<p class="link-row"><a href="{{ provider.policy_url }}" rel="noreferrer">{{ text.providers_policy() }}</a></p>
+{% else %}<p>{{ text.providers_missing() }}</p>{% endif %}
+{% if provider.connected %}
+<p>{{ text.security_expires() }}: <time>{{ provider.expires }}</time></p>
+{% else %}<p class="muted">{{ text.providers_none() }}</p>{% endif %}
+{% if !provider.connection_expires.is_empty() %}<p>{{ text.security_expires() }}: <time>{{ provider.connection_expires }}</time></p>{% endif %}
+{% if !provider.claims.is_empty() %}
+<details><summary>{{ text.providers_stored() }}</summary><dl>{% for (name, value) in provider.claims %}<dt>{{ name }}</dt><dd>{{ value }}</dd>{% endfor %}</dl></details>
+{% endif %}
+{% if provider.configured %}
+<form method="post" action="{{ action }}">
+<input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="issuer" value="{{ provider.issuer }}">
+<div class="actions">{% if provider.credential %}<button type="submit" name="action" value="refresh">{{ text.providers_refresh() }}</button>{% else %}<button type="submit" name="action" value="connect">{% if provider.connected %}{{ text.providers_reconnect() }}{% else %}{{ text.providers_connect() }}{% endif %}</button>{% endif %}</div>
+</form>
+{% endif %}
+{% if provider.connected || provider.credential || !provider.configured %}
+<details class="danger-section"><summary>{{ text.providers_remove() }}</summary><p>{{ text.providers_removal() }}</p>
+<form method="post" action="{{ action }}">
+<input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="issuer" value="{{ provider.issuer }}">
+<label class="permission"><input type="checkbox" required><span>{{ text.security_confirm() }}</span></label>
+<div class="actions"><button type="submit" name="action" value="revoke" class="secondary">{{ text.providers_remove() }}</button></div>
+</form></details>{% endif %}
+</section>
+{% endfor %}
+<p class="link-row"><a href="{{ account_href }}">{{ text.account_back() }}</a></p>
+{% endblock %}

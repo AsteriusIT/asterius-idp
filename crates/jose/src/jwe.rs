@@ -7,13 +7,10 @@
 
 use aws_lc_rs::aead::{AES_256_GCM, Aad, RandomizedNonceKey};
 use aws_lc_rs::rand::{SecureRandom, SystemRandom};
+use aws_lc_rs::rsa::PublicKeyComponents;
 use aws_lc_rs::rsa::{OAEP_SHA256_MGF1SHA256, OaepPublicEncryptingKey, PublicEncryptingKey};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
-use rsa::BigUint;
-use rsa::RsaPublicKey;
-use rsa::pkcs8::EncodePublicKey;
-use rsa::traits::PublicKeyParts;
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
@@ -111,16 +108,15 @@ impl Recipient {
         if modulus.len() < 256 || modulus.len() > 512 || exponent.is_empty() || exponent.len() > 8 {
             return Err(JweError::Key);
         }
-        let rsa = RsaPublicKey::new(
-            BigUint::from_bytes_be(&modulus),
-            BigUint::from_bytes_be(&exponent),
-        )
+        let public: PublicEncryptingKey = PublicKeyComponents {
+            n: modulus,
+            e: exponent,
+        }
+        .try_into()
         .map_err(|_| JweError::Key)?;
-        if !(2048..=4096).contains(&rsa.n().bits()) {
+        if !(2048..=4096).contains(&public.key_size_bits()) {
             return Err(JweError::Key);
         }
-        let der = rsa.to_public_key_der().map_err(|_| JweError::Key)?;
-        let public = PublicEncryptingKey::from_der(der.as_ref()).map_err(|_| JweError::Key)?;
         let key = OaepPublicEncryptingKey::new(public).map_err(|_| JweError::Key)?;
         Ok(Self {
             kid: kid.to_owned(),
@@ -177,7 +173,7 @@ mod tests {
     use crate::key::SigningKey;
     use asterius_domain::{Kid, SigningAlgorithm};
     use aws_lc_rs::aead::{LessSafeKey, Nonce, UnboundKey};
-    use rsa::pkcs8::DecodePrivateKey;
+    use aws_lc_rs::rsa::{OaepPrivateDecryptingKey, PrivateDecryptingKey};
 
     #[test]
     fn issued_nested_jwe_decrypts_to_a_verifiable_jwt_and_authenticates_its_header() {
@@ -208,12 +204,16 @@ mod tests {
         assert_eq!(header["cty"], "JWT");
         assert_eq!(header["kid"], "rp-encryption");
 
-        let private = rsa::RsaPrivateKey::from_pkcs8_der(rp_key.pkcs8()).expect("RP private key");
+        let private = OaepPrivateDecryptingKey::new(
+            PrivateDecryptingKey::from_pkcs8(rp_key.pkcs8()).expect("RP private key"),
+        )
+        .expect("OAEP key");
         let wrapped = B64.decode(parts[1]).expect("wrapped CEK");
+        let mut output = vec![0; private.min_output_size()];
         let cek = private
-            .decrypt(rsa::Oaep::new::<sha2::Sha256>(), &wrapped)
+            .decrypt(&OAEP_SHA256_MGF1SHA256, &wrapped, &mut output, None)
             .expect("unwrap CEK");
-        let aes = LessSafeKey::new(UnboundKey::new(&AES_256_GCM, &cek).expect("AES key"));
+        let aes = LessSafeKey::new(UnboundKey::new(&AES_256_GCM, cek).expect("AES key"));
         let nonce_bytes = B64.decode(parts[2]).expect("nonce");
         let nonce = Nonce::try_assume_unique_for_key(&nonce_bytes).expect("nonce size");
         let mut ciphertext = B64.decode(parts[3]).expect("ciphertext");

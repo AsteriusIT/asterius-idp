@@ -209,6 +209,9 @@ mod tests {
             "scope": "openid",
             "jwks": {"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "abc"}]},
         });
+        if grants.contains(&GrantType::JwtBearer.as_str()) {
+            document["subject_type"] = json!("pairwise");
+        }
         // CIBA Core 1.0 §4 makes a delivery mode REQUIRED of a CIBA client, and
         // takes its pairwise sector from the `jwks_uri` host — so a CIBA client
         // is registered by reference. A test about grants must not be a test
@@ -236,7 +239,7 @@ mod tests {
             ciba: true,
             device_flow: true,
             token_exchange: true,
-            id_jag: false,
+            id_jag: true,
             ssf: true,
             dynamic_client_registration: true,
             self_registration: true,

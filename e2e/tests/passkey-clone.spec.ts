@@ -146,9 +146,9 @@ test('a credential whose counter went backwards is refused, and stays refused', 
   expect(signal, 'the clone signal is not in the audit trail').toBeDefined();
   expect(signal?.outcome).toBe('failure');
   expect(signal?.detail.kind).toBe('passkey');
-  // The RFC 8176 `amr` value for a software key, which is what a passkey is to
-  // this server (`http::passkeys::amr` says why it never claims `hwk`).
-  expect(signal?.detail.method).toBe('swk');
+  // The RFC 8176 proof-of-possession value; an assertion alone does not
+  // establish whether the key is held in software or hardware.
+  expect(signal?.detail.method).toBe('pop');
   // Both counters, because "how far behind" is what tells a broken
   // authenticator from a credential that has been copied and used elsewhere.
   expect(

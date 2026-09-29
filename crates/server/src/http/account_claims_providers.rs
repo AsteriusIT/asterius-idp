@@ -19,7 +19,6 @@ use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeSet, HashMap};
-use std::fmt::Write as _;
 use time::{Duration, OffsetDateTime};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -878,90 +877,79 @@ fn render(
     let action = context.account.mount.absolute(PAGE_PATH);
     let account = context.account.mount.absolute(account::PAGE_PATH);
     let csrf = csrf_for(session, CSRF_SEPARATOR);
-    let mut items = String::new();
+    let mut providers = Vec::new();
     let mut rendered = BTreeSet::new();
     for registration in context
         .providers
         .oauth_registrations(context.account.tenant.id.as_str())
     {
         rendered.insert(registration.issuer.clone());
-        let connected = sources
+        let source = sources
             .iter()
             .find(|source| source.provider_issuer == registration.issuer);
         let credential = connections
             .iter()
             .find(|entry| entry.provider_issuer == registration.issuer);
-        let details = connected.map_or_else(
-            || "No signed claims stored.".to_owned(),
-            |source| {
-                format!(
-                    "Stored claim names: {}. Expires: {}.",
-                    escape_html(&source.claim_names.join(", ")),
-                    escape_html(&account::stamp(source.expires_at))
-                )
-            },
-        );
-        let values = stored_values
-            .get(&registration.issuer)
-            .map_or_else(String::new, |pairs| {
-                let mut list = String::from("<dl aria-label=\"Verified stored claims\">");
-                for (name, value) in pairs {
-                    write!(
-                        list,
-                        "<dt>{}</dt><dd>{}</dd>",
-                        escape_html(name),
-                        escape_html(&value.to_string())
-                    )
-                    .expect("writing to String cannot fail");
-                }
-                list.push_str("</dl>");
-                list
-            });
-        let buttons = if credential.is_some() {
-            "<button name=\"action\" value=\"refresh\">Refresh signed claims</button> <button name=\"action\" value=\"revoke\">Remove local connection and claims</button>"
-        } else if connected.is_some() {
-            "<button name=\"action\" value=\"connect\">Reconnect provider</button> <button name=\"action\" value=\"revoke\">Remove provider claims</button>"
-        } else {
-            "<button name=\"action\" value=\"connect\">Connect and approve claims</button>"
-        };
-        let credential_details = credential.map_or_else(String::new, |entry| {
-            format!(
-                "<p>Connection available until {}.</p>",
-                escape_html(&account::stamp(
-                    entry.refresh_expires_at.unwrap_or(entry.access_expires_at)
-                ))
-            )
+        providers.push(asterius_web::pages::AccountProviderLine {
+            issuer: registration.issuer.clone(),
+            policy_url: registration.policy_url.clone(),
+            configured: true,
+            connected: source.is_some(),
+            credential: credential.is_some(),
+            allowed: registration
+                .allowed_claims
+                .into_iter()
+                .collect::<Vec<_>>()
+                .join(", "),
+            expires: source.map_or_else(String::new, |source| account::stamp(source.expires_at)),
+            connection_expires: credential.map_or_else(String::new, |entry| {
+                account::stamp(entry.refresh_expires_at.unwrap_or(entry.access_expires_at))
+            }),
+            claims: stored_values
+                .get(&registration.issuer)
+                .map_or_else(Vec::new, |pairs| {
+                    pairs
+                        .iter()
+                        .map(|(name, value)| (name.clone(), value.to_string()))
+                        .collect()
+                }),
         });
-        write!(items,
-            "<li><h2>{}</h2><p>{}</p><p><a href=\"{}\" rel=\"noreferrer\">Connection policy</a></p><p>{details}</p>{values}{credential_details}<form method=\"post\" action=\"{}\"><input type=\"hidden\" name=\"csrf\" value=\"{csrf}\"><input type=\"hidden\" name=\"issuer\" value=\"{}\">{buttons}</form></li>",
-            escape_html(&registration.issuer), escape_html(&registration.allowed_claims.into_iter().collect::<Vec<_>>().join(", ")),
-            escape_html(&registration.policy_url), escape_html(&action), escape_html(&registration.issuer),
-        ).expect("writing to String cannot fail");
     }
-    // A provider removed from operator configuration still has locally held
-    // material until expiry. Keep its removal control visible to the user.
+    // Keep orphaned connections removable when operator configuration changes.
     for issuer in connections
         .iter()
         .map(|entry| &entry.provider_issuer)
         .chain(sources.iter().map(|entry| &entry.provider_issuer))
     {
-        if !rendered.insert(issuer.clone()) {
-            continue;
+        if rendered.insert(issuer.clone()) {
+            providers.push(asterius_web::pages::AccountProviderLine {
+                issuer: issuer.clone(),
+                policy_url: String::new(),
+                configured: false,
+                connected: false,
+                credential: false,
+                allowed: String::new(),
+                expires: String::new(),
+                connection_expires: String::new(),
+                claims: Vec::new(),
+            });
         }
-        write!(items, "<li data-provider=\"{}\"><h2>{}</h2><p>Provider is no longer configured.</p><form method=\"post\" action=\"{}\"><input type=\"hidden\" name=\"csrf\" value=\"{csrf}\"><input type=\"hidden\" name=\"issuer\" value=\"{}\"><button name=\"action\" value=\"revoke\">Remove local connection and claims</button></form></li>",
-            escape_html(issuer), escape_html(issuer), escape_html(&action), escape_html(issuer)).expect("writing to String cannot fail");
     }
-    if items.is_empty() {
-        items.push_str("<li>No Claims Providers are configured.</li>");
-    }
-    let notice = message.map_or_else(String::new, |message| {
-        format!("<p role=\"status\">{}</p>", escape_html(message))
-    });
-    let document = Document::render(context.account.nonce, |_nonce| {
-        format!(
-            "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"referrer\" content=\"no-referrer\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Claims Providers</title></head><body><main><h1>Claims Providers</h1><p>Connect a provider to collect signed claims. Recollect them when they expire. Each relying party needs your separate approval before receiving them. Removing a connection erases credentials here and contacts the provider revocation endpoint when configured.</p>{notice}<ul>{items}</ul><p><a href=\"{}\">Back to account</a></p></main></body></html>",
-            escape_html(&account)
-        )
+    let font_url = crate::http::font_url(&context.account.mount);
+    let presentation = crate::http::ThemeChrome::new(context.account.theme, &context.account.mount);
+    let document = Document::render(context.account.nonce, |nonce| {
+        asterius_web::pages::render(&asterius_web::pages::AccountProvidersPage {
+            text: context.account.text,
+            tenant_name: &context.account.tenant.display_name,
+            action: &action,
+            account_href: &account,
+            csrf: &csrf,
+            message,
+            providers,
+            nonce_attribute: asterius_web::pages::nonce_attribute(nonce),
+            theme_css: &presentation.css,
+            brand: presentation.brand(&font_url),
+        })
     });
     let mut response = (status, no_store(), document).into_response();
     response.headers_mut().insert(
@@ -1044,13 +1032,4 @@ fn parse_callback(raw: &str) -> Option<(String, String, Option<String>)> {
         return None;
     }
     Some((state, code, issuer))
-}
-
-fn escape_html(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
 }
