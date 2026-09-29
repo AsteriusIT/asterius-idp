@@ -132,7 +132,7 @@ rather than a hidden claim of completion. The single Bead records acceptance.
 | R01 | Converted all three inline account pages to shared templates. New page chrome/actions are EN/FR; existing server refusal messages remain as previously supplied. |
 | R02 | Shared guard for user identity/create, applications, settings, branding, providers, policy, schemas and group/resource dialogs. Existing architecture guard retained. Other short role/assignment dialogs retain existing behavior; extending them requires per-editor dirty semantics. |
 | R03 | Resource/type withdrawal confirmed; shared dialog failure behavior fixed. New account removal disclosure/acknowledgement chosen instead of an extra GET/POST confirmation endpoint. Existing passkey/session security constraints retained. |
-| R04 | Central 401 shell recovery and distinct fallback guidance for access/conflict/throttling/service/network failure. Writes are never automatically retried. No expiry countdown without authoritative expiry data; no new return-URL parameter. |
+| R04 | Central 401 shell recovery and distinct fallback guidance for access/conflict/throttling/service/network failure. Writes are never automatically retried. Request URLs are explicitly restricted to the current-origin workspace API or read-only discovery documents. No expiry countdown without authoritative expiry data; no new return-URL parameter. |
 | R05 | User/client ID and tab URLs, page titles and heading focus delivered. List scroll/filter history and links for every other entity are deferred; personal search terms are not persisted. |
 | R06 | New labelled grouping and Architecture destination. Existing workspace/account menus retained; optional command palette declined to avoid competing Ctrl/Cmd+K shortcuts. |
 | R07 | Loaded-row labels, contained accessible table scrolling and mobile minimum widths. Existing server pagination remains authoritative; global sort/search and alternative mobile cards require endpoint-specific work. |
@@ -181,7 +181,7 @@ against a running configured tenant remain explicit acceptance gates. Existing
 
 ### Local verification, 2026-09-29
 
-- Console production build/typecheck and 34 focused model tests passed.
+- Console production build/typecheck and 35 focused model/API tests passed.
 - 13 focused browser scenarios passed: nine console behaviors plus the five new
   account state fixtures in both languages, with and without JavaScript.
 - Responsive checks ran at 320/390/768/1440px; axe checks covered the new account

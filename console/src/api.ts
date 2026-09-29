@@ -116,7 +116,18 @@ async function refusalMessage(response: Response, method: string, path: string):
 }
 
 async function request(target: string, init: RequestInit, label = target): Promise<unknown> {
-  const response = await fetch(target, {
+  const endpoint = new URL(target, window.location.href);
+  const api = new URL(API_BASE, window.location.href);
+  const isDiscovery = init.method === 'GET'
+    && endpoint.pathname.endsWith('/.well-known/openid-configuration')
+    && endpoint.search === '';
+  // Enforce the boundary before fetch rather than relying solely on CSP. Only
+  // the current workspace API and read-only same-origin Discovery are allowed.
+  if (endpoint.origin !== window.location.origin || endpoint.username || endpoint.password
+      || endpoint.hash || (!endpoint.pathname.startsWith(api.pathname) && !isDiscovery)) {
+    throw new ApiError(0, 'This request does not belong to the current console workspace.');
+  }
+  const response = await fetch(endpoint.href, {
     ...init,
     // The session cookie is the credential. `same-origin` rather than
     // `include`: there is no other origin to send it to.
