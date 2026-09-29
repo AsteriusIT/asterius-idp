@@ -196,7 +196,7 @@ async fn the_transmitter_advertises_what_it_can_do() {
         "urn:ietf:rfc:6749"
     );
     assert_eq!(metadata["default_subjects"], "NONE");
-    assert!(metadata["critical_subject_members"].is_array());
+    assert!(metadata.get("critical_subject_members").is_none());
 }
 
 #[tokio::test]

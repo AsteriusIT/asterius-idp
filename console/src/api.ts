@@ -127,7 +127,9 @@ async function request(target: string, init: RequestInit, label = target): Promi
       || endpoint.hash || (!endpoint.pathname.startsWith(api.pathname) && !isDiscovery)) {
     throw new ApiError(0, 'This request does not belong to the current console workspace.');
   }
-  const response = await fetch(endpoint.href, {
+  // Fetch the supplied relative path after validation; never derive a request
+  // from the document fragment or query string.
+  const response = await fetch(target, {
     ...init,
     // The session cookie is the credential. `same-origin` rather than
     // `include`: there is no other origin to send it to.

@@ -315,6 +315,7 @@ impl Fixture {
             Capabilities::default(),
         )
         .expect("a valid agent registration");
+        registration.resources.insert(RESOURCE.to_owned());
         // What `POST /register` does with the tenant's policy, done here: the
         // document carries the owner, the tenant carries the limits.
         registration.agent = registration

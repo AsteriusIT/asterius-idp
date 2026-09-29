@@ -1068,6 +1068,12 @@ fn tenant() -> Section {
                 "Operator-pinned Federation trust roots for remote RP chains. Each jwks_file is a local JSON JWK Set; invalid or duplicate anchors fail startup. No remote statement can add a trust root.",
             ),
             key(
+                "native_sso_approval",
+                "array of { source_client_id, target_client_id, allow_offline_access? } tables",
+                "empty (native SSO disabled)".to_owned(),
+                "Explicit directional native SSO approvals between distinct clients. Offline access is disabled unless explicitly approved.",
+            ),
+            key(
                 "id_jag_approval",
                 "array of { client_id, audience, downstream_client_id, subject_sector_uri, resources, scopes } tables",
                 "empty (ID-JAG issuance disabled)".to_owned(),
@@ -1296,6 +1302,9 @@ fn features() -> Vec<Key> {
                 notes: match feature {
                     Feature::Mtls => {
                         "mTLS client authentication and certificate-bound tokens (RFC 8705)."
+                    }
+                    Feature::AdvancedClaims => {
+                        "Advanced claims requests and approved external Claims Providers."
                     }
                     Feature::GrantManagement => {
                         "Grant Management for OAuth 2.0 (Implementer's Draft)."

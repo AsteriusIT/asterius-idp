@@ -209,3 +209,37 @@ test('expiry during a write removes both the editor and its draft prompt', async
   await expect(page.getByRole('alertdialog')).toHaveCount(0);
   expect(writes).toBe(1);
 });
+
+test('architecture editor opens an object, saves its changes and previews the saved revision', async ({ page }) => {
+  const id = 'a0000000-0000-4000-8000-000000000001';
+  let flow = { id, name: 'Review architecture', revision: 1, updated_at: '2026-09-29T00:00:00Z', graph: { schema_version: 1,
+    nodes: [{ id: 'api', kind: 'api', mode: 'managed', label: 'Review API', identifier: 'https://api.example/', x: 0, y: 0, settings: { scopes: ['read'] } }], edges: [] } };
+  const errors = await prepare(page, (path, route) => {
+    if (path === 'session') return { body: { ...session, scopes: [...session.scopes, 'admin.flows:write'] } };
+    if (path === `flows/${id}`) {
+      if (route.request().method() === 'PUT') flow = { ...flow, ...route.request().postDataJSON(), revision: flow.revision + 1 };
+      return { body: flow };
+    }
+    if (path === `flows/${id}/plan`) return { body: { flow_id: id, revision: flow.revision, digest: 'fixture', applicable: true, steps: [] } };
+    return undefined;
+  });
+  await page.goto(`${entry}#/architecture?flow=${id}&mode=edit`);
+  await page.getByRole('button', { name: 'Show object list', exact: true }).click();
+  await page.getByRole('button', { name: 'Review API · API', exact: true }).click();
+  await page.getByLabel('Display name', { exact: true }).fill('Updated API');
+  await page.getByRole('button', { name: 'Save draft', exact: true }).click();
+  await expect.poll(() => flow.graph.nodes[0]?.label).toBe('Updated API');
+  await page.getByRole('button', { name: 'Review changes', exact: true }).click();
+  await expect(page.getByText('Ready to apply.', { exact: false })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Apply this plan', exact: true })).toBeEnabled();
+  expect(errors).toEqual([]);
+});
+
+test('architecture URL rejects malformed identifiers before any flow request', async ({ page }) => {
+  const requested: string[] = [];
+  const errors = await prepare(page, path => { requested.push(path); return undefined; });
+  await page.goto(`${entry}#/architecture?flow=${encodeURIComponent('../../users')}`);
+  await expect(page.getByText('Invalid architecture identifier', { exact: true })).toBeVisible();
+  expect(requested.filter(path => path.startsWith('flows/') || path === 'users')).toEqual([]);
+  expect(errors).toEqual([]);
+});

@@ -337,6 +337,7 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
     setNotice(null);
     setRefusal(null);
     setIssuedSecret(null);
+    setBusy(false);
     setEditing({ kind: 'new' });
     setDraft(emptyDraft());
   }, []);
@@ -368,6 +369,7 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
 
   const close = useCallback(() => {
     requestNumber.current++; openedClient.current = null;
+    setBusy(false);
     setEditing({ kind: 'none' });
     setDraft(null);
     setResourceLoad({ kind: 'idle' });

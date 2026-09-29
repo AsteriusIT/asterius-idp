@@ -31,6 +31,8 @@ use libfuzzer_sys::fuzz_target;
 /// Every flag on. Anything gated must be reachable, or half the validator is
 /// never exercised.
 const EVERYTHING: Capabilities = Capabilities {
+    advanced_claims: true,
+    id_jag: true,
     mtls: true,
     grant_management: true,
     ciba: true,

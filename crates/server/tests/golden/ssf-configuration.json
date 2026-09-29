@@ -4,7 +4,6 @@
       "spec_urn": "urn:ietf:rfc:6749"
     }
   ],
-  "critical_subject_members": [],
   "default_subjects": "NONE",
   "issuer": "https://as.example/t/demo",
   "jwks_uri": "https://as.example/t/demo/jwks",

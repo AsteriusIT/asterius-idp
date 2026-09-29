@@ -642,8 +642,7 @@ function Account({
   onBack: () => void;
 }>): JSX.Element {
   const parameters = useRouteParameters();
-  const wantedTab = parameters.get('tab') ?? 'details';
-  const tab = ['details', 'claims', 'credentials', 'sessions', 'grants', 'roles', 'groups'].includes(wantedTab) ? wantedTab : 'details';
+  const tab = accountTab(parameters.get('tab'));
   const setTab = (value: string): void => setRouteParameters('users', { tab: value });
   const [load, setLoad] = useState<Load<Detail>>({ kind: 'loading' });
   const [notice, setNotice] = useState<string | null>(null);
@@ -1473,4 +1472,8 @@ function GrantTable({
     </table>
     </div>
   );
+}
+
+function accountTab(value: string | null): string {
+  return value !== null && ['details', 'claims', 'credentials', 'sessions', 'grants', 'roles', 'groups'].includes(value) ? value : 'details';
 }

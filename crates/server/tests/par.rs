@@ -632,7 +632,11 @@ async fn a_response_mode_is_validated_at_the_push_and_stored() {
         }
 
         // --- Act ---
-        let (status, _, store) = pushed(&pairs).await;
+        let mut registered = client();
+        registered.registration.authorization_signed_response_alg =
+            Some(asterius_domain::SigningAlgorithm::EdDsa);
+        let store = FakeRequests::default();
+        let (status, _, _) = run(&pairs, &store, Ok(registered)).await;
 
         // --- Assert ---
         assert_eq!(status, StatusCode::CREATED, "refused {sent:?}");

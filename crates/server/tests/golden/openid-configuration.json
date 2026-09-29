@@ -47,6 +47,12 @@
     "refresh_token",
     "client_credentials"
   ],
+  "id_token_encryption_alg_values_supported": [
+    "RSA-OAEP-256"
+  ],
+  "id_token_encryption_enc_values_supported": [
+    "A256GCM"
+  ],
   "id_token_signing_alg_values_supported": [
     "EdDSA",
     "ES256",
@@ -82,6 +88,7 @@
     "query",
     "form_post",
     "query.jwt",
+    "jwt",
     "form_post.jwt"
   ],
   "response_types_supported": [
@@ -114,6 +121,12 @@
   "ui_locales_supported": [
     "en",
     "fr"
+  ],
+  "userinfo_encryption_alg_values_supported": [
+    "RSA-OAEP-256"
+  ],
+  "userinfo_encryption_enc_values_supported": [
+    "A256GCM"
   ],
   "userinfo_endpoint": "https://as.example/t/demo/userinfo",
   "userinfo_signing_alg_values_supported": [

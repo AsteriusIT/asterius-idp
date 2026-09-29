@@ -1119,7 +1119,7 @@ async fn a_step_up_onto_another_users_session_starts_a_new_one_instead() {
 /// RFC 8176: `swk` because this server cannot prove hardware, and `user`
 /// because the UV bit was set. No `pin`: nothing in an assertion says so.
 #[tokio::test]
-async fn a_user_verified_assertion_is_recorded_as_swk_and_user() {
+async fn a_user_verified_assertion_is_recorded_as_pop_and_user() {
     // Arrange
     let now = OffsetDateTime::now_utc();
     let fixture = Fixture::at_login(now, 0);
@@ -1150,7 +1150,7 @@ async fn a_user_verified_assertion_is_recorded_as_swk_and_user() {
             .map(|m| m.as_str())
             .collect::<Vec<_>>()
             .join(" "),
-        "swk user"
+        "pop user"
     );
 }
 

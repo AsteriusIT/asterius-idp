@@ -106,6 +106,68 @@ pub const MAX_BATCHES: usize = 100;
 /// `0001_baseline.sql` is a straight comparison.
 pub const POLICY: &[Retention] = &[
     Retention {
+        table: "cimd_client_documents",
+        rule: Rule::Sweep {
+            statement: "delete from cimd_client_documents where ctid = any (array(
+                select ctid from cimd_client_documents where tenant_id = $1 and expires_at <= $2 limit $3))",
+            grace: Duration::ZERO,
+        },
+    },
+    Retention {
+        table: "id_jag_consents",
+        rule: Rule::Sweep {
+            statement: "delete from id_jag_consents where ctid = any (array(
+                select ctid from id_jag_consents where tenant_id = $1 and expires_at <= $2 limit $3))",
+            grace: Duration::ZERO,
+        },
+    },
+    Retention {
+        table: "native_sso_secrets",
+        rule: Rule::Sweep {
+            statement: "delete from native_sso_secrets where ctid = any (array(
+                select ctid from native_sso_secrets where tenant_id = $1 and expires_at <= $2 limit $3))",
+            grace: Duration::ZERO,
+        },
+    },
+    Retention {
+        table: "oidc_upstream_pending",
+        rule: Rule::Sweep {
+            statement: "delete from oidc_upstream_pending where ctid = any (array(
+                select ctid from oidc_upstream_pending where tenant_id = $1 and expires_at <= $2 limit $3))",
+            grace: Duration::ZERO,
+        },
+    },
+    Retention {
+        table: "ssf_receiver_upstream_verification_events",
+        rule: Rule::Sweep {
+            statement: "delete from ssf_receiver_upstream_verification_events where ctid = any (array(
+                select ctid from ssf_receiver_upstream_verification_events where tenant_id = $1 and replay_until <= $2 limit $3))",
+            grace: Duration::ZERO,
+        },
+    },
+    Retention {
+        table: "totp_credentials",
+        rule: Rule::Sweep {
+            statement: "delete from totp_credentials where ctid = any (array(
+                select ctid from totp_credentials where tenant_id = $1 and state = 'pending' and expires_at <= $2 limit $3))",
+            grace: Duration::ZERO,
+        },
+    },
+    Retention { table: "architecture_flows", rule: Rule::Kept("operator-owned architecture, removed explicitly with its managed-resource links") },
+    Retention { table: "flow_resource_links", rule: Rule::Kept("resource ownership and apply reconciliation state; removed with explicit flow cleanup") },
+    Retention { table: "id_jag_subject_bindings", rule: Rule::Kept("explicit identity binding; cascades on user deletion") },
+    Retention { table: "ldap_group_owners", rule: Rule::Kept("directory ownership must survive absence; cascades on group deletion") },
+    Retention { table: "ldap_user_owners", rule: Rule::Kept("directory ownership must survive absence; cascades on user deletion") },
+    Retention { table: "legacy_session_expiry_claims", rule: Rule::Kept("migration archive retained for operator review; cascades on user deletion") },
+    Retention { table: "native_sso_derivations", rule: Rule::Kept("revocation links needed for the session and grant lifetime; cascades with either") },
+    Retention { table: "oidc_identity_bindings", rule: Rule::Kept("explicit upstream identity mapping; cascades on user or provider deletion") },
+    Retention { table: "oidc_identity_providers", rule: Rule::Kept("operator configuration with encrypted credentials; explicit removal") },
+    Retention { table: "scim_group_owners", rule: Rule::Kept("provisioning ownership; cascades on group or client deletion") },
+    Retention { table: "scim_user_external_ids", rule: Rule::Kept("provisioning identity and deletion tombstones; explicit lifecycle") },
+    Retention { table: "ssf_receiver_upstream_setup_intents", rule: Rule::Kept("remote creation tombstone; must survive local client deletion until reconciliation") },
+    Retention { table: "ssf_receiver_upstream_streams", rule: Rule::Kept("remote stream identity; explicit deletion and reconciliation prevent duplicate creation") },
+    Retention { table: "verified_claim_bundles", rule: Rule::Kept("verification evidence without an expiry; explicit withdrawal and user deletion govern retention") },
+    Retention {
         table: "claims_provider_oauth_pending",
         rule: Rule::Sweep {
             statement: "delete from claims_provider_oauth_pending where ctid = any (array(
@@ -490,6 +552,19 @@ pub const POLICY: &[Retention] = &[
         },
     },
     Retention {
+        table: "saml_pending_logins",
+        rule: Rule::Sweep {
+            // The parent interaction also cascades on expiry. Sweep this row
+            // directly so a failed parent pass cannot retain a browser login
+            // correlator or a validated SP request beyond its ten minutes.
+            statement: "delete from saml_pending_logins where ctid = any (array(
+                            select ctid from saml_pending_logins
+                             where tenant_id = $1 and expires_at <= $2
+                             limit $3))",
+            grace: Duration::ZERO,
+        },
+    },
+    Retention {
         table: "first_party_interactions",
         rule: Rule::Sweep {
             // The login progress of somebody entering this server's own
@@ -498,19 +573,6 @@ pub const POLICY: &[Retention] = &[
             // material `auth_requests` holds and it is swept on the same terms.
             statement: "delete from first_party_interactions where ctid = any (array(
                             select ctid from first_party_interactions
-                             where tenant_id = $1 and expires_at <= $2
-                             limit $3))",
-            grace: Duration::ZERO,
-        },
-    },
-    Retention {
-        table: "saml_pending_logins",
-        rule: Rule::Sweep {
-            // The parent interaction also cascades on expiry. Sweep this row
-            // directly so a failed parent pass cannot retain a browser login
-            // correlator or a validated SP request beyond its ten minutes.
-            statement: "delete from saml_pending_logins where ctid = any (array(
-                            select ctid from saml_pending_logins
                              where tenant_id = $1 and expires_at <= $2
                              limit $3))",
             grace: Duration::ZERO,

@@ -274,9 +274,7 @@ fn check_method_selection(input: &Input) {
         assertion: input.has_assertion.then_some(token),
         assertion_type: input.has_assertion_type.then_some(assertion_type),
         client_id: input.has_client_id.then_some(input.client_id_text.as_str()),
-        authorization_header: input
-            .has_authorization_header
-            .then_some("Basic credential"),
+        authorization_header: input.has_authorization_header.then_some("Basic credential"),
         certificate: input.has_certificate.then_some(&certificate),
     };
 
@@ -289,11 +287,17 @@ fn check_method_selection(input: &Input) {
         + usize::from(input.has_certificate)
         + usize::from(input.has_authorization_header);
     assert_eq!(
-        offered, 1,
+        offered,
+        usize::from(method != Method::None),
         "selected {method:?} from a request offering {offered} credentials"
     );
 
     match method {
+        Method::None => {
+            assert!(
+                !input.has_assertion && !input.has_authorization_header && !input.has_certificate
+            );
+        }
         Method::ClientSecretBasic => {
             assert!(
                 input.has_authorization_header,

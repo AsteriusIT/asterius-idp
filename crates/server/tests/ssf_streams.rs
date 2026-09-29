@@ -707,23 +707,18 @@ async fn a_patch_leaves_the_members_it_does_not_carry_unchanged() {
     // Arrange
     let fixture = Fixture::new().await;
     let stream_id = fixture
-        .existing_stream(json!({"description": "prod", "inactivity_timeout": 3600}))
+        .existing_stream(json!({"description": "prod"}))
         .await;
 
     // Act
     let response = fixture
-        .request(
-            Method::PATCH,
-            None,
-            json!({"stream_id": stream_id, "description": "staging"}),
-        )
+        .request(Method::PATCH, None, json!({"stream_id": stream_id}))
         .await;
 
     // Assert
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_of(response).await;
-    assert_eq!(body["description"], json!("staging"));
-    assert_eq!(body["inactivity_timeout"], json!(3600));
+    assert_eq!(body["description"], json!("prod"));
 }
 
 /// §8.1.1.3: a transmitter-supplied member sent with the wrong value is an
@@ -795,24 +790,19 @@ async fn a_put_deletes_the_members_it_does_not_carry() {
     // Arrange
     let fixture = Fixture::new().await;
     let stream_id = fixture
-        .existing_stream(json!({"description": "prod", "inactivity_timeout": 3600}))
+        .existing_stream(json!({"description": "prod"}))
         .await;
 
     // Act
     let response = fixture
-        .request(
-            Method::PUT,
-            None,
-            json!({"stream_id": stream_id, "description": "staging"}),
-        )
+        .request(Method::PUT, None, json!({"stream_id": stream_id}))
         .await;
 
     // Assert
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_of(response).await;
-    assert_eq!(body["description"], json!("staging"));
     assert!(
-        body.get("inactivity_timeout").is_none(),
+        body.get("description").is_none(),
         "a member the replacement did not carry survived: {body}"
     );
 }

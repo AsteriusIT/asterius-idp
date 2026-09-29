@@ -189,7 +189,6 @@ dependencies = [
  "async-trait",
  "aws-lc-rs",
  "base64 0.22.1",
- "rsa",
  "serde",
  "serde_json",
  "sha2",

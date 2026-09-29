@@ -209,6 +209,77 @@ db_test! {
 /// credential means writing a lie here first.
 const NOT_A_STORED_SECRET: &[(&str, &str, &str)] = &[
     (
+        "architecture_flows",
+        "apply_token",
+        "internal apply lease identifier, never accepted as an authentication credential",
+    ),
+    (
+        "claims_provider_oauth_pending",
+        "verifier_kek_id",
+        "identifier of the wrapping key",
+    ),
+    (
+        "claims_provider_oauth_pending",
+        "verifier_nonce",
+        "public AEAD nonce",
+    ),
+    ("clients", "encrypt_id_token", "boolean encryption policy"),
+    (
+        "native_sso_secrets",
+        "secret_digest",
+        "one-way SHA-256 digest of a random device secret",
+    ),
+    (
+        "oid4vp_transactions",
+        "credential_id",
+        "public presented credential identifier",
+    ),
+    (
+        "oid4vp_transactions",
+        "credential_issuer",
+        "public issuer identifier",
+    ),
+    (
+        "oid4vp_transactions",
+        "verifier_id",
+        "configured verifier identifier",
+    ),
+    (
+        "oidc_identity_providers",
+        "client_secret_nonce",
+        "public AEAD nonce",
+    ),
+    (
+        "oidc_identity_providers",
+        "token_endpoint",
+        "public endpoint URL",
+    ),
+    (
+        "oidc_upstream_pending",
+        "token_endpoint",
+        "public endpoint URL",
+    ),
+    (
+        "oidc_upstream_pending",
+        "verifier_nonce",
+        "public AEAD nonce",
+    ),
+    (
+        "saml_idp_signing_keys",
+        "private_key_nonce",
+        "public AEAD nonce",
+    ),
+    (
+        "saml_pending_logins",
+        "token_digest",
+        "one-way token digest",
+    ),
+    (
+        "verified_claim_bundles",
+        "verifier_issuer",
+        "public verifier issuer",
+    ),
+    (
         "clients",
         "token_endpoint_auth_method",
         "client metadata name, e.g. private_key_jwt",
@@ -5911,6 +5982,10 @@ mod grants {
     /// no client is not a thing.
     pub(super) async fn seed_client(pool: &PgPool, tenant: &str, client_id: &str) {
         seed_tenant(pool, tenant).await;
+        // Claims-provider subject bindings reference the grant's real user.
+        sqlx::query("insert into users (tenant_id, user_id, username) values ($1, $2, 'grant-owner') on conflict do nothing")
+            .bind(tenant).bind(uuid::Uuid::from_u128(0x676_7261_6e74))
+            .execute(pool).await.expect("seed grant owner");
         Store::from_pool(pool.clone())
             .scope(TenantId::new(tenant))
             .clients(Capabilities::default())
@@ -5924,7 +5999,7 @@ mod grants {
     fn a_grant(tenant: &str, client_id: &str, subject: &str) -> Grant {
         let mut grant = Grant::new(TenantId::new(tenant), ClientId::new(client_id), epoch());
         grant.subject = Some(SubjectId::new(subject));
-        grant.user = Some(UserId::generate());
+        grant.user = Some(UserId::new(uuid::Uuid::from_u128(0x676_7261_6e74)));
         grant.scopes = ["openid", "payments"]
             .into_iter()
             .map(str::to_owned)
@@ -8676,6 +8751,26 @@ mod retention {
             seed_ciba_request(pool, tenant, user, label, expires).await;
         }
         seed_outbox(pool, tenant).await;
+        // Seed after both session rows exist: Native SSO uses the live sid.
+        for (label, expires) in [
+            ("stale", now() - Duration::days(2)),
+            ("fresh", now() + Duration::hours(1)),
+        ] {
+            for statement in include_str!("fixtures/retention-additions.sql")
+                .split(';')
+                .filter(|sql| !sql.trim().is_empty())
+            {
+                sqlx::query(statement)
+                    .bind(tenant)
+                    .bind(user)
+                    .bind(grant)
+                    .bind(label)
+                    .bind(expires)
+                    .execute(pool)
+                    .await
+                    .unwrap_or_else(|error| panic!("retention fixture: {error}: {statement}"));
+            }
+        }
     }
 
     /// A mailbox invitation with the same expired/live pair as the other
@@ -9615,7 +9710,7 @@ mod retention {
 
             for table in swept_tables() {
                 let remaining = count(&db.pool, table, "demo").await;
-                let expected = if table == "outbox" { 2 } else { 1 };
+                let expected = match table { "outbox" => 2, "clients" => 3, _ => 1 };
                 assert_eq!(
                     remaining, expected,
                     "{table} has {remaining} rows after the sweep, expected {expected}; \

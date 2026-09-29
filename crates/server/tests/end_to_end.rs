@@ -416,6 +416,7 @@ impl Flow {
             user,
             jti: AtomicU32::new(0),
         };
+        flow.register_resource_server(RESOURCE, None).await;
         flow.register_client(&jwks).await;
         flow.register_user().await;
         Some(flow)
@@ -425,7 +426,7 @@ impl Flow {
     /// `offline_access` so that a redemption earns a refresh token.
     async fn register_client(&self, jwks: &Value) {
         let now = OffsetDateTime::now_utc();
-        let client = Client {
+        let mut client = Client {
             tenant: self.tenant.id.clone(),
             id: ClientId::new(CLIENT),
             registration: ClientRegistration::from_json(
@@ -450,6 +451,7 @@ impl Flow {
             created_at: now,
             updated_at: now,
         };
+        client.registration.resources.insert(RESOURCE.to_owned());
         self.store
             .scope(self.tenant.id.clone())
             .clients(Capabilities::default())
@@ -1036,7 +1038,7 @@ impl Flow {
     async fn register_service_client(&self) -> SigningKey {
         let (key, jwks) = client_credentials();
         let now = OffsetDateTime::now_utc();
-        let client = Client {
+        let mut client = Client {
             tenant: self.tenant.id.clone(),
             id: ClientId::new(SERVICE_CLIENT),
             registration: ClientRegistration::from_json(
@@ -1056,6 +1058,7 @@ impl Flow {
             created_at: now,
             updated_at: now,
         };
+        client.registration.resources.insert(RESOURCE.to_owned());
         self.store
             .scope(self.tenant.id.clone())
             .clients(Capabilities::default())
@@ -1159,7 +1162,7 @@ impl Flow {
     async fn register_other_client(&self) -> SigningKey {
         let (key, jwks) = client_credentials();
         let now = OffsetDateTime::now_utc();
-        let client = Client {
+        let mut client = Client {
             tenant: self.tenant.id.clone(),
             id: ClientId::new(OTHER_CLIENT),
             registration: ClientRegistration::from_json(
@@ -1180,6 +1183,7 @@ impl Flow {
             created_at: now,
             updated_at: now,
         };
+        client.registration.resources.insert(RESOURCE.to_owned());
         self.store
             .scope(self.tenant.id.clone())
             .clients(Capabilities::default())
@@ -2747,6 +2751,7 @@ async fn a_client_with_no_resource_and_no_default_audience_gets_no_token() {
         eprintln!("skipping: DATABASE_URL is not set");
         return;
     };
+    flow.allow_client_resources(&[]).await;
     let refused = redeemed(&mut flow, &[], &[]).await;
 
     assert_eq!(
@@ -5162,7 +5167,7 @@ impl Flow {
     async fn register_device_client(&self) -> SigningKey {
         let (key, jwks) = client_credentials();
         let now = OffsetDateTime::now_utc();
-        let client = Client {
+        let mut client = Client {
             tenant: self.tenant.id.clone(),
             id: ClientId::new(DEVICE_CLIENT),
             registration: ClientRegistration::from_json(
@@ -5188,6 +5193,7 @@ impl Flow {
             created_at: now,
             updated_at: now,
         };
+        client.registration.resources.insert(RESOURCE.to_owned());
         self.store
             .scope(self.tenant.id.clone())
             .clients(Capabilities {
@@ -5963,7 +5969,7 @@ impl Flow {
             ciba: true,
             ..Capabilities::default()
         };
-        let client = Client {
+        let mut client = Client {
             tenant: self.tenant.id.clone(),
             id: ClientId::new(client_id),
             registration: ClientRegistration::from_json(
@@ -5975,6 +5981,7 @@ impl Flow {
             created_at: now,
             updated_at: now,
         };
+        client.registration.resources.insert(RESOURCE.to_owned());
         self.store
             .scope(self.tenant.id.clone())
             .clients(capabilities)
@@ -6904,8 +6911,9 @@ where
 /// session-policy read at issuance, five extra statements for each of the
 /// two browser session checks/touches, and one session-policy read during
 /// token redemption. ACR resolution uses the already-warm settings cache.
-/// The measured total is 86, with no allowance for per-collection growth.
-const CODE_FLOW_QUERY_BUDGET: usize = 86;
+/// Claims Provider aggregation adds one bounded source lookup during ID-token
+/// issuance. The measured total is 87, with no per-collection growth allowance.
+const CODE_FLOW_QUERY_BUDGET: usize = 87;
 
 /// **One code flow costs a bounded number of SQL statements** (`ast-p2l.8`).
 ///

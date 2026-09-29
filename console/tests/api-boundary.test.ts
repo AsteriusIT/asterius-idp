@@ -7,7 +7,7 @@ test('console requests cannot escape the current workspace or send writes to pub
   const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
   Object.defineProperty(globalThis, 'window', { configurable: true, value: { location: new URL('https://id.example/t/review/admin/#/users') } });
   const calls: string[] = [];
-  globalThis.fetch = async target => { calls.push(String(target)); return new Response('{}', { status: 200 }); };
+  globalThis.fetch = async target => { calls.push(new URL(String(target), 'https://id.example/t/review/admin/').href); return new Response('{}', { status: 200 }); };
   t.after(() => {
     globalThis.fetch = originalFetch;
     if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow);
