@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent, JSX } from 'react';
 import { ApiError, mutate, read, type Session } from './api';
 import { toast } from './components/ui/toast';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from './components/ui/dialog';
+import { useDialogDraft } from './dialog-draft';
 import { Badge, Button, ConfirmDialog, LoadFailure, Message, Panel, Screen, Skeleton, Timestamp } from './ui';
 
 interface IdpKeySummary {
@@ -64,6 +66,7 @@ export function SamlIdpKey({ session }: Readonly<{ session: Session }>): JSX.Ele
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ tone: 'success' | 'error'; text: string } | null>(null);
   const [confirming, setConfirming] = useState<KeyAction | null>(null);
+  const [importing, setImporting] = useState(false);
   const certificateInput = useRef<HTMLInputElement>(null);
   const privateKeyInput = useRef<HTMLInputElement>(null);
   const canWrite = session.scopes.includes('admin.saml:write');
@@ -71,6 +74,7 @@ export function SamlIdpKey({ session }: Readonly<{ session: Session }>): JSX.Ele
   const hasActive = keys.some((key) => key.state === 'active');
   const canImport = canWrite && (load.kind === 'empty' ||
     (load.kind === 'ready' && !keys.some((key) => key.state === 'pending' || key.state === 'retiring')));
+  const importDraft = useDialogDraft(false, busy, () => setImporting(false));
 
   const refresh = useCallback(() => {
     setLoad({ kind: 'loading' });
@@ -118,6 +122,7 @@ export function SamlIdpKey({ session }: Readonly<{ session: Session }>): JSX.Ele
         private_key_pkcs8_der_base64,
       });
       setLoad({ kind: 'ready', inventory: result as Inventory });
+      setImporting(false);
       setMessage({ tone: 'success', text: hasActive ? 'A successor key was staged.' : 'The initial SAML IdP signing key was imported.' });
       toast.success('SAML key imported', 'The public certificate is ready for inspection.');
     } catch (error: unknown) {
@@ -182,11 +187,11 @@ export function SamlIdpKey({ session }: Readonly<{ session: Session }>): JSX.Ele
           </div>
         ))}
       </Panel>
-      {canImport && (
-        <Panel
-          title={hasActive ? 'Stage successor signing key' : 'Import initial signing key'}
-          description="Import a matching X.509 certificate and unencrypted private PKCS#8 key, both as DER files. Stage, activate and retire are separate operator steps."
-        >
+      {canImport && <Panel title="Signing key setup" description="Stage, activate and retire are separate operator steps." actions={<Button onClick={() => setImporting(true)}>{hasActive ? 'Stage successor' : 'Import IdP key'}</Button>}>
+        <p className="muted">Import a matching X.509 certificate and unencrypted private PKCS#8 key, both as DER files.</p>
+      </Panel>}
+      <Dialog open={importing} onOpenChange={open => { if (!open) importDraft.requestClose(); }}><DialogContent>{importDraft.confirmation}
+        <DialogHeader><DialogTitle>{hasActive ? 'Stage successor signing key' : 'Import initial signing key'}</DialogTitle><DialogDescription>Choose matching DER files from a trusted operator workstation.</DialogDescription></DialogHeader>
           <form className="flex flex-col gap-3" onSubmit={(event) => { void provision(event); }}>
             <label className="flex flex-col gap-1" htmlFor="saml-idp-certificate">
               X.509 certificate (DER)
@@ -197,10 +202,9 @@ export function SamlIdpKey({ session }: Readonly<{ session: Session }>): JSX.Ele
               <input id="saml-idp-private-key" ref={privateKeyInput} type="file" required disabled={busy} autoComplete="off" />
             </label>
             <p className="muted">Choose files from a trusted operator workstation. This form clears both selections after submission and does not retain key material in console state.</p>
-            <Button type="submit" disabled={busy}>{busy ? 'Importing…' : hasActive ? 'Stage successor' : 'Import IdP key'}</Button>
+            <div className="actions"><Button type="button" onClick={importDraft.requestClose}>Cancel</Button><Button type="submit" disabled={busy}>{busy ? 'Importing…' : hasActive ? 'Stage successor' : 'Import IdP key'}</Button></div>
           </form>
-        </Panel>
-      )}
+      </DialogContent></Dialog>
       <SpTrusts session={session} />
       {confirming !== null && (
         <ConfirmDialog
@@ -230,8 +234,11 @@ function SpTrusts({ session }: Readonly<{ session: Session }>): JSX.Element {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ tone: 'success' | 'error'; text: string } | null>(null);
   const [removing, setRemoving] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
   const signingKeyInput = useRef<HTMLInputElement>(null);
   const canWrite = session.scopes.includes('admin.saml:write');
+  const addDraft = useDialogDraft(adding && (entityId !== '' || acsUrl !== '' || allowUnsigned || Boolean(signingKeyInput.current?.files?.length)), busy,
+    () => { setAdding(false); setEntityId(''); setAcsUrl(''); setAllowUnsigned(false); if (signingKeyInput.current) signingKeyInput.current.value = ''; });
 
   const refresh = useCallback(() => {
     setLoad({ kind: 'loading' });
@@ -285,6 +292,7 @@ function SpTrusts({ session }: Readonly<{ session: Session }>): JSX.Element {
       setAcsUrl('');
       setAllowUnsigned(false);
       if (signingKeyInput.current) signingKeyInput.current.value = '';
+      setAdding(false);
       refresh();
       setMessage({ tone: 'success', text: 'The SP trust was added.' });
       toast.success('SP trust added');
@@ -318,7 +326,7 @@ function SpTrusts({ session }: Readonly<{ session: Session }>): JSX.Element {
   return (
     <>
       {message !== null && <Message tone={message.tone}>{message.text}</Message>}
-      <Panel title="Trusted service providers" description="Only these exact entity IDs and ACS URLs may use this tenant's SAML IdP.">
+      <Panel title="Trusted service providers" description="Only these exact entity IDs and ACS URLs may use this tenant's SAML IdP." actions={canWrite ? <Button onClick={() => setAdding(true)}>Add service provider</Button> : undefined}>
         {load.kind === 'loading' && <Skeleton rows={3} label="Reading SAML SP trusts." />}
         {load.kind === 'failed' && <LoadFailure message={load.message} onRetry={refresh} />}
         {load.kind === 'ready' && load.trusts.length === 0 && <p className="muted">No service providers are trusted yet.</p>}
@@ -335,8 +343,8 @@ function SpTrusts({ session }: Readonly<{ session: Session }>): JSX.Element {
           </div>
         ))}
       </Panel>
-      {canWrite && (
-        <Panel title="Add service provider" description="Enter operator-approved values. The IdP matches the entity ID and HTTPS ACS URL exactly; it does not import SP metadata.">
+      <Dialog open={adding} onOpenChange={open => { if (!open) addDraft.requestClose(); }}><DialogContent>{addDraft.confirmation}
+        <DialogHeader><DialogTitle>Add service provider</DialogTitle><DialogDescription>Enter operator-approved values. Entity ID and HTTPS ACS URL must match exactly.</DialogDescription></DialogHeader>
           <form className="flex flex-col gap-3" onSubmit={(event) => { void provision(event); }}>
             <label className="flex flex-col gap-1" htmlFor="saml-sp-entity-id">Entity ID
               <input id="saml-sp-entity-id" value={entityId} onChange={(event) => setEntityId(event.target.value)} maxLength={1024} required disabled={busy} autoComplete="off" />
@@ -352,10 +360,9 @@ function SpTrusts({ session }: Readonly<{ session: Session }>): JSX.Element {
               Allow unsigned authentication requests for this SP
             </label>
             <p className="muted">Unsigned requests are refused by default. A pinned public key is required unless you explicitly allow them.</p>
-            <Button type="submit" disabled={busy}>{busy ? 'Adding…' : 'Add SP trust'}</Button>
+            <div className="actions"><Button type="button" onClick={addDraft.requestClose}>Cancel</Button><Button type="submit" disabled={busy}>{busy ? 'Adding…' : 'Add SP trust'}</Button></div>
           </form>
-        </Panel>
-      )}
+      </DialogContent></Dialog>
       {removing !== null && (
         <ConfirmDialog
           title="Remove this SP trust?"

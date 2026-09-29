@@ -537,7 +537,30 @@ summary { cursor: pointer; min-height: 44px; padding-block: 12px; }
 pre { overflow-x: auto; max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; }
 fieldset { min-width: 0; border: 1px solid var(--line); border-radius: var(--ctl); padding: 12px; }
 .support-links { display: flex; flex-wrap: wrap; justify-content: center; gap: 16px; margin-top: 16px; }
-.support-links a { display: inline-flex; align-items: center; min-height: 44px; }:root{--bg:#ffffff;--fg:#18181b;--muted:#71717a;--line:#71717a;--accent:#3f3fbf;--accent-fg:#ffffff;--danger:#b42318;--radius:8px;--space:8px;--font:Geist, system-ui, -apple-system, Segoe UI, sans-serif;}</style>
+.support-links a { display: inline-flex; align-items: center; min-height: 44px; }
+
+/* A lighter surface system shared by sign-in and account pages. Tenant colour
+   tokens remain authoritative, including dark palettes. */
+.page { padding: clamp(20px, 5vw, 64px) 16px; }
+.shell { gap: 26px; }
+.card { border-color: color-mix(in srgb, var(--fg) 7%, var(--bg)); border-radius: max(16px, var(--radius)); box-shadow: 0 20px 65px color-mix(in srgb, var(--fg) 8%, transparent), 0 2px 10px color-mix(in srgb, var(--fg) 4%, transparent); padding: clamp(24px, 4vw, 38px); }
+input[type=text], input[type=password], input[type=email] { border-color: color-mix(in srgb, var(--fg) 18%, var(--bg)); border-radius: max(9px, var(--ctl)); }
+input[type=text]:focus, input[type=password]:focus, input[type=email]:focus { border-color: var(--accent); outline: 3px solid color-mix(in srgb, var(--accent) 17%, transparent); outline-offset: 1px; }
+.account-dashboard { gap: 30px; }
+.account-intro { display: grid; gap: 8px; padding-bottom: 24px; border-bottom: 1px solid var(--line); }
+.account-intro h2 { font-size: clamp(1.7rem, 3vw, 2.3rem); line-height: 1.2; }
+.account-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.account-section { min-width: 0; padding: 22px; border: 1px solid color-mix(in srgb, var(--fg) 8%, var(--bg)); border-radius: max(13px, var(--radius)); background: color-mix(in srgb, var(--card) 92%, var(--backdrop)); }
+.account-section h3 { margin: 0 0 16px; font-size: 1.08rem; }
+.account-section .scopes { padding: 0; list-style: none; gap: 8px; }
+.account-section .scopes li { padding: 13px 14px; border-radius: max(9px, var(--ctl)); background: var(--card); }
+.account-section .scopes a { display: inline-block; font-weight: 650; text-decoration: none; }
+.account-section .scopes a:hover { text-decoration: underline; }
+.account-section .scopes .muted { display: inline-block; margin-top: 5px; line-height: 1.4; }
+.account-connections { grid-column: 1 / -1; }
+@media (max-width: 650px) { .account-grid { grid-template-columns: 1fr; } .account-section { padding: 18px; } }
+
+.shell:has(.account-dashboard) { max-width: 72rem; }:root{--bg:#ffffff;--fg:#18181b;--muted:#71717a;--line:#71717a;--accent:#3f3fbf;--accent-fg:#ffffff;--danger:#b42318;--radius:8px;--space:8px;--font:Geist, system-ui, -apple-system, Segoe UI, sans-serif;}</style>
 </head>
 <body>
 
@@ -548,16 +571,17 @@ fieldset { min-width: 0; border: 1px solid var(--line); border-radius: var(--ctl
 
 <h1 class="wordmark">Example Tenant</h1>
 </div>
-<main class="card">
+<main class="card account-dashboard">
 
 
-<div class="stack tight">
+<header class="account-intro">
 <h2>Gérer votre compte</h2>
 <p class="muted">Connecté en tant que ada</p>
 <p class="muted">Ce avec quoi vous vous connectez, où vous êtes connecté, et ce que vous avez autorisé.</p>
-</div>
+</header>
 
-<h3>Connexion et récupération</h3>
+<div class="account-grid">
+<section class="account-section"><h3>Connexion et récupération</h3>
 <ul class="scopes">
 <li>
   <a href="/account/passkeys">Clés d&#39;accès</a>
@@ -575,7 +599,7 @@ fieldset { min-width: 0; border: 1px solid var(--line); border-radius: var(--ctl
   <a href="/account/email">Adresse e-mail</a>
   <br><span class="muted">Changer votre adresse après confirmation de la nouvelle boîte mail.</span>
 </li>
-</ul><h3>Sessions et activité</h3>
+</ul></section><section class="account-section"><h3>Sessions et activité</h3>
 <ul class="scopes">
 <li>
   <a href="/account/sessions">Vos sessions ouvertes</a>
@@ -585,7 +609,7 @@ fieldset { min-width: 0; border: 1px solid var(--line); border-radius: var(--ctl
   <a href="/account/activity">Activité de sécurité</a>
   <br><span class="muted">Consultez les changements récents de votre compte.</span>
 </li>
-</ul><h3>Applications et permissions</h3>
+</ul></section><section class="account-section"><h3>Applications et permissions</h3>
 <ul class="scopes">
 <li>
   <a href="/account/approvals">Demandes en attente</a>
@@ -595,7 +619,7 @@ fieldset { min-width: 0; border: 1px solid var(--line); border-radius: var(--ctl
   <a href="/account/grants">Les accès que vous avez autorisés</a>
   <br><span class="muted">Voir ce qui dispose d&#39;un accès permanent à votre compte, et le retirer.</span>
 </li>
-</ul><h3>Fournisseurs connectés</h3>
+</ul></section><section class="account-section"><h3>Fournisseurs connectés</h3>
 <ul class="scopes">
 <li>
   <a href="/account/claims-providers">Fournisseurs d’informations connectés</a>
@@ -605,7 +629,7 @@ fieldset { min-width: 0; border: 1px solid var(--line); border-radius: var(--ctl
   <a href="/account/id-jag">Autorisations d’identité externe</a>
   <br><span class="muted">Les autorisations durent au maximum 30 jours. Seuls les émetteurs liés à votre compte par un administrateur sont affichés.</span>
 </li>
-</ul>
+</ul></section></div>
 
 </main>
 

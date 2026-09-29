@@ -252,6 +252,7 @@ export function Policy({ session }: Readonly<{ session: Session }>): JSX.Element
   const [notice, setNotice] = useState<string | null>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState(false);
   // The question in front of the one irreversible act on this screen.
   const [removing, setRemoving] = useState(false);
   const mayWrite = session.scopes.includes('admin.policies:write');
@@ -436,8 +437,8 @@ export function Policy({ session }: Readonly<{ session: Session }>): JSX.Element
       )}
       </Panel>
 
-      <Panel title="Document">
-        <Field
+      <Panel title="Document" actions={mayWrite && !editing ? <Button onClick={() => setEditing(true)}>Edit policy</Button> : undefined}>
+        {!editing ? <pre className="json-code" aria-label="Saved policy document">{baseline}</pre> : <><Field
           label="The rule document, as the evaluator reads it"
           // The one thing this screen is allowed to say about the draft before
           // the server sees it: whether the braces close. It is the same
@@ -476,6 +477,7 @@ export function Policy({ session }: Readonly<{ session: Session }>): JSX.Element
             is what a change needs).
           </p>
         )}
+        <Button onClick={() => { setDraft(baseline); setEditing(false); }} disabled={busy}>Cancel editing</Button></>}
       </Panel>
 
       <PolicyHistory session={session} dirty={busy || draft !== baseline} onRestored={refresh} />

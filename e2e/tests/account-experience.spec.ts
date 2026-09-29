@@ -7,7 +7,7 @@ import { resolve } from 'node:path';
 
 const root = resolve(import.meta.dirname, '../..');
 const origin = 'https://account-experience.test';
-const fixtures = ['account_totp.setup', 'account_totp.active', 'account_totp.pending', 'account_providers', 'account_external_approvals'];
+const fixtures = ['account', 'account_totp.setup', 'account_totp.active', 'account_totp.pending', 'account_providers', 'account_external_approvals'];
 
 for (const locale of ['en', 'fr']) {
   test(`account security pages reflow with native forms (${locale})`, async ({ page }, info) => {
@@ -32,6 +32,10 @@ for (const locale of ['en', 'fr']) {
       await expect(page.locator('html')).toHaveAttribute('lang', locale);
       await expect(page.getByRole('main')).toBeVisible();
       await expect(page.locator('script')).toHaveCount(0);
+      if (fixture === 'account') {
+        await expect(page.locator('.account-grid .account-section')).toHaveCount(4);
+        await expect(page.locator('a[href="/account/passkeys"]')).toBeVisible();
+      }
       if (fixture === 'account_totp.setup') {
         expect((await page.locator('input[name=code]').boundingBox())!.height).toBeGreaterThanOrEqual(44);
       }

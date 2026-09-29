@@ -2042,13 +2042,14 @@ test('linked identities require confirmation and send only accepted identity fie
   await page.getByRole('alertdialog').getByRole('button', { name: 'Unlink identity', exact: true }).click();
   await expect(page.getByText('No upstream identities are linked to this account.')).toBeVisible();
   expect(mutations).toEqual([{ method: 'DELETE', body: identity }]);
+  await page.getByRole('button', { name: 'Link identity', exact: true }).click();
   await page.getByLabel('Provider ID', { exact: true }).fill(identity.provider_id);
   await page.getByLabel('Exact issuer URL', { exact: true }).fill(identity.issuer);
   await page.getByLabel('Exact upstream subject', { exact: true }).fill(identity.upstream_subject);
-  await page.getByRole('button', { name: 'Link identity', exact: true }).click();
-  await expect(page.getByRole('alertdialog')).toBeVisible();
+  await page.getByRole('button', { name: 'Review link' }).click();
+  await expect(page.getByRole('dialog')).toBeVisible();
   expect(mutations).toHaveLength(1);
-  await page.getByRole('alertdialog').getByRole('button', { name: 'Link identity', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Confirm link' }).click();
   await expect(page.getByRole('button', { name: 'Unlink', exact: true })).toBeVisible();
   expect(mutations[1]).toEqual({ method: 'PUT', body: identity });
 });

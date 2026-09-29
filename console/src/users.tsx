@@ -1,3 +1,5 @@
+import { SearchIcon } from 'lucide-react';
+import { DirectoryOrder } from './directory-controls';
 import { useViewState, useListScroll } from './view-memory';
 import { useRouteParameters, setRouteParameters } from './route-state';
 import { UserAccessSummary } from './user-access-summary';
@@ -398,7 +400,7 @@ function DirectoryScreen({
         title="Directory"
         description="Search by username or email. The list is one page at a time, in the order the server returns."
       >
-        <Field label="Server order">{props => <select {...props} value={sort} onChange={event => { setCursor(null); setSort(event.target.value); }}><option value="username">Username A–Z</option><option value="-username">Username Z–A</option></select>}</Field>
+        <DirectoryOrder value={sort} options={[{ value: "username", label: "Username A–Z" }, { value: "-username", label: "Username Z–A" }]} onChange={value => { setCursor(null); setSort(value); }} />
         <Search initial={term}
           onSearch={(value) => {
             // A new search starts at the first page: keeping a cursor minted for
@@ -436,7 +438,8 @@ function Search({ initial, onSearch }: Readonly<{ initial: string; onSearch: (te
   const [typed, setTyped] = useState(initial);
   return (
     <form
-      className="toolbar"
+      className="directory-search"
+      role="search"
       onSubmit={(event) => {
         event.preventDefault();
         onSearch(typed.trim());
@@ -454,9 +457,7 @@ function Search({ initial, onSearch }: Readonly<{ initial: string; onSearch: (te
           />
         )}
       </Field>
-      <Button type="submit">
-        Search
-      </Button>
+      <Button type="submit" className="directory-icon-action" aria-label="Search" title="Search"><SearchIcon aria-hidden="true" /></Button>
     </form>
   );
 }
@@ -1165,6 +1166,7 @@ function ClaimsEditor({
   const [claims, setClaims] = useState<readonly Editable[]>(initial);
   useUnsavedChanges(email !== (user.email ?? '') || emailVerified !== user.email_verified || JSON.stringify(claims) !== JSON.stringify(initial()));
   const [refusal, setRefusal] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
 
   const save = (event: React.FormEvent): void => {
     event.preventDefault();
@@ -1184,15 +1186,16 @@ function ClaimsEditor({
       body.email = email.trim();
     }
     mutate(`${base}/claims`, 'PUT', session, body).then(
-      () => onSaved('The claims were saved.'),
+      () => { setEditing(false); onSaved('The claims were saved.'); },
       (error: unknown) => setRefusal(failure(error, 'the claims were refused')),
     );
   };
 
   return (
-    <Panel className="flat-section tab-primary-section" id="claims" title="Claims">
+    <Panel className="flat-section" id="claims" title="Claims" actions={session.scopes.includes('admin.users:write') && !editing ? <Button onClick={() => setEditing(true)}>Edit identity data</Button> : undefined}>
       {refusal !== null && <Message tone="error">{refusal}</Message>}
-      <form onSubmit={save}>
+      {!editing ? <div className="read-summary"><dl className="stats"><div><dt>Email</dt><dd>{user.email ?? 'Not set'}</dd></div><div><dt>Email verified</dt><dd>{user.email_verified ? 'Yes' : 'No'}</dd></div></dl>
+        <h4>Saved claims</h4>{Object.keys(user.claims).length === 0 ? <p className="muted">No additional claims.</p> : <dl className="stats">{Object.entries(user.claims).map(([name, claim]) => <div key={name}><dt>{name}</dt><dd><code>{claimText(claim.value)}</code></dd></div>)}</dl>}</div> : <form onSubmit={save}>
         <Field label="Email" error={emailAddress(email)}>
           {(props) => (
             <input
@@ -1320,7 +1323,8 @@ function ClaimsEditor({
           <code>aud</code>, <code>acr</code>, <code>amr</code> — are refused, and so are{' '}
           <code>email</code> and <code>email_verified</code>, which have their own fields above.
         </p>
-      </form>
+        <Button onClick={() => { setEmail(user.email ?? ''); setEmailVerified(user.email_verified); setClaims(initial()); setEditing(false); }} disabled={busy}>Cancel editing</Button>
+      </form>}
     </Panel>
   );
 }

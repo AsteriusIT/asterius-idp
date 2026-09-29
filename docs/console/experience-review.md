@@ -235,3 +235,24 @@ instance: policy-history atomicity/retention/tenant isolation and descending
 user search with tenant-scoped pagination. JSON sentinel inspection passed.
 No full local Rust suite was run; remote CI was not invoked for this local-only
 follow-up. Human screen-reader and moderated usability testing remain open.
+
+### Read-first and visual consistency follow-up, 2026-09-29
+
+The console now uses the shared custom select for every select control. Users
+and Applications have icon-based search/order controls, and remaining search
+actions use the same icon language. Configuration, policy, branding, user
+identity data, group membership and roles, verified claims, SAML setup, shared
+signal actions and operator-confirmed upstream identity linking open from
+explicit edit/add actions. The workspace setup checklist has its own top-bar
+health destination instead of occupying Overview. The shared dark palette was
+adjusted for readable panels, overlays and text throughout the console. Public
+login and account pages use softer cards; the account landing page now spreads
+existing security, session, access and connection links across a responsive
+dashboard while keeping their dedicated detail pages.
+
+Local verification passed: production console build/typecheck; strict Rust
+Clippy, refreshed EN/FR golden snapshots and 33 targeted/source-audit nextest
+checks; 29 focused browser scenarios plus two group/SAML dialog scenarios.
+Those browser checks include keyboard navigation, 200% zoom, 320px reflow,
+automated accessibility and representative dark destinations. Human
+screen-reader and moderated usability testing remain outstanding.
