@@ -2051,6 +2051,28 @@ impl DeploymentUsers {
 
 #[async_trait::async_trait]
 impl asterius_domain::UserAdministration for DeploymentUsers {
+    async fn search_filtered(
+        &self,
+        tenant: &TenantId,
+        term: &str,
+        after: Option<&str>,
+        limit: usize,
+        status: Option<asterius_domain::UserStatus>,
+        descending: bool,
+    ) -> Result<Vec<asterius_domain::User>, DomainError> {
+        self.store
+            .scope(tenant.clone())
+            .users(Arc::clone(&self.kek))
+            .search_filtered(
+                term,
+                after,
+                i64::try_from(limit).unwrap_or(i64::MAX),
+                status,
+                descending,
+            )
+            .await
+    }
+
     async fn search_ordered(
         &self,
         tenant: &TenantId,

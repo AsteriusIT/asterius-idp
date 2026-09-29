@@ -15838,5 +15838,13 @@ db_test! {
         assert_eq!(second[0].username, "alice");
         assert_eq!(second.len(), 1);
         assert_eq!(users.search_ordered("ar", None, 2, true).await.expect("filtered")[0].username, "zara");
+        sqlx::query("update users set status = 'disabled' where tenant_id = $1 and username = 'zara'")
+            .bind("sort-a").execute(&db.pool).await.expect("disable zara");
+        let active = users.search_filtered("", None, 1, Some(UserStatus::Active), false).await.expect("active first page");
+        assert_eq!(active[0].username, "alice");
+        let next_active = users.search_filtered("", Some("alice"), 2, Some(UserStatus::Active), false).await.expect("active second page");
+        assert_eq!(next_active.iter().map(|user| user.username.as_str()).collect::<Vec<_>>(), vec!["mila"]);
+        let disabled = users.search_filtered("", None, 2, Some(UserStatus::Disabled), true).await.expect("disabled page");
+        assert_eq!(disabled.iter().map(|user| user.username.as_str()).collect::<Vec<_>>(), vec!["zara"]);
     }
 }

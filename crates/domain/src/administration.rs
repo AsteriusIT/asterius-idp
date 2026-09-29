@@ -229,6 +229,26 @@ pub trait UserAdministration: Debug + Send + Sync {
         self.search(tenant, term, after, limit).await
     }
 
+    /// Search before pagination, optionally restricting the account status.
+    async fn search_filtered(
+        &self,
+        tenant: &TenantId,
+        term: &str,
+        after: Option<&str>,
+        limit: usize,
+        status: Option<UserStatus>,
+        descending: bool,
+    ) -> Result<Vec<User>, DomainError> {
+        if status.is_some() {
+            return Err(DomainError::invalid(
+                "status",
+                "status filtering is unavailable",
+            ));
+        }
+        self.search_ordered(tenant, term, after, limit, descending)
+            .await
+    }
+
     /// Provider display names linked to the requested accounts in this tenant.
     /// Only directory metadata is returned, never upstream subjects or credentials.
     async fn external_provider_names(

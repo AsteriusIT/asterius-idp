@@ -259,7 +259,6 @@ test('tenant TOTP activation saves and reloads without replacing existing assura
     return { body: saved };
   });
   await page.goto(`${entry}#/settings`);
-  await page.getByRole('button', { name: 'Edit settings', exact: true }).click();
   await page.getByRole('tab', { name: 'Authentication', exact: true }).click();
   await expect(page.getByRole('status')).toContainText('Disabled in this configuration');
   await page.getByRole('button', { name: 'Enable authenticator codes' }).click();
@@ -269,7 +268,6 @@ test('tenant TOTP activation saves and reloads without replacing existing assura
   await expect.poll(() => writes).toBe(1);
   expect(saved.acr_policy.levels.map(level => level.amr)).toEqual([['pwd'], ['pwd', 'otp'], ['swk']]);
   await page.reload();
-  await page.getByRole('button', { name: 'Edit settings', exact: true }).click();
   await page.getByRole('tab', { name: 'Authentication', exact: true }).click();
   await expect(page.getByLabel('Assurance level 2: Authenticator code')).toBeChecked();
   await page.getByLabel('Assurance level 2: Authenticator code').uncheck();
@@ -356,22 +354,47 @@ test('guided application setup preserves fields and requires review before regis
   expect(errors).toEqual([]);
 });
 
-test('user server sorting and search survive an account inspection', async ({ page }) => {
+test('directory search and status filter share one line and survive account inspection', async ({ page }) => {
   const queries: string[] = [];
+  const clientQueries: string[] = [];
   await prepare(page, (path, route) => {
     if (path === 'users') queries.push(new URL(route.request().url()).search);
+    if (path === 'clients') clientQueries.push(new URL(route.request().url()).search);
     return undefined;
   });
   await page.goto(`${entry}#/users`);
   await page.getByRole('searchbox', { name: 'Search' }).fill('alex');
   await page.getByRole('button', { name: 'Search', exact: true }).click();
-  await page.getByRole('button', { name: /Order: Username A–Z/ }).click();
-  await page.getByRole('menuitemradio', { name: 'Username Z–A' }).click();
-  await expect.poll(() => queries.some(query => query.includes('sort=-username') && query.includes('q=alex'))).toBe(true);
+  await page.getByRole('button', { name: /Filter by status: All statuses/ }).click();
+  await page.getByRole('menuitemradio', { name: 'Active' }).click();
+  await expect.poll(() => queries.some(query => query.includes('status=active') && query.includes('q=alex'))).toBe(true);
+  await expect(page.getByRole('button', { name: /Order:/ })).toHaveCount(0);
+  const userToolbar = page.locator('.directory-toolbar');
+  const searchBox = await userToolbar.getByRole('searchbox').boundingBox();
+  const filterButton = await userToolbar.getByRole('button', { name: /Filter by status/ }).boundingBox();
+  expect(searchBox && filterButton && Math.abs(searchBox.y - filterButton.y) < 8).toBe(true);
+  if (process.env.E2E_SHOTS) await page.screenshot({ path: `${process.env.E2E_SHOTS}/users-toolbar.png`, fullPage: true });
   await page.getByRole('button', { name: /alex@example.test/ }).click();
   await page.getByRole('button', { name: /Back to users/ }).click();
   await expect(page.getByRole('searchbox', { name: 'Search' })).toHaveValue('alex');
-  await expect(page.getByRole('button', { name: /Order: Username Z–A/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Filter by status: Active/ })).toBeVisible();
+  await page.goto(`${entry}#/clients`);
+  const clientToolbar = page.locator('.directory-toolbar');
+  await expect(clientToolbar.getByRole('searchbox', { name: 'Search clients' })).toBeVisible();
+  await expect(clientToolbar.getByRole('button', { name: /Filter by status/ })).toBeVisible();
+  await clientToolbar.getByRole('searchbox', { name: 'Search clients' }).fill('demo');
+  await clientToolbar.getByRole('button', { name: 'Search' }).click();
+  await clientToolbar.getByRole('button', { name: /Filter by status/ }).click();
+  await page.getByRole('menuitemradio', { name: 'Disabled' }).click();
+  await expect.poll(() => clientQueries.some(query => query.includes('status=disabled') && query.includes('q=demo'))).toBe(true);
+  if (process.env.E2E_SHOTS) await page.screenshot({ path: `${process.env.E2E_SHOTS}/clients-toolbar.png`, fullPage: true });
+  await page.setViewportSize({ width: 320, height: 800 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await expect.poll(async () => {
+    const clientSearch = await clientToolbar.getByRole('searchbox').boundingBox();
+    const clientFilter = await clientToolbar.getByRole('button', { name: /Filter by status/ }).boundingBox();
+    return clientSearch && clientFilter ? Math.abs(clientSearch.y - clientFilter.y) : Infinity;
+  }).toBeLessThan(8);
 });
 
 test('OIDC metadata checks run automatically and allow an explicit retry', async ({ page }) => {
@@ -409,7 +432,6 @@ test('guided setup and assurance settings support keyboard, reflow and zoom', as
   for (const destination of ['clients?mode=new&guided=1', 'settings']) {
     await page.goto(`${entry}#/${destination}`);
     if (destination === 'settings') {
-      await page.getByRole('button', { name: 'Edit settings', exact: true }).click();
       await page.getByRole('tab', { name: 'Authentication', exact: true }).click();
     }
     for (const dark of [false, true]) {
@@ -464,19 +486,17 @@ test('manual configuration checks report missing setup without sending a mutatio
   expect(writes).toBe(0);
 });
 
-test('reading views expose edit actions and no edit forms before activation', async ({ page }) => {
+test('tenant settings open on tabs with direct controls', async ({ page }) => {
   await prepare(page, path => {
     if (path === 'session') return { body: { ...session, scopes: [...session.scopes, 'admin.tenants:read', 'admin.policies:read', 'admin.policies:write', 'admin.theme:read', 'admin.theme:write'] } };
     if (path === 'tenants/review/settings') return { body: { ...settings, limits: { max_authorization_code_lifetime_seconds: 60, max_access_token_lifetime_seconds: 3600 }, acr_policy: { levels: [{ value: 'password', amr: ['pwd'] }] } } };
     return undefined;
   });
   await page.goto(`${entry}#/settings`);
-  await expect(page.getByRole('button', { name: 'Edit settings' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Save settings' })).toHaveCount(0);
-  await page.getByRole('button', { name: 'Edit settings' }).click();
+  await expect(page.getByRole('tab', { name: 'Capabilities' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Save settings' })).toBeVisible();
-  await page.getByRole('button', { name: 'Cancel editing' }).click();
-  await expect(page.getByRole('button', { name: 'Save settings' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Edit settings' })).toHaveCount(0);
+  await expect(page.locator('.app-topbar').getByRole('link', { name: 'Architecture builder' })).toHaveCount(0);
 });
 
 test('workspace health is reachable from the top bar and reports scoped milestones', async ({ page }) => {

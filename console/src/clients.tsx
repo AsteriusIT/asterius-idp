@@ -1,4 +1,4 @@
-import { DirectoryOrder, DirectorySearch } from './directory-controls';
+import { DirectorySearch, DirectoryStatusFilter } from './directory-controls';
 import { AuthorizationTypePicker } from './authorization-type-picker';
 import { useViewState, useListScroll } from './view-memory';
 import { CopyValue } from './components/copy-value';
@@ -248,7 +248,7 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
   const [load, setLoad] = useState<Load>({ kind: 'loading' });
   const [query, setQuery] = useViewState('clients:query', '');
   const [appliedQuery, setAppliedQuery] = useViewState('clients:applied', '');
-  const [sort, setSort] = useViewState('clients:sort', 'id');
+  const [status, setStatus] = useViewState('clients:status', '');
   const [cursor, setCursor] = useViewState<string | null>('clients:cursor', null);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const parameters = useRouteParameters();
@@ -256,7 +256,7 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
   const wantedMode = parameters.get('mode');
   const { tab, guided } = clientEditorRoute(parameters);
   const setTab = useCallback((value: string) => setRouteParameters('clients', { tab: value }), []);
-  useListScroll(`clients:${appliedQuery}:${sort}:${cursor}`, wantedId === null && wantedMode !== 'new' && load.kind === 'ready');
+  useListScroll(`clients:${appliedQuery}:${status}:${cursor}`, wantedId === null && wantedMode !== 'new' && load.kind === 'ready');
   const [editing, setEditing] = useState<Editing>({ kind: 'none' });
   const [draft, setDraft] = useState<Draft | null>(null);
   const [gate, setGate] = useState<RegistrationGate | null>(null);
@@ -293,7 +293,8 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
     (term: string) => {
       const request = ++listRequest.current;
       setLoad({ kind: 'loading' });
-      const params = new URLSearchParams({ sort });
+      const params = new URLSearchParams();
+      if (status) params.set('status', status);
       if (term.trim()) params.set('q', term.trim());
       if (cursor) params.set('cursor', cursor);
       read(`clients?${params}`).then(
@@ -307,7 +308,7 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
         },
       );
     },
-    [sort, cursor],
+    [cursor, status],
   );
 
   useEffect(() => refresh(appliedQuery), [refresh, appliedQuery]);
@@ -610,8 +611,7 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
         <div className="directory-toolbar"><DirectorySearch label="Search clients" value={query} placeholder="Name, client ID or callback" onChange={setQuery} onSubmit={() => {
           if (cursor === null && appliedQuery === query) refresh(query);
           else { setCursor(null); setAppliedQuery(query); }
-        }} />
-        <DirectoryOrder value={sort} options={[{ value: 'id', label: 'Client ID A–Z' }, { value: '-id', label: 'Client ID Z–A' }, { value: 'name', label: 'Name A–Z' }, { value: '-name', label: 'Name Z–A' }]} onChange={value => { setCursor(null); setSort(value); }} /></div>
+        }} /><DirectoryStatusFilter value={status} options={[{ value: '', label: 'All statuses' }, { value: 'active', label: 'Active' }, { value: 'disabled', label: 'Disabled' }]} onChange={value => { setCursor(null); setStatus(value); }} /></div>
         <Inventory load={load} onOpen={(id) => setRouteParameters('clients', { id, mode: null, tab: null })} onRetry={() => refresh(appliedQuery)} busy={busy} />
         <Actions><Button disabled={cursor === null || load.kind === 'loading'} onClick={() => setCursor(null)}>First page</Button><Button disabled={!nextCursor || load.kind === 'loading'} onClick={() => setCursor(nextCursor)}>Next page</Button></Actions>
       </Panel>
@@ -784,7 +784,7 @@ function Inventory({
       empty={
         <EmptyState
           title="No client matches."
-          body="Clear the search to see every client registered against this tenant."
+          body="Change the search or status filter to see more applications."
         />
       }
       columns={[

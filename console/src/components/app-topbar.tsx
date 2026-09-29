@@ -1,6 +1,5 @@
 import { useState, type JSX } from 'react';
 import {
-  NetworkIcon,
   HeartPulseIcon,
   CopyIcon,
   ChevronDownIcon,
@@ -45,7 +44,6 @@ export function AppTopbar({
 
       <div className="topbar-actions">
         <Button asChild variant="ghost" size="icon" title="Workspace health" aria-label="Workspace health"><a href={hrefOf('health')}><HeartPulseIcon aria-hidden="true" /></a></Button>
-        {session.scopes.includes('admin.flows:read') && <Button asChild variant="ghost" size="icon" title="Architecture builder" aria-label="Architecture builder"><a href={hrefOf('architecture')}><NetworkIcon aria-hidden="true" /></a></Button>}
         <AccountMenu session={session} onSignOut={onSignOut} />
       </div>
     </header>
