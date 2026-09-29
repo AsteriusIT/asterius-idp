@@ -3,23 +3,30 @@ import { useState } from 'react';
 import type { JSX } from 'react';
 import { mutate, read, type Session } from './api';
 import { toast } from './components/ui/toast';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from './components/ui/dialog';
+import { useDialogDraft } from './dialog-draft';
 import { Actions, Button, ConfirmDialog, Message, Panel } from './ui';
 import { userIdForUsername } from './user-lookup';
 import type { Directory } from './users';
 
 const SUBJECT_PATH = 'ssf/receiver/subjects';
+const EMPTY_SUBJECT = '{"format":"opaque","id":""}';
 
 type Change = 'bind' | 'remove';
 
 /** A mapping is identified by all three values; there is no list API yet. */
 export function SsfReceiverSubjects({ session }: Readonly<{ session: Session }>): JSX.Element {
   const [peer, setPeer] = useState('');
-  const [subjectText, setSubjectText] = useState('{"format":"opaque","id":""}');
+  const [subjectText, setSubjectText] = useState(EMPTY_SUBJECT);
   const [user, setUser] = useState('');
+  const [mode, setMode] = useState<Change | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirmingRemove, setConfirmingRemove] = useState(false);
   const [message, setMessage] = useState<{ tone: 'success' | 'error'; text: string } | null>(null);
   const writable = session.scopes.includes('admin.ssf:write');
+  const canManage = writable && session.scopes.includes('admin.users:read');
+  const close = () => { setMode(null); setPeer(''); setSubjectText(EMPTY_SUBJECT); setUser(''); setMessage(null); };
+  const draft = useDialogDraft(mode !== null && (peer !== '' || user !== '' || subjectText !== EMPTY_SUBJECT), busy, close);
 
   const change = async (operation: Change): Promise<void> => {
     setMessage(null);
@@ -62,6 +69,10 @@ export function SsfReceiverSubjects({ session }: Readonly<{ session: Session }>)
         : `The peer subject mapping for ${username} was removed.`;
       setMessage({ tone: 'success', text });
       toast.success('Shared signals mapping updated', text);
+      setMode(null);
+      setPeer('');
+      setSubjectText(EMPTY_SUBJECT);
+      setUser('');
     } catch (error) {
       const text = error instanceof Error ? error.message : 'The mapping change was refused.';
       setMessage({ tone: 'error', text });
@@ -77,6 +88,7 @@ export function SsfReceiverSubjects({ session }: Readonly<{ session: Session }>)
       id="ssf-receiver-subjects"
       title="Inbound subject mapping"
       description="Link a trusted sender’s subject identifier to a local user before its security events can act on that account. Only clients configured for SSF reception are eligible."
+      actions={canManage ? <Actions><Button onClick={() => { setMessage(null); setMode('bind'); }}>Bind subject</Button><Button onClick={() => { setMessage(null); setMode('remove'); }}>Remove mapping</Button></Actions> : undefined}
     >
       <p className="muted">
         The server cannot list existing mappings yet. To remove a mapping, enter the same peer,
@@ -84,8 +96,11 @@ export function SsfReceiverSubjects({ session }: Readonly<{ session: Session }>)
         in your operator system.
       </p>
       {message !== null && <Message tone={message.tone}>{message.text}</Message>}
-      {writable && session.scopes.includes('admin.users:read') ? (
-        <form className="flex flex-col gap-3" onSubmit={(event) => { event.preventDefault(); void change('bind'); }}>
+      {!canManage && <p className="muted">You need Shared Signals write access and user directory access to change subject mappings by username.</p>}
+      <Dialog open={mode !== null} onOpenChange={open => { if (!open) draft.requestClose(); }}><DialogContent>{draft.confirmation}
+        <DialogHeader><DialogTitle>{mode === 'remove' ? 'Remove inbound subject mapping' : 'Bind inbound subject'}</DialogTitle><DialogDescription>Use the exact peer, subject and local username. The server cannot list existing mappings.</DialogDescription></DialogHeader>
+        {message?.tone === 'error' && <Message tone="error">{message.text} Your entries are still here.</Message>}
+        <form className="flex flex-col gap-3" onSubmit={(event) => { event.preventDefault(); if (mode === 'remove') setConfirmingRemove(true); else void change('bind'); }}>
           <label className="flex flex-col gap-1" htmlFor="ssf-receiver-peer">
             Peer client ID
             <input
@@ -126,16 +141,12 @@ export function SsfReceiverSubjects({ session }: Readonly<{ session: Session }>)
               disabled={busy}
             />
           </label>
-          <Actions>
-            <Button type="submit" disabled={busy}>Bind subject</Button>
-            <Button type="button" variant="danger" disabled={busy} onClick={() => setConfirmingRemove(true)}>
-              Remove mapping
-            </Button>
+          <Actions end>
+            <Button type="button" onClick={draft.requestClose}>Cancel</Button>
+            <Button type="submit" variant={mode === 'remove' ? 'danger' : 'primary'} disabled={busy}>{mode === 'remove' ? 'Review removal' : 'Bind subject'}</Button>
           </Actions>
         </form>
-      ) : (
-        <p className="muted">You need Shared Signals write access and user directory access to change subject mappings by username.</p>
-      )}
+      </DialogContent></Dialog>
       {confirmingRemove && <ConfirmDialog
         title="Remove inbound subject mapping?"
         body={`Security events for the entered peer and subject will no longer resolve to ${user.trim() || 'this local user'}. Check the peer, subject, and username before continuing.`}
