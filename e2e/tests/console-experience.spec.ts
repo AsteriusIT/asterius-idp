@@ -549,6 +549,31 @@ test('SAML signing and service-provider forms open from explicit actions', async
   await expect(page.getByRole('dialog').getByLabel('Entity ID')).toBeVisible();
 });
 
+test('inbound signal subject mapping reads first and opens bind/remove actions', async ({ page }) => {
+  await prepare(page, path => {
+    if (path === 'session') return { body: { ...session, scopes: [...session.scopes, 'admin.ssf:read', 'admin.ssf:write'] } };
+    if (path === 'ssf/streams') return { body: { items: [] } };
+    return undefined;
+  });
+  await page.goto(`${entry}#/ssf`);
+  await expect(page.getByRole('heading', { name: 'Inbound subject mapping' })).toBeVisible();
+  await expect(page.getByLabel('Peer client ID')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Bind subject' }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByLabel('Peer client ID')).toBeVisible();
+  await dialog.getByLabel('Peer client ID').fill('peer-1');
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+  await expect(dialog.getByText('Your changes have not been saved.')).toBeVisible();
+  await dialog.getByRole('button', { name: 'Discard changes' }).click();
+  await expect(dialog).toHaveCount(0);
+  await page.getByRole('button', { name: 'Remove mapping' }).click();
+  await expect(page.getByRole('dialog').getByRole('heading', { name: 'Remove inbound subject mapping' })).toBeVisible();
+  await page.getByRole('dialog').getByLabel('Peer client ID').fill('peer-1');
+  await page.getByRole('dialog').getByLabel('Local username').fill('alex@example.test');
+  await page.getByRole('dialog').getByRole('button', { name: 'Review removal' }).click();
+  await expect(page.getByRole('alertdialog')).toContainText('Security events for the entered peer');
+});
+
 test('dark surfaces keep readable headings and controls across main destinations', async ({ page }) => {
   test.setTimeout(90_000);
   await prepare(page, path => {
