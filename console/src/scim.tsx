@@ -1,9 +1,11 @@
+import { FormSelect } from './components/ui/select';
+import { SearchIcon } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { read, type Session } from './api';
 import type { ClientDocument } from './client-draft';
 import { hrefOf } from './routes';
-import { Badge, Button, EmptyState, LoadFailure, Panel, Screen, Skeleton } from './ui';
+import { Badge, Button, EmptyState, Field, LoadFailure, Panel, Screen, Skeleton } from './ui';
 
 interface ClientSummary {
   readonly client_id: string;
@@ -129,7 +131,7 @@ export function ScimProvisioning({ session }: Readonly<{ session: Session }>): J
         <form className="row" onSubmit={(event) => { event.preventDefault(); loadClients(query); }}>
           <label htmlFor="scim-client-search">Find application</label>
           <input id="scim-client-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Name or client ID" />
-          <Button type="submit">Search</Button>
+          <Button type="submit" aria-label="Search applications" title="Search applications"><SearchIcon aria-hidden="true" /><span className="visually-hidden">Search applications</span></Button>
         </form>
         {inventory.kind === 'loading' && <Skeleton label="Loading applications" />}
         {inventory.kind === 'failed' && <LoadFailure message={inventory.message} onRetry={() => loadClients(query)} />}
@@ -137,11 +139,7 @@ export function ScimProvisioning({ session }: Readonly<{ session: Session }>): J
           <EmptyState title="No matching applications" body="Register a client in Applications or search by another name." />
         )}
         {inventory.kind === 'ready' && inventory.page.items.length > 0 && <>
-          <label htmlFor="scim-client-select">Application</label>
-          <select id="scim-client-select" value={selectedId} onChange={(event) => event.target.value === '' ? (setSelectedId(''), setInspection({ kind: 'idle' })) : inspect(event.target.value)}>
-            <option value="">Choose an application</option>
-            {inventory.page.items.map((client) => <option key={client.client_id} value={client.client_id}>{client.client_name} ({client.client_id})</option>)}
-          </select>
+          <Field label="Application">{props => <FormSelect {...props} value={selectedId} onValueChange={value => value === '' ? (setSelectedId(''), setInspection({ kind: 'idle' })) : inspect(value)} options={[{ value: '', label: 'Choose an application' }, ...inventory.page.items.map(client => ({ value: client.client_id, label: `${client.client_name} (${client.client_id})` }))]} />}</Field>
           {inventory.page.next_cursor !== null && <p className="muted">More applications exist. Search by name or client ID to find one outside this page.</p>}
         </>}
         {inspection.kind === 'loading' && <Skeleton label="Checking client registration" />}

@@ -1,3 +1,5 @@
+import { FormSelect } from './components/ui/select';
+import { SearchIcon } from 'lucide-react';
 import { useDialogDraft } from './dialog-draft';
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
@@ -67,7 +69,7 @@ function GroupDirectory({ session, onOpen }: Readonly<{
       <form className="toolbar" onSubmit={(event) => { event.preventDefault(); setCursor(null); setTerm(typed.trim()); }}>
         <Field label="Search groups">{props => <input {...props} type="search" value={typed}
           placeholder="Search groups" onChange={event => setTyped(event.target.value)} />}</Field>
-        <Button type="submit">Search</Button>
+        <Button type="submit" aria-label="Search groups" title="Search groups"><SearchIcon aria-hidden="true" /><span className="visually-hidden">Search groups</span></Button>
       </form>
       {load.kind === 'loading' && <Skeleton rows={4} label="Reading groups." />}
       {load.kind === 'failed' && <LoadFailure message={load.message} onRetry={refresh} />}
@@ -175,6 +177,7 @@ function GroupMembers({ session, group }: Readonly<{ session: Session; group: Gr
   const [cursor, setCursor] = useState<string | null>(null);
   const [user, setUser] = useState('');
   const [matches, setMatches] = useState<Load<Directory> | null>(null);
+  const [adding, setAdding] = useState(false);
   const [busy, setBusy] = useState(false);
   const [refusal, setRefusal] = useState<string | null>(null);
   const [removingMember, setRemovingMember] = useState<{ user_id: string; username: string } | null>(null);
@@ -188,7 +191,7 @@ function GroupMembers({ session, group }: Readonly<{ session: Session; group: Gr
   const change = (id: string, add: boolean, label: string): void => {
     setBusy(true);
     setRefusal(null); mutate(memberPath(group.id, id), add ? 'PUT' : 'DELETE', session).then(
-      () => { setUser(''); setBusy(false); setRemovingMember(null); toast.success(add ? 'Member added' : 'Member removed', label); refresh(); },
+      () => { setUser(''); setBusy(false); setRemovingMember(null); setAdding(false); setMatches(null); toast.success(add ? 'Member added' : 'Member removed', label); refresh(); },
       error => { setBusy(false); setRemovingMember(null); setRefusal(failure(error, 'Membership could not be changed')); },
     );
   };
@@ -199,17 +202,20 @@ function GroupMembers({ session, group }: Readonly<{ session: Session; group: Gr
       error => setMatches({ kind: 'failed', message: failure(error, 'The directory could not be searched') }),
     );
   };
-  return <Panel title="Members" description="Membership changes affect the next authorization decision and token issuance. Existing JWTs remain valid until expiry.">
+  const addDraft = useDialogDraft(adding && user.trim() !== '', busy, () => { setAdding(false); setUser(''); setMatches(null); });
+  return <Panel title="Members" description="Membership changes affect the next authorization decision and token issuance. Existing JWTs remain valid until expiry." actions={writable && session.scopes.includes('admin.users:read') ? <Button onClick={() => setAdding(true)}>Add member</Button> : undefined}>
     {refusal !== null && <Message tone="error">{refusal}</Message>}
+    <Dialog open={adding} onOpenChange={open => { if (!open) addDraft.requestClose(); }}><DialogContent>{addDraft.confirmation}<DialogHeader><DialogTitle>Add member</DialogTitle><DialogDescription>Find a user and add them to {group.display_name}.</DialogDescription></DialogHeader>
     {writable && session.scopes.includes('admin.users:read') && <form className="toolbar" onSubmit={event => { event.preventDefault(); findUser(); }}>
       <Field label="Find a user" hint="Search by username or email, then choose the person to add.">{props => <input {...props} value={user} placeholder="e.g. alex" autoComplete="off" onChange={event => setUser(event.target.value)} />}</Field>
-      <Button type="submit" variant="primary" disabled={user.trim() === '' || busy}>Find users</Button></form>}
+      <Button type="submit" aria-label="Search users" title="Search users" disabled={user.trim() === '' || busy}><SearchIcon aria-hidden="true" /><span className="visually-hidden">Search users</span></Button></form>}
     {matches?.kind === 'loading' && <Skeleton rows={2} label="Searching users." />}
     {matches?.kind === 'failed' && <LoadFailure message={matches.message} onRetry={findUser} />}
     {matches?.kind === 'ready' && <DataTable caption="Matching users" rows={matches.value.items} rowKey={row => row.user_id}
       empty={<EmptyState title="No matching users" body="Try another username or email address." />}
       columns={[{ key: 'person', header: 'Person', cell: row => <><strong>{row.username}</strong><span className="muted block">{row.email}</span></> },
-        { key: 'add', header: 'Add member', actions: true, cell: row => <Button small disabled={busy || (load.kind === 'ready' && load.value.items.some(member => member.user_id === row.user_id))} onClick={() => { change(row.user_id, true, row.username); setMatches(null); }}>Add {row.username}</Button> }]} />}
+        { key: 'add', header: 'Add member', actions: true, cell: row => <Button small disabled={busy || (load.kind === 'ready' && load.value.items.some(member => member.user_id === row.user_id))} onClick={() => change(row.user_id, true, row.username)}>Add {row.username}</Button> }]} />}
+    <Actions end><Button onClick={addDraft.requestClose}>Cancel</Button></Actions></DialogContent></Dialog>
     {writable && !session.scopes.includes('admin.users:read') && <Message tone="info">Ask an administrator for user directory access to add members by username.</Message>}
     {load.kind === 'loading' && <Skeleton rows={3} label="Reading members." />}
     {load.kind === 'failed' && <LoadFailure message={load.message} onRetry={refresh} />}
@@ -231,8 +237,10 @@ function GroupRoles({ session, group }: Readonly<{ session: Session; group: Grou
   const [clients, setClients] = useState<readonly string[]>([]);
   const [owner, setOwner] = useState('');
   const [role, setRole] = useState('');
+  const [assigning, setAssigning] = useState(false);
   const [withdrawing, setWithdrawing] = useState<{ role: string; clientId: string | null } | null>(null);
   const [changing, setChanging] = useState(false);
+  const assignmentDraft = useDialogDraft(assigning && (owner !== '' || role !== ''), changing, () => { setAssigning(false); setOwner(''); setRole(''); });
   const [refusal, setRefusal] = useState<string | null>(null);
   const writable = session.scopes.includes(ROLES_WRITE);
   const refresh = useCallback(() => { setLoad({ kind: 'loading' }); read(groupRolesPath(group.id)).then(
@@ -244,7 +252,7 @@ function GroupRoles({ session, group }: Readonly<{ session: Session; group: Grou
     (value as { items: readonly { client_id: string }[] }).items.map(item => item.client_id)), () => setClients([])); }, [session.scopes]);
   const rows = load.kind === 'ready' ? assignmentsOf(load.value) : [];
   const assign = (): void => { const body: Record<string, string> = { name: role }; if (owner !== '') body.client_id = owner;
-    setRefusal(null); mutate(groupRolesPath(group.id), 'POST', session, body).then(() => { setRole(''); toast.success('Role assigned', role); refresh(); },
+    setRefusal(null); mutate(groupRolesPath(group.id), 'POST', session, body).then(() => { setRole(''); setAssigning(false); toast.success('Role assigned', role); refresh(); },
       error => setRefusal(failure(error, 'The role was not assigned'))); };
   const withdraw = (row: { role: string; clientId: string | null }): void => {
     setChanging(true);
@@ -254,12 +262,13 @@ function GroupRoles({ session, group }: Readonly<{ session: Session; group: Grou
       error => { setChanging(false); setWithdrawing(null); setRefusal(failure(error, 'The role was not withdrawn')); },
     );
   };
-  return <Panel title="Application roles" description="Every member inherits these roles. Group roles can never grant console administrator authority.">
+  return <Panel title="Application roles" description="Every member inherits these roles. Group roles can never grant console administrator authority." actions={writable ? <Button onClick={() => setAssigning(true)}>Assign role</Button> : undefined}>
     {refusal !== null && <Message tone="error">{refusal}</Message>}
+    <Dialog open={assigning} onOpenChange={open => { if (!open) assignmentDraft.requestClose(); }}><DialogContent>{assignmentDraft.confirmation}<DialogHeader><DialogTitle>Assign application role</DialogTitle><DialogDescription>Every member of this group will inherit the selected role.</DialogDescription></DialogHeader>
     {writable && <form className="group-role-form" onSubmit={event => { event.preventDefault(); if (role !== '') assign(); }}>
-      <Field label="Application">{props => <select {...props} value={owner} onChange={event => { setOwner(event.target.value); setRole(''); }}><option value="">Workspace</option>{clients.map(client => <option key={client} value={client}>{client}</option>)}</select>}</Field>
-      <Field label="Role">{props => <select {...props} value={role} onChange={event => setRole(event.target.value)}><option value="">Choose a role</option>{catalogue.filter(item => !rows.some(row => row.role === item.name && row.clientId === (owner || null))).map(item => <option key={item.name} value={item.name}>{item.name}</option>)}</select>}</Field>
-      <Button type="submit" variant="primary" disabled={role === ''}>Assign role</Button></form>}
+      <Field label="Application">{props => <FormSelect {...props} value={owner} onValueChange={value => { setOwner(value); setRole(''); }} options={[{value: '', label: 'Workspace'}, ...clients.map(client => ({ value: client, label: client }))]} />}</Field>
+      <Field label="Role">{props => <FormSelect {...props} value={role} onValueChange={setRole} options={[{ value: '', label: 'Choose a role' }, ...catalogue.filter(item => !rows.some(row => row.role === item.name && row.clientId === (owner || null))).map(item => ({ value: item.name, label: item.name }))]} />}</Field>
+      <div className="actions"><Button onClick={assignmentDraft.requestClose}>Cancel</Button><Button type="submit" variant="primary" disabled={role === ''}>Assign role</Button></div></form>}</DialogContent></Dialog>
     {load.kind === 'loading' && <Skeleton rows={3} label="Reading group roles." />}
     {load.kind === 'failed' && <LoadFailure message={load.message} onRetry={refresh} />}
     {load.kind === 'ready' && <DataTable rows={rows} rowKey={row => `${row.clientId ?? ''}:${row.role}`}
@@ -277,6 +286,7 @@ export function UserGroups({ session, userId }: Readonly<{ session: Session; use
   const [cursor, setCursor] = useState<string | null>(null);
   const [typed, setTyped] = useState('');
   const [matches, setMatches] = useState<Load<GroupPage> | null>(null);
+  const [adding, setAdding] = useState(false);
   const [chosen, setChosen] = useState<GroupRow | null>(null);
   const [saving, setSaving] = useState(false);
   const [refusal, setRefusal] = useState<string | null>(null);
@@ -301,7 +311,7 @@ export function UserGroups({ session, userId }: Readonly<{ session: Session; use
     mutate(memberPath(chosen.id, userId), 'PUT', session).then(() => {
       toast.success('Membership added', `${chosen.display_name} (${chosen.name})`);
       window.dispatchEvent(new CustomEvent(GROUP_MEMBERSHIP_CHANGED_EVENT, { detail: { userId } }));
-      setSaving(false); setChosen(null); setMatches(null); setTyped(''); refresh();
+      setSaving(false); setChosen(null); setMatches(null); setTyped(''); setAdding(false); refresh();
     }, error => { setSaving(false); setRefusal(failure(error, 'Membership could not be added')); });
   };
   const remove = (row: GroupRow): void => {
@@ -311,12 +321,14 @@ export function UserGroups({ session, userId }: Readonly<{ session: Session; use
       window.dispatchEvent(new CustomEvent(GROUP_MEMBERSHIP_CHANGED_EVENT, { detail: { userId } })); refresh();
     }, error => { setSaving(false); setRemovingGroup(null); setRefusal(failure(error, 'Membership could not be removed')); });
   };
-  return <Panel title="Groups" description="Direct managed-group memberships. Role inheritance is shown on the Roles tab with its source.">
+  const addDraft = useDialogDraft(adding && (typed.trim() !== '' || chosen !== null), saving, () => { setAdding(false); setTyped(''); setMatches(null); setChosen(null); });
+  return <Panel title="Groups" description="Direct managed-group memberships. Role inheritance is shown on the Roles tab with its source." actions={searchable ? <Button onClick={() => setAdding(true)}>Add to group</Button> : undefined}>
     {refusal !== null && <Message tone="error">{refusal}</Message>}
+    <Dialog open={adding} onOpenChange={open => { if (!open) addDraft.requestClose(); }}><DialogContent>{addDraft.confirmation}<DialogHeader><DialogTitle>Add to group</DialogTitle><DialogDescription>Find a group and select it for this user.</DialogDescription></DialogHeader>
     {searchable && <form onSubmit={event => { event.preventDefault(); search(); }}>
       <div className="toolbar"><Field label="Find a group">{props => <input {...props} type="search" value={typed}
         placeholder="Search display or machine name" onChange={event => setTyped(event.target.value)} />}</Field>
-        <Button type="submit" disabled={saving}>Search groups</Button></div>
+        <Button type="submit" disabled={saving} aria-label="Search groups" title="Search groups"><SearchIcon aria-hidden="true" /><span className="visually-hidden">Search groups</span></Button></div>
       {matches?.kind === 'loading' && <Skeleton rows={2} label="Searching groups." />}
       {matches?.kind === 'failed' && <LoadFailure message={matches.message} onRetry={search} />}
       {matches?.kind === 'ready' && <div className="role-picker" role="radiogroup" aria-label="Matching groups">
@@ -328,6 +340,7 @@ export function UserGroups({ session, userId }: Readonly<{ session: Session; use
       </div>}
       {matches?.kind === 'ready' && <Actions end><Button type="button" variant="primary" disabled={chosen === null || saving} onClick={assign}>Add to group</Button></Actions>}
     </form>}
+    <Actions end><Button onClick={addDraft.requestClose}>Cancel</Button></Actions></DialogContent></Dialog>
     {load.kind === 'loading' && <Skeleton rows={3} label="Reading user groups." />}{load.kind === 'failed' && <LoadFailure message={load.message} onRetry={refresh} />}
     {load.kind === 'ready' && <><DataTable rows={load.value.items} rowKey={row => row.id} empty={<EmptyState title="No group memberships." body="Add this user from a group’s Members tab." />}
       columns={[{ key: 'group', header: 'Group', cell: row => <><strong>{row.display_name}</strong><br /><code>{row.name}</code></> },

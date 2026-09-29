@@ -30,8 +30,10 @@ test('group membership changes effective application roles', async ({ page }) =>
   await groupDialog.getByRole('button', { name: 'Save group' }).click();
 
   await page.getByRole('tab', { name: 'Roles' }).click();
-  await page.getByLabel('Role', { exact: true }).selectOption(role);
   await page.getByRole('button', { name: 'Assign role' }).click();
+  await page.getByRole('dialog').getByLabel('Role', { exact: true }).click();
+  await page.getByRole('option', { name: role }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Assign role' }).click();
   await expect(page.getByRole('cell', { name: role, exact: true })).toBeVisible();
 
   await open(page, 'Users', 'Users');
@@ -39,12 +41,13 @@ test('group membership changes effective application roles', async ({ page }) =>
   await page.getByRole('button', { name: 'Search' }).click();
   await page.getByRole('button', { name: USERNAME, exact: true }).click();
   await page.getByRole('tab', { name: 'Groups' }).click();
+  await page.getByRole('button', { name: 'Add to group' }).click();
   await page.getByLabel('Find a group').fill(group);
   await page.getByRole('button', { name: 'Search groups' }).click();
   const choice = page.getByRole('radio', { name: new RegExp(`${displayName}.*${group}`) });
   await expect(choice).toBeVisible();
   await choice.check();
-  await page.getByRole('button', { name: 'Add to group' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Add to group' }).click();
   const membership = page.getByRole('row', { name: new RegExp(`${displayName}.*${group}`) });
   await expect(membership).toBeVisible();
 

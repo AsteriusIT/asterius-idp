@@ -146,6 +146,7 @@ export function TenantSettings({
   const [notice, setNotice] = useState<string | null>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState(false);
   useUnsavedChanges(load.kind === 'ready' && draft !== null && JSON.stringify(draft) !== JSON.stringify(draftOf(load.settings)));
   const subject = tenant ?? session.workspace;
   const elsewhere = subject !== session.workspace;
@@ -195,6 +196,7 @@ export function TenantSettings({
           setLoad({ kind: 'ready', settings });
           setDraft(draftOf(settings));
           setNotice('Saved.');
+          setEditing(false);
           toast.success('The tenant settings were saved');
           setBusy(false);
         },
@@ -268,7 +270,13 @@ export function TenantSettings({
         nothing is lost by letting the request be made and everything is gained
         by showing what came back.
       */}
-      <div className="tenant-configuration">
+      {!editing && <Panel title="Saved configuration" description="Review the current tenant settings, then choose Edit settings to make a change." actions={<Button variant="primary" onClick={() => setEditing(true)}>Edit settings</Button>}>
+        <dl className="stats"><div><dt>Workspace</dt><dd>{settings.tenant_id}</dd></div>
+          <div><dt>Authorization code lifetime</dt><dd>{settings.authorization_code_lifetime_seconds} seconds</dd></div>
+          <div><dt>Access token lifetime</dt><dd>{settings.access_token_lifetime_seconds} seconds</dd></div>
+          <div><dt>Authenticator codes</dt><dd>{draft.acrPolicy?.levels.some(level => level.amr.includes('otp')) ? 'Enabled in assurance policy' : 'Disabled in assurance policy'}</dd></div></dl>
+      </Panel>}
+      {editing && <div className="tenant-configuration">
       <form
         noValidate
         onSubmit={(event) => {
@@ -399,7 +407,8 @@ export function TenantSettings({
           </Button>
         </Actions>
       </form>
-      </div>
+      <Button onClick={() => { setDraft(draftOf(settings)); setEditing(false); }} disabled={busy}>Cancel editing</Button>
+      </div>}
     </Screen>
   );
 }

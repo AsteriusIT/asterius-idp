@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}{{ text.account_title() }} — {{ tenant_name }}{% endblock %}
+{% block card_class %} account-dashboard{% endblock %}
 {% block content %}
 {# The front door of the self-service pages (`ast-1xd`).
 
@@ -10,13 +11,14 @@
    no form, no token and no button, because there is nothing here to press.
 
    No script, like everything in this tree. #}
-<div class="stack tight">
+<header class="account-intro">
 <h2>{{ text.account_heading() }}</h2>
 <p class="muted">{{ text.account_signed_in_as(username) }}</p>
 <p class="muted">{{ text.account_intro() }}</p>
-</div>
+</header>
 
-{% if !identities.is_empty() %}<section class="stack tight">
+<div class="account-grid">
+{% if !identities.is_empty() %}<section class="account-section account-connections">
 <h3>{{ text.account_identities_heading() }}</h3>
 <ul class="scopes">
 {% for identity in identities %}
@@ -25,7 +27,7 @@
 </ul>
 </section>
 
-{% endif %}<h3>{{ text.account_signin_group() }}</h3>
+{% endif %}<section class="account-section"><h3>{{ text.account_signin_group() }}</h3>
 <ul class="scopes">
 <li>
   <a href="{{ passkeys_href }}">{{ text.account_passkeys_link() }}</a>
@@ -43,7 +45,7 @@
   <a href="{{ email_href }}">{{ text.account_email_link() }}</a>
   <br><span class="muted">{{ text.account_email_explains() }}</span>
 </li>
-</ul><h3>{{ text.account_sessions_group() }}</h3>
+</ul></section><section class="account-section"><h3>{{ text.account_sessions_group() }}</h3>
 <ul class="scopes">
 <li>
   <a href="{{ sessions_href }}">{{ text.account_sessions_link() }}</a>
@@ -53,7 +55,7 @@
   <a href="{{ activity_href }}">{{ text.account_activity_link() }}</a>
   <br><span class="muted">{{ text.account_activity_explains() }}</span>
 </li>
-</ul><h3>{{ text.account_access_group() }}</h3>
+</ul></section><section class="account-section"><h3>{{ text.account_access_group() }}</h3>
 <ul class="scopes">
 <li>
   <a href="{{ approvals_href }}">{{ text.account_approvals_link() }}</a>
@@ -63,7 +65,7 @@
   <a href="{{ grants_href }}">{{ text.account_grants_link() }}</a>
   <br><span class="muted">{{ text.account_grants_explains() }}</span>
 </li>
-</ul><h3>{{ text.account_connections_group() }}</h3>
+</ul></section><section class="account-section"><h3>{{ text.account_connections_group() }}</h3>
 <ul class="scopes">
 <li>
   <a href="{{ claims_providers_href }}">{{ text.providers_title() }}</a>
@@ -73,5 +75,5 @@
   <a href="{{ id_jag_href }}">{{ text.external_approvals_title() }}</a>
   <br><span class="muted">{{ text.external_approvals_intro() }}</span>
 </li>
-</ul>
+</ul></section></div>
 {% endblock %}

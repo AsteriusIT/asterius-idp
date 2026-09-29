@@ -1,3 +1,4 @@
+import { DirectoryOrder, DirectorySearch } from './directory-controls';
 import { AuthorizationTypePicker } from './authorization-type-picker';
 import { useViewState, useListScroll } from './view-memory';
 import { CopyValue } from './components/copy-value';
@@ -606,31 +607,11 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
       {refusal !== null && <Message tone="error">{refusal}</Message>}
 
       <Panel className="directory-panel" title="Registered clients">
-        <form
-          className="toolbar"
-          role="search"
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (cursor === null && appliedQuery === query) refresh(query);
-            else { setCursor(null); setAppliedQuery(query); }
-          }}
-        >
-          <Field label="Search clients">
-            {(props) => (
-              <input
-                {...props}
-                name="q"
-                type="search"
-                value={query}
-                placeholder="name, client_id or a callback"
-                onChange={(event) => setQuery(event.target.value)}
-              />
-            )}
-          </Field>
-          <Button type="submit">Search</Button>
-        </form>
-
-        <Field label="Server order">{props => <select {...props} value={sort} onChange={event => { setCursor(null); setSort(event.target.value); }}><option value="id">Client ID A–Z</option><option value="-id">Client ID Z–A</option><option value="name">Name A–Z</option><option value="-name">Name Z–A</option></select>}</Field>
+        <div className="directory-toolbar"><DirectorySearch label="Search clients" value={query} placeholder="Name, client ID or callback" onChange={setQuery} onSubmit={() => {
+          if (cursor === null && appliedQuery === query) refresh(query);
+          else { setCursor(null); setAppliedQuery(query); }
+        }} />
+        <DirectoryOrder value={sort} options={[{ value: 'id', label: 'Client ID A–Z' }, { value: '-id', label: 'Client ID Z–A' }, { value: 'name', label: 'Name A–Z' }, { value: '-name', label: 'Name Z–A' }]} onChange={value => { setCursor(null); setSort(value); }} /></div>
         <Inventory load={load} onOpen={(id) => setRouteParameters('clients', { id, mode: null, tab: null })} onRetry={() => refresh(appliedQuery)} busy={busy} />
         <Actions><Button disabled={cursor === null || load.kind === 'loading'} onClick={() => setCursor(null)}>First page</Button><Button disabled={!nextCursor || load.kind === 'loading'} onClick={() => setCursor(nextCursor)}>Next page</Button></Actions>
       </Panel>

@@ -32,6 +32,7 @@ import { SamlIdpKey } from './saml-idp-key';
 import { Help } from './help';
 import { ArchitectureFlows } from './architecture-flows';
 import { OidcProviders } from './oidc-providers';
+import { WorkspaceHealth } from './workspace-health';
 
 /**
  * What the shell is doing, as one value.
@@ -179,6 +180,7 @@ function RouteScreen({
   fragment: string;
   session: Session;
 }>): JSX.Element {
+  if (route === 'health') return <WorkspaceHealth session={session} />;
   if (route === 'roles') return <Roles session={session} client={paramsOf(fragment).get('client')} />;
   if (route === 'users') {
     return <Users session={session} />;

@@ -140,6 +140,7 @@ export const DESTINATIONS: readonly Destination[] = [
   // Local-only browser preferences. It makes no API call, so there is no
   // server scope to require and every signed-in console user can reach it.
   { route: 'preferences', menuOnly: true, label: 'Preferences', reach: 'tenant', scope: null, bead: 'ast-f7m.10', group: 'Workspace' },
+  { route: 'health', menuOnly: true, label: 'Workspace health', reach: 'tenant', scope: null, bead: 'ast-1k13.1', group: 'Workspace' },
   { route: 'help', label: 'Help & guides', reach: 'tenant', scope: null, bead: 'ast-p2mm', group: 'Help' },
 ];
 

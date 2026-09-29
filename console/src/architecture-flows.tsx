@@ -1,3 +1,4 @@
+import { FormSelect } from './components/ui/select';
 import { memo, useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { AppWindow, Database, Users, UserRound, ShieldCheck, Radio, LogIn, ArrowLeft, Plus, Pencil, Eye, Trash2, X, Network, Layers, Keyboard } from 'lucide-react';
@@ -286,8 +287,8 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
           <h2>Connections</h2>
           <ul>{graph.edges.map(edge => <li key={edge.id}><span>{graph.nodes.find(node => node.id === edge.source)?.label} → {graph.nodes.find(node => node.id === edge.target)?.label}</span>{canWrite && <Button small onClick={() => change({ ...graph, edges: graph.edges.filter(item => item.id !== edge.id) })}>Remove connection</Button>}</li>)}</ul>
           {canWrite && <form onSubmit={event => { event.preventDefault(); if (validConnection(graph, connectionSource, connectionTarget)) { change({ ...graph, edges: [...graph.edges, { id: crypto.randomUUID(), source: connectionSource, target: connectionTarget }] }); setConnectionTarget(''); } }}>
-            <Field label="Connect from">{props => <select {...props} value={connectionSource} onChange={event => { setConnectionSource(event.target.value); setConnectionTarget(''); }}><option value="">Choose an object</option>{graph.nodes.map(node => <option key={node.id} value={node.id}>{node.label}</option>)}</select>}</Field>
-            <Field label="Connect to">{props => <select {...props} value={connectionTarget} onChange={event => setConnectionTarget(event.target.value)}><option value="">Choose a compatible object</option>{graph.nodes.filter(node => validConnection(graph, connectionSource, node.id)).map(node => <option key={node.id} value={node.id}>{node.label}</option>)}</select>}</Field>
+            <Field label="Connect from">{props => <FormSelect {...props} value={connectionSource} onValueChange={value => { setConnectionSource(value); setConnectionTarget(''); }} options={[{ value: '', label: 'Choose an object' }, ...graph.nodes.map(node => ({ value: node.id, label: node.label }))]} />}</Field>
+            <Field label="Connect to">{props => <FormSelect {...props} value={connectionTarget} onValueChange={setConnectionTarget} options={[{ value: '', label: 'Choose a compatible object' }, ...graph.nodes.filter(node => validConnection(graph, connectionSource, node.id)).map(node => ({ value: node.id, label: node.label }))]} />}</Field>
             <Button type="submit" disabled={!validConnection(graph, connectionSource, connectionTarget)}>Add connection</Button>
           </form>}
         </div> : <div className="architecture-stage-canvas"><FlowCanvas graph={graph} writable={canWrite} selected={selected} selectedEdge={selectedEdge} onEdgeSelect={setSelectedEdge} onSelect={id => { setSelected(id); setTab('object'); }} onChange={change} /></div>}
@@ -351,7 +352,7 @@ function KeySource({ node, disabled, onChange, onValidity, draft, onDraft }: { d
       const { jwks_uri: _uri, ...rest } = node.settings; onChange({ ...rest, jwks: keys }); setError(''); onValidity(true);
     } catch (error) { onValidity(false); const { jwks: _keys, ...rest } = node.settings; onChange(rest); setError(error instanceof Error ? error.message : 'Invalid public JWKS'); }
   };
-  return <><Field label="Application public keys">{props => <select {...props} value={mode} disabled={disabled} onChange={event => changeMode(event.target.value)}><option value="url">Fetch from a JWKS URL</option><option value="json">Paste public JWKS JSON</option></select>}</Field>
+  return <><Field label="Application public keys">{props => <FormSelect {...props} value={mode} disabled={disabled} onValueChange={changeMode} options={[{ value: 'url', label: 'Fetch from a JWKS URL' }, { value: 'json', label: 'Paste public JWKS JSON' }]} />}</Field>
     {mode === 'url' ? <Field label="Public JWKS URL" hint="HTTPS endpoint published by your application.">{props => <input {...props} type="url" value={String(node.settings.jwks_uri ?? '')} disabled={disabled} onChange={event => onChange({ ...node.settings, jwks_uri: event.target.value })} />}</Field> : <Field label="Public JWKS JSON" hint="Paste the public key set. Never paste private keys.">{props => <textarea {...props} rows={9} value={text} disabled={disabled} onChange={event => { setText(event.target.value); onDraft(event.target.value); commit(event.target.value); }} spellCheck={false} />}</Field>}
     {error && <p role="alert">{error}</p>}</>;
 }
@@ -389,9 +390,7 @@ function NodeInspector({ selectedNode, canWrite, links, keyDraft, onKeyDraft, on
           <Field label="Display name">{props => <input {...props} value={selectedNode.label} disabled={!canWrite} onChange={event => updateSelected({ label: event.target.value })} />}</Field>
           {(selectedNode.kind !== 'application' || selectedNode.mode === 'reference') &&
             <Field label={IDENTIFIER_LABELS[selectedNode.kind]}>{props => <input {...props} value={selectedNode.identifier} disabled={!canWrite} onChange={event => updateSelected({ identifier: event.target.value })} />}</Field>}
-          <Field label="Ownership">{props => <select {...props} value={selectedNode.mode} disabled={!canWrite || contextOnlyNode(selectedNode.kind)} onChange={event => updateSelected({ mode: event.target.value as Mode })}>
-            <option value="managed">Create with flow</option><option value="reference">{contextOnlyNode(selectedNode.kind) ? 'Diagram context only' : 'Existing reference'}</option>
-          </select>}</Field>
+          <Field label="Ownership">{props => <FormSelect {...props} value={selectedNode.mode} disabled={!canWrite || contextOnlyNode(selectedNode.kind)} onValueChange={value => updateSelected({ mode: value as Mode })} options={[{ value: 'managed', label: 'Create with flow' }, { value: 'reference', label: contextOnlyNode(selectedNode.kind) ? 'Diagram context only' : 'Existing reference' }]} />}</Field>
           {(contextOnlyNode(selectedNode.kind)) &&
             <p className="muted">Shown for architecture context. Apply does not configure or verify this integration.</p>}
           {selectedNode.kind === 'application' && selectedNode.mode === 'managed' && <>

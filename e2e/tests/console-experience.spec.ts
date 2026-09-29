@@ -93,6 +93,7 @@ test('user tabs survive reload and keep unsaved identity edits between tabs', as
   await page.reload();
   await expect(page.getByRole('tab', { name: 'Sessions', exact: true })).toHaveAttribute('aria-selected', 'true');
   await page.getByRole('tab', { name: 'Identity data' }).click();
+  await page.getByRole('button', { name: 'Edit identity data' }).click();
   await page.getByLabel('Email', { exact: true }).fill('new@example.test');
   await page.getByRole('tab', { name: 'Sessions', exact: true }).click();
   await expect(page.getByRole('alertdialog')).toHaveCount(0);
@@ -112,7 +113,7 @@ test('schema editor reflows and remains accessible in both themes', async ({ pag
   await page.getByLabel('Consent template', { exact: true }).fill('Initiate the payment you described');
   for (const dark of [false, true]) {
     await page.evaluate(value => document.documentElement.classList.toggle('dark', value), dark);
-    await expect(page.locator('.content')).toHaveCSS('color', dark ? 'rgb(244, 244, 245)' : 'rgb(24, 24, 27)');
+    await expect(page.locator('.content')).toHaveCSS('color', dark ? 'rgb(245, 246, 248)' : 'rgb(24, 24, 27)');
     for (const width of [320, 390, 768, 1440]) {
       await page.setViewportSize({ width, height: 900 });
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
@@ -134,6 +135,7 @@ test('browser Back cancellation retains its history destination and draft', asyn
   const errors = await prepare(page);
   await page.goto(`${entry}#/users`);
   await page.evaluate(() => { window.location.hash = '#/users?id=alex&tab=claims'; });
+  await page.getByRole('button', { name: 'Edit identity data' }).click();
   await page.getByLabel('Email', { exact: true }).fill('draft@example.test');
   await page.evaluate(() => history.back());
   await page.getByRole('button', { name: 'Keep editing' }).click();
@@ -257,6 +259,7 @@ test('tenant TOTP activation saves and reloads without replacing existing assura
     return { body: saved };
   });
   await page.goto(`${entry}#/settings`);
+  await page.getByRole('button', { name: 'Edit settings', exact: true }).click();
   await page.getByRole('tab', { name: 'Authentication', exact: true }).click();
   await expect(page.getByRole('status')).toContainText('Disabled in this configuration');
   await page.getByRole('button', { name: 'Enable authenticator codes' }).click();
@@ -266,6 +269,7 @@ test('tenant TOTP activation saves and reloads without replacing existing assura
   await expect.poll(() => writes).toBe(1);
   expect(saved.acr_policy.levels.map(level => level.amr)).toEqual([['pwd'], ['pwd', 'otp'], ['swk']]);
   await page.reload();
+  await page.getByRole('button', { name: 'Edit settings', exact: true }).click();
   await page.getByRole('tab', { name: 'Authentication', exact: true }).click();
   await expect(page.getByLabel('Assurance level 2: Authenticator code')).toBeChecked();
   await page.getByLabel('Assurance level 2: Authenticator code').uncheck();
@@ -359,14 +363,15 @@ test('user server sorting and search survive an account inspection', async ({ pa
     return undefined;
   });
   await page.goto(`${entry}#/users`);
-  await page.getByLabel('Search', { exact: true }).fill('alex');
+  await page.getByRole('searchbox', { name: 'Search' }).fill('alex');
   await page.getByRole('button', { name: 'Search', exact: true }).click();
-  await page.getByLabel('Server order', { exact: true }).selectOption('-username');
+  await page.getByRole('button', { name: /Order: Username A–Z/ }).click();
+  await page.getByRole('menuitemradio', { name: 'Username Z–A' }).click();
   await expect.poll(() => queries.some(query => query.includes('sort=-username') && query.includes('q=alex'))).toBe(true);
   await page.getByRole('button', { name: /alex@example.test/ }).click();
   await page.getByRole('button', { name: /Back to users/ }).click();
-  await expect(page.getByLabel('Search', { exact: true })).toHaveValue('alex');
-  await expect(page.getByLabel('Server order', { exact: true })).toHaveValue('-username');
+  await expect(page.getByRole('searchbox', { name: 'Search' })).toHaveValue('alex');
+  await expect(page.getByRole('button', { name: /Order: Username Z–A/ })).toBeVisible();
 });
 
 test('OIDC metadata checks run automatically and allow an explicit retry', async ({ page }) => {
@@ -403,10 +408,13 @@ test('guided setup and assurance settings support keyboard, reflow and zoom', as
   await expect(page.getByRole('tab', { name: 'Callbacks', exact: true })).toHaveAttribute('aria-selected', 'true');
   for (const destination of ['clients?mode=new&guided=1', 'settings']) {
     await page.goto(`${entry}#/${destination}`);
-    if (destination === 'settings') await page.getByRole('tab', { name: 'Authentication', exact: true }).click();
+    if (destination === 'settings') {
+      await page.getByRole('button', { name: 'Edit settings', exact: true }).click();
+      await page.getByRole('tab', { name: 'Authentication', exact: true }).click();
+    }
     for (const dark of [false, true]) {
       await page.evaluate(value => document.documentElement.classList.toggle('dark', value), dark);
-      await expect(page.locator('.content')).toHaveCSS('color', dark ? 'rgb(244, 244, 245)' : 'rgb(24, 24, 27)');
+      await expect(page.locator('.content')).toHaveCSS('color', dark ? 'rgb(245, 246, 248)' : 'rgb(24, 24, 27)');
       for (const width of [320, 1440]) {
         await page.setViewportSize({ width, height: 1000 });
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -454,4 +462,110 @@ test('manual configuration checks report missing setup without sending a mutatio
   await expect(page.getByText('No active federation signing key is configured.', { exact: false })).toBeVisible();
   await expect(page.getByText('Automatic rotation has no positive period configured.', { exact: false })).toBeVisible();
   expect(writes).toBe(0);
+});
+
+test('reading views expose edit actions and no edit forms before activation', async ({ page }) => {
+  await prepare(page, path => {
+    if (path === 'session') return { body: { ...session, scopes: [...session.scopes, 'admin.tenants:read', 'admin.policies:read', 'admin.policies:write', 'admin.theme:read', 'admin.theme:write'] } };
+    if (path === 'tenants/review/settings') return { body: { ...settings, limits: { max_authorization_code_lifetime_seconds: 60, max_access_token_lifetime_seconds: 3600 }, acr_policy: { levels: [{ value: 'password', amr: ['pwd'] }] } } };
+    return undefined;
+  });
+  await page.goto(`${entry}#/settings`);
+  await expect(page.getByRole('button', { name: 'Edit settings' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Save settings' })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Edit settings' }).click();
+  await expect(page.getByRole('button', { name: 'Save settings' })).toBeVisible();
+  await page.getByRole('button', { name: 'Cancel editing' }).click();
+  await expect(page.getByRole('button', { name: 'Save settings' })).toHaveCount(0);
+});
+
+test('workspace health is reachable from the top bar and reports scoped milestones', async ({ page }) => {
+  await prepare(page, path => {
+    if (path === 'overview/users') return { body: { value: 1 } };
+    if (path === 'overview/applications') return { body: { value: 0 } };
+    if (path === 'overview/keys') return { body: { value: 1 } };
+    return undefined;
+  });
+  await page.goto(`${entry}#/overview`);
+  await expect(page.getByText('Workspace setup checklist')).toHaveCount(0);
+  await page.getByRole('link', { name: 'Workspace health' }).click();
+  await expect(page.getByRole('heading', { name: 'Workspace setup checklist' })).toBeVisible();
+  await expect(page.getByText('Needs setup')).toBeVisible();
+  expect((await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa']).analyze()).violations).toEqual([]);
+});
+
+test('linked upstream identities are read first and the linking dialog preserves a rejected draft', async ({ page }) => {
+  await prepare(page, (path, route) => {
+    if (path === 'users/alex/oidc-bindings') {
+      if (route.request().method() === 'PUT') return { status: 409, body: { error: { message: 'Binding refused for this test.' } } };
+      return { body: { bindings: [] } };
+    }
+    return undefined;
+  });
+  await page.goto(`${entry}#/users?id=alex&tab=credentials`);
+  await expect(page.getByLabel('Exact upstream subject')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Link identity', exact: true }).click();
+  await page.getByLabel('Provider ID').fill('external');
+  await page.getByLabel('Exact issuer URL').fill('https://issuer.example.test');
+  await page.getByLabel('Exact upstream subject').fill('subject-123');
+  await page.getByRole('button', { name: 'Review link' }).click();
+  await page.getByRole('button', { name: 'Confirm link' }).click();
+  await expect(page.getByRole('dialog')).toContainText('Binding refused for this test.');
+  await expect(page.getByLabel('Exact upstream subject')).toHaveValue('subject-123');
+});
+
+test('group membership is read first and its add form opens from an action', async ({ page }) => {
+  const group = { id: 'group-1', name: 'operators', display_name: 'Operators', revision: 1, created_at: '2026-09-29T12:00:00Z', updated_at: '2026-09-29T12:00:00Z' };
+  await prepare(page, path => {
+    if (path === 'session') return { body: { ...session, scopes: [...session.scopes, 'admin.groups:read', 'admin.groups:write', 'admin.memberships:read', 'admin.memberships:write'] } };
+    if (path === 'groups') return { body: { items: [group], next_cursor: null } };
+    if (path === 'groups/group-1') return { body: group };
+    if (path === 'groups/group-1/members') return { body: { items: [], next_cursor: null } };
+    return undefined;
+  });
+  await page.goto(`${entry}#/groups`);
+  await page.getByRole('button', { name: 'View Operators' }).click();
+  await expect(page.getByRole('heading', { name: 'Members' })).toBeVisible();
+  await expect(page.getByLabel('Find a user')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Add member' }).click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+  await expect(page.getByLabel('Find a user')).toBeVisible();
+});
+
+test('SAML signing and service-provider forms open from explicit actions', async ({ page }) => {
+  await prepare(page, path => {
+    if (path === 'session') return { body: { ...session, scopes: [...session.scopes, 'admin.saml:read', 'admin.saml:write'] } };
+    if (path === 'saml/idp-key') return { body: { keys: [] } };
+    if (path === 'saml/sp-trusts') return { body: { service_providers: [] } };
+    return undefined;
+  });
+  await page.goto(`${entry}#/saml`);
+  await expect(page.getByLabel('X.509 certificate (DER)')).toHaveCount(0);
+  await expect(page.getByLabel('Entity ID')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Import IdP key' }).click();
+  await expect(page.getByRole('dialog').getByLabel('X.509 certificate (DER)')).toBeVisible();
+  await page.getByRole('dialog').getByRole('button', { name: 'Cancel' }).click();
+  await page.getByRole('button', { name: 'Add service provider' }).click();
+  await expect(page.getByRole('dialog').getByLabel('Entity ID')).toBeVisible();
+});
+
+test('dark surfaces keep readable headings and controls across main destinations', async ({ page }) => {
+  test.setTimeout(90_000);
+  await prepare(page, path => {
+    if (path === 'session') return { body: { ...session, scopes: [...session.scopes, 'admin.tenants:read', 'admin.policies:read', 'admin.theme:read', 'admin.keys:read'] } };
+    if (path.startsWith('overview/')) return { body: { value: 0 } };
+    if (path === 'policies') return { body: { document: { version: 1, rules: [] }, rule_count: 0, updated_at: '2026-09-29T12:00:00Z' } };
+    if (path === 'tenants/review/settings') return { body: { ...settings, limits: { max_authorization_code_lifetime_seconds: 60, max_access_token_lifetime_seconds: 3600 }, acr_policy: { levels: [{ value: 'password', amr: ['pwd'] }] } } };
+    return undefined;
+  });
+  for (const route of ['overview', 'users', 'clients', 'settings', 'policy', 'health']) {
+    await page.goto(`${entry}#/${route}`);
+    await page.evaluate(() => document.documentElement.classList.add('dark'));
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.locator('.content')).toHaveCSS('color', 'rgb(245, 246, 248)');
+    await expect(page.locator('.screen-head h2')).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    const violations = (await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa']).analyze()).violations;
+    expect(violations).toEqual([]);
+  }
 });

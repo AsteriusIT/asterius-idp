@@ -28,6 +28,8 @@ import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { mutate, read, type Session } from './api';
 import { toast } from './components/ui/toast';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from './components/ui/dialog';
+import { useDialogDraft } from './dialog-draft';
 import { SsfReceiverSubjects } from './ssf-receiver';
 import { SsfUpstreamPeers } from './ssf-upstream';
 import {
@@ -155,7 +157,7 @@ export function SharedSignals({ session }: Readonly<{ session: Session }>): JSX.
       setBusy(true);
       setNotice(null);
       setRefusal(null);
-      action().then(
+      return action().then(
         () => {
           setNotice(said);
           // The toast announces, the `Message` above records (`ast-f9j5` (3)):
@@ -166,19 +168,21 @@ export function SharedSignals({ session }: Readonly<{ session: Session }>): JSX.
           toast.success(announced, said);
           setBusy(false);
           refresh();
+          return true;
         },
         (error: unknown) => {
           const message = error instanceof Error ? error.message : 'the change was refused';
           setRefusal(message);
           toast.error('Nothing changed', message);
           setBusy(false);
+          return false;
         },
       );
     },
     [refresh],
   );
 
-  const setStatus = (stream: StreamRow, status: 'enabled' | 'paused', reason: string): void =>
+  const setStatus = (stream: StreamRow, status: 'enabled' | 'paused', reason: string): Promise<boolean> =>
     run(
       () =>
         mutate(`ssf/streams/${encodeURIComponent(stream.stream_id)}/status`, 'PUT', session, {
@@ -189,7 +193,7 @@ export function SharedSignals({ session }: Readonly<{ session: Session }>): JSX.
       status === 'paused' ? 'Stream paused' : 'Stream enabled',
     );
 
-  const verify = (stream: StreamRow, state: string): void =>
+  const verify = (stream: StreamRow, state: string): Promise<boolean> =>
     run(
       () =>
         mutate(
@@ -203,14 +207,14 @@ export function SharedSignals({ session }: Readonly<{ session: Session }>): JSX.
     );
 
   const retry = (letter: DeadLetterRow): void =>
-    run(
+    void run(
       () => mutate(`outbox/dead-letters/${letter.id}/retry`, 'POST', session),
       `Delivery ${letter.id} is back on the schedule.`,
       'Delivery retried',
     );
 
   const drop = (letter: DeadLetterRow): void =>
-    run(
+    void run(
       () => mutate(`outbox/dead-letters/${letter.id}`, 'DELETE', session),
       `Delivery ${letter.id} was dropped; the audit trail keeps its record.`,
       'Delivery dropped',
@@ -295,8 +299,8 @@ function StreamTable({
   streams: readonly StreamRow[];
   busy: boolean;
   mayWrite: boolean;
-  onStatus: (stream: StreamRow, status: 'enabled' | 'paused', reason: string) => void;
-  onVerify: (stream: StreamRow, state: string) => void;
+  onStatus: (stream: StreamRow, status: 'enabled' | 'paused', reason: string) => Promise<boolean>;
+  onVerify: (stream: StreamRow, state: string) => Promise<boolean>;
 }>): JSX.Element {
   return (
     <DataTable
@@ -416,37 +420,17 @@ function StreamControls({
 }: Readonly<{
   stream: StreamRow;
   busy: boolean;
-  onStatus: (stream: StreamRow, status: 'enabled' | 'paused', reason: string) => void;
-  onVerify: (stream: StreamRow, state: string) => void;
+  onStatus: (stream: StreamRow, status: 'enabled' | 'paused', reason: string) => Promise<boolean>;
+  onVerify: (stream: StreamRow, state: string) => Promise<boolean>;
 }>): JSX.Element {
   const [reason, setReason] = useState('');
   const [state, setState] = useState('');
+  const [action, setAction] = useState<'pause' | 'verify' | null>(null);
+  const draft = useDialogDraft(action !== null && (reason !== '' || state !== ''), busy, () => { setAction(null); setReason(''); setState(''); });
   const id = stream.stream_id;
   let statusControl: JSX.Element | null = null;
   if (stream.status === 'enabled') {
-    statusControl = (
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          onStatus(stream, 'paused', reason);
-        }}
-      >
-        <label htmlFor={`reason-${id}`} className="visually-hidden">
-          Reason for pausing {id}
-        </label>{' '}
-        <input
-          id={`reason-${id}`}
-          type="text"
-          value={reason}
-          placeholder="reason (optional)"
-          maxLength={256}
-          onChange={(event) => setReason(event.target.value)}
-        />{' '}
-        <Button type="submit" small disabled={busy}>
-          Pause
-        </Button>
-      </form>
-    );
+    statusControl = <Button small disabled={busy} onClick={() => setAction('pause')}>Pause</Button>;
   } else if (stream.status === 'paused') {
     statusControl = (
       <Button small disabled={busy} onClick={() => onStatus(stream, 'enabled', '')}>
@@ -457,27 +441,18 @@ function StreamControls({
   return (
     <>
       {statusControl}
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          onVerify(stream, state);
-        }}
-      >
-        <label htmlFor={`state-${id}`} className="visually-hidden">
-          Verification state for {id}
-        </label>
-        <input
-          id={`state-${id}`}
-          type="text"
-          value={state}
-          placeholder="state (optional)"
-          maxLength={256}
-          onChange={(event) => setState(event.target.value)}
-        />{' '}
-        <Button type="submit" small disabled={busy}>
-          Verify
-        </Button>
-      </form>
+      <Button small disabled={busy} onClick={() => setAction('verify')}>Verify</Button>
+      <Dialog open={action !== null} onOpenChange={open => { if (!open) draft.requestClose(); }}><DialogContent>{draft.confirmation}
+        <DialogHeader><DialogTitle>{action === 'pause' ? 'Pause stream' : 'Verify stream'}</DialogTitle><DialogDescription>Receiver stream {id}</DialogDescription></DialogHeader>
+        {action === 'pause' ? <form onSubmit={event => { event.preventDefault(); void onStatus(stream, 'paused', reason).then(ok => { if (ok) { setAction(null); setReason(''); } }); }}>
+          <label htmlFor={`reason-${id}`}>Reason for pausing (optional)</label>
+          <input id={`reason-${id}`} type="text" value={reason} maxLength={256} onChange={event => setReason(event.target.value)} />
+          <Actions end><Button type="button" onClick={draft.requestClose}>Cancel</Button><Button type="submit" variant="primary" disabled={busy}>Pause stream</Button></Actions>
+        </form> : <form onSubmit={event => { event.preventDefault(); void onVerify(stream, state).then(ok => { if (ok) { setAction(null); setState(''); } }); }}>
+          <label htmlFor={`state-${id}`}>Verification state (optional)</label>
+          <input id={`state-${id}`} type="text" value={state} maxLength={256} onChange={event => setState(event.target.value)} />
+          <Actions end><Button type="button" onClick={draft.requestClose}>Cancel</Button><Button type="submit" variant="primary" disabled={busy}>Send verification</Button></Actions>
+        </form>}</DialogContent></Dialog>
     </>
   );
 }

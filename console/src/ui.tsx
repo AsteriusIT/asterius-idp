@@ -34,7 +34,7 @@ import { UnsavedNotice } from './navigation-guard';
  */
 import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import type { JSX, ReactNode } from 'react';
-import { ArrowDownIcon, ArrowUpIcon, ChevronsUpDownIcon, SearchIcon } from 'lucide-react';
+import { ArrowDownIcon, ArrowUpIcon, ChevronsUpDownIcon, ListFilterIcon, SearchIcon } from 'lucide-react';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -167,7 +167,7 @@ export function FilterPanel({ children }: Readonly<{ children: ReactNode }>): JS
   return (
     <details className="filter-panel" open>
       <summary>
-        <span>Filters</span>
+        <span className="filter-trigger-label"><ListFilterIcon aria-hidden="true" /> Filters</span>
         <span className="muted">Show or hide</span>
       </summary>
       <div className="filter-panel-body">{children}</div>

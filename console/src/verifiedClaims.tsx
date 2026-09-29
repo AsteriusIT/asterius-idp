@@ -1,3 +1,5 @@
+import { useDialogDraft } from './dialog-draft';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from './components/ui/dialog';
 import { useCallback, useEffect, useState } from 'react';
 import type { FormEvent, JSX } from 'react';
 import { mutate, read, type Session } from './api';
@@ -42,6 +44,8 @@ export function VerifiedClaims({ session, userId }: Readonly<{ session: Session;
   const [claimsText, setClaimsText] = useState('');
   const [process, setProcess] = useState('');
   const [evidenceText, setEvidenceText] = useState('[]');
+  const [creating, setCreating] = useState(false);
+  const creationDraft = useDialogDraft(creating && (claimsText !== '' || process !== '' || evidenceText !== '[]'), busy, () => { setCreating(false); setClaimsText(''); setProcess(''); setEvidenceText('[]'); });
 
   const refresh = useCallback(() => {
     setLoad({ kind: 'loading' });
@@ -89,6 +93,8 @@ export function VerifiedClaims({ session, userId }: Readonly<{ session: Session;
       () => {
         setBusy(false);
         setNotice('Verified claims bundle added.');
+        setCreating(false);
+        setClaimsText(''); setProcess(''); setEvidenceText('[]');
         refresh();
       },
       (error: unknown) => {
@@ -118,7 +124,7 @@ export function VerifiedClaims({ session, userId }: Readonly<{ session: Session;
   };
 
   return (
-    <Panel title="Verified identity claims" description="Identity assurance records with their verification source and time. These are separate from ordinary account claims.">
+    <Panel title="Verified identity claims" description="Identity assurance records with their verification source and time. These are separate from ordinary account claims." actions={mayWrite ? <Button onClick={() => setCreating(true)}>Add verified claims</Button> : undefined}>
       {notice !== null && <Message tone="success">{notice}</Message>}
       {refusal !== null && <Message tone="error">{refusal}</Message>}
       {load.kind === 'loading' && <Skeleton rows={3} label="Reading verified claims." />}
@@ -138,6 +144,7 @@ export function VerifiedClaims({ session, userId }: Readonly<{ session: Session;
           {mayWrite && <Actions><Button variant="danger" disabled={busy} onClick={() => setRevokeId(item.bundle_id)}>Revoke bundle</Button></Actions>}
         </section>
       ))}
+      <Dialog open={creating} onOpenChange={open => { if (!open) creationDraft.requestClose(); }}><DialogContent className="max-h-[calc(100vh-2rem)] overflow-y-auto"><DialogHeader><DialogTitle>Add verified claims</DialogTitle><DialogDescription>Record only attributes you verified.</DialogDescription></DialogHeader>{creationDraft.confirmation}
       {mayWrite && (
         <form onSubmit={create} className="flex flex-col gap-3">
           <h4>Add verified claims</h4>
@@ -154,9 +161,9 @@ export function VerifiedClaims({ session, userId }: Readonly<{ session: Session;
           <Field label="Evidence JSON" hint="Optional array of typed evidence objects.">
             {(props) => <textarea {...props} rows={3} value={evidenceText} onChange={(event) => setEvidenceText(event.target.value)} />}
           </Field>
-          <Actions><Button type="submit" variant="primary" disabled={busy}>Add verified bundle</Button></Actions>
+          <Actions><Button onClick={creationDraft.requestClose} disabled={busy}>Cancel</Button><Button type="submit" variant="primary" disabled={busy}>Add verified bundle</Button></Actions>
         </form>
-      )}
+      )}</DialogContent></Dialog>
       {revokeId !== null && <ConfirmDialog title="Revoke verified claims?" body="This bundle will no longer be available for identity assurance responses." confirmLabel="Revoke bundle" busy={busy} onConfirm={revoke} onCancel={() => setRevokeId(null)} />}
     </Panel>
   );

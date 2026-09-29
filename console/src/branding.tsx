@@ -1,3 +1,4 @@
+import { FormSelect } from './components/ui/select';
 import { useUnsavedChanges } from './navigation-guard';
 /** Tenant branding editor and CSP-safe, console-isolated local preview. */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -51,6 +52,7 @@ export function Branding({ session }: Readonly<{ session: Session }>): JSX.Eleme
   const [refusal, setRefusal] = useState<string | null>(null);
   const [serverErrors, setServerErrors] = useState<BrandingErrors>({});
   const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [logoFile, setLogoFile] = useState<File | null>(null);
   const [logoPreview, setLogoPreview] = useState<string | null>(null);
@@ -124,6 +126,7 @@ export function Branding({ session }: Readonly<{ session: Session }>): JSX.Eleme
         setLoad({ kind: 'ready', theme: saved, schema: load.schema });
         setDraft(draftOf(saved));
         setNotice('Saved. The preview now shows the effective server model.');
+        setEditing(false);
         toast.success('Branding saved');
         setBusy(false);
       },
@@ -223,7 +226,10 @@ export function Branding({ session }: Readonly<{ session: Session }>): JSX.Eleme
       {dirty && <Message tone="info">You have unsaved changes.</Message>}
       {notice !== null && <Message tone="success">{notice}</Message>}
       {refusal !== null && <Message tone="error">{refusal}</Message>}
-      <div className="branding-layout">
+      {!editing && <Panel title="Saved sign-in appearance" description="Open a production preview or edit the saved theme." actions={canWrite ? <Button variant="primary" onClick={() => setEditing(true)}>Edit branding</Button> : undefined}>
+        <dl className="stats"><div><dt>Product name</dt><dd>{draft.productName || session.workspace}</dd></div><div><dt>Font</dt><dd>{FONT_LABELS[draft.font] ?? draft.font}</dd></div></dl><div className="actions"><a className="button" href="api/v1/theme/preview" target="_blank" rel="noreferrer">Preview sign-in</a><a className="button" href="api/v1/theme/preview?view=step-up" target="_blank" rel="noreferrer">Preview step-up</a></div>
+      </Panel>}
+      {editing && <div className="branding-layout">
         <form className="branding-editor" noValidate onSubmit={(event) => { event.preventDefault(); save(); }}>
           <Panel title="Identity" description="The name and mark people see before they sign in.">
             <Field label="Product name" hint="Leave blank to use the tenant display name." error={errors.productName ?? null}>
@@ -242,7 +248,7 @@ export function Branding({ session }: Readonly<{ session: Session }>): JSX.Eleme
             </div>
           </Panel>
           <Panel title="Layout" description="Use only fonts shipped by this server.">
-            <Field label="Font" error={errors.font ?? null}>{(props) => <select {...props} value={draft.font} disabled={!canWrite || busy} onChange={(event) => change('font', event.target.value)}>{fontOptions.map((font) => <option key={font} value={font}>{FONT_LABELS[font] ?? font}</option>)}</select>}</Field>
+            <Field label="Font" error={errors.font ?? null}>{(props) => <FormSelect {...props} value={draft.font} disabled={!canWrite || busy} onValueChange={value => change('font', value)} options={fontOptions.map(font => ({ value: font, label: FONT_LABELS[font] ?? font }))} />}</Field>
             <div className="branding-scale">
               <Field label="Corner radius (px)" error={errors.radius ?? null}>{(props) => <input {...props} type="number" min={0} max={24} value={draft.radius} disabled={!canWrite || busy} onChange={(event) => change('radius', event.target.value)} />}</Field>
               <Field label="Spacing (px)" error={errors.spacing ?? null}>{(props) => <input {...props} type="number" min={4} max={16} value={draft.spacing} disabled={!canWrite || busy} onChange={(event) => change('spacing', event.target.value)} />}</Field>
@@ -278,7 +284,7 @@ export function Branding({ session }: Readonly<{ session: Session }>): JSX.Eleme
           <p className="hint">The links open the production template using the saved theme, with sign-in controls disabled. Save your draft to update them.</p>
           <p className="hint">This preview is rendered locally. It makes no request and does not restyle the console.</p>
         </aside>
-      </div>
+      </div>}
       {resetting && <ConfirmDialog title="Reset tenant branding?" body="The shipped palette, type, spacing and mark will replace the saved branding." confirmLabel="Reset branding" busy={busy} onConfirm={reset} onCancel={() => setResetting(false)} />}
     </Screen>
   );
