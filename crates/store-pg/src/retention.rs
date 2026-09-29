@@ -867,6 +867,10 @@ pub const POLICY: &[Retention] = &[
         },
     },
     Retention {
+        table: "tenant_policy_revisions",
+        rule: Rule::Kept("configuration history bounded to the last 100 versions per tenant by its publication trigger; removed with the tenant"),
+    },
+    Retention {
         table: "tenant_policies",
         rule: Rule::Kept(
             "one row per tenant, replaced rather than accumulated; a tenant's \

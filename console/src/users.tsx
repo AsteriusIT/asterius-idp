@@ -1,4 +1,7 @@
+import { useViewState, useListScroll } from './view-memory';
 import { useRouteParameters, setRouteParameters } from './route-state';
+import { UserAccessSummary } from './user-access-summary';
+import { useDialogDraft } from './dialog-draft';
 import { useUnsavedChanges } from './navigation-guard';
 /**
  * The account screen (`ast-f7m.6`).
@@ -36,7 +39,7 @@ import { useUnsavedChanges } from './navigation-guard';
  * session does not ask: it is the reversible one, and the person signs in
  * again.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { JSX } from 'react';
 import { mutate, read, type Session } from './api';
 import { UserAppRoles, mayRead as mayReadAppRoles } from './appRoles';
@@ -351,13 +354,18 @@ function DirectoryScreen({
   onOpen: (id: string) => void;
 }>): JSX.Element {
   const [load, setLoad] = useState<Load<Directory>>({ kind: 'loading' });
-  const [term, setTerm] = useState('');
-  const [cursor, setCursor] = useState<string | null>(null);
+  const listRequest = useRef(0);
+  useEffect(() => () => { listRequest.current++; }, []);
+  const [term, setTerm] = useViewState('users:term', '');
+  const [cursor, setCursor] = useViewState<string | null>('users:cursor', null);
+  const [sort, setSort] = useViewState('users:sort', 'username');
+  useListScroll(`users:${term}:${sort}:${cursor}`, load.kind === 'ready');
 
   const refresh = useCallback(
     (search: string, from: string | null) => {
+      const request = ++listRequest.current;
       setLoad({ kind: 'loading' });
-      const query = new URLSearchParams();
+      const query = new URLSearchParams({ sort });
       if (search !== '') {
         query.set('q', search);
       }
@@ -366,12 +374,13 @@ function DirectoryScreen({
       }
       const suffix = query.toString();
       read(suffix === '' ? 'users' : `users?${suffix}`).then(
-        (value) => setLoad({ kind: 'ready', value: value as Directory }),
-        (error: unknown) =>
-          setLoad({ kind: 'failed', message: failure(error, 'the accounts could not be read') }),
+        (value) => { if (request === listRequest.current) setLoad({ kind: 'ready', value: value as Directory }); },
+        (error: unknown) => {
+          if (request === listRequest.current) setLoad({ kind: 'failed', message: failure(error, 'the accounts could not be read') });
+        },
       );
     },
-    [],
+    [sort],
   );
 
   useEffect(() => refresh(term, cursor), [refresh, term, cursor]);
@@ -389,7 +398,8 @@ function DirectoryScreen({
         title="Directory"
         description="Search by username or email. The list is one page at a time, in the order the server returns."
       >
-        <Search
+        <Field label="Server order">{props => <select {...props} value={sort} onChange={event => { setCursor(null); setSort(event.target.value); }}><option value="username">Username A–Z</option><option value="-username">Username Z–A</option></select>}</Field>
+        <Search initial={term}
           onSearch={(value) => {
             // A new search starts at the first page: keeping a cursor minted for
             // the previous term would resume in the middle of a different list.
@@ -422,8 +432,8 @@ function DirectoryScreen({
   );
 }
 
-function Search({ onSearch }: Readonly<{ onSearch: (term: string) => void }>): JSX.Element {
-  const [typed, setTyped] = useState('');
+function Search({ initial, onSearch }: Readonly<{ initial: string; onSearch: (term: string) => void }>): JSX.Element {
+  const [typed, setTyped] = useState(initial);
   return (
     <form
       className="toolbar"
@@ -763,6 +773,7 @@ function Account({
           {mayReadMemberships(session) && <TabsTrigger value="groups">Groups</TabsTrigger>}
         </TabsList>
         <TabsContent value="details">
+      <UserAccessSummary userId={user.user_id} grants={grants.length} session={session} />
       <Panel
         id="account-details"
         className="flat-section account-details-section"
@@ -1036,6 +1047,7 @@ function RoleEditor({
   const [chosen, setChosen] = useState<readonly string[]>(held.roles);
   const [saving, setSaving] = useState(false);
   const mayWrite = session.scopes.includes('admin.roles:write') && !isSelf;
+  const roleDraft = useDialogDraft(editing && JSON.stringify([...chosen].sort()) !== JSON.stringify([...held.roles].sort()), busy || saving, () => setEditing(false));
 
   // The offered set is what the caller may grant, plus whatever this account
   // already holds: a role the caller cannot grant is still shown, ticked and
@@ -1073,8 +1085,9 @@ function RoleEditor({
         <thead><tr><th>Role name</th><th>Assignment</th></tr></thead>
         <tbody>{held.roles.length === 0 ? <tr><td colSpan={2} className="table-empty">No administrative roles assigned.</td></tr> : held.roles.map((role) => <tr key={role}><td>{role}</td><td>Direct</td></tr>)}</tbody>
       </table></div>
-      <Dialog open={editing} onOpenChange={setEditing}>
+      <Dialog open={editing} onOpenChange={open => { if (!open) roleDraft.requestClose(); }}>
         <DialogContent>
+          {roleDraft.confirmation}
           <DialogHeader><DialogTitle>Manage administrative roles</DialogTitle><DialogDescription>Select the roles this account should hold.</DialogDescription></DialogHeader>
       <ul className="switches">
         {offered.map((role) => (

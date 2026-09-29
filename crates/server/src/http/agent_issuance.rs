@@ -437,6 +437,13 @@ impl InvalidatingPolicies {
 
 #[async_trait::async_trait]
 impl asterius_domain::ports::PolicyStore for InvalidatingPolicies {
+    async fn history(
+        &self,
+        tenant: &TenantId,
+    ) -> Result<Vec<asterius_domain::policy::PolicyRevision>, DomainError> {
+        self.inner.history(tenant).await
+    }
+
     async fn load(
         &self,
         tenant: &TenantId,

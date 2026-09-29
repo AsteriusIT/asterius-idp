@@ -723,6 +723,27 @@ impl PgUserRepository {
     /// # Errors
     ///
     /// As [`Self::find`].
+    pub async fn search_ordered(
+        &self,
+        term: &str,
+        after: Option<&str>,
+        limit: i64,
+        descending: bool,
+    ) -> Result<Vec<User>, DomainError> {
+        if !descending {
+            return self.search(term, after, limit).await;
+        }
+        let pattern = format!("%{term}%");
+        sqlx::query_as::<_, Row>(
+            "select user_id, username, email, email_verified, status, claims, created_at, updated_at
+             from users where tenant_id = $1
+             and ($2 = '' or username ilike $3 or email ilike $3)
+             and ($4::text is null or username < $4) order by username desc limit $5"
+        ).bind(self.tenant.as_str()).bind(term).bind(pattern).bind(after).bind(limit)
+            .fetch_all(&self.pool).await.map_err(to_domain_error)?.into_iter()
+            .map(|row| row.into_entity(&self.tenant)).collect()
+    }
+
     pub async fn search(
         &self,
         term: &str,

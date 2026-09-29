@@ -194,6 +194,10 @@ pub fn validate_https_url(raw: &str) -> Result<(), DomainError> {
 
 #[async_trait::async_trait]
 pub trait ProviderAdministration: Send + Sync {
+    async fn check(&self, _tenant: &TenantId, _id: &str) -> Result<serde_json::Value, DomainError> {
+        Err(DomainError::NotFound)
+    }
+
     async fn list_bindings(
         &self,
         _tenant: &TenantId,

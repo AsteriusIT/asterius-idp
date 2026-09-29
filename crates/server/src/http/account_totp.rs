@@ -392,6 +392,7 @@ fn render(
             csrf: &csrf,
             message,
             active: matches!(status, TotpStatus::Active),
+            login_enabled: context.account.acr.supports_totp(),
             pending: matches!(status, TotpStatus::Pending),
             provisioning,
             qr: provisioning.and_then(|(_, uri)| asterius_web::qr::SetupQr::new(uri)),

@@ -1,3 +1,5 @@
+import { AuthorizationTypePicker } from './authorization-type-picker';
+import { useViewState, useListScroll } from './view-memory';
 import { CopyValue } from './components/copy-value';
 import { useRouteParameters, setRouteParameters, replaceSavedRoute } from './route-state';
 import { useUnsavedChanges } from './navigation-guard';
@@ -243,19 +245,25 @@ type Editing =
 
 export function Clients({ session }: Readonly<{ session: Session }>): JSX.Element {
   const [load, setLoad] = useState<Load>({ kind: 'loading' });
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = useViewState('clients:query', '');
+  const [appliedQuery, setAppliedQuery] = useViewState('clients:applied', '');
+  const [sort, setSort] = useViewState('clients:sort', 'id');
+  const [cursor, setCursor] = useViewState<string | null>('clients:cursor', null);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
   const parameters = useRouteParameters();
   const wantedId = parameters.get('id');
   const wantedMode = parameters.get('mode');
-  const wantedTab = parameters.get('tab') ?? 'settings';
-  const tab = ['settings', 'callbacks', 'credentials', 'grants', 'resources', 'tokens', 'configuration'].includes(wantedTab) ? wantedTab : 'settings';
+  const { tab, guided } = clientEditorRoute(parameters);
   const setTab = useCallback((value: string) => setRouteParameters('clients', { tab: value }), []);
+  useListScroll(`clients:${appliedQuery}:${sort}:${cursor}`, wantedId === null && wantedMode !== 'new' && load.kind === 'ready');
   const [editing, setEditing] = useState<Editing>({ kind: 'none' });
   const [draft, setDraft] = useState<Draft | null>(null);
   const [gate, setGate] = useState<RegistrationGate | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const openedClient = useRef<string | null>(null);
   const requestNumber = useRef(0);
+  const listRequest = useRef(0);
+  useEffect(() => () => { listRequest.current++; }, []);
   useEffect(() => () => { requestNumber.current++; }, []);
   const [secretCopied, setSecretCopied] = useState(false);
   const [issuedSecret, setIssuedSecret] = useState<string | null>(null);
@@ -268,7 +276,7 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
   const [health, setHealth] = useState<HealthReport | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
   const [healthBusy, setHealthBusy] = useState(false);
-  const leave = useUnsavedChanges(draft !== null && (JSON.stringify(draft) !== JSON.stringify(editing.kind === 'existing' ? draftOf(editing.document) : emptyDraft()) || (editing.kind === 'existing' && JSON.stringify(selectedResources) !== JSON.stringify(editing.document.resources)) || (issuedSecret !== null && !secretCopied)));
+  const leave = useUnsavedChanges(hasUnsavedClient(draft, editing, selectedResources, issuedSecret, secretCopied));
   const canWrite = session.scopes.includes('admin.clients:write');
   const canReadResources = session.scopes.includes('admin.resource_servers:read');
   useEffect(() => {
@@ -282,20 +290,26 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
 
   const refresh = useCallback(
     (term: string) => {
+      const request = ++listRequest.current;
       setLoad({ kind: 'loading' });
-      read(listPath(term)).then(
-        (document) => setLoad({ kind: 'ready', rows: (document as Page).items }),
-        (error: unknown) =>
+      const params = new URLSearchParams({ sort });
+      if (term.trim()) params.set('q', term.trim());
+      if (cursor) params.set('cursor', cursor);
+      read(`clients?${params}`).then(
+        (document) => { if (request !== listRequest.current) return; setLoad({ kind: 'ready', rows: (document as Page).items }); setNextCursor((document as Page).next_cursor); },
+        (error: unknown) => {
+          if (request !== listRequest.current) return;
           setLoad({
             kind: 'failed',
             message: error instanceof Error ? error.message : 'the clients could not be read',
-          }),
+          });
+        },
       );
     },
-    [],
+    [sort, cursor],
   );
 
-  useEffect(() => refresh(''), [refresh]);
+  useEffect(() => refresh(appliedQuery), [refresh, appliedQuery]);
 
   const loadResourceServers = useCallback(() => {
     if (!canReadResources) {
@@ -512,9 +526,7 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
       ? editing.document.client_name
       : 'Register an application';
     const profile = profilePresentation(draft.compliance_profile);
-    const discoveryUrl = discovery === null
-      ? null
-      : `${discovery.issuer.replace(/\/$/, '')}/.well-known/openid-configuration`;
+    const discoveryUrl = issuerDiscoveryUrl(discovery);
     return (
       <Screen
         title={title}
@@ -527,50 +539,21 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
         {editing.kind === 'existing' && <FlowOrigin session={session} kind="application" resource={editing.document.client_id} />}
         {notice !== null && <Message tone="success">{notice}</Message>}
         {refusal !== null && <Message tone="error">{refusal}</Message>}
-        {editing.kind === 'existing' && discovery !== null && discoveryUrl !== null && <Panel
-          className="application-connection-card"
-          title="Connect to this application"
-          description="Use these values in the application’s authentication library or deployment configuration."
-          actions={<Badge tone={editing.document.status === 'active' ? 'ok' : 'bad'}>{editing.document.status}</Badge>}
-        >
-          <dl className="application-connection-grid">
-            <div><dt>Client ID</dt><dd><code>{editing.document.client_id}</code></dd></div>
-            <div><dt>Authentication</dt><dd><code>{draft.token_endpoint_auth_method}</code></dd></div>
-            <div className="application-connection-wide"><dt>Issuer</dt><dd><code>{discovery.issuer}</code></dd></div>
-            <div className="application-connection-wide"><dt>Discovery document</dt><dd><code>{discoveryUrl}</code></dd></div>
-          </dl>
-          {draft.token_endpoint_auth_method === 'private_key_jwt' && <p className="muted">Use the issuer as the assertion audience, the client ID as <code>iss</code> and <code>sub</code>, and a fresh <code>jti</code> for every request.</p>}
-          {!profile.fapiBadge && <Message tone="info">This application is a non-FAPI compatibility exception. Review its authentication and sender constraints before production use.</Message>}
-          <div className="application-health">
-            <Button disabled={healthBusy || busy} onClick={() => checkHealth(editing.document.client_id)}>{healthBusy ? 'Checking…' : 'Run integration check'}</Button>
-            <p className="muted">Read-only checks. No token is issued and no private credential is requested. The registered JWKS URL is fetched through the server’s guarded outbound path.</p>
-            {healthError !== null && <Message tone="error">{healthError}</Message>}
-            {health !== null && <>
-              <ul className="application-health-checks">
-                {health.checks.map((check) => <li key={check.name}>
-                  <Badge tone={check.status === 'pass' ? 'ok' : 'bad'}>{check.status}</Badge>
-                  <span><strong>{check.name.replaceAll('_', ' ')}</strong><small>{check.message}</small></span>
-                </li>)}
-              </ul>
-              <p>Request ID <code>{health.request_id}</code> <CopyValue value={health.request_id} label="Copy ID" /> · audit event <code>{health.audit_event}</code>{session.scopes.includes('admin.audit:read') ? <> in <a href={hrefOf('audit')}>Audit</a>.</> : ' (viewing the event requires admin.audit:read).'}</p>
-            </>}
-          </div>
-        </Panel>}
+        {editing.kind === 'existing' && discovery !== null && discoveryUrl !== null && <ConnectionCard document={editing.document} draft={draft} discovery={discovery} discoveryUrl={discoveryUrl} session={session} busy={busy} healthBusy={healthBusy} healthError={healthError} health={health} checkHealth={checkHealth} />}
         {discoveryError !== null && <Message tone="error">{discoveryError}</Message>}
         {!canWrite && <Message tone="info">Read-only access. Registering and saving applications requires admin.clients:write.</Message>}
+        {guided && <Panel title="Guided application setup" description="Complete each section, then review before registering. No application is created until you choose Register client.">
+          <p>Step {Math.max(0, ['settings', 'callbacks', 'credentials', 'grants', 'tokens', 'review'].indexOf(tab)) + 1} of 6</p>
+          <Button onClick={() => setRouteParameters('clients', { guided: null })}>Switch to full editor</Button>
+        </Panel>}
         <Tabs value={tab} onValueChange={setTab}>
-          <TabsList aria-label="Application sections">
-            <TabsTrigger value="settings">General</TabsTrigger>
-            <TabsTrigger value="callbacks">Callbacks</TabsTrigger>
-            <TabsTrigger value="credentials">Credentials</TabsTrigger>
-            <TabsTrigger value="grants">Access &amp; grants</TabsTrigger>
-            {editing.kind === 'existing' && <TabsTrigger value="resources">Resources</TabsTrigger>}
-            <TabsTrigger value="tokens">Token claims</TabsTrigger>
-            {editing.kind === 'existing' && <TabsTrigger value="configuration">Configuration JSON</TabsTrigger>}
-
-          </TabsList>
+          <ApplicationTabs existing={editing.kind === 'existing'} guided={guided} />
         <div><Editor
           draft={draft}
+          session={session}
+          guided={guided}
+          tab={tab}
+          onTab={setTab}
           editing={editing}
           busy={busy}
           canWrite={canWrite}
@@ -614,9 +597,9 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
         </>
       }
       actions={
-        canWrite ? <Button variant="primary" onClick={() => setRouteParameters('clients', { mode: 'new', id: null, tab: null })}>
+        canWrite ? <Actions><Button onClick={() => setRouteParameters('clients', { mode: 'new', id: null, tab: null, guided: '1' })}>Guided setup</Button><Button variant="primary" onClick={() => setRouteParameters('clients', { mode: 'new', id: null, tab: null, guided: null })}>
           Register a client
-        </Button> : undefined
+        </Button></Actions> : undefined
       }
     >
       {notice !== null && <Message tone="success">{notice}</Message>}
@@ -628,7 +611,8 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
           role="search"
           onSubmit={(event) => {
             event.preventDefault();
-            refresh(query);
+            if (cursor === null && appliedQuery === query) refresh(query);
+            else { setCursor(null); setAppliedQuery(query); }
           }}
         >
           <Field label="Search clients">
@@ -646,7 +630,9 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
           <Button type="submit">Search</Button>
         </form>
 
-        <Inventory load={load} onOpen={(id) => setRouteParameters('clients', { id, mode: null, tab: null })} onRetry={() => refresh(query)} busy={busy} />
+        <Field label="Server order">{props => <select {...props} value={sort} onChange={event => { setCursor(null); setSort(event.target.value); }}><option value="id">Client ID A–Z</option><option value="-id">Client ID Z–A</option><option value="name">Name A–Z</option><option value="-name">Name Z–A</option></select>}</Field>
+        <Inventory load={load} onOpen={(id) => setRouteParameters('clients', { id, mode: null, tab: null })} onRetry={() => refresh(appliedQuery)} busy={busy} />
+        <Actions><Button disabled={cursor === null || load.kind === 'loading'} onClick={() => setCursor(null)}>First page</Button><Button disabled={!nextCursor || load.kind === 'loading'} onClick={() => setCursor(nextCursor)}>Next page</Button></Actions>
       </Panel>
 
       {gate !== null && <Gate gate={gate} />}
@@ -659,6 +645,77 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
       </Panel>
     </Screen>
   );
+}
+
+function issuerDiscoveryUrl(discovery: ClientDiscovery | null): string | null {
+  return discovery === null ? null : `${discovery.issuer.replace(/\/$/, '')}/.well-known/openid-configuration`;
+}
+
+function clientEditorRoute(parameters: URLSearchParams): { tab: string; guided: boolean } {
+  const wantedTab = parameters.get('tab') ?? 'settings';
+  return {
+    guided: parameters.get('mode') === 'new' && parameters.get('guided') === '1',
+    tab: ['settings', 'callbacks', 'credentials', 'grants', 'resources', 'tokens', 'configuration', 'review'].includes(wantedTab) ? wantedTab : 'settings',
+  };
+}
+
+function ApplicationTabs({ existing, guided }: Readonly<{ existing: boolean; guided: boolean }>): JSX.Element {
+  return <TabsList aria-label="Application sections">
+            <TabsTrigger value="settings">General</TabsTrigger>
+            <TabsTrigger value="callbacks">Callbacks</TabsTrigger>
+            <TabsTrigger value="credentials">Credentials</TabsTrigger>
+            <TabsTrigger value="grants">Access &amp; grants</TabsTrigger>
+            {existing && <TabsTrigger value="resources">Resources</TabsTrigger>}
+            <TabsTrigger value="tokens">Token claims</TabsTrigger>
+            {guided && <TabsTrigger value="review">Review</TabsTrigger>}
+            {existing && <TabsTrigger value="configuration">Configuration JSON</TabsTrigger>}
+
+          </TabsList>;
+}
+
+function hasUnsavedClient(draft: Draft | null, editing: Editing, resources: readonly string[], secret: string | null, copied: boolean): boolean {
+  if (draft === null) return false;
+  const original = editing.kind === 'existing' ? draftOf(editing.document) : emptyDraft();
+  return JSON.stringify(draft) !== JSON.stringify(original)
+    || (editing.kind === 'existing' && JSON.stringify(resources) !== JSON.stringify(editing.document.resources))
+    || (secret !== null && !copied);
+}
+
+function ConnectionCard({ document, draft, discovery, discoveryUrl, session, busy, healthBusy, healthError, health, checkHealth }: Readonly<{
+  document: ClientDocument; draft: Draft; discovery: ClientDiscovery; discoveryUrl: string;
+  session: Session; busy: boolean; healthBusy: boolean; healthError: string | null;
+  health: HealthReport | null; checkHealth: (id: string) => void;
+}>): JSX.Element {
+  const profile = profilePresentation(draft.compliance_profile);
+  return <Panel
+          className="application-connection-card"
+          title="Connect to this application"
+          description="Use these values in the application’s authentication library or deployment configuration."
+          actions={<Badge tone={document.status === 'active' ? 'ok' : 'bad'}>{document.status}</Badge>}
+        >
+          <dl className="application-connection-grid">
+            <div><dt>Client ID</dt><dd><code>{document.client_id}</code></dd></div>
+            <div><dt>Authentication</dt><dd><code>{draft.token_endpoint_auth_method}</code></dd></div>
+            <div className="application-connection-wide"><dt>Issuer</dt><dd><code>{discovery.issuer}</code></dd></div>
+            <div className="application-connection-wide"><dt>Discovery document</dt><dd><code>{discoveryUrl}</code></dd></div>
+          </dl>
+          {draft.token_endpoint_auth_method === 'private_key_jwt' && <p className="muted">Use the issuer as the assertion audience, the client ID as <code>iss</code> and <code>sub</code>, and a fresh <code>jti</code> for every request.</p>}
+          {!profile.fapiBadge && <Message tone="info">This application is a non-FAPI compatibility exception. Review its authentication and sender constraints before production use.</Message>}
+          <div className="application-health">
+            <Button disabled={healthBusy || busy} onClick={() => checkHealth(document.client_id)}>{healthBusy ? 'Checking…' : 'Run integration check'}</Button>
+            <p className="muted">Read-only checks. No token is issued and no private credential is requested. The registered JWKS URL is fetched through the server’s guarded outbound path.</p>
+            {healthError !== null && <Message tone="error">{healthError}</Message>}
+            {health !== null && <>
+              <ul className="application-health-checks">
+                {health.checks.map((check) => <li key={check.name}>
+                  <Badge tone={check.status === 'pass' ? 'ok' : 'bad'}>{check.status}</Badge>
+                  <span><strong>{check.name.replaceAll('_', ' ')}</strong><small>{check.message}</small></span>
+                </li>)}
+              </ul>
+              <p>Request ID <code>{health.request_id}</code> <CopyValue value={health.request_id} label="Copy ID" /> · audit event <code>{health.audit_event}</code>{session.scopes.includes('admin.audit:read') ? <> in <a href={hrefOf('audit')}>Audit</a>.</> : ' (viewing the event requires admin.audit:read).'}</p>
+            </>}
+          </div>
+        </Panel>;
 }
 
 function ResourceAllowList({
@@ -803,6 +860,10 @@ function Inventory({
 
 function Editor({
   draft,
+  session,
+  guided,
+  tab,
+  onTab,
   editing,
   busy,
   canWrite,
@@ -817,6 +878,10 @@ function Editor({
   onClose,
 }: Readonly<{
   draft: Draft;
+  session: Session;
+  guided: boolean;
+  tab: string;
+  onTab: (tab: string) => void;
   editing: Editing;
   busy: boolean;
   canWrite: boolean;
@@ -853,7 +918,7 @@ function Editor({
         noValidate
         onSubmit={(event) => {
           event.preventDefault();
-          onSubmit();
+          if (!guided || tab === 'review') onSubmit();
         }}
       >
         <TabsContent value="settings"><fieldset disabled={busy || !canWrite}>
@@ -962,7 +1027,7 @@ function Editor({
           </Field>
         </fieldset></TabsContent>
 
-        <TabsContent value="grants"><fieldset disabled={busy || !canWrite}>
+        <TabsContent value="grants"><AuthorizationTypePicker session={session} selected={draft.authorization_details_types} disabled={busy || !canWrite} onChange={values => onChange({ ...draft, authorization_details_types: values })} /><fieldset disabled={busy || !canWrite}>
           <legend id="client-grant-types">Grant types</legend>
           <ul className="grant-options">
             {grantRows(draft.grant_types).map(([name, description]) => {
@@ -1199,11 +1264,23 @@ function Editor({
           </p>
         </fieldset></TabsContent>
 
+        {guided && <TabsContent value="review"><Panel title="Review application">
+          <dl className="detail">
+            <div><dt>Name</dt><dd>{draft.client_name || 'Missing name'}</dd></div>
+            <div><dt>Security profile</dt><dd>{draft.compliance_profile}</dd></div>
+            <div><dt>Client authentication</dt><dd>{draft.token_endpoint_auth_method}</dd></div>
+            <div><dt>Callback URLs</dt><dd><pre>{draft.redirect_uris || 'No callbacks'}</pre></dd></div>
+            <div><dt>Grant types</dt><dd>{draft.grant_types.join(', ') || 'None'}</dd></div>
+          </dl>
+          <p>The server validates the full configuration when you register. Registration does not prove an application can sign in; use its integration check and perform a real sign-in afterward.</p>
+        </Panel></TabsContent>}
         <Actions>
+          {guided && tab !== 'settings' && <Button disabled={busy} onClick={() => onTab(['settings', 'callbacks', 'credentials', 'grants', 'tokens', 'review'][Math.max(0, ['settings', 'callbacks', 'credentials', 'grants', 'tokens', 'review'].indexOf(tab) - 1)]!)}>Previous step</Button>}
+          {guided && tab !== 'review' && <Button variant="primary" disabled={busy} onClick={() => onTab(['settings', 'callbacks', 'credentials', 'grants', 'tokens', 'review'][['settings', 'callbacks', 'credentials', 'grants', 'tokens', 'review'].indexOf(tab) + 1] ?? 'review')}>Continue</Button>}
           <Button type="button" disabled={busy} onClick={onClose}>
             Close
           </Button>
-          {canWrite && <Button type="submit" variant="primary" disabled={busy}>
+          {canWrite && (!guided || tab === 'review') && <Button type="submit" variant="primary" disabled={busy}>
             {editing.kind === 'existing' ? 'Save client' : 'Register client'}
           </Button>}
         </Actions>

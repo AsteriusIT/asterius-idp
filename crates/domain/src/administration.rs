@@ -211,6 +211,24 @@ pub struct ScimProfileReplacement {
 /// and forget the second.
 #[async_trait::async_trait]
 pub trait UserAdministration: Debug + Send + Sync {
+    /// A server-ordered username page. Descending support is explicit for adapters.
+    async fn search_ordered(
+        &self,
+        tenant: &TenantId,
+        term: &str,
+        after: Option<&str>,
+        limit: usize,
+        descending: bool,
+    ) -> Result<Vec<User>, DomainError> {
+        if descending {
+            return Err(DomainError::invalid(
+                "sort",
+                "descending search is unavailable",
+            ));
+        }
+        self.search(tenant, term, after, limit).await
+    }
+
     /// Provider display names linked to the requested accounts in this tenant.
     /// Only directory metadata is returned, never upstream subjects or credentials.
     async fn external_provider_names(

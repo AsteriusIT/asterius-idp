@@ -243,3 +243,215 @@ test('architecture URL rejects malformed identifiers before any flow request', a
   expect(requested.filter(path => path.startsWith('flows/') || path === 'users')).toEqual([]);
   expect(errors).toEqual([]);
 });
+
+
+test('tenant TOTP activation saves and reloads without replacing existing assurance levels', async ({ page }) => {
+  let saved = { ...settings, limits: { max_authorization_code_lifetime_seconds: 60, max_access_token_lifetime_seconds: 3600 }, acr_policy: { amr_in_id_token: true, levels: [
+    { value: 'password', amr: ['pwd'] }, { value: 'phr', amr: ['swk'] },
+  ] } };
+  let writes = 0;
+  await prepare(page, (path, route) => {
+    if (path === 'session') return { body: { ...session, scopes: [...session.scopes, 'admin.tenants:read'] } };
+    if (path !== 'tenants/review/settings') return undefined;
+    if (route.request().method() === 'PUT') { saved = { ...saved, ...route.request().postDataJSON() }; writes++; }
+    return { body: saved };
+  });
+  await page.goto(`${entry}#/settings`);
+  await page.getByRole('tab', { name: 'Authentication', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('Disabled in this configuration');
+  await page.getByRole('button', { name: 'Enable authenticator codes' }).click();
+  expect(writes).toBe(0);
+  await expect(page.getByLabel('Assurance level 2: Authenticator code')).toBeChecked();
+  await page.getByRole('button', { name: 'Save settings', exact: true }).click();
+  await expect.poll(() => writes).toBe(1);
+  expect(saved.acr_policy.levels.map(level => level.amr)).toEqual([['pwd'], ['pwd', 'otp'], ['swk']]);
+  await page.reload();
+  await page.getByRole('tab', { name: 'Authentication', exact: true }).click();
+  await expect(page.getByLabel('Assurance level 2: Authenticator code')).toBeChecked();
+  await page.getByLabel('Assurance level 2: Authenticator code').uncheck();
+  await page.getByRole('button', { name: 'Save settings', exact: true }).click();
+  await expect.poll(() => writes).toBe(2);
+  expect(saved.acr_policy.levels.some(level => level.amr.includes('otp'))).toBe(false);
+});
+
+test('an audit event link loads its record independently of the current list', async ({ page }) => {
+  const event = { id: 42, hash: 'abc', type: 'auth.login', outcome: 'success', occurred_at: '2026-09-29T12:00:00Z', detail: { source: 'fixture' } };
+  const errors = await prepare(page, path => {
+    if (path === 'session') return { body: { ...session, scopes: [...session.scopes, 'admin.audit:read'] } };
+    if (path === 'audit/events/42') return { body: event };
+    return undefined;
+  });
+  await page.goto(`${entry}#/audit?id=42`);
+  await expect(page.getByRole('heading', { name: 'Event #42', exact: true })).toBeVisible();
+  await expect(page.getByText('auth.login', { exact: true })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole('button', { name: 'Copy event link' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page).toHaveURL(`${entry}#/audit`);
+  expect(errors).toEqual([]);
+});
+
+test('policy restoration confirms publication and keeps failures in the dialog', async ({ page }) => {
+  let writes = 0;
+  const policy = { document: { version: 1, rules: [] }, rule_count: 0, updated_at: '2026-09-29T12:00:00Z' };
+  const errors = await prepare(page, (path, route) => {
+    if (path === 'session') return { body: { ...session, scopes: [...session.scopes, 'admin.policies:read', 'admin.policies:write'] } };
+    if (path === 'policies/history') return { body: { items: [{ id: 7, policy }] } };
+    if (path === 'policies') {
+      if (route.request().method() === 'PUT') { writes++; return { status: 409, body: { error: { message: 'Publication refused for this test.' } } }; }
+      return { body: policy };
+    }
+    return undefined;
+  });
+  await page.goto(`${entry}#/policy`);
+  await page.locator('summary').filter({ hasText: 'Version 7' }).click();
+  await page.getByRole('button', { name: 'Restore version 7', exact: true }).click();
+  expect(writes).toBe(0);
+  await page.getByRole('button', { name: 'Restore and publish' }).click();
+  await expect(page.getByRole('alertdialog')).toContainText('Publication refused for this test.');
+  expect(writes).toBe(1);
+  expect(errors).toEqual([]);
+});
+
+test('schema sample checks use the draft and invalidate stale results when edited', async ({ page }) => {
+  let body: unknown;
+  await prepare(page, (path, route) => {
+    if (path === 'authorization-details-types/validate-sample') {
+      body = route.request().postDataJSON();
+      return { body: { valid: false, message: 'Schema violation at /amount' } };
+    }
+    return undefined;
+  });
+  await page.goto(`${entry}#/authorization-details`);
+  await page.getByRole('button', { name: 'Register type', exact: true }).click();
+  await page.getByLabel('Sample JSON', { exact: true }).fill('{"amount":42}');
+  await page.getByRole('button', { name: 'Validate sample', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('/amount');
+  expect(body).toEqual({ schema: { type: 'object' }, sample: { amount: 42 } });
+  await page.getByLabel('Sample JSON', { exact: true }).fill('{}');
+  await expect(page.getByText('Schema violation at /amount')).toHaveCount(0);
+});
+
+test('guided application setup preserves fields and requires review before registration', async ({ page }) => {
+  let writes = 0;
+  const errors = await prepare(page, (_path, route) => {
+    if (route.request().method() === 'POST') writes++;
+    return undefined;
+  });
+  await page.goto(`${entry}#/clients`);
+  await page.getByRole('button', { name: 'Guided setup', exact: true }).click();
+  await page.getByLabel('Client name', { exact: true }).fill('Review app');
+  await expect(page.getByRole('button', { name: 'Register client', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Continue', exact: true }).click();
+  await page.getByRole('button', { name: 'Previous step', exact: true }).click();
+  await expect(page.getByLabel('Client name', { exact: true })).toHaveValue('Review app');
+  await page.getByRole('tab', { name: 'Review', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Review application', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Register client', exact: true })).toBeVisible();
+  expect(writes).toBe(0);
+  expect(errors).toEqual([]);
+});
+
+test('user server sorting and search survive an account inspection', async ({ page }) => {
+  const queries: string[] = [];
+  await prepare(page, (path, route) => {
+    if (path === 'users') queries.push(new URL(route.request().url()).search);
+    return undefined;
+  });
+  await page.goto(`${entry}#/users`);
+  await page.getByLabel('Search', { exact: true }).fill('alex');
+  await page.getByRole('button', { name: 'Search', exact: true }).click();
+  await page.getByLabel('Server order', { exact: true }).selectOption('-username');
+  await expect.poll(() => queries.some(query => query.includes('sort=-username') && query.includes('q=alex'))).toBe(true);
+  await page.getByRole('button', { name: /alex@example.test/ }).click();
+  await page.getByRole('button', { name: /Back to users/ }).click();
+  await expect(page.getByLabel('Search', { exact: true })).toHaveValue('alex');
+  await expect(page.getByLabel('Server order', { exact: true })).toHaveValue('-username');
+});
+
+test('OIDC metadata checks run automatically and allow an explicit retry', async ({ page }) => {
+  let checks = 0;
+  const errors = await prepare(page, (path, route) => {
+    if (path === 'session') return { body: { ...session, scopes: [...session.scopes, 'admin.oidc_providers:read'] } };
+    if (path === 'oidc/providers') return { body: { providers: [{ id: 'external', name: 'External provider', issuer: 'https://issuer.example.test', client_id: 'console', enabled: true, secret_configured: true, callback_url: 'https://idp.example.test/callback' }] } };
+    if (path === 'oidc/providers/check') {
+      checks++;
+      expect(route.request().postDataJSON()).toEqual({ id: 'external' });
+      return { body: { checked_at: 1700000000, checks: [{ name: 'discovery', status: 'pass', message: 'Discovery metadata is valid.' }] } };
+    }
+    return undefined;
+  });
+  await page.goto(`${entry}#/oidc-providers`);
+  await expect(page.getByText('Metadata checks pass', { exact: true })).toBeVisible();
+  expect(checks).toBe(1);
+  await page.getByRole('button', { name: 'Check now', exact: true }).click();
+  await expect.poll(() => checks).toBe(2);
+  expect(errors).toEqual([]);
+});
+
+test('guided setup and assurance settings support keyboard, reflow and zoom', async ({ page }) => {
+  const errors = await prepare(page, path => {
+    if (path === 'session') return { body: { ...session, scopes: [...session.scopes, 'admin.tenants:read'] } };
+    if (path === 'tenants/review/settings') return { body: { ...settings, limits: { max_authorization_code_lifetime_seconds: 60, max_access_token_lifetime_seconds: 3600 }, acr_policy: { levels: [{ value: 'password', amr: ['pwd'] }] } } };
+    return undefined;
+  });
+  await page.goto(`${entry}#/clients?mode=new&guided=1`);
+  await page.getByRole('tab', { name: 'General', exact: true }).focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(page.getByRole('tab', { name: 'Callbacks', exact: true })).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('tab', { name: 'Callbacks', exact: true })).toHaveAttribute('aria-selected', 'true');
+  for (const destination of ['clients?mode=new&guided=1', 'settings']) {
+    await page.goto(`${entry}#/${destination}`);
+    if (destination === 'settings') await page.getByRole('tab', { name: 'Authentication', exact: true }).click();
+    for (const dark of [false, true]) {
+      await page.evaluate(value => document.documentElement.classList.toggle('dark', value), dark);
+      await expect(page.locator('.content')).toHaveCSS('color', dark ? 'rgb(244, 244, 245)' : 'rgb(24, 24, 27)');
+      for (const width of [320, 1440]) {
+        await page.setViewportSize({ width, height: 1000 });
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+        expect((await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa']).analyze()).violations).toEqual([]);
+      }
+    }
+    // 200% document zoom complements the 320px reflow check (1280px at 400%).
+    await page.evaluate(value => { const style = document.createElement('style'); style.id = 'zoom-check'; style.nonce = value; style.textContent = 'html { zoom: 2; }'; document.head.append(style); }, nonce);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    const action = page.getByRole('button', { name: destination === 'settings' ? 'Enable authenticator codes' : 'Continue', exact: true });
+    await action.focus();
+    await expect(action).toBeFocused();
+    await action.scrollIntoViewIfNeeded();
+    await expect(action).toBeInViewport();
+    await page.evaluate(() => document.getElementById('zoom-check')?.remove());
+  }
+  expect(errors).toEqual([]);
+});
+
+test('access overview skips failed sign-ins when finding the last success', async ({ page }) => {
+  await prepare(page, (path, route) => {
+    if (path === 'session') return { body: { ...session, scopes: [...session.scopes, 'admin.audit:read'] } };
+    if (path === 'audit/events') return { body: new URL(route.request().url()).searchParams.has('cursor')
+      ? { items: [{ outcome: 'success', occurred_at: '2026-09-28T12:00:00Z' }], next_cursor: null }
+      : { items: [{ outcome: 'failure', occurred_at: '2026-09-29T12:00:00Z' }], next_cursor: 'older' } };
+    return undefined;
+  });
+  await page.goto(`${entry}#/users?id=alex`);
+  const summary = page.locator('section').filter({ has: page.getByRole('heading', { name: 'Access overview', exact: true }) }).last();
+  await expect(summary).toContainText('2026-09-28');
+  await expect(summary).not.toContainText('2026-09-29');
+});
+
+test('manual configuration checks report missing setup without sending a mutation', async ({ page }) => {
+  let writes = 0;
+  await prepare(page, (path, route) => {
+    if (route.request().method() !== 'GET') writes++;
+    if (path === 'session') return { body: { ...session, scopes: [...session.scopes, 'admin.keys:read'] } };
+    if (path === 'federation/keys') return { body: { keys: [], rotation_period_seconds: 0 } };
+    return undefined;
+  });
+  await page.goto(`${entry}#/federation`);
+  await expect(page.getByText('No active federation signing key is configured.', { exact: false })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Check configuration', exact: true }).click();
+  await expect(page.getByText('No active federation signing key is configured.', { exact: false })).toBeVisible();
+  await expect(page.getByText('Automatic rotation has no positive period configured.', { exact: false })).toBeVisible();
+  expect(writes).toBe(0);
+});

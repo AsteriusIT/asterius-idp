@@ -26,6 +26,9 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
+import { useRouteParameters, setRouteParameters } from './route-state';
+import { hrefOf } from './routes';
+import { CopyValue } from './components/copy-value';
 import { read, type Session } from './api';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from './components/ui/sheet';
 import { JsonValue } from './components/json-view';
@@ -293,6 +296,7 @@ export function AuditExplorer({ session }: Readonly<{ session: Session }>): JSX.
         </form>
       </FilterPanel>
 
+      <AuditEventDrawer />
       <Panel title="Records">
         <Trail load={load} more={more} onMore={loadMore} onRetry={() => refresh(applied)} />
       </Panel>
@@ -311,8 +315,6 @@ function Trail({
   onMore: () => void;
   onRetry: () => void;
 }>): JSX.Element {
-  const [selected, setSelected] = useState<string | null>(null);
-  const record = load.kind === 'ready' ? load.rows.find(row => String(row.id) === selected) : undefined;
   if (load.kind === 'loading') {
     return <Skeleton rows={5} label="Reading the trail." />;
   }
@@ -324,12 +326,6 @@ function Trail({
   }
   return (
     <>
-      <Sheet open={record !== undefined} onOpenChange={open => { if (!open) setSelected(null); }}>
-        <SheetContent className="overflow-y-auto">
-          <SheetHeader><SheetTitle>Event #{record?.id}</SheetTitle><SheetDescription>Read-only event details. Times use UTC.</SheetDescription></SheetHeader>
-          {record && <div className="p-6 space-y-4"><p><strong>{record.type}</strong> · {record.outcome}</p><p>{record.occurred_at}</p><Chain links={chainOf(record)} /><DetailList row={record} /></div>}
-        </SheetContent>
-      </Sheet>
       {/*
         A scrolling box has to be reachable by keyboard (WCAG 2.2 §2.1.1), and
         this one really scrolls: a record's detail is a list of opaque
@@ -389,7 +385,7 @@ function Trail({
                     <Chain links={chainOf(row)} />
                   </td>
                   <td>
-                    <Button small onClick={() => setSelected(String(row.id))}>Inspect event #{row.id}</Button>
+                    <Button small onClick={() => setRouteParameters('audit', { id: String(row.id) })}>Inspect event #{row.id}</Button>
                   </td>
                 </>
               )}
@@ -476,4 +472,36 @@ function DetailList({ row }: Readonly<{ row: AuditRow }>): JSX.Element {
       </dl>
     </details>
   );
+}
+
+
+function AuditEventDrawer() {
+  const id = useRouteParameters().get('id');
+  const [record, setRecord] = useState<AuditRow | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [retry, setRetry] = useState(0);
+  useEffect(() => {
+    let active = true;
+    setRecord(null); setError(null);
+    if (id !== null) {
+      if (!/^[1-9][0-9]{0,18}$/.test(id)) setError('The event ID is invalid.');
+      else read(`audit/events/${encodeURIComponent(id)}`).then(
+        value => { if (active) setRecord(value as AuditRow); },
+        reason => { if (active) setError(reason instanceof Error ? reason.message : 'The event could not be read.'); },
+      );
+    }
+    return () => { active = false; };
+  }, [id, retry]);
+  return <Sheet open={id !== null} onOpenChange={open => { if (!open) setRouteParameters('audit', { id: null }); }}>
+    <SheetContent className="overflow-y-auto">
+      <SheetHeader><SheetTitle>Event #{id}</SheetTitle><SheetDescription>Read-only event details. Times use UTC.</SheetDescription></SheetHeader>
+      <div className="p-6 space-y-4">
+        {error && <LoadFailure message={error} onRetry={() => setRetry(retry + 1)} />}
+        {!record && !error && <Skeleton rows={3} label="Reading event." />}
+        {record && <><p><strong>{record.type ?? 'Unreadable record'}</strong> · {record.outcome}</p><p>{record.occurred_at}</p><Chain links={chainOf(record)} /><DetailList row={record} />
+          <CopyValue value={new URL(hrefOf('audit', { id: String(record.id) }), window.location.href).href} label="Copy event link" />
+        </>}
+      </div>
+    </SheetContent>
+  </Sheet>;
 }

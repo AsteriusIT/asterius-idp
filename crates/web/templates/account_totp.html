@@ -3,6 +3,11 @@
 {% block content %}
 <h2>{{ text.authenticator_title() }}</h2>
 {% include "error_summary.html" %}
+{% if login_enabled %}
+<p class="notice">{{ text.authenticator_policy_enabled() }}</p>
+{% else %}
+<p class="notice">{{ text.authenticator_policy_disabled() }}</p>
+{% endif %}
 {% if let Some((secret, uri)) = provisioning %}
 <section class="stack">
 <h3>{{ text.authenticator_scan() }}</h3>

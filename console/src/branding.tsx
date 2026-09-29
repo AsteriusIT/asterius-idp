@@ -274,6 +274,8 @@ export function Branding({ session }: Readonly<{ session: Session }>): JSX.Eleme
               </div>
             </div>
           </div>
+          <div className="actions"><a className="button" href="api/v1/theme/preview" target="_blank" rel="noreferrer">Preview saved sign-in</a><a className="button" href="api/v1/theme/preview?view=error" target="_blank" rel="noreferrer">Preview saved error state</a><a className="button" href="api/v1/theme/preview?view=step-up" target="_blank" rel="noreferrer">Preview saved verification</a></div>
+          <p className="hint">The links open the production template using the saved theme, with sign-in controls disabled. Save your draft to update them.</p>
           <p className="hint">This preview is rendered locally. It makes no request and does not restyle the console.</p>
         </aside>
       </div>

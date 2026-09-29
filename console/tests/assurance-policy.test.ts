@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { moveAssuranceLevel, type AssuranceLevel } from '../src/assurance-policy-model.ts';
+import { enableAuthenticator, moveAssuranceLevel, type AssuranceLevel } from '../src/assurance-policy-model.ts';
 
 const levels: readonly AssuranceLevel[] = [
   { value: 'low', amr: ['pwd'] },
@@ -18,4 +18,21 @@ test('an invalid or no-op assurance move preserves the original list', () => {
   assert.equal(moveAssuranceLevel(levels, 1, 1), levels);
   assert.equal(moveAssuranceLevel(levels, -1, 1), levels);
   assert.equal(moveAssuranceLevel(levels, 1, levels.length), levels);
+});
+
+
+test('enabling TOTP preserves existing contexts and inserts below passkeys', () => {
+  const policy = { levels, amr_in_id_token: false };
+  const enabled = enableAuthenticator(policy);
+  assert.deepEqual(enabled.levels.map(level => level.amr), [['pwd'], ['pwd', 'otp'], ['swk'], ['swk', 'user']]);
+  assert.equal(enabled.amr_in_id_token, false);
+  assert.equal(policy.levels.length, 3);
+  assert.equal(enableAuthenticator(enabled), enabled);
+});
+
+test('enabling TOTP handles custom names and the server level limit', () => {
+  const policy = { amr_in_id_token: true, levels: [{ value: 'urn:asterius:acr:pwd-otp', amr: ['pwd'] }] };
+  assert.equal(enableAuthenticator(policy).levels[1]?.value, 'urn:asterius:acr:pwd-otp-2');
+  const full = { ...policy, levels: Array.from({ length: 32 }, (_, i) => ({ value: `custom-${i}`, amr: ['pwd'] })) };
+  assert.equal(enableAuthenticator(full), full);
 });

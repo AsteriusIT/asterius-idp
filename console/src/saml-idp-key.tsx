@@ -1,3 +1,4 @@
+import { ConfigurationCheck } from './configuration-check';
 /** Tenant SAML IdP signing material. The private key never enters React state. */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent, JSX } from 'react';
@@ -156,6 +157,10 @@ export function SamlIdpKey({ session }: Readonly<{ session: Session }>): JSX.Ele
   return (
     <Screen title="SAML identity provider" description={`Signing material for ${session.workspace}.`}>
       <Message tone="info">SAML browser SSO requires an active key and an explicitly trusted SP. {hasActive && <><a href="../saml/metadata">Open signed IdP metadata</a>. </>}SAML Single Logout is not offered.</Message>
+      <ConfigurationCheck paths={[KEY_PATH, SP_PATH]} evaluate={documents => [
+        { pass: (documents[0] as Inventory).keys.some(key => key.state === 'active'), message: 'An active IdP signing certificate is configured.', failureMessage: 'No active IdP signing certificate is configured.' },
+        { pass: (documents[1] as SpInventory).service_providers.length > 0, message: 'At least one trusted service provider is registered.', failureMessage: 'No trusted service provider is registered.' },
+      ]} />
       {message !== null && <Message tone={message.tone}>{message.text}</Message>}
       <Panel title="IdP signing certificates" description="Public certificate state for this tenant. Private keys are never returned by the API.">
         {load.kind === 'loading' && <Skeleton rows={3} label="Reading SAML IdP key." />}

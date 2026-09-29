@@ -241,6 +241,26 @@ fn operation_parameters(operation: &Operation) -> Vec<Value> {
         parameters.push(json!({ "$ref": "#/components/parameters/cursor" }));
         parameters.push(json!({ "$ref": "#/components/parameters/limit" }));
     }
+    if matches!(
+        operation.id(),
+        crate::USERS_LIST_ID | crate::CLIENTS_LIST_ID
+    ) {
+        let orders = if operation.id() == crate::USERS_LIST_ID {
+            json!(["username", "-username"])
+        } else {
+            json!(["id", "-id", "name", "-name"])
+        };
+        parameters.push(json!({
+            "name": "sort", "in": "query", "required": false,
+            "description": "Server order applied before pagination. Reuse the same search and order with each cursor.",
+            "schema": { "type": "string", "enum": orders },
+        }));
+        parameters.push(json!({
+            "name": "q", "in": "query", "required": false,
+            "description": "Directory search applied before pagination.",
+            "schema": { "type": "string" },
+        }));
+    }
     if is_audit_query(operation) {
         for (name, description) in crate::audit::PARAMETERS {
             parameters.push(json!({

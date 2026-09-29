@@ -2,7 +2,7 @@ import { useUnsavedChanges } from './navigation-guard';
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { PencilIcon, PlusIcon } from 'lucide-react';
-import { mutate, read, type Session } from './api';
+import { mutate, probe, read, type Session } from './api';
 
 import { draftError, parseSchema } from './authorization-details-type-model';
 import { Button, ConfirmDialog, Field, LoadFailure, Message, Panel, Screen, Skeleton } from './ui';
@@ -20,6 +20,9 @@ const EMPTY_SCHEMA = JSON.stringify({ type: 'object' }, null, 2);
 
 export function AuthorizationDetailsTypes({ session }: Readonly<{ session: Session }>): JSX.Element {
   const [load, setLoad] = useState<Load>({ kind: 'loading' });
+  const [sample, setSample] = useState('{}');
+  const [sampleResult, setSampleResult] = useState<{ valid: boolean; message?: string } | null>(null);
+  const [checking, setChecking] = useState(false);
   const [name, setName] = useState('');
   const [schema, setSchema] = useState(EMPTY_SCHEMA);
   const [template, setTemplate] = useState('');
@@ -43,6 +46,7 @@ export function AuthorizationDetailsTypes({ session }: Readonly<{ session: Sessi
   useEffect(refresh, [refresh]);
 
   const clearDraft = (): void => {
+    setSample('{}'); setSampleResult(null);
     setName('');
     setSchema(EMPTY_SCHEMA);
     setTemplate('');
@@ -68,6 +72,17 @@ export function AuthorizationDetailsTypes({ session }: Readonly<{ session: Sessi
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'The authorization details type could not be saved.');
     } finally { setBusy(false); }
+  };
+
+  const validateSample = async (): Promise<void> => {
+    setChecking(true); setSampleResult(null);
+    try {
+      const result = await probe('authorization-details-types/validate-sample', session, {
+        schema: parseSchema(schema), sample: JSON.parse(sample),
+      });
+      setSampleResult(result as { valid: boolean; message?: string });
+    } catch (reason) { setSampleResult({ valid: false, message: reason instanceof Error ? reason.message : 'Validation failed.' }); }
+    finally { setChecking(false); }
   };
 
   const withdraw = async (type: string): Promise<void> => {
@@ -113,7 +128,12 @@ export function AuthorizationDetailsTypes({ session }: Readonly<{ session: Sessi
         {error !== null && <Message tone="error">{error}</Message>}
         <Field label="Type name">{props => <input {...props} value={name} disabled={editing} onChange={event => setName(event.target.value)} placeholder="payment_initiation" />}</Field>
         <Field label="Consent template" hint="A user-facing sentence, up to 512 characters. Leave blank to mark the type undescribed.">{props => <input {...props} value={template} maxLength={512} onChange={event => setTemplate(event.target.value)} placeholder="Initiate the described payment" />}</Field>
-        <Field label="JSON Schema" hint="Supported: type, required, properties, additionalProperties, enum, maxLength, items, maxItems, title, description.">{props => <textarea {...props} rows={12} value={schema} onChange={event => setSchema(event.target.value)} spellCheck={false} />}</Field>
+        <Field label="JSON Schema" hint="Supported: type, required, properties, additionalProperties, enum, maxLength, items, maxItems, title, description.">{props => <textarea {...props} rows={12} value={schema} disabled={checking} onChange={event => { setSchema(event.target.value); setSampleResult(null); }} spellCheck={false} />}</Field>
+        <Panel title="Test a sample" description="Uses the server’s authorization schema validator. This does not save the schema, issue a token or authorize a request.">
+          <Field label="Sample JSON">{props => <textarea {...props} rows={6} value={sample} spellCheck={false} disabled={checking} onChange={event => { setSample(event.target.value); setSampleResult(null); }} />}</Field>
+          <Button disabled={checking || busy} onClick={() => void validateSample()}>{checking ? 'Checking sample…' : 'Validate sample'}</Button>
+          {sampleResult && <Message tone={sampleResult.valid ? 'success' : 'error'}>{sampleResult.valid ? 'The sample matches the schema.' : sampleResult.message ?? 'The sample does not match the schema.'}</Message>}
+        </Panel>
         <Panel title="Consent wording preview" description="This is the operator-provided wording; the actual request may also show its actions, data and locations.">
           <p>{template.trim() || 'Perform an action this server has no description for'}</p><code>{name || 'Type name'}</code>
         </Panel>

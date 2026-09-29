@@ -1,3 +1,4 @@
+import { ConfigurationCheck } from './configuration-check';
 /** Tenant Federation signing key lifecycle, backed by the admin API. */
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
@@ -103,6 +104,10 @@ export function FederationKeys({ session }: Readonly<{ session: Session }>): JSX
       title="Federation keys"
       description="Inspect this tenant’s dedicated Federation signing keys and stage a successor."
     >
+      <ConfigurationCheck paths={['federation/keys']} evaluate={documents => [
+        { pass: (documents[0] as Inventory).keys.some(key => key.state === 'active'), message: 'An active federation signing key is configured.', failureMessage: 'No active federation signing key is configured.' },
+        { pass: (documents[0] as Inventory).rotation_period_seconds > 0, message: 'A positive automatic rotation period is configured.', failureMessage: 'Automatic rotation has no positive period configured.' },
+      ]} />
       {notice !== null && <Message tone="success">{notice}</Message>}
       {refusal !== null && <Message tone="error">{refusal}</Message>}
       <Panel

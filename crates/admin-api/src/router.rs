@@ -291,6 +291,7 @@ async fn handle(
         headers: &headers,
         query: parts.uri.query().unwrap_or_default().to_owned(),
         path: parts.uri.path().to_owned(),
+        nonce: parts.extensions.get::<asterius_web::Nonce>(),
         now,
     };
 
@@ -383,6 +384,7 @@ async fn route_standard(
         crate::RESOURCE_SERVER_READ_ID => context.read_resource_server().await,
         crate::RESOURCE_SERVER_UPDATE_ID => context.update_resource_server(body).await,
         crate::RESOURCE_SERVER_WITHDRAW_ID => context.withdraw_resource_server().await,
+        crate::AUTHORIZATION_DETAILS_SAMPLE_ID => context.validate_authorization_sample(body).await,
         crate::AUTHORIZATION_DETAILS_TYPES_LIST_ID => {
             context.list_authorization_details_types().await
         }
@@ -408,6 +410,8 @@ async fn route_standard(
         crate::NOTIFICATION_STATUS_ID => context.list_notification_statuses().await,
         crate::OUTBOX_DEAD_LETTER_RETRY_ID => context.retry_dead_letter().await,
         crate::OUTBOX_DEAD_LETTER_DROP_ID => context.drop_dead_letter().await,
+        "theme.preview" => context.preview_theme().await,
+        crate::POLICY_HISTORY_ID => context.policy_history().await,
         crate::POLICY_READ_ID => context.read_policy().await,
         crate::POLICY_UPDATE_ID => context.update_policy(body).await,
         crate::POLICY_DELETE_ID => context.delete_policy().await,
@@ -428,6 +432,7 @@ async fn route_standard(
         crate::ID_JAG_SUBJECT_BIND_ID => context.bind_id_jag_subject(body).await,
         crate::ID_JAG_SUBJECT_REMOVE_ID => context.remove_id_jag_subject(body).await,
         crate::SAML_SP_LIST_ID => context.list_saml_sp_trust().await,
+        crate::OIDC_PROVIDER_CHECK_ID => context.check_oidc_provider(body).await,
         crate::OIDC_PROVIDERS_LIST_ID => context.list_oidc_providers().await,
         crate::OIDC_PROVIDERS_PUT_ID => context.put_oidc_provider(body).await,
         crate::OIDC_PROVIDERS_DELETE_ID => context.delete_oidc_provider(body).await,
@@ -440,6 +445,7 @@ async fn route_standard(
         crate::SAML_IDP_KEY_PROVISION_ID => context.provision_saml_idp_key(body).await,
         crate::SAML_IDP_KEY_ACTIVATE_ID => context.activate_saml_idp_key(body).await,
         crate::SAML_IDP_KEY_RETIRE_ID => context.retire_saml_idp_key(body).await,
+        crate::AUDIT_EVENT_READ_ID => context.read_audit_event().await,
         crate::AUDIT_EVENTS_LIST_ID => context.list_audit_events().await,
         crate::AUDIT_EVENTS_EXPORT_ID => context.export_audit_events(),
         crate::USERS_LIST_ID => context.list_users().await,
@@ -558,6 +564,7 @@ async fn route_groups(
 
 /// Everything a handler is given, once the gate has passed it.
 struct Handling<'a> {
+    nonce: Option<&'a asterius_web::Nonce>,
     state: &'a AdminState,
     tenant: &'a Tenant,
     principal: &'a Principal,
@@ -1297,6 +1304,23 @@ impl Handling<'_> {
                 "collected_at": self.now.unix_timestamp(),
             }),
         ))
+    }
+
+    async fn preview_theme(&self) -> Result<Response, AdminError> {
+        let theme = self
+            .state
+            .backend
+            .themes()
+            .theme(&self.tenant.id)
+            .await
+            .map_err(|error| AdminError::from_storage("theme.preview", &error))?;
+        let nonce = self.nonce.ok_or(AdminError::Unavailable)?;
+        crate::theme_preview::render(
+            self.tenant,
+            &theme,
+            nonce,
+            query_value(&self.query, "view").as_deref(),
+        )
     }
 
     async fn read_theme(&self) -> Result<Response, AdminError> {
@@ -2056,15 +2080,43 @@ impl Handling<'_> {
         // holds clients in the tens or hundreds, and a ranged `list_after` on
         // the port is what a deployment with more would grow. The cursor is
         // opaque so that it can grow without breaking a console.
-        let rows: Vec<serde_json::Value> = clients
+        let sort = query_value(&self.query, "sort").unwrap_or_else(|| "id".to_owned());
+        if !matches!(sort.as_str(), "id" | "-id" | "name" | "-name") {
+            return Err(AdminError::Invalid(
+                "sort must be id, -id, name or -name".to_owned(),
+            ));
+        }
+        let mut matched: Vec<_> = clients
             .iter()
             .filter(|client| clients::matches(client, &query))
-            .skip_while(|client| {
-                request
-                    .after
-                    .as_ref()
-                    .is_some_and(|cursor| client.id.as_str() <= cursor.key())
-            })
+            .collect();
+        matched.sort_by(|left, right| {
+            let order = if sort.ends_with("name") {
+                left.registration
+                    .client_name
+                    .to_lowercase()
+                    .cmp(&right.registration.client_name.to_lowercase())
+                    .then_with(|| left.id.as_str().cmp(right.id.as_str()))
+            } else {
+                left.id.as_str().cmp(right.id.as_str())
+            };
+            if sort.starts_with('-') {
+                order.reverse()
+            } else {
+                order
+            }
+        });
+        let start = match request.after.as_ref() {
+            None => 0,
+            Some(cursor) => matched
+                .iter()
+                .position(|client| client.id.as_str() == cursor.key())
+                .map(|index| index + 1)
+                .ok_or(AdminError::CursorInvalid)?,
+        };
+        let rows: Vec<serde_json::Value> = matched
+            .into_iter()
+            .skip(start)
             .take(request.limit + 1)
             .map(clients::summarise)
             .collect();
@@ -2531,6 +2583,17 @@ impl Handling<'_> {
             .ok_or(AdminError::NotFound)
     }
 
+    async fn validate_authorization_sample(
+        &self,
+        body: axum::body::Body,
+    ) -> Result<Response, AdminError> {
+        let document: authorization_details_types::SampleDocument = self.parse_body(body).await?;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &authorization_details_types::validate_sample(&document)?,
+        ))
+    }
+
     async fn list_authorization_details_types(&self) -> Result<Response, AdminError> {
         let kinds = self
             .state
@@ -2835,6 +2898,28 @@ impl Handling<'_> {
     /// A tenant that has never written one is a 200 carrying the empty
     /// document rather than a 404: the editor has to open on something, and
     /// "no policy" is a state of the tenant rather than a missing resource.
+    async fn policy_history(&self) -> Result<Response, AdminError> {
+        let versions = self
+            .state
+            .backend
+            .policies()
+            .history(&self.tenant.id)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::POLICY_HISTORY_ID, &error))?;
+        let items: Vec<_> = versions
+            .iter()
+            .map(|version| {
+                serde_json::json!({
+                    "id": version.id, "policy": policies::document(Some(&version.policy)),
+                })
+            })
+            .collect();
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({ "items": items, "retained_versions": 100 }),
+        ))
+    }
+
     async fn read_policy(&self) -> Result<Response, AdminError> {
         let stored = self
             .state
@@ -3377,6 +3462,25 @@ impl Handling<'_> {
         ))
     }
 
+    async fn check_oidc_provider(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let bytes = axum::body::to_bytes(body, oidc_providers::MAX_BODY_BYTES)
+            .await
+            .map_err(|_| AdminError::Invalid("the request body is too large".to_owned()))?;
+        let id = oidc_providers::parse_id(&bytes)?;
+        let report = self
+            .state
+            .backend
+            .oidc_providers()
+            .ok_or(AdminError::NotFound)?
+            .check(&self.tenant.id, &id)
+            .await
+            .map_err(|error| match error {
+                DomainError::NotFound => AdminError::NotFound,
+                other => AdminError::from_storage(crate::OIDC_PROVIDER_CHECK_ID, &other),
+            })?;
+        Ok(json_no_store(StatusCode::OK, &report))
+    }
+
     async fn list_oidc_providers(&self) -> Result<Response, AdminError> {
         let administration = self
             .state
@@ -3798,6 +3902,32 @@ impl Handling<'_> {
     /// The filter is parsed before the cursor is read, so a caller with a
     /// bad filter and a bad cursor is told about the filter: the cursor was
     /// minted for a different query and would be wrong anyway.
+    async fn read_audit_event(&self) -> Result<Response, AdminError> {
+        let id = self
+            .last_decoded_path_segment()?
+            .parse::<i64>()
+            .ok()
+            .filter(|id| *id > 0 && *id < i64::MAX)
+            .ok_or_else(|| AdminError::Invalid("event id must be a positive integer".to_owned()))?;
+        let entries = self
+            .state
+            .backend
+            .audit_trail()
+            .query(
+                &self.tenant.id,
+                &asterius_domain::audit::query::AuditFilter::default(),
+                Some(id + 1),
+                1,
+            )
+            .await
+            .map_err(|error| AdminError::from_storage(crate::AUDIT_EVENT_READ_ID, &error))?;
+        let entry = entries
+            .first()
+            .filter(|entry| entry.id == id)
+            .ok_or(AdminError::NotFound)?;
+        Ok(json_no_store(StatusCode::OK, &audit::render(entry)))
+    }
+
     async fn list_audit_events(&self) -> Result<Response, AdminError> {
         let filter = audit::parse_filter(&self.query)?;
         let request = PageRequest::parse(
@@ -4075,17 +4205,27 @@ impl Handling<'_> {
         // holds prose, and a browser sends prose percent-encoded.
         let term = clients::search_term(&query_value(&self.query, "q").unwrap_or_default());
 
+        let descending = match query_value(&self.query, "sort").as_deref() {
+            None | Some("username") => false,
+            Some("-username") => true,
+            _ => {
+                return Err(AdminError::Invalid(
+                    "sort must be username or -username".to_owned(),
+                ));
+            }
+        };
         let rows = self
             .state
             .backend
             .users()
-            .search(
+            .search_ordered(
                 &self.tenant.id,
                 &term,
                 request.after.as_ref().map(Cursor::key),
                 // One more than asked for, which is how the page knows whether
                 // to mint a cursor without a second `COUNT`.
                 request.limit + 1,
+                descending,
             )
             .await
             .map_err(|error| AdminError::from_storage(crate::USERS_LIST_ID, &error))?;
@@ -8448,6 +8588,25 @@ mod tests {
 
     #[async_trait::async_trait]
     impl asterius_domain::ports::PolicyStore for Handle {
+        async fn history(
+            &self,
+            tenant: &TenantId,
+        ) -> Result<Vec<asterius_domain::policy::PolicyRevision>, DomainError> {
+            Ok(self
+                .0
+                .policies
+                .lock()
+                .expect("an uncontended lock")
+                .get(tenant.as_str())
+                .map(|policy| {
+                    vec![asterius_domain::policy::PolicyRevision {
+                        id: 1,
+                        policy: policy.clone(),
+                    }]
+                })
+                .unwrap_or_default())
+        }
+
         async fn load(
             &self,
             tenant: &TenantId,
@@ -11297,6 +11456,7 @@ mod tests {
             )));
             self.api()
                 .into_router()
+                .layer(axum::middleware::from_fn(asterius_web::document::layer))
                 .oneshot(request)
                 .await
                 .expect("the router answers")
@@ -11310,6 +11470,7 @@ mod tests {
         let path = operation
             .full_path()
             .replace("{tenant_id}", "acme")
+            .replace("{id}", "1")
             .replace("{kid}", SEEDED_KID)
             .replace("{client_id}", SEEDED_CLIENT_ID)
             .replace("{flow_id}", SEEDED_INVITATION_ID)
@@ -11417,6 +11578,10 @@ mod tests {
                 "default_token_lifetime_seconds": 300,
                 "introspection_clients": [SEEDED_CLIENT_ID]
             }),
+            crate::AUTHORIZATION_DETAILS_SAMPLE_ID => {
+                serde_json::json!({"schema": {"type": "object"}, "sample": {}})
+            }
+            crate::OIDC_PROVIDER_CHECK_ID => serde_json::json!({"id": "example"}),
             crate::AUTHORIZATION_DETAILS_TYPE_UPDATE_ID => serde_json::json!({
                 "schema": {
                     "type": "object",
@@ -12781,6 +12946,56 @@ mod tests {
     /// The chain user alice → agent A → agent B in `acme`, as the token
     /// endpoints write it, plus noise: carol's agent and a record in another
     /// tenant.
+    #[tokio::test]
+    async fn branding_preview_uses_the_production_template_without_live_credentials() {
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+        for view in ["login", "error", "step-up"] {
+            let response = world
+                .get_with_query(&crate::THEME_PREVIEW, &format!("view={view}"), &cookie)
+                .await;
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+            let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+                .await
+                .expect("body");
+            let html = std::str::from_utf8(&body).expect("html");
+            assert!(html.contains("<fieldset disabled>"));
+            assert!(!html.contains("<script"));
+            assert!(html.contains("Saved branding preview"));
+        }
+    }
+
+    #[tokio::test]
+    async fn audit_event_detail_is_tenant_scoped_and_missing_ids_do_not_return_neighbors() {
+        let world = World::new();
+        seed_delegation_chain(&world);
+        let cookie = world.sign_in("acme", &[Role::SecurityAuditor]);
+        for (id, expected) in [
+            (1, StatusCode::OK),
+            (4, StatusCode::NOT_FOUND),
+            (900, StatusCode::NOT_FOUND),
+        ] {
+            let response = world
+                .send(
+                    HttpRequest::builder()
+                        .method("GET")
+                        .uri(format!("/admin/api/v1/audit/events/{id}"))
+                        .header(
+                            "cookie",
+                            format!(
+                                "{}={cookie}",
+                                asterius_domain::entities::session::COOKIE_NAME
+                            ),
+                        )
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await;
+            assert_eq!(response.status(), expected, "event {id}");
+        }
+    }
+
     fn seed_delegation_chain(world: &World) {
         use asterius_domain::audit::{Actor, Detail, EventType, Outcome};
         let at = |seconds: i64| OffsetDateTime::UNIX_EPOCH + time::Duration::seconds(seconds);
@@ -13268,7 +13483,9 @@ mod tests {
     fn registry_accepts_client_refusal(operation_id: &str) -> bool {
         matches!(
             operation_id,
-            crate::SSF_UPSTREAM_SETUP_ID
+            crate::OIDC_PROVIDER_CHECK_ID
+                | crate::AUDIT_EVENT_READ_ID
+                | crate::SSF_UPSTREAM_SETUP_ID
                 | crate::SSF_UPSTREAM_POLL_ID
                 | crate::SSF_UPSTREAM_VERIFY_ID
                 | crate::SSF_UPSTREAM_DELETE_ID
@@ -15612,6 +15829,45 @@ mod tests {
             .filter_map(|row| row["client_name"].as_str())
             .collect();
         assert_eq!(names, ["Payments"], "{page}");
+    }
+
+    #[tokio::test]
+    async fn client_name_order_is_applied_before_pagination() {
+        let (world, cookie) = console_in_a_signing_tenant();
+        for name in ["Sort Alpha", "Sort Zulu", "Sort Middle"] {
+            let mut registration = valid_registration();
+            registration["client_name"] = serde_json::json!(name);
+            post_client(&world, &cookie, &registration).await;
+        }
+        let mut cursor: Option<String> = None;
+        for expected in ["Sort Zulu", "Sort Middle", "Sort Alpha"] {
+            let mut query = url::form_urlencoded::Serializer::new(String::new());
+            query
+                .append_pair("q", "Sort ")
+                .append_pair("sort", "-name")
+                .append_pair("limit", "1");
+            if let Some(cursor) = cursor.as_deref() {
+                query.append_pair("cursor", cursor);
+            }
+            let page = body_of(
+                world
+                    .send(
+                        as_console(&crate::CLIENTS_LIST, &cookie)
+                            .uri(format!(
+                                "{}?{}",
+                                crate::CLIENTS_LIST.full_path(),
+                                query.finish()
+                            ))
+                            .body(Body::empty())
+                            .expect("request"),
+                    )
+                    .await,
+            )
+            .await;
+            assert_eq!(page["items"][0]["client_name"], expected, "{page}");
+            cursor = page["next_cursor"].as_str().map(str::to_owned);
+        }
+        assert!(cursor.is_none());
     }
 
     /// A `client_id` belonging to another tenant is a 404 here, not somebody

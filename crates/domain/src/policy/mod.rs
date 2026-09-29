@@ -67,3 +67,10 @@ pub struct StoredPolicy {
     /// When the document was last written.
     pub updated_at: OffsetDateTime,
 }
+
+/// A published policy snapshot; restoring it creates a new publication.
+#[derive(Debug, Clone)]
+pub struct PolicyRevision {
+    pub id: i64,
+    pub policy: StoredPolicy,
+}

@@ -71,6 +71,7 @@ pub mod scim;
 mod scim_groups;
 pub mod ssf;
 pub mod theme_image;
+mod theme_preview;
 pub mod throttle;
 pub mod users;
 
@@ -153,6 +154,7 @@ pub const RESOURCE_SERVER_READ_ID: &str = "resource_servers.read";
 pub const RESOURCE_SERVER_UPDATE_ID: &str = "resource_servers.update";
 /// The `operationId` of `DELETE /resource-servers/{identifier}`.
 pub const RESOURCE_SERVER_WITHDRAW_ID: &str = "resource_servers.withdraw";
+pub const AUTHORIZATION_DETAILS_SAMPLE_ID: &str = "authorization_details_types.sample";
 pub const AUTHORIZATION_DETAILS_TYPES_LIST_ID: &str = "authorization_details_types.list";
 pub const AUTHORIZATION_DETAILS_TYPE_UPDATE_ID: &str = "authorization_details_types.update";
 pub const AUTHORIZATION_DETAILS_TYPE_DELETE_ID: &str = "authorization_details_types.delete";
@@ -206,6 +208,7 @@ pub const SSF_RECEIVER_SUBJECT_REMOVE_ID: &str = "ssf.receiver.subject.remove";
 pub const ID_JAG_SUBJECT_BIND_ID: &str = "id_jag.subject.bind";
 pub const ID_JAG_SUBJECT_REMOVE_ID: &str = "id_jag.subject.remove";
 pub const SAML_SP_LIST_ID: &str = "saml.sp.list";
+pub const OIDC_PROVIDER_CHECK_ID: &str = "oidc.providers.check";
 pub const OIDC_PROVIDERS_LIST_ID: &str = "oidc.providers.list";
 pub const OIDC_PROVIDERS_PUT_ID: &str = "oidc.providers.put";
 pub const OIDC_PROVIDERS_DELETE_ID: &str = "oidc.providers.delete";
@@ -219,6 +222,7 @@ pub const SAML_IDP_KEY_PROVISION_ID: &str = "saml.idp_key.provision";
 pub const SAML_IDP_KEY_ACTIVATE_ID: &str = "saml.idp_key.activate";
 pub const SAML_IDP_KEY_RETIRE_ID: &str = "saml.idp_key.retire";
 /// The `operationId` of `GET /audit/events`.
+pub const AUDIT_EVENT_READ_ID: &str = "audit.events.read";
 pub const AUDIT_EVENTS_LIST_ID: &str = "audit.events.list";
 /// The `operationId` of `GET /audit/events/export`.
 pub const AUDIT_EVENTS_EXPORT_ID: &str = "audit.events.export";
@@ -645,6 +649,14 @@ pub const RESOURCE_SERVER_WITHDRAW: Operation = Operation::mutation(
 );
 
 /// The RFC 9396 detail types this tenant accepts.
+pub const AUTHORIZATION_DETAILS_SAMPLE: Operation = Operation::probe(
+    AUTHORIZATION_DETAILS_SAMPLE_ID,
+    "/authorization-details-types/validate-sample",
+    M::Post,
+    A::new(R::Tenant, "admin.authorization_details_types:write"),
+    "Validates a sample against a draft schema without saving it",
+);
+
 pub const AUTHORIZATION_DETAILS_TYPES_LIST: Operation = Operation::read(
     AUTHORIZATION_DETAILS_TYPES_LIST_ID,
     "/authorization-details-types",
@@ -1054,6 +1066,14 @@ pub const SAML_SP_LIST: Operation = Operation::read(
     "Lists tenant SAML SP trust",
 );
 
+pub const OIDC_PROVIDER_CHECK: Operation = Operation::probe(
+    OIDC_PROVIDER_CHECK_ID,
+    "/oidc/providers/check",
+    M::Post,
+    A::new(R::Tenant, "admin.oidc_providers:read"),
+    "Checks stored provider discovery and public keys without using client credentials",
+);
+
 pub const OIDC_PROVIDERS_LIST: Operation = Operation::read(
     OIDC_PROVIDERS_LIST_ID,
     "/oidc/providers",
@@ -1171,6 +1191,14 @@ pub const SAML_IDP_KEY_RETIRE: Operation = Operation::mutation(
 /// position in the tenant's chain. Introspection (RFC 7662) is not mounted in
 /// this build (`ast-1sk.1`), so the trail holds issuance and exchange and the
 /// query will hold introspection the day it is recorded.
+pub const AUDIT_EVENT_READ: Operation = Operation::read(
+    AUDIT_EVENT_READ_ID,
+    "/audit/events/{id}",
+    S::Get,
+    A::new(R::Tenant, "admin.audit:read"),
+    "Reads one audit event in the active tenant",
+);
+
 pub const AUDIT_EVENTS_LIST: Operation = Operation::read(
     AUDIT_EVENTS_LIST_ID,
     "/audit/events",
@@ -1659,6 +1687,7 @@ pub const GROUP_APP_ROLE_WITHDRAW_ID: &str = "groups.app_roles.tenant.withdraw";
 /// The client-role group withdrawal operation.
 pub const GROUP_CLIENT_APP_ROLE_WITHDRAW_ID: &str = "groups.app_roles.client.withdraw";
 /// The `operationId` of [`POLICY_READ`].
+pub const POLICY_HISTORY_ID: &str = "policies.history";
 pub const POLICY_READ_ID: &str = "policies.read";
 /// The `operationId` of [`POLICY_UPDATE`].
 pub const POLICY_UPDATE_ID: &str = "policies.update";
@@ -1967,7 +1996,7 @@ pub const SCIM_BULK: Operation = Operation::mutation(
     "SCIM Bulk is unsupported by this service",
 );
 
-static REGISTRY: [Operation; 149] = [
+static REGISTRY: [Operation; 154] = [
     SESSION_READ,
     SESSION_END,
     OVERVIEW_USERS,
@@ -1998,6 +2027,7 @@ static REGISTRY: [Operation; 149] = [
     RESOURCE_SERVER_UPDATE,
     RESOURCE_SERVER_WITHDRAW,
     AUTHORIZATION_DETAILS_TYPES_LIST,
+    AUTHORIZATION_DETAILS_SAMPLE,
     AUTHORIZATION_DETAILS_TYPE_UPDATE,
     AUTHORIZATION_DETAILS_TYPE_DELETE,
     REGISTRATION_READ,
@@ -2031,6 +2061,7 @@ static REGISTRY: [Operation; 149] = [
     ID_JAG_SUBJECT_REMOVE,
     SAML_SP_LIST,
     OIDC_PROVIDERS_LIST,
+    OIDC_PROVIDER_CHECK,
     OIDC_PROVIDERS_PUT,
     OIDC_PROVIDERS_DELETE,
     OIDC_BINDINGS_LIST,
@@ -2043,6 +2074,7 @@ static REGISTRY: [Operation; 149] = [
     SAML_IDP_KEY_ACTIVATE,
     SAML_IDP_KEY_RETIRE,
     AUDIT_EVENTS_LIST,
+    AUDIT_EVENT_READ,
     AUDIT_EVENTS_EXPORT,
     USERS_LIST,
     USER_READ,
@@ -2114,6 +2146,8 @@ static REGISTRY: [Operation; 149] = [
     GROUP_APP_ROLE_WITHDRAW,
     GROUP_CLIENT_APP_ROLE_WITHDRAW,
     POLICY_READ,
+    POLICY_HISTORY,
+    THEME_PREVIEW,
     POLICY_UPDATE,
     POLICY_DELETE,
     POLICY_TRY,
@@ -2129,6 +2163,22 @@ static REGISTRY: [Operation; 149] = [
 /// (`asterius_domain::Role::grants` gives every read to `security_auditor`),
 /// which is the right answer for a document a compliance review exists to
 /// read.
+pub const THEME_PREVIEW: Operation = Operation::read(
+    "theme.preview",
+    "/theme/preview",
+    S::Get,
+    A::new(R::Tenant, "admin.theme:read"),
+    "Renders the saved branding with disabled production sign-in controls",
+);
+
+pub const POLICY_HISTORY: Operation = Operation::read(
+    POLICY_HISTORY_ID,
+    "/policies/history",
+    S::Get,
+    A::new(R::Tenant, "admin.policies:read"),
+    "Lists the last 100 published policy versions for this tenant",
+);
+
 pub const POLICY_READ: Operation = Operation::read(
     POLICY_READ_ID,
     "/policies",

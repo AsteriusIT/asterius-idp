@@ -1,3 +1,4 @@
+import { ProviderHealth } from './provider-health';
 import { useUnsavedChanges } from './navigation-guard';
 /** Tenant-managed upstream sign-in providers. */
 import { useCallback, useEffect, useState } from 'react';
@@ -83,15 +84,15 @@ export function OidcProviders({ session }: Readonly<{ session: Session }>): JSX.
   return <Screen title="Sign-in providers" description="Register external sign-in providers for this tenant. Each provider has its own callback URL.">
     <Message tone="info">Provider setup stores connection details. Users can then sign in through an enabled provider and link their account.</Message>
     {error !== null && <Message tone="error">{error}</Message>}
-    <Panel title="External sign-in providers" description="Endpoint metadata is discovered from the exact issuer and checked before it is stored."
+    <Panel title="External sign-in providers" description="Discovery and public keys are checked automatically while this page is visible, once per minute. These checks do not test client credentials or prove sign-in succeeds."
       actions={canWrite && draft === null ? <Button variant="primary" onClick={() => { setBaseline(JSON.stringify(EMPTY)); setDraft(EMPTY); setEditing(false); setError(null); }}>Add provider</Button> : undefined}>
       {load.kind === 'loading' && <Skeleton rows={3} label="Reading sign-in providers." />}
       {load.kind === 'failed' && <LoadFailure message={load.message} onRetry={refresh} />}
       {ready !== null && (ready.providers.length === 0 ? <p className="muted">No upstream sign-in providers are configured.</p> :
-        <div className="overflow-x-auto"><table>
+        <div className="overflow-x-auto" tabIndex={0} role="region" aria-label="Sign-in providers"><table>
           <caption className="visually-hidden">External sign-in providers</caption>
-          <thead><tr><th>Provider</th><th>Issuer</th><th>Status</th><th>Callback URL</th>{canWrite && <th>Actions</th>}</tr></thead>
-          <tbody>{ready.providers.map((provider) => <tr key={provider.id}>
+          <thead><tr><th>Metadata health</th><th>Provider</th><th>Issuer</th><th>Status</th><th>Callback URL</th>{canWrite && <th>Actions</th>}</tr></thead>
+          <tbody>{ready.providers.map((provider) => <tr key={provider.id}><td><ProviderHealth id={provider.id} session={session} /></td>
             <td><strong>{provider.name}</strong><br /><small>{provider.id}</small></td>
             <td><code>{provider.issuer}</code><br /><small>Client: {provider.client_id}</small><br /><small>Username claim: {provider.username_claim ?? 'Generated name'}</small></td>
             <td><Badge tone={provider.enabled ? 'ok' : 'neutral'}>{provider.enabled ? 'Enabled' : 'Disabled'}</Badge><br /><small>{provider.secret_configured ? 'Secret configured' : 'Secret needed'}</small><br /><small>{provider.allow_registration ? 'First login creates an account' : 'Existing linked accounts only'}</small></td>
