@@ -2086,9 +2086,23 @@ impl Handling<'_> {
                 "sort must be id, -id, name or -name".to_owned(),
             ));
         }
+        let status = query_value(&self.query, "status");
+        if status
+            .as_deref()
+            .is_some_and(|value| ClientStatus::parse(value).is_none())
+        {
+            return Err(AdminError::Invalid(
+                "status must be active or disabled".to_owned(),
+            ));
+        }
         let mut matched: Vec<_> = clients
             .iter()
-            .filter(|client| clients::matches(client, &query))
+            .filter(|client| {
+                clients::matches(client, &query)
+                    && status
+                        .as_deref()
+                        .is_none_or(|value| client.status.as_str() == value)
+            })
             .collect();
         matched.sort_by(|left, right| {
             let order = if sort.ends_with("name") {
@@ -4214,17 +4228,24 @@ impl Handling<'_> {
                 ));
             }
         };
+        let status = match query_value(&self.query, "status") {
+            None => None,
+            Some(value) => Some(asterius_domain::UserStatus::parse(&value).ok_or_else(|| {
+                AdminError::Invalid("status must be active, disabled or locked".to_owned())
+            })?),
+        };
         let rows = self
             .state
             .backend
             .users()
-            .search_ordered(
+            .search_filtered(
                 &self.tenant.id,
                 &term,
                 request.after.as_ref().map(Cursor::key),
                 // One more than asked for, which is how the page knows whether
                 // to mint a cursor without a second `COUNT`.
                 request.limit + 1,
+                status,
                 descending,
             )
             .await
@@ -9509,6 +9530,42 @@ mod tests {
     /// What is counted here is the promise the port makes to this crate.
     #[async_trait::async_trait]
     impl asterius_domain::UserAdministration for Handle {
+        async fn search_filtered(
+            &self,
+            tenant: &TenantId,
+            term: &str,
+            after: Option<&str>,
+            limit: usize,
+            status: Option<asterius_domain::UserStatus>,
+            descending: bool,
+        ) -> Result<Vec<asterius_domain::User>, DomainError> {
+            let accounts = self.0.accounts.lock().expect("an uncontended lock");
+            let mut matched: Vec<_> = accounts
+                .iter()
+                .filter(|user| &user.tenant == tenant && crate::users::matches(user, term))
+                .filter(|user| status.is_none_or(|selected| user.status == selected))
+                .filter(|user| {
+                    after.is_none_or(|cursor| {
+                        if descending {
+                            user.username.as_str() < cursor
+                        } else {
+                            user.username.as_str() > cursor
+                        }
+                    })
+                })
+                .cloned()
+                .collect();
+            matched.sort_by(|left, right| {
+                if descending {
+                    right.username.cmp(&left.username)
+                } else {
+                    left.username.cmp(&right.username)
+                }
+            });
+            matched.truncate(limit);
+            Ok(matched)
+        }
+
         async fn external_provider_names(
             &self,
             tenant: &TenantId,
@@ -15829,6 +15886,40 @@ mod tests {
             .filter_map(|row| row["client_name"].as_str())
             .collect();
         assert_eq!(names, ["Payments"], "{page}");
+
+        let disabled = world
+            .send(
+                as_console(&crate::CLIENTS_LIST, &cookie)
+                    .uri(format!(
+                        "{}?q=payments&status=disabled",
+                        crate::CLIENTS_LIST.full_path()
+                    ))
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+        assert_eq!(disabled.status(), StatusCode::OK);
+        assert_eq!(
+            body_of(disabled).await["items"].as_array().map(Vec::len),
+            Some(0)
+        );
+
+        let active = world
+            .send(
+                as_console(&crate::CLIENTS_LIST, &cookie)
+                    .uri(format!(
+                        "{}?q=payments&status=active",
+                        crate::CLIENTS_LIST.full_path()
+                    ))
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+        assert_eq!(active.status(), StatusCode::OK);
+        assert_eq!(
+            body_of(active).await["items"].as_array().map(Vec::len),
+            Some(1)
+        );
     }
 
     #[tokio::test]
@@ -18077,6 +18168,61 @@ mod tests {
             page["items"][0]["external_providers"],
             serde_json::json!([])
         );
+    }
+
+    #[tokio::test]
+    async fn the_directory_filters_status_before_paging() {
+        let (world, cookie) = console_over_the_seeded_account();
+        world
+            .handle
+            .0
+            .accounts
+            .lock()
+            .expect("an uncontended lock")
+            .push(asterius_domain::User {
+                id: UserId::generate(),
+                username: "carol@example.test".to_owned(),
+                email: Some("carol@example.test".to_owned()),
+                status: asterius_domain::UserStatus::Disabled,
+                ..seeded_user("acme")
+            });
+        let filtered = world
+            .send(
+                request_for(&crate::USERS_LIST)
+                    .uri("/admin/api/v1/users?status=disabled&limit=1")
+                    .header(
+                        "cookie",
+                        format!(
+                            "{}={cookie}",
+                            asterius_domain::entities::session::COOKIE_NAME
+                        ),
+                    )
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+        assert_eq!(filtered.status(), StatusCode::OK);
+        let page = body_of(filtered).await;
+        assert_eq!(page["items"].as_array().map(Vec::len), Some(1));
+        assert_eq!(page["items"][0]["username"], "carol@example.test");
+        assert!(page["next_cursor"].is_null());
+
+        let invalid = world
+            .send(
+                request_for(&crate::USERS_LIST)
+                    .uri("/admin/api/v1/users?status=unknown")
+                    .header(
+                        "cookie",
+                        format!(
+                            "{}={cookie}",
+                            asterius_domain::entities::session::COOKIE_NAME
+                        ),
+                    )
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
     }
 
     /// OIDC Core §5.1, at the route: the claims and the verification flags are

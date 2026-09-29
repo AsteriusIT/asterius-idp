@@ -256,3 +256,18 @@ checks; 29 focused browser scenarios plus two group/SAML dialog scenarios.
 Those browser checks include keyboard navigation, 200% zoom, 320px reflow,
 automated accessibility and representative dark destinations. Human
 screen-reader and moderated usability testing remain outstanding.
+
+### Directory toolbar correction, 2026-09-29
+
+Tenant settings now open directly on their tabs; the separate saved-summary
+step has been removed at the administrator's request. Users and Applications
+share one full-width row with inline search and a custom Status filter. Status
+is applied by the API before pagination, including PostgreSQL account range
+scans; the redundant Order popovers are gone. The Architecture builder remains
+in the sidebar but no longer has a top-bar shortcut. Desktop screenshots and
+320px reflow show the search and filter controls on the same row.
+
+The focused browser sweep passed 32 scenarios. Targeted API, source-audit and
+snapshot tests passed (35 total), as did a PostgreSQL 16 test of status-filtered
+account pagination in an isolated disposable database. Human testing remains
+outstanding.

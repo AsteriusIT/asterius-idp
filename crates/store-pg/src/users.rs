@@ -744,6 +744,46 @@ impl PgUserRepository {
             .map(|row| row.into_entity(&self.tenant)).collect()
     }
 
+    /// Restricts account status in PostgreSQL before the cursor page is cut.
+    pub async fn search_filtered(
+        &self,
+        term: &str,
+        after: Option<&str>,
+        limit: i64,
+        status: Option<UserStatus>,
+        descending: bool,
+    ) -> Result<Vec<User>, DomainError> {
+        let pattern = format!("%{term}%");
+        let statement = if descending {
+            "select user_id, username, email, email_verified, status, claims, created_at, updated_at
+             from users where tenant_id = $1
+             and ($2 = '' or username ilike $3 or email ilike $3)
+             and ($4::text is null or username < $4)
+             and ($5::text is null or status = $5)
+             order by username desc limit $6"
+        } else {
+            "select user_id, username, email, email_verified, status, claims, created_at, updated_at
+             from users where tenant_id = $1
+             and ($2 = '' or username ilike $3 or email ilike $3)
+             and ($4::text is null or username > $4)
+             and ($5::text is null or status = $5)
+             order by username limit $6"
+        };
+        sqlx::query_as::<_, Row>(statement)
+            .bind(self.tenant.as_str())
+            .bind(term)
+            .bind(pattern)
+            .bind(after)
+            .bind(status.map(UserStatus::as_str))
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(to_domain_error)?
+            .into_iter()
+            .map(|row| row.into_entity(&self.tenant))
+            .collect()
+    }
+
     pub async fn search(
         &self,
         term: &str,

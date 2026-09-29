@@ -1,5 +1,4 @@
-import { SearchIcon } from 'lucide-react';
-import { DirectoryOrder } from './directory-controls';
+import { DirectorySearch, DirectoryStatusFilter } from './directory-controls';
 import { useViewState, useListScroll } from './view-memory';
 import { useRouteParameters, setRouteParameters } from './route-state';
 import { UserAccessSummary } from './user-access-summary';
@@ -360,14 +359,15 @@ function DirectoryScreen({
   useEffect(() => () => { listRequest.current++; }, []);
   const [term, setTerm] = useViewState('users:term', '');
   const [cursor, setCursor] = useViewState<string | null>('users:cursor', null);
-  const [sort, setSort] = useViewState('users:sort', 'username');
-  useListScroll(`users:${term}:${sort}:${cursor}`, load.kind === 'ready');
+  const [status, setStatus] = useViewState('users:status', '');
+  useListScroll(`users:${term}:${status}:${cursor}`, load.kind === 'ready');
 
   const refresh = useCallback(
     (search: string, from: string | null) => {
       const request = ++listRequest.current;
       setLoad({ kind: 'loading' });
-      const query = new URLSearchParams({ sort });
+      const query = new URLSearchParams();
+      if (status) query.set('status', status);
       if (search !== '') {
         query.set('q', search);
       }
@@ -382,7 +382,7 @@ function DirectoryScreen({
         },
       );
     },
-    [sort],
+    [status],
   );
 
   useEffect(() => refresh(term, cursor), [refresh, term, cursor]);
@@ -398,17 +398,16 @@ function DirectoryScreen({
       <Panel
         className="directory-panel"
         title="Directory"
-        description="Search by username or email. The list is one page at a time, in the order the server returns."
+        description="Search by username or email. The list is one page at a time."
       >
-        <DirectoryOrder value={sort} options={[{ value: "username", label: "Username A–Z" }, { value: "-username", label: "Username Z–A" }]} onChange={value => { setCursor(null); setSort(value); }} />
-        <Search initial={term}
+        <div className="directory-toolbar"><Search initial={term}
           onSearch={(value) => {
             // A new search starts at the first page: keeping a cursor minted for
             // the previous term would resume in the middle of a different list.
             setCursor(null);
             setTerm(value);
           }}
-        />
+        /><DirectoryStatusFilter value={status} options={[{ value: '', label: 'All statuses' }, { value: 'active', label: 'Active' }, { value: 'disabled', label: 'Disabled' }, { value: 'locked', label: 'Locked' }]} onChange={value => { setCursor(null); setStatus(value); }} /></div>
         {load.kind === 'loading' && <Skeleton rows={4} label="Reading the directory." />}
         {load.kind === 'failed' && (
           <LoadFailure message={load.message} onRetry={() => refresh(term, cursor)} />
@@ -436,30 +435,7 @@ function DirectoryScreen({
 
 function Search({ initial, onSearch }: Readonly<{ initial: string; onSearch: (term: string) => void }>): JSX.Element {
   const [typed, setTyped] = useState(initial);
-  return (
-    <form
-      className="directory-search"
-      role="search"
-      onSubmit={(event) => {
-        event.preventDefault();
-        onSearch(typed.trim());
-      }}
-    >
-      <Field label="Search">
-        {(props) => (
-          <input
-            {...props}
-            name="q"
-            type="search"
-            value={typed}
-            placeholder="Search by username or email address"
-            onChange={(event) => setTyped(event.target.value)}
-          />
-        )}
-      </Field>
-      <Button type="submit" className="directory-icon-action" aria-label="Search" title="Search"><SearchIcon aria-hidden="true" /></Button>
-    </form>
-  );
+  return <DirectorySearch label="Search" value={typed} placeholder="Search by username or email address" onChange={setTyped} onSubmit={() => onSearch(typed.trim())} />;
 }
 
 function UserTable({
@@ -474,7 +450,7 @@ function UserTable({
       caption="Accounts"
       rows={rows}
       rowKey={(row) => row.user_id}
-      empty={<EmptyState title="No account matches." body="Clear the search to see the whole directory." />}
+      empty={<EmptyState title="No account matches." body="Change the search or status filter to see more accounts." />}
       columns={[
         {
           key: 'username',
