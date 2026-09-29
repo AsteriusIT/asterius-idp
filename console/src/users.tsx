@@ -1,3 +1,5 @@
+import { useRouteParameters, setRouteParameters } from './route-state';
+import { useUnsavedChanges } from './navigation-guard';
 /**
  * The account screen (`ast-f7m.6`).
  *
@@ -295,7 +297,11 @@ function failure(error: unknown, fallback: string): string {
 }
 
 export function Users({ session }: Readonly<{ session: Session }>): JSX.Element {
-  const [view, setView] = useState<View>({ kind: 'directory' });
+  const parameters = useRouteParameters();
+  const userId = parameters.get('id');
+  const view: View = parameters.get('mode') === 'new' ? { kind: 'new' } : userId ? { kind: 'account', id: userId } : { kind: 'directory' };
+  const setView = (next: View): void => setRouteParameters('users', { id: next.kind === 'account' ? next.id : null, mode: next.kind === 'new' ? 'new' : null, tab: null });
+  const leave = useUnsavedChanges(false);
 
   if (view.kind === 'new') {
     return (
@@ -318,9 +324,10 @@ export function Users({ session }: Readonly<{ session: Session }>): JSX.Element 
   if (view.kind === 'account') {
     return (
       <Account
+        key={view.id}
         session={session}
         id={view.id}
-        onBack={() => setView({ kind: 'directory' })}
+        onBack={() => leave(() => setView({ kind: 'directory' }))}
       />
     );
   }
@@ -542,6 +549,7 @@ function NewAccount({
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  useUnsavedChanges(username !== '' || email !== '' || password !== '');
   const [busy, setBusy] = useState(false);
   const [refusal, setRefusal] = useState<string | null>(null);
 
@@ -633,7 +641,10 @@ function Account({
   id: string;
   onBack: () => void;
 }>): JSX.Element {
-  const [tab, setTab] = useState('details');
+  const parameters = useRouteParameters();
+  const wantedTab = parameters.get('tab') ?? 'details';
+  const tab = ['details', 'claims', 'credentials', 'sessions', 'grants', 'roles', 'groups'].includes(wantedTab) ? wantedTab : 'details';
+  const setTab = (value: string): void => setRouteParameters('users', { tab: value });
   const [load, setLoad] = useState<Load<Detail>>({ kind: 'loading' });
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -1140,6 +1151,7 @@ function ClaimsEditor({
   const [email, setEmail] = useState(user.email ?? '');
   const [emailVerified, setEmailVerified] = useState(user.email_verified);
   const [claims, setClaims] = useState<readonly Editable[]>(initial);
+  useUnsavedChanges(email !== (user.email ?? '') || emailVerified !== user.email_verified || JSON.stringify(claims) !== JSON.stringify(initial()));
   const [refusal, setRefusal] = useState<string | null>(null);
 
   const save = (event: React.FormEvent): void => {

@@ -18,6 +18,7 @@ export function Overview({ session }: Readonly<{ session: Session }>): JSX.Eleme
   const definitions = visibleMetrics(session);
   const [metrics, setMetrics] = useState<ReadonlyMap<string, MetricState>>(() => new Map());
   const [refresh, setRefresh] = useState(0);
+  const [collectedAt, setCollectedAt] = useState<string | null>(null);
   const [allowNonFapiClients, setAllowNonFapiClients] = useState<boolean | null>(null);
   const mayReadTenant = session.scopes.includes('admin.tenants:read');
 
@@ -29,6 +30,7 @@ export function Overview({ session }: Readonly<{ session: Session }>): JSX.Eleme
       read(definition.path).then(
         (value) => {
           if (!active) return;
+          setCollectedAt(new Date().toISOString());
           setMetrics((current) => updateMetric(current, definition.path, { kind: 'ready', document: value as MetricDocument }));
         },
         (error: unknown) => {
@@ -75,6 +77,7 @@ export function Overview({ session }: Readonly<{ session: Session }>): JSX.Eleme
       description={`Activity and health for ${session.workspace}, limited to the data this session may read.`}
       actions={<Button onClick={reload}>Refresh summaries</Button>}
     >
+      {collectedAt && <p className="muted">Latest summary received: <Timestamp value={collectedAt} />. Cards may finish updating at different times.</p>}
       <div className="overview-bento">
         <Panel title="What would you like to do?" description="Go straight to a common task in this tenant.">
           <div className="quick-link-grid">

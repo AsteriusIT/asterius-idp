@@ -1,3 +1,4 @@
+import { useUnsavedChanges } from './navigation-guard';
 /** Tenant-managed upstream sign-in providers. */
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
@@ -29,6 +30,8 @@ export function OidcProviders({ session }: Readonly<{ session: Session }>): JSX.
   const [deleting, setDeleting] = useState<OidcProvider | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [baseline, setBaseline] = useState(JSON.stringify(EMPTY));
+  const leave = useUnsavedChanges(draft !== null && JSON.stringify(draft) !== baseline);
   const canWrite = session.scopes.includes('admin.oidc_providers:write');
 
   const refresh = useCallback(() => {
@@ -81,7 +84,7 @@ export function OidcProviders({ session }: Readonly<{ session: Session }>): JSX.
     <Message tone="info">Provider setup stores connection details. Users can then sign in through an enabled provider and link their account.</Message>
     {error !== null && <Message tone="error">{error}</Message>}
     <Panel title="External sign-in providers" description="Endpoint metadata is discovered from the exact issuer and checked before it is stored."
-      actions={canWrite && draft === null ? <Button variant="primary" onClick={() => { setDraft(EMPTY); setEditing(false); setError(null); }}>Add provider</Button> : undefined}>
+      actions={canWrite && draft === null ? <Button variant="primary" onClick={() => { setBaseline(JSON.stringify(EMPTY)); setDraft(EMPTY); setEditing(false); setError(null); }}>Add provider</Button> : undefined}>
       {load.kind === 'loading' && <Skeleton rows={3} label="Reading sign-in providers." />}
       {load.kind === 'failed' && <LoadFailure message={load.message} onRetry={refresh} />}
       {ready !== null && (ready.providers.length === 0 ? <p className="muted">No upstream sign-in providers are configured.</p> :
@@ -94,7 +97,7 @@ export function OidcProviders({ session }: Readonly<{ session: Session }>): JSX.
             <td><Badge tone={provider.enabled ? 'ok' : 'neutral'}>{provider.enabled ? 'Enabled' : 'Disabled'}</Badge><br /><small>{provider.secret_configured ? 'Secret configured' : 'Secret needed'}</small><br /><small>{provider.allow_registration ? 'First login creates an account' : 'Existing linked accounts only'}</small></td>
             <td><code className="break-all">{provider.callback_url}</code></td>
             {canWrite && <td><div className="flex flex-wrap gap-2">
-              <Button small disabled={busy} onClick={() => { setDraft(draftFor(provider)); setEditing(true); setError(null); }}>Edit</Button>
+              <Button small disabled={busy} onClick={() => leave(() => { setBaseline(JSON.stringify(draftFor(provider))); setDraft(draftFor(provider)); setEditing(true); setError(null); })}>Edit</Button>
               <Button small variant="danger" disabled={busy} onClick={() => setDeleting(provider)}>Delete</Button>
             </div></td>}
           </tr>)}</tbody>
@@ -112,7 +115,7 @@ export function OidcProviders({ session }: Readonly<{ session: Session }>): JSX.
         <label className="flex items-center gap-2"><input type="checkbox" checked={draft.allowRegistration} onChange={event => change({ allowRegistration: event.target.checked })} /> Create a new local account on first verified sign-in</label>
         <p className="muted">When off, only explicitly linked identities can sign in. New accounts never inherit an existing account through an email address.</p>
         {ready !== null && <p className="muted">Callback URL: <code className="break-all">{ready.callback_url_template.replace('{id}', draft.id || '{id}')}</code></p>}
-        <div className="flex flex-wrap gap-2"><Button variant="primary" onClick={save} disabled={busy}>{busy ? 'Saving…' : 'Save provider'}</Button><Button onClick={() => { setDraft(null); setError(null); }} disabled={busy}>Cancel</Button></div>
+        <div className="flex flex-wrap gap-2"><Button variant="primary" onClick={save} disabled={busy}>{busy ? 'Saving…' : 'Save provider'}</Button><Button onClick={() => leave(() => { setDraft(null); setError(null); })} disabled={busy}>Cancel</Button></div>
       </fieldset>
     </Panel>}
     {deleting !== null && <ConfirmDialog title={`Delete ${deleting.name}?`} body="The provider configuration and stored credential will be removed. Existing sign-in sessions are unaffected." confirmLabel="Delete provider" busy={busy} onConfirm={remove} onCancel={() => setDeleting(null)} />}

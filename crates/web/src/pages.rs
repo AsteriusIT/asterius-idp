@@ -1363,6 +1363,7 @@ pub struct NewPasswordPage<'a> {
 #[derive(Debug, Template)]
 #[template(path = "invitation.html")]
 pub struct InvitationPage<'a> {
+    pub sign_in_href: &'a str,
     pub text: &'a Catalog,
     pub tenant_name: &'a str,
     pub username: &'a str,
@@ -1376,6 +1377,86 @@ pub struct InvitationPage<'a> {
     pub nonce_attribute: NonceAttribute,
     pub theme_css: &'a str,
     pub brand: crate::brand::Brand<'a>,
+}
+
+/// Authenticator setup. Secrets are rendered only in the enrollment response.
+#[derive(Template)]
+#[template(path = "account_totp.html")]
+pub struct AccountTotpPage<'a> {
+    pub text: &'a Catalog,
+    pub tenant_name: &'a str,
+    pub action: &'a str,
+    pub account_href: &'a str,
+    pub csrf: &'a str,
+    pub message: Option<&'a str>,
+    pub active: bool,
+    pub pending: bool,
+    pub provisioning: Option<(&'a str, &'a str)>,
+    pub qr: Option<crate::qr::SetupQr>,
+    pub nonce_attribute: NonceAttribute,
+    pub theme_css: &'a str,
+    pub brand: Brand<'a>,
+}
+
+impl std::fmt::Debug for AccountTotpPage<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AccountTotpPage").finish_non_exhaustive()
+    }
+}
+
+/// Display data only: templates escape every provider field.
+#[derive(Debug)]
+pub struct AccountProviderLine {
+    pub issuer: String,
+    pub policy_url: String,
+    pub configured: bool,
+    pub connected: bool,
+    pub credential: bool,
+    pub allowed: String,
+    pub expires: String,
+    pub connection_expires: String,
+    pub claims: Vec<(String, String)>,
+}
+
+#[derive(Debug, Template)]
+#[template(path = "account_providers.html")]
+pub struct AccountProvidersPage<'a> {
+    pub text: &'a Catalog,
+    pub tenant_name: &'a str,
+    pub action: &'a str,
+    pub account_href: &'a str,
+    pub csrf: &'a str,
+    pub message: Option<&'a str>,
+    pub providers: Vec<AccountProviderLine>,
+    pub nonce_attribute: NonceAttribute,
+    pub theme_css: &'a str,
+    pub brand: Brand<'a>,
+}
+
+#[derive(Debug)]
+pub struct ExternalApprovalLine {
+    pub issuer: String,
+    pub actor: String,
+    pub client: String,
+    pub resource: String,
+    pub scopes: Vec<String>,
+    pub expires: String,
+}
+
+#[derive(Debug, Template)]
+#[template(path = "account_external_approvals.html")]
+pub struct AccountExternalApprovalsPage<'a> {
+    pub text: &'a Catalog,
+    pub tenant_name: &'a str,
+    pub action: &'a str,
+    pub account_href: &'a str,
+    pub csrf: &'a str,
+    pub message: Option<&'a str>,
+    pub consents: Vec<ExternalApprovalLine>,
+    pub options: Vec<ExternalApprovalLine>,
+    pub nonce_attribute: NonceAttribute,
+    pub theme_css: &'a str,
+    pub brand: Brand<'a>,
 }
 
 /// The error page.
@@ -2921,5 +3002,78 @@ mod tests {
             html.contains(r#"<meta name="referrer" content="no-referrer">"#),
             "{html}"
         );
+    }
+}
+
+#[cfg(test)]
+mod experience_tests {
+    use super::*;
+    use asterius_domain::Locale;
+
+    #[test]
+    fn authenticator_setup_is_branded_translated_and_escaped_without_scripts() {
+        for locale in [Locale::English, Locale::French] {
+            let catalog = Catalog::new(locale);
+            let nonce = Nonce::fixed_for_test("experience-test");
+            let page = AccountTotpPage {
+                text: &catalog,
+                tenant_name: "Tenant <script>",
+                action: "/t/review/account/totp",
+                account_href: "/t/review/account",
+                csrf: "token",
+                message: None,
+                active: false,
+                pending: true,
+                provisioning: Some((
+                    "PRIVATE-SETUP-KEY",
+                    "otpauth://totp/Example?secret=PRIVATE-SETUP-KEY",
+                )),
+                qr: crate::qr::SetupQr::new("otpauth://totp/Example?secret=PRIVATE-SETUP-KEY"),
+                nonce_attribute: nonce_attribute(&nonce),
+                theme_css: "",
+                brand: Brand::new("/t/review/font.woff2"),
+            };
+            let html = render(&page);
+            assert!(html.contains(catalog.authenticator_scan()));
+            assert!(html.contains("Tenant &#60;script&#62;"));
+            assert!(html.contains("name=\"csrf\""));
+            assert!(html.contains("class=\"setup-qr\""));
+            assert!(html.contains("/t/review/account/totp"));
+            assert!(!html.contains("<script"));
+            assert!(!format!("{page:?}").contains("PRIVATE-SETUP-KEY"));
+        }
+    }
+
+    #[test]
+    fn connected_provider_values_cannot_escape_the_shared_template() {
+        let text = Catalog::new(Locale::English);
+        let nonce = Nonce::fixed_for_test("experience-test");
+        let page = AccountProvidersPage {
+            text: &text,
+            tenant_name: "Review",
+            action: "/t/review/account/claims-providers",
+            account_href: "/t/review/account",
+            csrf: "token",
+            message: None,
+            providers: vec![AccountProviderLine {
+                issuer: "<script>".into(),
+                policy_url: "https://example.test/policy".into(),
+                configured: true,
+                connected: true,
+                credential: true,
+                allowed: "name".into(),
+                expires: "2026-10-01".into(),
+                connection_expires: String::new(),
+                claims: vec![("name".into(), "<img src=x>".into())],
+            }],
+            nonce_attribute: nonce_attribute(&nonce),
+            theme_css: "",
+            brand: Brand::new("/font.woff2"),
+        };
+        let html = render(&page);
+        assert!(!html.contains("<script>"));
+        assert!(!html.contains("<img src=x>"));
+        assert!(html.contains("name=\"issuer\" value=\"&#60;script&#62;\""));
+        assert!(html.contains("class=\"danger-section\""));
     }
 }

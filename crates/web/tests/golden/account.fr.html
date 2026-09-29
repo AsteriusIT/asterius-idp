@@ -522,7 +522,22 @@ input.code {
   font-size: 1.5rem;
   letter-spacing: .15em;
   text-align: center;
-}:root{--bg:#ffffff;--fg:#18181b;--muted:#71717a;--line:#71717a;--accent:#3f3fbf;--accent-fg:#ffffff;--danger:#b42318;--radius:8px;--space:8px;--font:Geist, system-ui, -apple-system, Segoe UI, sans-serif;}</style>
+}
+
+/* Account tools share the sign-in shell, including on script-free browsers. */
+.account-section { border-top: 1px solid var(--line); padding-block: 24px; display: grid; gap: 16px; }
+.account-section h3, .account-section p, .account-section dd { overflow-wrap: anywhere; }
+.account-section dl { margin: 0; }
+.account-section dt { font-weight: 600; margin-top: 12px; }
+.account-section dd { margin: 4px 0 0; }
+.danger-section { border: 1px solid var(--line); border-radius: var(--ctl); padding: 16px; }
+summary { cursor: pointer; min-height: 44px; padding-block: 12px; }
+.setup-qr { width: 240px; max-width: 100%; height: auto; display: block; margin-inline: auto; shape-rendering: crispEdges; }
+.setup-key { overflow-wrap: anywhere; user-select: all; }
+pre { overflow-x: auto; max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; }
+fieldset { min-width: 0; border: 1px solid var(--line); border-radius: var(--ctl); padding: 12px; }
+.support-links { display: flex; flex-wrap: wrap; justify-content: center; gap: 16px; margin-top: 16px; }
+.support-links a { display: inline-flex; align-items: center; min-height: 44px; }:root{--bg:#ffffff;--fg:#18181b;--muted:#71717a;--line:#71717a;--accent:#3f3fbf;--accent-fg:#ffffff;--danger:#b42318;--radius:8px;--space:8px;--font:Geist, system-ui, -apple-system, Segoe UI, sans-serif;}</style>
 </head>
 <body>
 
@@ -542,6 +557,7 @@ input.code {
 <p class="muted">Ce avec quoi vous vous connectez, où vous êtes connecté, et ce que vous avez autorisé.</p>
 </div>
 
+<h3>Connexion et récupération</h3>
 <ul class="scopes">
 <li>
   <a href="/account/passkeys">Clés d&#39;accès</a>
@@ -559,6 +575,8 @@ input.code {
   <a href="/account/email">Adresse e-mail</a>
   <br><span class="muted">Changer votre adresse après confirmation de la nouvelle boîte mail.</span>
 </li>
+</ul><h3>Sessions et activité</h3>
+<ul class="scopes">
 <li>
   <a href="/account/sessions">Vos sessions ouvertes</a>
   <br><span class="muted">Voir les sessions ouvertes sur votre compte et fermer celles que vous ne reconnaissez pas.</span>
@@ -567,6 +585,8 @@ input.code {
   <a href="/account/activity">Activité de sécurité</a>
   <br><span class="muted">Consultez les changements récents de votre compte.</span>
 </li>
+</ul><h3>Applications et permissions</h3>
+<ul class="scopes">
 <li>
   <a href="/account/approvals">Demandes en attente</a>
   <br><span class="muted">Répondre à ce qui demande à agir en votre nom.</span>
@@ -575,17 +595,20 @@ input.code {
   <a href="/account/grants">Les accès que vous avez autorisés</a>
   <br><span class="muted">Voir ce qui dispose d&#39;un accès permanent à votre compte, et le retirer.</span>
 </li>
+</ul><h3>Fournisseurs connectés</h3>
+<ul class="scopes">
 <li>
-  <a href="/account/claims-providers">Claims Providers</a>
-  <br><span class="muted">View, connect or remove signed claims from configured providers.</span>
+  <a href="/account/claims-providers">Fournisseurs d’informations connectés</a>
+  <br><span class="muted">Connectez un fournisseur pour obtenir des informations vérifiées. Chaque application nécessite votre accord avant de les recevoir.</span>
 </li>
 <li>
-  <a href="/account/id-jag">External identity approvals</a>
-  <br><span class="muted">Review and revoke access granted through a linked external identity.</span>
+  <a href="/account/id-jag">Autorisations d’identité externe</a>
+  <br><span class="muted">Les autorisations durent au maximum 30 jours. Seuls les émetteurs liés à votre compte par un administrateur sont affichés.</span>
 </li>
 </ul>
 
 </main>
+
 </div>
 </div>
 </body>

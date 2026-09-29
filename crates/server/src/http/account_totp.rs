@@ -381,33 +381,24 @@ fn render(
     let csrf = csrf_for(session, CSRF_SEPARATOR);
     let action = context.account.mount.absolute(PAGE_PATH);
     let account = context.account.mount.absolute(account::PAGE_PATH);
-    let notice = message.map_or_else(String::new, |message| {
-        format!("<p role=\"status\">{}</p>", escape_html(message))
-    });
-    let body = match status {
-        TotpStatus::Active => format!(
-            "<p>Authenticator is active.</p><form method=\"post\" action=\"{}\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><label>Current six digit code, unless this session already meets your tenant's assurance policy <input name=\"code\" inputmode=\"numeric\" autocomplete=\"one-time-code\" pattern=\"[0-9]{{6}}\" maxlength=\"6\"></label><button name=\"action\" value=\"remove\">Remove authenticator</button></form><p>If you have lost access to your authenticator, use an existing approved sign-in or account recovery method. This page does not bypass your tenant's assurance policy.</p>",
-            escape_html(&action),
-            csrf
-        ),
-        TotpStatus::Pending => format!(
-            "<p>Enrollment is pending. The setup key is shown only in the response that starts enrollment; if you did not save it, start again.</p><form method=\"post\" action=\"{}\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><button name=\"action\" value=\"start\">Start a new setup key</button></form>",
-            escape_html(&action),
-            csrf
-        ),
-        TotpStatus::Unenrolled => format!(
-            "<form method=\"post\" action=\"{}\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><button name=\"action\" value=\"start\">Start authenticator setup</button></form>",
-            escape_html(&action),
-            csrf
-        ),
-    };
-    let one_time = provisioning.map_or_else(String::new, |(secret, uri)| format!(
-        "<section><h2>Save this setup key now</h2><p><code>{secret}</code></p><p>Authenticator URI:</p><pre>{}</pre><form method=\"post\" action=\"{}\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><label>Six digit code <input name=\"code\" inputmode=\"numeric\" autocomplete=\"one-time-code\" pattern=\"[0-9]{{6}}\" maxlength=\"6\" required></label><button name=\"action\" value=\"confirm\">Confirm setup</button></form></section>", escape_html(uri), escape_html(&action), csrf));
-    let document = Document::render(context.account.nonce, |_nonce| {
-        format!(
-            "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"referrer\" content=\"no-referrer\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Authenticator setup</title></head><body><main><h1>Authenticator setup</h1>{notice}{body}{one_time}<p><a href=\"{}\">Back to account</a></p></main></body></html>",
-            escape_html(&account)
-        )
+    let font_url = crate::http::font_url(&context.account.mount);
+    let presentation = crate::http::ThemeChrome::new(context.account.theme, &context.account.mount);
+    let document = Document::render(context.account.nonce, |nonce| {
+        asterius_web::pages::render(&asterius_web::pages::AccountTotpPage {
+            text: context.account.text,
+            tenant_name: &context.account.tenant.display_name,
+            action: &action,
+            account_href: &account,
+            csrf: &csrf,
+            message,
+            active: matches!(status, TotpStatus::Active),
+            pending: matches!(status, TotpStatus::Pending),
+            provisioning,
+            qr: provisioning.and_then(|(_, uri)| asterius_web::qr::SetupQr::new(uri)),
+            nonce_attribute: asterius_web::pages::nonce_attribute(nonce),
+            theme_css: &presentation.css,
+            brand: presentation.brand(&font_url),
+        })
     });
     let mut response = (http_status, no_store(), document).into_response();
     response.headers_mut().insert(
@@ -491,20 +482,6 @@ fn path_encode(value: &str) -> String {
             } else {
                 format!("%{byte:02X}")
             }
-        })
-        .collect()
-}
-
-fn escape_html(value: &str) -> String {
-    value
-        .chars()
-        .map(|character| match character {
-            '&' => "&amp;".to_owned(),
-            '<' => "&lt;".to_owned(),
-            '>' => "&gt;".to_owned(),
-            '"' => "&quot;".to_owned(),
-            '\'' => "&#39;".to_owned(),
-            _ => character.to_string(),
         })
         .collect()
 }

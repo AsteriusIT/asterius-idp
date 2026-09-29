@@ -1,33 +1,25 @@
 # The console's design
 
-The admin console is drawn in the language `7f428d2` gave the user-facing
-pages: hairline borders, an 8px card and a 6px control, 44px targets, and a
-single accent spent on one decision per view. Since `ast-k7az.1` the console is
-**greyscale**, and the pages are not: the accent here is ink rather than
-indigo, the backdrop is a neutral grey rather than the pages' warm one, and the
-only colour on the screen names a state — green succeeded, red failed, blue
-informs, amber warns. The two tokens that diverge are listed in
-`console/src/tokens.css` and asserted as divergences by
-`the_console_declares_the_same_design_tokens`; everything else is still a
-checked copy. This file says where the values live, what the pieces are called, and
-what a screen is expected to do with them (`ast-fe39`, rebuilt on **shadcn/ui**
-by `ast-gore`).
+The console uses the existing Geist typography, restrained borders, neutral
+surfaces and shadcn/Radix components. Tenant-facing pages keep the tenant palette;
+console theme and density are browser-local preferences. The current shell has a
+labelled collapsible sidebar, workspace topbar and scoped navigation groups.
+Tenant settings/branding live in the workspace menu; preferences in the account
+menu.
 
-The components are shadcn's, copied into `console/src/components/ui/`. The
-application shell uses a fixed icon rail, a contextual topbar and bento-style
-content cards. Theme and density are browser preferences on one Settings page;
-tenant configuration remains a separate domain page. The policy the whole
-thing is served under did not change, which took measuring — see
-[Under the policy](#under-the-policy).
+The shared baseline is in `tokens.css`. `styles.css` and the final
+`enterprise.css` layer refine the console; the final cascade is authoritative.
+See [the current interaction, spacing and screen/state specification](experience-review.md)
+for ast-1k13, its recommendation dispositions and validation limits.
 
-The pictures beside it cover every screen at 1440×900 and are produced by
-`e2e/tests/console-shots.spec.ts`. The matching dark-theme series lives under
-`after/dark/`. Tenants has no historical “before” image and is photographed as
-the deployment administrator because nobody else is shown the link.
+The `before/`, `after/` and `reference-redesign/` screenshots are historical.
+Focused current captures are in `experience-review/`; deterministic fixture
+captures do not certify live backend journeys. `e2e/tests/console-shots.spec.ts`
+remains the broad deployment screenshot harness.
 
 ## The tokens
 
-`console/src/tokens.css` is the whole palette, and it is a **checked copy** of
+`console/src/tokens.css` is the baseline palette, and it is a **checked copy** of
 the `:root` rule of `crates/web/templates/style.css`.
 
 A copy, because the two consumers cannot read the same bytes: `style.css` is

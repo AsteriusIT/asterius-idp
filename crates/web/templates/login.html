@@ -44,7 +44,7 @@
      data-failed="{{ text.login_passkey_failed() }}"
      hidden>
   <div class="actions"><button type="button" id="passkey-signin-button">{{ text.login_passkey_button() }}</button></div>
-  <p class="muted" id="passkey-signin-status"></p>
+  <p class="muted" id="passkey-signin-status" role="status" aria-live="polite" aria-atomic="true"></p>
   <p class="separator">{{ text.login_or() }}</p>
 </div>
 
@@ -77,7 +77,7 @@
 <div class="stack" aria-label="Other ways to sign in">
   <p class="separator">{{ text.login_or() }}</p>
   {% for provider in upstream_providers %}
-  <p class="link-row"><a href="{{ provider.href }}">Continue with {{ provider.name }}</a></p>
+  <p class="link-row"><a class="button secondary" href="{{ provider.href }}">Continue with {{ provider.name }}</a></p>
   {% endfor %}
 </div>
 {% endif %}

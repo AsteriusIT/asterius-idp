@@ -1,17 +1,11 @@
+import { useUnsavedChanges } from './navigation-guard';
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { PencilIcon, PlusIcon } from 'lucide-react';
 import { mutate, read, type Session } from './api';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from './components/ui/dialog';
+
 import { draftError, parseSchema } from './authorization-details-type-model';
-import { Button, Field, LoadFailure, Message, Panel, Screen, Skeleton } from './ui';
+import { Button, ConfirmDialog, Field, LoadFailure, Message, Panel, Screen, Skeleton } from './ui';
 
 interface RegisteredType {
   readonly type: string;
@@ -31,9 +25,12 @@ export function AuthorizationDetailsTypes({ session }: Readonly<{ session: Sessi
   const [template, setTemplate] = useState('');
   const [editorOpen, setEditorOpen] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [withdrawing, setWithdrawing] = useState<string | null>(null);
+  const [baseline, setBaseline] = useState('');
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const leave = useUnsavedChanges(editorOpen && JSON.stringify([name, schema, template]) !== baseline);
   const mayWrite = session.scopes.includes('admin.authorization_details_types:write');
 
   const refresh = useCallback(() => {
@@ -55,6 +52,7 @@ export function AuthorizationDetailsTypes({ session }: Readonly<{ session: Sessi
 
   const openCreate = (): void => {
     clearDraft();
+    setBaseline(JSON.stringify(['', EMPTY_SCHEMA, '']));
     setEditorOpen(true);
   };
 
@@ -76,13 +74,14 @@ export function AuthorizationDetailsTypes({ session }: Readonly<{ session: Sessi
     setBusy(true); setError(null); setNotice(null);
     try {
       await mutate(`authorization-details-types/${encodeURIComponent(type)}`, 'DELETE', session);
-      setNotice(`${type} was withdrawn.`); refresh();
+      setNotice(`${type} was withdrawn.`); setWithdrawing(null); refresh();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'The authorization details type could not be withdrawn.');
     } finally { setBusy(false); }
   };
 
   const edit = (item: RegisteredType): void => {
+    setBaseline(JSON.stringify([item.type, JSON.stringify(item.schema, null, 2), item.consent_template ?? '']));
     setName(item.type); setSchema(JSON.stringify(item.schema, null, 2)); setTemplate(item.consent_template ?? '');
     setEditing(true); setError(null); setEditorOpen(true);
   };
@@ -93,37 +92,35 @@ export function AuthorizationDetailsTypes({ session }: Readonly<{ session: Sessi
   return <Screen
     title="Authorization details"
     description={`Structured authorization request types accepted by ${session.workspace}.`}
-    actions={mayWrite && <Button variant="primary" onClick={openCreate}><PlusIcon aria-hidden="true" /> Register type</Button>}
+    actions={mayWrite && !editorOpen && <Button variant="primary" onClick={openCreate}><PlusIcon aria-hidden="true" /> Register type</Button>}
   >
     {notice !== null && <Message tone="success">{notice}</Message>}
     {error !== null && !editorOpen && <Message tone="error">{error}</Message>}
-    <Panel title="Registered types">
+    {withdrawing !== null && <ConfirmDialog title={`Withdraw ${withdrawing}?`}
+      body={<><p>This removes the registration from {session.workspace}. Applications depending on it may no longer obtain the expected access. Already issued tokens retain their existing validity.</p>{error && <Message tone="error">{error}</Message>}</>}
+      confirmLabel="Withdraw registration" busy={busy} onCancel={() => { setWithdrawing(null); setError(null); }} onConfirm={() => void withdraw(withdrawing)} />}
+    {!editorOpen && <Panel title="Registered types">
       {load.kind === 'loading' && <Skeleton rows={3} label="Reading the authorization details types." />}
       {load.kind === 'failed' && <LoadFailure message={load.message} onRetry={refresh} />}
       {load.kind === 'ready' && (load.items.length === 0 ? <p className="muted">No authorization details types are registered.</p> :
-        <table><caption className="visually-hidden">Registered authorization details types</caption><thead><tr><th>Type</th><th>Consent</th><th>Schema</th>{mayWrite && <th>Actions</th>}</tr></thead>
+        <div className="table-wrap"><table><caption className="visually-hidden">Registered authorization details types</caption><thead><tr><th>Type</th><th>Consent</th><th>Schema</th>{mayWrite && <th>Actions</th>}</tr></thead>
           <tbody>{load.items.map(item => <tr key={item.type}><td><code>{item.type}</code></td><td>{item.consent_template ?? 'Undescribed'}</td><td><code>{JSON.stringify(item.schema)}</code></td>
-            {mayWrite && <td><Button small className="size-8 p-0" disabled={busy} aria-label={`Edit ${item.type}`} title="Edit" onClick={() => edit(item)}><PencilIcon aria-hidden="true" /></Button> <Button small variant="danger" disabled={busy} onClick={() => void withdraw(item.type)}>Withdraw</Button></td>}</tr>)}</tbody></table>)}
-    </Panel>
-    {mayWrite && <Dialog open={editorOpen} onOpenChange={(open) => {
-      if (busy) return;
-      setEditorOpen(open);
-      if (!open) clearDraft();
-    }}>
-      <DialogContent className="max-h-[calc(100vh-2rem)] overflow-y-auto sm:max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>{editing ? 'Edit authorization details type' : 'Register authorization details type'}</DialogTitle>
-          <DialogDescription>Schemas use the supported JSON Schema subset and are validated again by the server.</DialogDescription>
-        </DialogHeader>
+            {mayWrite && <td><Button small className="size-8 p-0" disabled={busy} aria-label={`Edit ${item.type}`} title="Edit" onClick={() => edit(item)}><PencilIcon aria-hidden="true" /></Button> <Button small variant="danger" disabled={busy} onClick={() => setWithdrawing(item.type)}>Withdraw</Button></td>}</tr>)}</tbody></table></div>)}
+    </Panel>}
+    {mayWrite && editorOpen && <section className="schema-editor" aria-label="Authorization type editor">
+      <h3>{editing ? 'Edit authorization details type' : 'Register authorization details type'}</h3>
+      <p className="muted">Validate the schema and review the consent wording before saving. The server validates the supported schema rules.</p>
         {error !== null && <Message tone="error">{error}</Message>}
         <Field label="Type name">{props => <input {...props} value={name} disabled={editing} onChange={event => setName(event.target.value)} placeholder="payment_initiation" />}</Field>
         <Field label="Consent template" hint="A user-facing sentence, up to 512 characters. Leave blank to mark the type undescribed.">{props => <input {...props} value={template} maxLength={512} onChange={event => setTemplate(event.target.value)} placeholder="Initiate the described payment" />}</Field>
         <Field label="JSON Schema" hint="Supported: type, required, properties, additionalProperties, enum, maxLength, items, maxItems, title, description.">{props => <textarea {...props} rows={12} value={schema} onChange={event => setSchema(event.target.value)} spellCheck={false} />}</Field>
-        <DialogFooter>
-          <Button disabled={busy} onClick={() => { setEditorOpen(false); clearDraft(); }}>Cancel</Button>
+        <Panel title="Consent wording preview" description="This is the operator-provided wording; the actual request may also show its actions, data and locations.">
+          <p>{template.trim() || 'Perform an action this server has no description for'}</p><code>{name || 'Type name'}</code>
+        </Panel>
+        <div className="actions">
+          <Button disabled={busy} onClick={() => leave(() => { setEditorOpen(false); clearDraft(); })}>Cancel</Button>
           <Button variant="primary" disabled={busy} onClick={() => void save()}>{busy ? 'Validating…' : editing ? 'Save changes' : 'Validate and register'}</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>}
+        </div>
+    </section>}
   </Screen>;
 }

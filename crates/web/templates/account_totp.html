@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}{{ text.authenticator_title() }} — {{ tenant_name }}{% endblock %}
+{% block content %}
+<h2>{{ text.authenticator_title() }}</h2>
+{% include "error_summary.html" %}
+{% if let Some((secret, uri)) = provisioning %}
+<section class="stack">
+<h3>{{ text.authenticator_scan() }}</h3>
+<p>{{ text.authenticator_secret() }}</p>
+{% if let Some(code) = qr %}
+<svg class="setup-qr" viewBox="0 0 {{ code.size }} {{ code.size }}" role="img" aria-label="{{ text.authenticator_scan() }}">
+<rect width="100%" height="100%" fill="white"/>
+{% for (x, y) in code.modules %}<rect x="{{ x }}" y="{{ y }}" width="1" height="1" fill="black"/>{% endfor %}
+</svg>
+{% endif %}
+<p class="setup-key"><code>{{ secret }}</code></p>
+<details><summary>{{ text.authenticator_manual() }}</summary><pre>{{ uri }}</pre></details>
+<h3>{{ text.authenticator_confirm() }}</h3>
+<form method="post" action="{{ action }}">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<label><span>{{ text.login_totp_code() }}</span><input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required></label>
+<div class="actions"><button type="submit" name="action" value="confirm">{{ text.authenticator_finish() }}</button></div>
+</form>
+</section>
+{% else if active %}
+<p class="notice">{{ text.authenticator_active() }}</p>
+<details class="danger-section"><summary>{{ text.authenticator_remove() }}</summary>
+<p>{{ text.authenticator_removal() }}</p>
+<form method="post" action="{{ action }}">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<label><span>{{ text.authenticator_current() }}</span><input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6"></label>
+<label class="permission"><input type="checkbox" required><span>{{ text.security_confirm() }}</span></label>
+<div class="actions"><button type="submit" name="action" value="remove" class="secondary">{{ text.authenticator_remove() }}</button></div>
+</form>
+</details>
+{% else %}
+{% if pending %}<p>{{ text.authenticator_pending() }}</p>{% endif %}
+<form method="post" action="{{ action }}">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<div class="actions"><button type="submit" name="action" value="start">{% if pending %}{{ text.authenticator_restart() }}{% else %}{{ text.authenticator_start() }}{% endif %}</button></div>
+</form>
+{% endif %}
+<p class="muted">{{ text.authenticator_recovery() }}</p>
+<p class="link-row"><a href="{{ account_href }}">{{ text.account_back() }}</a></p>
+{% endblock %}

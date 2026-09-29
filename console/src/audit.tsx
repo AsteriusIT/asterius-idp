@@ -27,6 +27,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { read, type Session } from './api';
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from './components/ui/sheet';
 import { JsonValue } from './components/json-view';
 import {
   Actions,
@@ -254,6 +255,11 @@ export function AuditExplorer({ session }: Readonly<{ session: Session }>): JSX.
         ) : undefined
       }
     >
+      <p className="muted">Times use UTC. The export includes records matching the applied filters, up to the server’s export limit.</p>
+      <Actions>{[1, 24, 168].map(hours => <Button key={hours} small onClick={() => {
+        const next = { ...draft, from: new Date(Date.now() - hours * 3600000).toISOString(), until: new Date().toISOString() };
+        setDraft(next); setApplied(next);
+      }}>{hours === 1 ? 'Last hour' : hours === 24 ? 'Last 24 hours' : 'Last 7 days'}</Button>)}</Actions>
       <FilterPanel>
         <form
           className="toolbar"
@@ -305,6 +311,8 @@ function Trail({
   onMore: () => void;
   onRetry: () => void;
 }>): JSX.Element {
+  const [selected, setSelected] = useState<string | null>(null);
+  const record = load.kind === 'ready' ? load.rows.find(row => String(row.id) === selected) : undefined;
   if (load.kind === 'loading') {
     return <Skeleton rows={5} label="Reading the trail." />;
   }
@@ -316,6 +324,12 @@ function Trail({
   }
   return (
     <>
+      <Sheet open={record !== undefined} onOpenChange={open => { if (!open) setSelected(null); }}>
+        <SheetContent className="overflow-y-auto">
+          <SheetHeader><SheetTitle>Event #{record?.id}</SheetTitle><SheetDescription>Read-only event details. Times use UTC.</SheetDescription></SheetHeader>
+          {record && <div className="p-6 space-y-4"><p><strong>{record.type}</strong> · {record.outcome}</p><p>{record.occurred_at}</p><Chain links={chainOf(record)} /><DetailList row={record} /></div>}
+        </SheetContent>
+      </Sheet>
       {/*
         A scrolling box has to be reachable by keyboard (WCAG 2.2 §2.1.1), and
         this one really scrolls: a record's detail is a list of opaque
@@ -375,7 +389,7 @@ function Trail({
                     <Chain links={chainOf(row)} />
                   </td>
                   <td>
-                    <DetailList row={row} />
+                    <Button small onClick={() => setSelected(String(row.id))}>Inspect event #{row.id}</Button>
                   </td>
                 </>
               )}

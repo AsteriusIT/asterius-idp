@@ -1,7 +1,7 @@
+import { useDialogDraft } from './dialog-draft';
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import type { Directory } from './users';
-import { userIdForUsername } from './user-lookup';
 import { mutate, read, type Session } from './api';
 import { FlowOrigin } from './flow-origin';
 import { assignmentsOf, clientCatalogue, TENANT_CATALOGUE, type AppRole, type HeldRoles } from './appRoles';
@@ -106,7 +106,8 @@ function GroupForm({ session, group, onCancel, onSaved }: Readonly<{
       error => { setBusy(false); setRefusal(failure(error, 'The group was not saved')); },
     );
   };
-  return <Dialog open onOpenChange={open => { if (!open && !busy) onCancel(); }}><DialogContent>
+  const { requestClose, confirmation } = useDialogDraft(name !== (group?.name ?? '') || display !== (group?.display_name ?? ''), busy, onCancel);
+  return <Dialog open onOpenChange={open => { if (!open) requestClose(); }}><DialogContent>
     <DialogHeader><DialogTitle>{editing ? 'Edit group' : 'Create group'}</DialogTitle>
       <DialogDescription>The machine name is used by policy; the display name is for administrators.</DialogDescription></DialogHeader>
     {refusal !== null && <Message tone="error">{refusal} Your draft is still here.</Message>}
@@ -114,7 +115,7 @@ function GroupForm({ session, group, onCancel, onSaved }: Readonly<{
       <fieldset disabled={busy}><Field label="Machine name" required hint="Lowercase letters, numbers, and -_.: only.">
         {props => <input {...props} value={name} onChange={event => setName(event.target.value)} />}</Field>
         <Field label="Display name" required>{props => <input {...props} value={display} onChange={event => setDisplay(event.target.value)} />}</Field>
-        <Actions end><Button onClick={onCancel}>Cancel</Button><Button variant="primary" type="submit" disabled={name.trim() === '' || display.trim() === ''}>Save group</Button></Actions>
+        {confirmation}<Actions end><Button onClick={requestClose}>Cancel</Button><Button variant="primary" type="submit" disabled={name.trim() === '' || display.trim() === ''}>Save group</Button></Actions>
       </fieldset>
     </form>
   </DialogContent></Dialog>;
@@ -173,6 +174,7 @@ function GroupMembers({ session, group }: Readonly<{ session: Session; group: Gr
   const [load, setLoad] = useState<Load<MemberPage>>({ kind: 'loading' });
   const [cursor, setCursor] = useState<string | null>(null);
   const [user, setUser] = useState('');
+  const [matches, setMatches] = useState<Load<Directory> | null>(null);
   const [busy, setBusy] = useState(false);
   const [refusal, setRefusal] = useState<string | null>(null);
   const [removingMember, setRemovingMember] = useState<{ user_id: string; username: string } | null>(null);
@@ -190,24 +192,24 @@ function GroupMembers({ session, group }: Readonly<{ session: Session; group: Gr
       error => { setBusy(false); setRemovingMember(null); setRefusal(failure(error, 'Membership could not be changed')); },
     );
   };
-  const addUsername = (): void => {
-    const username = user.trim();
-    if (!username || busy) return;
-    setBusy(true);
-    setRefusal(null);
-    userIdForUsername(username, async (path) => await read(path) as Directory).then(
-      (id) => {
-        if (id === null) { setBusy(false); setRefusal(`No user has the username “${username}”.`); return; }
-        change(id, true, username);
-      },
-      (error: unknown) => { setBusy(false); setRefusal(failure(error, 'The user could not be found')); },
+  const findUser = (): void => {
+    setMatches({ kind: 'loading' });
+    read(`users?q=${encodeURIComponent(user.trim())}`).then(
+      value => setMatches({ kind: 'ready', value: value as Directory }),
+      error => setMatches({ kind: 'failed', message: failure(error, 'The directory could not be searched') }),
     );
   };
   return <Panel title="Members" description="Membership changes affect the next authorization decision and token issuance. Existing JWTs remain valid until expiry.">
     {refusal !== null && <Message tone="error">{refusal}</Message>}
-    {writable && session.scopes.includes('admin.users:read') && <form className="toolbar" onSubmit={event => { event.preventDefault(); addUsername(); }}>
-      <Field label="Username" hint="Enter the exact username of an existing user.">{props => <input {...props} value={user} placeholder="e.g. alex" autoComplete="off" onChange={event => setUser(event.target.value)} />}</Field>
-      <Button type="submit" variant="primary" disabled={user.trim() === '' || busy}>{busy ? 'Adding…' : 'Add member'}</Button></form>}
+    {writable && session.scopes.includes('admin.users:read') && <form className="toolbar" onSubmit={event => { event.preventDefault(); findUser(); }}>
+      <Field label="Find a user" hint="Search by username or email, then choose the person to add.">{props => <input {...props} value={user} placeholder="e.g. alex" autoComplete="off" onChange={event => setUser(event.target.value)} />}</Field>
+      <Button type="submit" variant="primary" disabled={user.trim() === '' || busy}>Find users</Button></form>}
+    {matches?.kind === 'loading' && <Skeleton rows={2} label="Searching users." />}
+    {matches?.kind === 'failed' && <LoadFailure message={matches.message} onRetry={findUser} />}
+    {matches?.kind === 'ready' && <DataTable caption="Matching users" rows={matches.value.items} rowKey={row => row.user_id}
+      empty={<EmptyState title="No matching users" body="Try another username or email address." />}
+      columns={[{ key: 'person', header: 'Person', cell: row => <><strong>{row.username}</strong><span className="muted block">{row.email}</span></> },
+        { key: 'add', header: 'Add member', actions: true, cell: row => <Button small disabled={busy || (load.kind === 'ready' && load.value.items.some(member => member.user_id === row.user_id))} onClick={() => { change(row.user_id, true, row.username); setMatches(null); }}>Add {row.username}</Button> }]} />}
     {writable && !session.scopes.includes('admin.users:read') && <Message tone="info">Ask an administrator for user directory access to add members by username.</Message>}
     {load.kind === 'loading' && <Skeleton rows={3} label="Reading members." />}
     {load.kind === 'failed' && <LoadFailure message={load.message} onRetry={refresh} />}

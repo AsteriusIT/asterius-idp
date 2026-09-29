@@ -1,3 +1,4 @@
+import { useUnsavedChanges } from '@/navigation-guard';
 /**
  * The tenant selector (`ast-gore` (4)).
  *
@@ -94,6 +95,7 @@ export function TenantSwitcher({
   session: Session;
   className?: string;
 }>): JSX.Element {
+  const leave = useUnsavedChanges(false);
   const [open, setOpen] = useState(false);
   const [load, setLoad] = useState<Load>({ kind: 'idle' });
   const switchable = maySwitch(session);
@@ -119,6 +121,7 @@ export function TenantSwitcher({
   // are. `⌘` as well as `Ctrl` because this console is used on both.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
+      if (document.querySelector('[role=dialog], [role=alertdialog]')) return;
       if (event.key.toLowerCase() === 'k' && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
         setOpen((current) => !current);
@@ -132,8 +135,9 @@ export function TenantSwitcher({
     // A full navigation, on purpose: the other tenant's console is another
     // document with another session. See the module docs.
     if (tenant.tenant_id === session.workspace) { setOpen(false); return; }
-    window.location.assign(tenantSwitchUrl(tenant, window.location.origin, LANDING_ROUTE));
-  }, [session.workspace]);
+    setOpen(false);
+    leave(() => window.location.assign(tenantSwitchUrl(tenant, window.location.origin, LANDING_ROUTE)));
+  }, [session.workspace, leave]);
 
   const currentName = load.kind === 'ready'
     ? (load.tenants.find((tenant) => tenant.tenant_id === session.workspace)?.display_name ?? session.workspace)

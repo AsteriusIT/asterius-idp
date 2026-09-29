@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}{{ text.external_approvals_title() }} — {{ tenant_name }}{% endblock %}
+{% block content %}
+<h2>{{ text.external_approvals_title() }}</h2>
+{% include "error_summary.html" %}
+<h3>{{ text.external_approvals_current() }}</h3>
+{% if consents.is_empty() %}<p class="muted">{{ text.external_approvals_empty() }}</p>{% endif %}
+{% for entry in consents %}
+<section class="account-section">
+<h3>{{ entry.client }}</h3><p>{{ entry.resource }}</p>
+<p>{{ text.security_permissions() }}: {% for scope in entry.scopes %}<code>{{ scope }}</code> {% endfor %}</p>
+<p>{{ text.security_expires() }}: <time>{{ entry.expires }}</time></p>
+<details><summary>{{ text.security_details() }}</summary><p>{{ entry.issuer }}</p><p>{{ entry.actor }}</p></details>
+<details class="danger-section"><summary>{{ text.external_approvals_revoke() }}</summary><p>{{ text.external_approvals_impact() }}</p>
+<form method="post" action="{{ action }}">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<input type="hidden" name="issuer" value="{{ entry.issuer }}">
+<input type="hidden" name="actor_client_id" value="{{ entry.actor }}">
+<input type="hidden" name="client_id" value="{{ entry.client }}">
+<input type="hidden" name="resource" value="{{ entry.resource }}">
+<label class="permission"><input type="checkbox" required><span>{{ text.security_confirm() }}</span></label>
+<div class="actions"><button type="submit" name="action" value="revoke" class="secondary">{{ text.external_approvals_revoke() }}</button></div>
+</form></details>
+</section>
+{% endfor %}
+<h3>{{ text.external_approvals_new() }}</h3><p>{{ text.external_approvals_intro() }}</p>
+{% if options.is_empty() %}<p class="muted">{{ text.external_approvals_unavailable() }}</p>{% endif %}
+{% for entry in options %}
+<section class="account-section"><h3>{{ entry.client }}</h3><p>{{ entry.resource }}</p>
+<details><summary>{{ text.security_details() }}</summary><p>{{ entry.issuer }}</p><p>{{ entry.actor }}</p></details>
+<form method="post" action="{{ action }}">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<input type="hidden" name="issuer" value="{{ entry.issuer }}">
+<input type="hidden" name="actor_client_id" value="{{ entry.actor }}">
+<input type="hidden" name="client_id" value="{{ entry.client }}">
+<input type="hidden" name="resource" value="{{ entry.resource }}">
+<fieldset><legend>{{ text.security_permissions() }}</legend>
+{% for scope in entry.scopes %}<label class="permission"><input type="checkbox" name="scope" value="{{ scope }}"><span>{{ scope }}</span></label>{% endfor %}
+</fieldset>
+<div class="actions"><button type="submit" name="action" value="grant">{{ text.external_approvals_grant() }}</button></div>
+</form></section>
+{% endfor %}
+<p class="link-row"><a href="{{ account_href }}">{{ text.account_back() }}</a></p>
+{% endblock %}

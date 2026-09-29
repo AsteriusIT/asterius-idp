@@ -1,3 +1,4 @@
+import { UnsavedNotice } from './navigation-guard';
 /**
  * The console's components (`ast-fe39`, rebuilt on shadcn/ui by `ast-gore`).
  *
@@ -83,7 +84,7 @@ export function PageHeader({
     <header className={identity ? "screen-head identity-heading" : "screen-head"}>
       {identity && <span className="identity-avatar detail-avatar" aria-hidden="true">{identity.slice(0, 2).toUpperCase()}</span>}
       <div className="screen-title">
-        <h2>{title}</h2>
+        <h2 tabIndex={-1}>{title}</h2>
         {description !== undefined && <p className="muted">{description}</p>}
       </div>
       {actions !== undefined && <div className="screen-actions">{actions}</div>}
@@ -101,10 +102,15 @@ export function Screen({
   back?: { label: string; onClick: () => void };
   identity?: string | undefined;
 }>): JSX.Element {
+  useEffect(() => {
+    document.title = `${title} — Asterius console`;
+    document.querySelector<HTMLElement>('.screen-head h2')?.focus({ preventScroll: true });
+  }, [title]);
   return (
     <div className="screen">
       {back && <button className="back-link" onClick={back.onClick}>← {back.label}</button>}
       <PageHeader title={title} description={description} actions={actions} identity={identity} />
+      <UnsavedNotice />
       {children}
     </div>
   );
@@ -648,8 +654,8 @@ export function DataTable<Row>({
             type="search"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder={search.placeholder ?? 'Filter…'}
-            aria-label={search.label ?? 'Filter the rows below'}
+            placeholder={search.placeholder ?? 'Filter loaded results…'}
+            aria-label={search.label ?? 'Filter loaded results'}
             className="pl-8"
           />
         </div>
@@ -677,7 +683,7 @@ export function DataTable<Row>({
           }
         />
       ) : (
-        <div className="table-wrap">
+        <div className="table-wrap" tabIndex={0} role="region" aria-label={caption ?? "Table — scroll horizontally for more columns"}>
           <Table>
             {caption !== undefined && <TableCaption>{caption}</TableCaption>}
             <TableHeader>
@@ -699,6 +705,7 @@ export function DataTable<Row>({
                     heading = (
                       <button
                         type="button"
+                        title="Sort loaded results"
                         className="inline-flex items-center gap-1 rounded-sm font-medium hover:text-foreground"
                         onClick={() =>
                           setSort((current) =>
@@ -794,11 +801,11 @@ export function ConfirmDialog({
 }>): JSX.Element {
   const dismiss = useCallback(
     (open: boolean) => {
-      if (!open) {
+      if (!open && !busy) {
         onCancel();
       }
     },
-    [onCancel],
+    [onCancel, busy],
   );
 
   return (
@@ -806,7 +813,7 @@ export function ConfirmDialog({
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>{title}</AlertDialogTitle>
-          <AlertDialogDescription>{body}</AlertDialogDescription>
+          <AlertDialogDescription asChild><div>{body}</div></AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel disabled={busy}>{cancelLabel}</AlertDialogCancel>
@@ -814,7 +821,7 @@ export function ConfirmDialog({
               the act runs on click and the dialog is unmounted by the caller
               when the call settles, rather than closing before it has. */}
           <AlertDialogAction asChild>
-            <ShadButton variant="destructive" disabled={busy} onClick={onConfirm}>
+            <ShadButton variant="destructive" disabled={busy} onClick={(event) => { event.preventDefault(); onConfirm(); }}>
               {confirmLabel}
             </ShadButton>
           </AlertDialogAction>

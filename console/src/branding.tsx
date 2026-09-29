@@ -1,3 +1,4 @@
+import { useUnsavedChanges } from './navigation-guard';
 /** Tenant branding editor and CSP-safe, console-isolated local preview. */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { JSX } from 'react';
@@ -75,12 +76,7 @@ export function Branding({ session }: Readonly<{ session: Session }>): JSX.Eleme
 
   useEffect(refresh, [refresh]);
   const dirty = load.kind === 'ready' && draft !== null && (isDirty(load.theme, draft) || logoFile !== null);
-  useEffect(() => {
-    if (!dirty) return undefined;
-    const warn = (event: BeforeUnloadEvent): void => event.preventDefault();
-    window.addEventListener('beforeunload', warn);
-    return () => window.removeEventListener('beforeunload', warn);
-  }, [dirty]);
+  useUnsavedChanges(dirty);
 
   useEffect(() => {
     if (draft === null || preview.current === null) return;

@@ -5,6 +5,7 @@
 <h2>Accept invitation</h2>
 {% if complete %}
 <p>Your account is ready. Sign in with your new password.</p>
+<p class="link-row"><a class="button" href="{{ sign_in_href }}">Sign in</a></p>
 {% else if available %}
 <p>Create a password for <strong>{{ username }}</strong>.</p>
 {% else %}

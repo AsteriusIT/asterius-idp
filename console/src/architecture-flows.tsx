@@ -103,6 +103,9 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
   const [graph, setGraph] = useState<Graph>(EMPTY);
   const [selected, setSelected] = useState<string | null>(null);
   const [selectedEdge, setSelectedEdge] = useState<string | null>(null);
+  const [listView, setListView] = useState(false);
+  const [connectionSource, setConnectionSource] = useState('');
+  const [connectionTarget, setConnectionTarget] = useState('');
   const [pendingRemoval, setPendingRemoval] = useState<string | null>(null);
   const [pendingNavigation, setPendingNavigation] = useState<string | null>(null);
   const [showShortcuts, setShowShortcuts] = useState(false);
@@ -273,7 +276,18 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
     <div className="architecture-workspace-body">
       <div className="architecture-stage">
         {canWrite && <div className="architecture-palette" aria-label="Add an object"><Button variant="ghost" small title="Add backend for frontend preset (B)" aria-keyshortcuts="B" onClick={addBff}><Layers size={18} />BFF</Button>{(Object.keys(TYPES) as Kind[]).map(kind => { const Icon = ICONS[kind]; return <Button variant="ghost" key={kind} small title={`Add ${TYPES[kind].toLowerCase()}`} aria-label={`Add ${TYPES[kind].toLowerCase()}`} onClick={() => { addNode(kind); setTab('object'); }}><Icon size={18} />{(kind === 'identity_provider' || kind === 'stream' || kind === 'gateway') && TYPES[kind]}</Button>; })}</div>}
-        <div className="architecture-stage-canvas"><FlowCanvas graph={graph} writable={canWrite} selected={selected} selectedEdge={selectedEdge} onEdgeSelect={setSelectedEdge} onSelect={id => { setSelected(id); setTab('object'); }} onChange={change} /></div>
+        <div className="architecture-view-switch"><Button small aria-pressed={listView} onClick={() => setListView(value => !value)}>{listView ? 'Show canvas' : 'Show object list'}</Button></div>
+        {listView ? <div className="architecture-object-list" aria-label="Architecture objects">
+          <p className="muted">Select an object to configure it. Changes affect this draft until reviewed and applied.</p>
+          <ul>{graph.nodes.map(node => <li key={node.id}><Button aria-pressed={selected === node.id} onClick={() => { setSelected(node.id); setTab('object'); }}>{node.label} · {TYPES[node.kind]}</Button>{canWrite && <Button small variant="danger" onClick={() => setPendingRemoval(node.id)}>Remove {node.label}</Button>}</li>)}</ul>
+          <h2>Connections</h2>
+          <ul>{graph.edges.map(edge => <li key={edge.id}><span>{graph.nodes.find(node => node.id === edge.source)?.label} → {graph.nodes.find(node => node.id === edge.target)?.label}</span>{canWrite && <Button small onClick={() => change({ ...graph, edges: graph.edges.filter(item => item.id !== edge.id) })}>Remove connection</Button>}</li>)}</ul>
+          {canWrite && <form onSubmit={event => { event.preventDefault(); if (validConnection(graph, connectionSource, connectionTarget)) { change({ ...graph, edges: [...graph.edges, { id: crypto.randomUUID(), source: connectionSource, target: connectionTarget }] }); setConnectionTarget(''); } }}>
+            <Field label="Connect from">{props => <select {...props} value={connectionSource} onChange={event => { setConnectionSource(event.target.value); setConnectionTarget(''); }}><option value="">Choose an object</option>{graph.nodes.map(node => <option key={node.id} value={node.id}>{node.label}</option>)}</select>}</Field>
+            <Field label="Connect to">{props => <select {...props} value={connectionTarget} onChange={event => setConnectionTarget(event.target.value)}><option value="">Choose a compatible object</option>{graph.nodes.filter(node => validConnection(graph, connectionSource, node.id)).map(node => <option key={node.id} value={node.id}>{node.label}</option>)}</select>}</Field>
+            <Button type="submit" disabled={!validConnection(graph, connectionSource, connectionTarget)}>Add connection</Button>
+          </form>}
+        </div> : <div className="architecture-stage-canvas"><FlowCanvas graph={graph} writable={canWrite} selected={selected} selectedEdge={selectedEdge} onEdgeSelect={setSelectedEdge} onSelect={id => { setSelected(id); setTab('object'); }} onChange={change} /></div>}
       </div>
       <aside className="architecture-sidepane" aria-label="Architecture details">
         {graph.edges.some(edge => !validConnection({ ...graph, edges: graph.edges.filter(item => item.id !== edge.id) }, edge.source, edge.target)) && <p role="alert" className="architecture-pane-content">This diagram has an unsupported link. Select the link on the canvas to remove it. Identity providers can connect only to groups or users.</p>}

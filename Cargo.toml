@@ -25,6 +25,7 @@ authors = ["Asterius contributors"]
 publish = false
 
 [workspace.dependencies]
+qrcodegen = "1.8.0"
 # --- internal crates -------------------------------------------------------
 asterius-domain = { path = "crates/domain" }
 asterius-oidc = { path = "crates/oidc" }
