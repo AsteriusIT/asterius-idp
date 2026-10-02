@@ -39,6 +39,26 @@ export const DEFAULT_THEME: Theme = 'light';
 const listeners = new Set<() => void>();
 
 let current: Theme = DEFAULT_THEME;
+let restoreTransitionsFrame: number | undefined;
+
+/** Suppress the palette swap through bundled CSS, without injecting a CSP-blocked style. */
+function paintWithoutTransitions(theme: Theme): void {
+  if (restoreTransitionsFrame !== undefined) {
+    window.cancelAnimationFrame(restoreTransitionsFrame);
+  }
+  const root = document.documentElement;
+  root.classList.add('theme-switching');
+  paint(theme);
+  // Commit the new palette while transitions are suppressed, then restore
+  // after a paint. Cancelling the pending frame also handles rapid toggles.
+  void root.offsetHeight;
+  restoreTransitionsFrame = window.requestAnimationFrame(() => {
+    restoreTransitionsFrame = window.requestAnimationFrame(() => {
+      root.classList.remove('theme-switching');
+      restoreTransitionsFrame = undefined;
+    });
+  });
+}
 
 /** Reads the remembered choice, or the default when there is not one. */
 function remembered(): Theme {
@@ -74,7 +94,7 @@ export function themeNow(): Theme {
 /** Sets the scheme, remembers it, and tells everyone who is watching. */
 export function setTheme(theme: Theme): void {
   current = theme;
-  paint(theme);
+  paintWithoutTransitions(theme);
   try {
     window.localStorage.setItem(STORAGE_KEY, theme);
   } catch {
