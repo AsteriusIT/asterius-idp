@@ -1,6 +1,6 @@
-{% extends "base.html" %}
+{% extends "account_base.html" %}
 {% block title %}{{ text.grants_title() }} — {{ tenant_name }}{% endblock %}
-{% block content %}
+{% block account_content %}
 {# Grant Management ID1 §3's dashboard use case: "the user can see the grants
    that are active and revoke them". OIDC Core §3.1.2.4 is the other half —
    what a person agreed to is a decision they keep, so it has to be visible and
@@ -19,7 +19,7 @@
    an ordinary form post. #}
 {% include "error_summary.html" %}
 
-<div class="stack tight">
+<div class="account-record">
 <h2>{{ text.grants_heading() }}</h2>
 </div>
 
@@ -28,8 +28,7 @@
 {% else %}
 <p class="muted">{{ text.grants_revoke_explains() }}</p>
 {% for grant in grants %}
-<p class="separator"></p>
-<div class="stack tight">
+<div class="account-record">
 <p>{{ text.grants_granted_to(grant.client_name) }}</p>
 
 {# An agent is the one client whose access a person may not recognise from
@@ -44,18 +43,18 @@
    taken from it. Both in a `<time>` element so a user agent can present the
    instant its own way. #}
 <p class="muted">
-  <time datetime="{{ grant.granted_at }}">{{ text.grants_allowed_on(grant.granted_at) }}</time>
+  <time datetime="{{ grant.granted_at }}">{{ text.grants_allowed_on(account_time(grant.granted_at).as_str()) }}</time>
 </p>
 <p class="muted">
 {% if let Some(used) = grant.last_used %}
-  <time datetime="{{ used }}">{{ text.grants_last_used(used) }}</time>
+  <time datetime="{{ used }}">{{ text.grants_last_used(account_time(used).as_str()) }}</time>
 {% else %}
   {{ text.grants_never_used() }}
 {% endif %}
 </p>
 {% if let Some(exchanged) = grant.last_exchange %}
 <p class="muted">
-  <time datetime="{{ exchanged }}">{{ text.grants_last_exchange(exchanged) }}</time>
+  <time datetime="{{ exchanged }}">{{ text.grants_last_exchange(account_time(exchanged).as_str()) }}</time>
 </p>
 {% endif %}
 

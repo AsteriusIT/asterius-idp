@@ -1,6 +1,6 @@
-{% extends "base.html" %}
+{% extends "account_base.html" %}
 {% block title %}{{ text.account_email_link() }} — {{ tenant_name }}{% endblock %}
-{% block content %}
+{% block account_content %}
 <div class="stack tight">
 <h2>{{ text.account_email_link() }}</h2>
 {% if !current_address.is_empty() %}<p>{{ text.account_email_current() }}: {{ current_address }}</p>{% endif %}

@@ -1,6 +1,6 @@
-{% extends "base.html" %}
+{% extends "account_base.html" %}
 {% block title %}{{ text.external_approvals_title() }} — {{ tenant_name }}{% endblock %}
-{% block content %}
+{% block account_content %}
 <h2>{{ text.external_approvals_title() }}</h2>
 {% include "error_summary.html" %}
 <h3>{{ text.external_approvals_current() }}</h3>
@@ -9,7 +9,7 @@
 <section class="account-section">
 <h3>{{ entry.client }}</h3><p>{{ entry.resource }}</p>
 <p>{{ text.security_permissions() }}: {% for scope in entry.scopes %}<code>{{ scope }}</code> {% endfor %}</p>
-<p>{{ text.security_expires() }}: <time>{{ entry.expires }}</time></p>
+<p>{{ text.security_expires() }}: <time datetime="{{ entry.expires }}">{{ account_time(entry.expires) }}</time></p>
 <details><summary>{{ text.security_details() }}</summary><p>{{ entry.issuer }}</p><p>{{ entry.actor }}</p></details>
 <details class="danger-section"><summary>{{ text.external_approvals_revoke() }}</summary><p>{{ text.external_approvals_impact() }}</p>
 <form method="post" action="{{ action }}">

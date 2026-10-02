@@ -1,6 +1,6 @@
-{% extends "base.html" %}
+{% extends "account_base.html" %}
 {% block title %}{{ text.authenticator_title() }} — {{ tenant_name }}{% endblock %}
-{% block content %}
+{% block account_content %}
 <h2>{{ text.authenticator_title() }}</h2>
 {% include "error_summary.html" %}
 {% if login_enabled %}

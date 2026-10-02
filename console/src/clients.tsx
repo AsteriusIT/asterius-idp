@@ -55,6 +55,7 @@ import { FlowOrigin } from './flow-origin';
  * (ADR-0009). Every control is an ordinary form element, every handler is
  * attached by React, and nothing is fetched from anywhere but this origin.
  */
+import { OneTimeSecret } from './components/one-time-secret';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from './components/ui/tabs';
 import { FormSelect } from './components/ui/select';
 import { ArrowRightLeftIcon, KeyRoundIcon, MonitorSmartphoneIcon, PencilIcon, RefreshCwIcon, ServerIcon, SmartphoneIcon } from 'lucide-react';
@@ -599,7 +600,7 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
         </>
       }
       actions={
-        canWrite ? <Actions><Button onClick={() => setRouteParameters('clients', { mode: 'new', id: null, tab: null, guided: '1' })}>Guided setup</Button><Button variant="primary" onClick={() => setRouteParameters('clients', { mode: 'new', id: null, tab: null, guided: null })}>
+        canWrite ? <Actions><Button variant="ghost" onClick={() => setRouteParameters('clients', { mode: 'new', id: null, tab: null, guided: '1' })}>Guided setup</Button><Button variant="primary" onClick={() => setRouteParameters('clients', { mode: 'new', id: null, tab: null, guided: null })}>
           Register a client
         </Button></Actions> : undefined
       }
@@ -613,17 +614,10 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
           else { setCursor(null); setAppliedQuery(query); }
         }} /><DirectoryStatusFilter value={status} options={[{ value: '', label: 'All statuses' }, { value: 'active', label: 'Active' }, { value: 'disabled', label: 'Disabled' }]} onChange={value => { setCursor(null); setStatus(value); }} /></div>
         <Inventory load={load} onOpen={(id) => setRouteParameters('clients', { id, mode: null, tab: null })} onRetry={() => refresh(appliedQuery)} busy={busy} />
-        <Actions><Button disabled={cursor === null || load.kind === 'loading'} onClick={() => setCursor(null)}>First page</Button><Button disabled={!nextCursor || load.kind === 'loading'} onClick={() => setCursor(nextCursor)}>Next page</Button></Actions>
+        {(cursor !== null || nextCursor) && <Actions><Button variant="ghost" disabled={cursor === null || load.kind === 'loading'} onClick={() => setCursor(null)}>First page</Button><Button variant="ghost" disabled={!nextCursor || load.kind === 'loading'} onClick={() => setCursor(nextCursor)}>Next page</Button></Actions>}
       </Panel>
 
       {gate !== null && <Gate gate={gate} />}
-
-      <Panel id="clients-not-here" title="Not editable yet">
-        <p className="muted">
-          The per-tenant registration policy (<code>ast-m9c.6</code>), the agent profile{' '}
-          (<code>ast-lh3.1</code>) and RAR type policy are not edited on this screen.
-        </p>
-      </Panel>
     </Screen>
   );
 }
@@ -1037,12 +1031,7 @@ function Editor({
         </fieldset></TabsContent>
 
         <TabsContent value="credentials">
-          {issuedSecret !== null && <Panel className="credential-secret-panel" title="New client secret — shown once">
-            <Message tone="info">Copy this value into the application&rsquo;s secret manager now. Asterius stores only its SHA-256 digest and cannot show it again.</Message>
-            <p className="credential-secret-value"><code>{issuedSecret}</code></p>
-            <CopyValue key={issuedSecret} value={issuedSecret} label="Copy secret" onCopied={onSecretCopied} />
-            <Button small onClick={onSecretCopied}>I have saved the secret</Button>
-          </Panel>}
+          {issuedSecret !== null && <OneTimeSecret key={issuedSecret} value={issuedSecret} onStored={onSecretCopied} />}
           <fieldset disabled={busy || !canWrite}>
           <legend id="client-keys-subjects">Keys and subjects</legend>
           <ClientSecurity draft={draft} discovery={discovery} refusal={refusal} busy={busy || !canWrite} onChange={onChange} />
@@ -1050,7 +1039,7 @@ function Editor({
             <h3>Client secret</h3>
             <p className="muted">Rotate to issue a replacement once, or revoke to stop shared-secret authentication until a new secret is issued.</p>
             <Actions>
-              <Button type="button" disabled={busy} onClick={onRotateSecret}>Rotate secret</Button>
+              <Button type="button" disabled={busy} onClick={onRotateSecret}><RefreshCwIcon aria-hidden="true" />Rotate secret</Button>
               <Button type="button" variant="danger" disabled={busy} onClick={() => setConfirmingRevoke(true)}>Revoke secret</Button>
             </Actions>
           </div>}
@@ -1286,31 +1275,32 @@ function Editor({
  */
 function Gate({ gate }: Readonly<{ gate: RegistrationGate }>): JSX.Element {
   return (
-    <Panel id="registration-gate" title="Dynamic client registration">
-      <dl className="stats">
-        <div className="stat">
-          <dt>Mode</dt>
-          <dd>
-            <code>{gate.mode}</code>
-          </dd>
-        </div>
-        <div className="stat">
-          <dt>Initial access tokens configured</dt>
-          <dd>{gate.configured_tokens}</dd>
-        </div>
-        <div className="stat">
-          <dt>Stored as</dt>
-          <dd>{gate.tokens_stored_hashed ? 'SHA-256 digests' : 'plain text'}</dd>
-        </div>
-      </dl>
-      {!gate.console_issuance && (
-        <p className="muted">
-          Initial access tokens are provisioned in this deployment&rsquo;s configuration file and
-          hashed when it is read, so there is no row to give an expiry, a quota or a revocation —
-          and nothing for this console to mint. Issuing them from here needs the per-tenant
-          registration policy (<code>ast-m9c.6</code>).
-        </p>
-      )}
-    </Panel>
+    <details className="registration-settings">
+      <summary>Dynamic client registration<span className="muted">Deployment configuration</span></summary>
+      <div className="registration-settings-body">
+        <dl className="stats">
+          <div className="stat">
+            <dt>Mode</dt>
+            <dd>
+              <code>{gate.mode}</code>
+            </dd>
+          </div>
+          <div className="stat">
+            <dt>Initial access tokens configured</dt>
+            <dd>{gate.configured_tokens}</dd>
+          </div>
+          <div className="stat">
+            <dt>Stored as</dt>
+            <dd>{gate.tokens_stored_hashed ? 'SHA-256 digests' : 'plain text'}</dd>
+          </div>
+        </dl>
+        {!gate.console_issuance && (
+          <p className="muted">
+            Initial access tokens are managed in your deployment’s configuration file.
+            This console cannot issue, expire or revoke them. Contact your deployment administrator to change registration access.
+          </p>
+        )}
+      </div>
+    </details>
   );
 }

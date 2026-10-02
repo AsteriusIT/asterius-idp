@@ -234,6 +234,7 @@ export function Button({
       variant={mapped}
       size={small ? 'sm' : 'default'}
       className={cn(
+        'console-action',
         variant === 'danger' &&
           'border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive',
         className,

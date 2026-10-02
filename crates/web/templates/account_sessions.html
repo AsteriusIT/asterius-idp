@@ -1,6 +1,6 @@
-{% extends "base.html" %}
+{% extends "account_base.html" %}
 {% block title %}{{ text.sessions_title() }} — {{ tenant_name }}{% endblock %}
-{% block content %}
+{% block account_content %}
 {# The sessions open on an account, and one button per row to close them
    (`ast-1xd`).
 
@@ -24,22 +24,22 @@
    ordinary form post. #}
 {% include "error_summary.html" %}
 
-<div class="stack tight">
+<div class="account-record">
 <h2>{{ text.sessions_heading() }}</h2>
 </div>
 
 <p class="muted">{{ text.sessions_explains() }}</p>
 {% for session in sessions %}
-<p class="separator"></p>
-<div class="stack tight">
+<div class="account-record">
 {% if session.current %}
-<p>{{ text.sessions_current() }}</p>
+<h3 class="account-session-current">{{ text.sessions_current() }}</h3>
+{% else %}<h3>{{ text.account_other_session() }}</h3>
 {% endif %}
 <p class="muted">
-  <time datetime="{{ session.started_at }}">{{ text.sessions_started(session.started_at) }}</time>
+  <time datetime="{{ session.started_at }}">{{ text.sessions_started(account_time(session.started_at).as_str()) }}</time>
 </p>
 <p class="muted">
-  <time datetime="{{ session.last_seen_at }}">{{ text.sessions_last_seen(session.last_seen_at) }}</time>
+  <time datetime="{{ session.last_seen_at }}">{{ text.sessions_last_seen(account_time(session.last_seen_at).as_str()) }}</time>
 </p>
 {% if !session.methods.is_empty() %}
 <p class="muted">{{ text.sessions_methods(session.methods.as_str()) }}</p>
@@ -56,7 +56,6 @@
 {% endfor %}
 
 {% if others %}
-<p class="separator"></p>
 {# One form for "everything but this browser". It names no session: the server
    works out which rows those are from the cookie it is holding, so a body
    that named them could not be made to close somebody else's. #}

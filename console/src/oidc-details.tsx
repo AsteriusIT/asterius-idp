@@ -1,3 +1,4 @@
+import { ConnectionDocument } from './components/connection-document';
 import { useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { read, readUrl } from './api';
@@ -16,7 +17,7 @@ type Load =
 function label(key: string): string {
   return key
     .replaceAll('_', ' ')
-    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+    .replace(/^./, (letter) => letter.toUpperCase());
 }
 
 /** Loads and presents the tenant's live sign-in discovery URL members. */
@@ -74,18 +75,10 @@ export function OidcDetails({ tenant }: Readonly<{ tenant: string }>): JSX.Eleme
       title="Protocol endpoints"
       description="Every URL advertised by this tenant's live discovery document."
     >
-      <p>
-        <strong>Discovery document</strong>{' '}
-        <a href={oidcDiscoveryUrl(load.issuer)}>{oidcDiscoveryUrl(load.issuer)}</a>
-      </p>
-      <dl className="oidc-links">
-        {load.links.map((link) => (
-          <div key={link.key}>
-            <dt>{label(link.key)}</dt>
-            <dd><a href={link.url}><code>{link.url}</code></a></dd>
-          </div>
-        ))}
-      </dl>
+      <ConnectionDocument entries={[
+        { label: 'Discovery document', value: oidcDiscoveryUrl(load.issuer), href: oidcDiscoveryUrl(load.issuer), description: 'Configure your library with the issuer below; use discovery to resolve endpoints.' },
+        ...load.links.map(link => ({ label: label(link.key), value: link.url, href: link.url })),
+      ]} />
     </Panel>
   );
 }

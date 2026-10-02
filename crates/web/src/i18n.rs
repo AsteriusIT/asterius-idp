@@ -611,6 +611,16 @@ catalogue! {
         // the catalogue from the first day, for the approvals inbox's reason —
         // these are the pages somebody reads in a hurry, on their own phone,
         // when something has gone wrong.
+        AccountOverview => account_overview, "account.overview",
+            en: "Overview", fr: "Vue d’ensemble";
+        AccountTechnicalDetails => account_technical_details, "account.technical-details",
+            en: "Technical details", fr: "Détails techniques";
+        AccountReviewSecurity => account_review_security, "account.review-security",
+            en: "Review sign-in security", fr: "Vérifier la sécurité de connexion";
+        AccountOtherSession => account_other_session, "account.other-session",
+            en: "Other session", fr: "Autre session";
+        AccountUnnamedPasskey => account_unnamed_passkey, "account.unnamed-passkey",
+            en: "Passkey", fr: "Clé d’accès";
         AccountTitle => account_title, "account.title",
             en: "Your account",
             fr: "Votre compte";

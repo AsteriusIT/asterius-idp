@@ -85,7 +85,7 @@ export function AppSidebar({
             <div key={section.group}>
               {sectionIndex > 0 && <SidebarSeparator className="my-2" />}
               <SidebarGroup className="p-0">
-                <SidebarGroupLabel className="navigation-group">{section.group}</SidebarGroupLabel>
+                {section.group !== 'Overview' && section.group !== 'Help' && <SidebarGroupLabel className="navigation-group">{section.group}</SidebarGroupLabel>}
                 <SidebarGroupContent>
                   <SidebarMenu>
                     {section.destinations.map((destination) => {

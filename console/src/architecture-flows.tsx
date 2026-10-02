@@ -1,7 +1,7 @@
 import { FormSelect } from './components/ui/select';
 import { memo, useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
-import { AppWindow, Database, Users, UserRound, ShieldCheck, Radio, LogIn, ArrowLeft, Plus, Pencil, Eye, Trash2, X, Network, Layers, Keyboard } from 'lucide-react';
+import { AppWindow, Database, Users, UserRound, ShieldCheck, Radio, LogIn, ArrowLeft, Plus, Pencil, Eye, Trash2, X, Network, Layers, Keyboard, List, LayoutGrid } from 'lucide-react';
 import {
   Background, Controls, Handle, MiniMap, Position, ReactFlow, BaseEdge, EdgeLabelRenderer, getBezierPath,
   applyEdgeChanges, applyNodeChanges,
@@ -279,8 +279,10 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
     {showShortcuts && <div className="architecture-shortcuts" role="region" aria-label="Keyboard shortcuts guide"><span><kbd>Ctrl/Cmd + S</kbd> Save draft</span><span><kbd>A</kbd> Web app</span><span><kbd>I</kbd> API</span><span><kbd>G</kbd> Gateway</span><span><kbd>B</kbd> BFF</span><span><kbd>Delete / Backspace</kbd> Remove selected object or connection from diagram</span><span><kbd>Escape</kbd> Architecture settings</span><span><kbd>?</kbd> Toggle this guide</span><small>Single-key shortcuts pause while typing. Editing shortcuts require edit access. Removing a linked object keeps its live resource.</small></div>}
     <div className="architecture-workspace-body">
       <div className="architecture-stage">
+        <div className="architecture-stage-toolbar">
         {canWrite && <div className="architecture-palette" aria-label="Add an object"><Button variant="ghost" small title="Add backend for frontend preset (B)" aria-keyshortcuts="B" onClick={addBff}><Layers size={18} />BFF</Button>{(Object.keys(TYPES) as Kind[]).map(kind => { const Icon = ICONS[kind]; return <Button variant="ghost" key={kind} small title={`Add ${TYPES[kind].toLowerCase()}`} aria-label={`Add ${TYPES[kind].toLowerCase()}`} onClick={() => { addNode(kind); setTab('object'); }}><Icon size={18} />{(kind === 'identity_provider' || kind === 'stream' || kind === 'gateway') && TYPES[kind]}</Button>; })}</div>}
-        <div className="architecture-view-switch"><Button small aria-pressed={listView} onClick={() => setListView(value => !value)}>{listView ? 'Show canvas' : 'Show object list'}</Button></div>
+        <div className="architecture-view-switch"><Button small aria-pressed={listView} onClick={() => setListView(value => !value)}>{listView ? <LayoutGrid aria-hidden="true" /> : <List aria-hidden="true" />}{listView ? 'Show canvas' : 'Show object list'}</Button></div>
+        </div>
         {listView ? <div className="architecture-object-list" aria-label="Architecture objects">
           <p className="muted">Select an object to configure it. Changes affect this draft until reviewed and applied.</p>
           <ul>{graph.nodes.map(node => <li key={node.id}><Button aria-pressed={selected === node.id} onClick={() => { setSelected(node.id); setTab('object'); }}>{node.label} · {TYPES[node.kind]}</Button>{canWrite && <Button small variant="danger" onClick={() => setPendingRemoval(node.id)}>Remove {node.label}</Button>}</li>)}</ul>

@@ -1,79 +1,35 @@
-{% extends "base.html" %}
+{% extends "account_base.html" %}
+{% import "account_icons.html" as icons %}
 {% block title %}{{ text.account_title() }} — {{ tenant_name }}{% endblock %}
-{% block card_class %} account-dashboard{% endblock %}
-{% block content %}
-{# The front door of the self-service pages (`ast-1xd`).
-
-   It exists because the four pages under it are useless if nobody can find
-   them: a person who has lost a passkey, or who thinks somebody else is signed
-   in as them, reaches for one URL and has to get from it to the credential and
-   to the session. So this page is a list of links and nothing else — it holds
-   no form, no token and no button, because there is nothing here to press.
-
-   No script, like everything in this tree. #}
-<header class="account-intro">
-<h2>{{ text.account_heading() }}</h2>
-<p class="muted">{{ text.account_signed_in_as(username) }}</p>
-<p class="muted">{{ text.account_intro() }}</p>
-</header>
-
-<div class="account-grid">
-{% if !identities.is_empty() %}<section class="account-section account-connections">
-<h3>{{ text.account_identities_heading() }}</h3>
-<ul class="scopes">
-{% for identity in identities %}
-<li><strong>{{ identity.provider_id }}</strong><br><span class="muted">{{ text.account_identity_issuer() }}: {{ identity.issuer }} · {{ text.account_identity_subject() }}: {{ identity.subject }}</span></li>
-{% endfor %}
-</ul>
+{% block account_content %}
+<header class="account-page-heading"><h2>{{ text.account_heading() }}</h2></header>
+<section class="account-hero" aria-label="{{ text.account_signed_in_as(username) }}">
+<div class="account-hero-copy"><h3>{{ username }}</h3><p>{{ text.account_intro() }}</p>
+<a class="account-primary-link" href="#account-signin">{{ text.account_review_security() }}</a></div>
+<div class="account-hero-mark" aria-hidden="true">{% call icons::icon("shield") %}{% endcall %}</div>
 </section>
-
-{% endif %}<section class="account-section"><h3>{{ text.account_signin_group() }}</h3>
-<ul class="scopes">
-<li>
-  <a href="{{ passkeys_href }}">{{ text.account_passkeys_link() }}</a>
-  <br><span class="muted">{{ text.account_passkeys_explains() }}</span>
-</li>
-<li>
-  <a href="{{ totp_href }}">{{ text.account_totp_link() }}</a>
-  <br><span class="muted">{{ text.account_totp_explains() }}</span>
-</li>
-<li>
-  <a href="{{ password_href }}">{{ text.account_password_link() }}</a>
-  <br><span class="muted">{{ text.account_password_explains() }}</span>
-</li>
-<li>
-  <a href="{{ email_href }}">{{ text.account_email_link() }}</a>
-  <br><span class="muted">{{ text.account_email_explains() }}</span>
-</li>
-</ul></section><section class="account-section"><h3>{{ text.account_sessions_group() }}</h3>
-<ul class="scopes">
-<li>
-  <a href="{{ sessions_href }}">{{ text.account_sessions_link() }}</a>
-  <br><span class="muted">{{ text.account_sessions_explains() }}</span>
-</li>
-<li>
-  <a href="{{ activity_href }}">{{ text.account_activity_link() }}</a>
-  <br><span class="muted">{{ text.account_activity_explains() }}</span>
-</li>
-</ul></section><section class="account-section"><h3>{{ text.account_access_group() }}</h3>
-<ul class="scopes">
-<li>
-  <a href="{{ approvals_href }}">{{ text.account_approvals_link() }}</a>
-  <br><span class="muted">{{ text.account_approvals_explains() }}</span>
-</li>
-<li>
-  <a href="{{ grants_href }}">{{ text.account_grants_link() }}</a>
-  <br><span class="muted">{{ text.account_grants_explains() }}</span>
-</li>
-</ul></section><section class="account-section"><h3>{{ text.account_connections_group() }}</h3>
-<ul class="scopes">
-<li>
-  <a href="{{ claims_providers_href }}">{{ text.providers_title() }}</a>
-  <br><span class="muted">{{ text.providers_intro() }}</span>
-</li>
-<li>
-  <a href="{{ id_jag_href }}">{{ text.external_approvals_title() }}</a>
-  <br><span class="muted">{{ text.external_approvals_intro() }}</span>
-</li>
+<div class="account-grid">
+<section class="account-section" id="account-signin"><h3>{{ text.account_signin_group() }}</h3><ul class="account-task-list">
+<li><a href="{{ passkeys_href }}" class="account-task-row">{% call icons::icon("key") %}{% endcall %}<span><strong>{{ text.account_passkeys_link() }}</strong><small>{{ text.account_passkeys_explains() }}</small></span>{% call icons::icon("arrow") %}{% endcall %}</a></li>
+<li><a href="{{ totp_href }}" class="account-task-row">{% call icons::icon("phone") %}{% endcall %}<span><strong>{{ text.account_totp_link() }}</strong><small>{{ text.account_totp_explains() }}</small></span>{% call icons::icon("arrow") %}{% endcall %}</a></li>
+<li><a href="{{ password_href }}" class="account-task-row">{% call icons::icon("shield") %}{% endcall %}<span><strong>{{ text.account_password_link() }}</strong><small>{{ text.account_password_explains() }}</small></span>{% call icons::icon("arrow") %}{% endcall %}</a></li>
+<li><a href="{{ email_href }}" class="account-task-row">{% call icons::icon("mail") %}{% endcall %}<span><strong>{{ text.account_email_link() }}</strong><small>{{ text.account_email_explains() }}</small></span>{% call icons::icon("arrow") %}{% endcall %}</a></li>
+</ul></section><section class="account-section"><h3>{{ text.account_sessions_group() }}</h3><ul class="account-task-list">
+<li><a href="{{ sessions_href }}" class="account-task-row">{% call icons::icon("devices") %}{% endcall %}<span><strong>{{ text.account_sessions_link() }}</strong><small>{{ text.account_sessions_explains() }}</small></span>{% call icons::icon("arrow") %}{% endcall %}</a></li>
+<li><a href="{{ activity_href }}" class="account-task-row">{% call icons::icon("clock") %}{% endcall %}<span><strong>{{ text.account_activity_link() }}</strong><small>{{ text.account_activity_explains() }}</small></span>{% call icons::icon("arrow") %}{% endcall %}</a></li>
+</ul></section><section class="account-section account-access-section"><h3>{{ text.account_access_group() }}</h3><ul class="account-task-list">
+<li><a href="{{ approvals_href }}" class="account-task-row">{% call icons::icon("check") %}{% endcall %}<span><strong>{{ text.account_approvals_link() }}</strong><small>{{ text.account_approvals_explains() }}</small></span>{% call icons::icon("arrow") %}{% endcall %}</a></li>
+<li><a href="{{ grants_href }}" class="account-task-row">{% call icons::icon("apps") %}{% endcall %}<span><strong>{{ text.account_grants_link() }}</strong><small>{{ text.account_grants_explains() }}</small></span>{% call icons::icon("arrow") %}{% endcall %}</a></li>
 </ul></section></div>
+<details class="account-advanced"><summary>{% call icons::icon("link") %}{% endcall %}{{ text.account_connections_group() }}</summary>
+<ul class="account-task-list">
+<li><a href="{{ claims_providers_href }}" class="account-task-row">{% call icons::icon("link") %}{% endcall %}<span><strong>{{ text.providers_title() }}</strong><small>{{ text.providers_intro() }}</small></span>{% call icons::icon("arrow") %}{% endcall %}</a></li>
+<li><a href="{{ id_jag_href }}" class="account-task-row">{% call icons::icon("apps") %}{% endcall %}<span><strong>{{ text.external_approvals_title() }}</strong><small>{{ text.external_approvals_intro() }}</small></span>{% call icons::icon("arrow") %}{% endcall %}</a></li>
+</ul>
+{% if !identities.is_empty() %}<section class="account-connected-identities"><h3>{{ text.account_identities_heading() }}</h3>
+{% for identity in identities %}<div class="account-identity-entry"><h4>{{ identity.provider_id }}</h4><dl class="account-document">
+<div><dt>{{ text.account_identity_issuer() }}</dt><dd><code>{{ identity.issuer }}</code></dd></div>
+<div><dt>{{ text.account_identity_subject() }}</dt><dd><code>{{ identity.subject }}</code></dd></div>
+</dl></div>{% endfor %}</section>{% endif %}
+</details>
 {% endblock %}

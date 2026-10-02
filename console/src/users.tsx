@@ -415,17 +415,17 @@ function DirectoryScreen({
         {load.kind === 'ready' && (
           <>
             <UserTable rows={load.value.items} onOpen={onOpen} />
-            <Actions>
-              <Button disabled={cursor === null} onClick={() => setCursor(null)}>
+            {(cursor !== null || load.value.next_cursor !== null) && <Actions>
+              <Button variant="ghost" disabled={cursor === null} onClick={() => setCursor(null)}>
                 First page
               </Button>
-              <Button
+              <Button variant="ghost"
                 disabled={load.value.next_cursor === null}
                 onClick={() => setCursor(load.value.next_cursor)}
               >
                 Next page
               </Button>
-            </Actions>
+            </Actions>}
           </>
         )}
       </Panel>

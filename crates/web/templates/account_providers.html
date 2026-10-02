@@ -1,6 +1,6 @@
-{% extends "base.html" %}
+{% extends "account_base.html" %}
 {% block title %}{{ text.providers_title() }} — {{ tenant_name }}{% endblock %}
-{% block content %}
+{% block account_content %}
 <h2>{{ text.providers_title() }}</h2>
 <p>{{ text.providers_intro() }}</p>
 {% include "error_summary.html" %}
@@ -13,9 +13,9 @@
 <p class="link-row"><a href="{{ provider.policy_url }}" rel="noreferrer">{{ text.providers_policy() }}</a></p>
 {% else %}<p>{{ text.providers_missing() }}</p>{% endif %}
 {% if provider.connected %}
-<p>{{ text.security_expires() }}: <time>{{ provider.expires }}</time></p>
+<p>{{ text.security_expires() }}: <time datetime="{{ provider.expires }}">{{ account_time(provider.expires) }}</time></p>
 {% else %}<p class="muted">{{ text.providers_none() }}</p>{% endif %}
-{% if !provider.connection_expires.is_empty() %}<p>{{ text.security_expires() }}: <time>{{ provider.connection_expires }}</time></p>{% endif %}
+{% if !provider.connection_expires.is_empty() %}<p>{{ text.security_expires() }}: <time datetime="{{ provider.connection_expires }}">{{ account_time(provider.connection_expires) }}</time></p>{% endif %}
 {% if !provider.claims.is_empty() %}
 <details><summary>{{ text.providers_stored() }}</summary><dl>{% for (name, value) in provider.claims %}<dt>{{ name }}</dt><dd>{{ value }}</dd>{% endfor %}</dl></details>
 {% endif %}

@@ -1,5 +1,6 @@
 import { FormSelect } from './components/ui/select';
-import { SearchIcon } from 'lucide-react';
+import { DirectorySearch } from './directory-controls';
+import { PlusIcon, SearchIcon } from 'lucide-react';
 import { useDialogDraft } from './dialog-draft';
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
@@ -64,13 +65,9 @@ function GroupDirectory({ session, onOpen }: Readonly<{
   useEffect(refresh, [refresh]);
 
   return <Screen title="Groups" description="Manage reusable membership and application access for this workspace."
-    actions={writable ? <Button variant="primary" onClick={() => setCreating(true)}>Create group</Button> : undefined}>
-    <Panel title="Group directory" description="Search machine names or display names. Both names stay visible wherever a group is used.">
-      <form className="toolbar" onSubmit={(event) => { event.preventDefault(); setCursor(null); setTerm(typed.trim()); }}>
-        <Field label="Search groups">{props => <input {...props} type="search" value={typed}
-          placeholder="Search groups" onChange={event => setTyped(event.target.value)} />}</Field>
-        <Button type="submit" aria-label="Search groups" title="Search groups"><SearchIcon aria-hidden="true" /><span className="visually-hidden">Search groups</span></Button>
-      </form>
+    actions={writable ? <Button variant="primary" onClick={() => setCreating(true)}><PlusIcon aria-hidden="true" />Create group</Button> : undefined}>
+    <Panel className="directory-panel" title="Group directory" description="Search machine names or display names. Both names stay visible wherever a group is used.">
+      <div className="directory-toolbar"><DirectorySearch label="Search groups" value={typed} placeholder="Name or display name" onChange={setTyped} onSubmit={() => { if (cursor === null && term === typed.trim()) refresh(); else { setCursor(null); setTerm(typed.trim()); } }} actionLabel="Search groups" /></div>
       {load.kind === 'loading' && <Skeleton rows={4} label="Reading groups." />}
       {load.kind === 'failed' && <LoadFailure message={load.message} onRetry={refresh} />}
       {load.kind === 'ready' && <>
@@ -82,8 +79,8 @@ function GroupDirectory({ session, onOpen }: Readonly<{
             { key: 'revision', header: 'Revision', sortBy: group => group.revision, cell: group => group.revision },
             { key: 'open', header: 'Open', actions: true, cell: group => <Button small onClick={() => onOpen(group.id)}>View <span className="visually-hidden">{group.display_name}</span></Button> },
           ]} />
-        <Actions><Button disabled={cursor === null} onClick={() => setCursor(null)}>First page</Button>
-          <Button disabled={load.value.next_cursor === null} onClick={() => setCursor(load.value.next_cursor)}>Next page</Button></Actions>
+        {(cursor !== null || load.value.next_cursor !== null) && <Actions><Button variant="ghost" disabled={cursor === null} onClick={() => setCursor(null)}>First page</Button>
+          <Button variant="ghost" disabled={load.value.next_cursor === null} onClick={() => setCursor(load.value.next_cursor)}>Next page</Button></Actions>}
       </>}
     </Panel>
     {creating && <GroupForm session={session} onCancel={() => setCreating(false)} onSaved={group => {
