@@ -135,3 +135,14 @@
     }
   }
 }
+
+/* Theme changes are immediate, including pseudo-elements and portalled UI.
+   Keep this in the bundled stylesheet to respect the console's nonce CSP. */
+html.theme-switching,
+html.theme-switching *,
+html.theme-switching::before,
+html.theme-switching::after,
+html.theme-switching *::before,
+html.theme-switching *::after {
+  transition: none !important;
+}
