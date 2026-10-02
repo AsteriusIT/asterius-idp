@@ -471,55 +471,6 @@
     gap: var(--space-4);
   }
 
-  .overview-identity {
-    position: relative;
-    min-height: 13rem;
-    overflow: hidden;
-    border-color: color-mix(in srgb, var(--accent) 28%, var(--line));
-    background:
-      radial-gradient(circle at 88% 18%, color-mix(in srgb, var(--info) 20%, transparent) 0, transparent 28%),
-      linear-gradient(135deg, color-mix(in srgb, var(--accent) 20%, var(--card)), var(--card) 60%, color-mix(in srgb, var(--info) 10%, var(--card)));
-  }
-
-  .overview-identity::after {
-    position: absolute;
-    right: -4rem;
-    bottom: -6rem;
-    width: 18rem;
-    height: 18rem;
-    border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
-    border-radius: 50%;
-    content: '';
-    pointer-events: none;
-  }
-
-  .overview-identity > * {
-    position: relative;
-    z-index: 1;
-  }
-
-  .overview-identity .panel-title h3 {
-    max-width: 18ch;
-    font-size: clamp(2rem, 5vw, 3.75rem);
-    font-weight: 720;
-    line-height: 1;
-    letter-spacing: -.045em;
-    overflow-wrap: anywhere;
-  }
-
-  .overview-identity .panel-title .muted {
-    margin-top: var(--space-2);
-    font-size: var(--text-xs);
-    font-weight: 600;
-    letter-spacing: .09em;
-    text-transform: uppercase;
-  }
-
-  .overview-context {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    max-width: 50rem;
-  }
-
   .preference-icon {
     flex: none;
     width: 2.5rem;
@@ -1394,9 +1345,7 @@
   }
 
   .account-menu-item[data-highlighted] {
-    outline: 2px solid var(--info);
-    outline-offset: -2px;
-    background: var(--tint-accent);
+    background: var(--surface-sunken);
   }
 
   .account-menu-item svg {
@@ -1509,10 +1458,6 @@
       border-radius: var(--radius-lg);
       background: var(--accent);
       color: var(--accent-fg);
-    }
-
-    .overview-context {
-      grid-template-columns: 1fr;
     }
 
     .screen-head {

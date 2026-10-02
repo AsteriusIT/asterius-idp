@@ -39,7 +39,7 @@
    93 KB to find out, and `swap` means the page is readable in the system
    stack from the first paint and never blank. -#}
 <style {{ nonce_attribute }}>@font-face{font-family:Geist;src:url("{{ brand.font_url() }}") format("woff2");font-weight:100 900;font-style:normal;font-display:swap}
-{% include "style.css" %}{{ theme_css }}</style>
+{% include "style.css" %}{% block page_styles %}{% endblock %}{{ theme_css }}</style>
 </head>
 <body>
 {# The layout of ast-9li's direction A: a centred card on a neutral backdrop,

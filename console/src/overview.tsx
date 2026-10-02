@@ -1,3 +1,5 @@
+import { ArrowUpRightIcon, RefreshCwIcon, FingerprintIcon, ShieldCheckIcon, Building2Icon, NetworkIcon } from 'lucide-react';
+import { NAVIGATION_ICONS } from './components/app-sidebar';
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { read, type Session } from './api';
@@ -74,32 +76,43 @@ export function Overview({ session }: Readonly<{ session: Session }>): JSX.Eleme
   return (
     <Screen
       title="Overview"
-      description={`Activity and health for ${session.workspace}, limited to the data this session may read.`}
-      actions={<Button onClick={reload}>Refresh summaries</Button>}
+      description={`Manage identity and application access for ${session.workspace}.`}
+      actions={<Button variant="ghost" onClick={reload}><RefreshCwIcon aria-hidden="true" />Refresh summaries</Button>}
     >
-      {collectedAt && <p className="muted">Latest summary received: <Timestamp value={collectedAt} />. Cards may finish updating at different times.</p>}
       <div className="overview-bento">
-        <Panel title="What would you like to do?" description="Go straight to a common task in this tenant.">
-          <div className="quick-link-grid">
-            {shortcuts.map((shortcut) => <a className="quick-link" key={shortcut.route} href={hrefOf(shortcut.route)}>
-              <strong>{shortcut.title}<span aria-hidden="true">→</span></strong><small>{shortcut.detail}</small>
-            </a>)}
-            <a className="quick-link" href={hrefOf('help')}><strong>Read a guide<span aria-hidden="true">→</span></strong><small>Step-by-step help for common work.</small></a>
+        <section className="overview-hero" aria-labelledby="tenant-hero-title">
+          <div className="overview-hero-copy">
+            <span className="overview-hero-label"><Building2Icon aria-hidden="true" />Active tenant</span>
+            <h3 id="tenant-hero-title">{session.workspace}</h3>
+            <p>Your identity workspace. Connect applications, manage people, and keep access in view.</p>
+            <div className="overview-hero-actions">
+              {applicationPolicy !== null && <Badge tone={applicationPolicy.tone}><ShieldCheckIcon aria-hidden="true" />{applicationPolicy.label}</Badge>}
+              <a href={hrefOf('health')}>View workspace health<ArrowUpRightIcon aria-hidden="true" /></a>
+            </div>
           </div>
-        </Panel>
-        <Panel
-          className="overview-identity"
-          title={session.workspace}
-          description="Active tenant"
-          actions={applicationPolicy !== null && <Badge tone={applicationPolicy.tone}>{applicationPolicy.label}</Badge>}
-        >
-          <dl className="stats overview-context">
-            <div className="stat"><dt>Signed in as</dt><dd className="wrap-anywhere">{session.username}</dd></div>
-            <div className="stat"><dt>Roles</dt><dd>{session.roles.length > 0 ? <span className="row">{session.roles.map((role) => <Badge key={role} tone="neutral">{role}</Badge>)}</span> : 'none'}</dd></div>
-          </dl>
+          <div className="overview-hero-network" aria-hidden="true">
+            <span className="hero-network-orbit" /><span className="hero-network-core"><FingerprintIcon /></span>
+            <span className="hero-network-node hero-network-app"><NetworkIcon /></span>
+            <span className="hero-network-node hero-network-trust"><ShieldCheckIcon /></span>
+            <span className="hero-network-node hero-network-tenant"><Building2Icon /></span>
+          </div>
+          <div className="overview-hero-footer"><span>Signed in as <strong>{session.username}</strong></span><span className="row">{session.roles.map(role => <Badge key={role} tone="neutral">{role}</Badge>)}</span></div>
+        </section>
+        <Panel className="overview-start" title="Start here" description="Common tasks in your identity workspace.">
+          <div className="quick-link-grid">
+            {shortcuts.map((shortcut) => {
+              const Icon = NAVIGATION_ICONS[shortcut.route];
+              return <a className="quick-link" key={shortcut.route} href={hrefOf(shortcut.route)}>
+                {Icon && <Icon className="quick-link-icon" aria-hidden="true" />}
+                <div><strong>{shortcut.title}</strong><small>{shortcut.detail}</small></div>
+                <ArrowUpRightIcon className="quick-link-arrow" aria-hidden="true" />
+              </a>;
+            })}
+          </div>
+          <p className="muted">Connecting your first app? <a href={hrefOf('help')}>Read the integration guide</a>.</p>
         </Panel>
 
-        <Panel className="overview-activity" title="Tenant activity and health" description="Each figure is independently authorized and collected from this tenant.">
+        <Panel className="overview-activity" title="Tenant activity and health" description="Current activity from the summaries your account can read.">
           {definitions.length === 0 ? (
             <EmptyState title="No summaries available" body="This session has no permission to read tenant activity or operational health." />
           ) : (
@@ -108,6 +121,10 @@ export function Overview({ session }: Readonly<{ session: Session }>): JSX.Eleme
             </div>
           )}
         </Panel>
+      </div>
+      <div className="overview-footer">
+        <span>{collectedAt ? <>Latest update <Timestamp value={collectedAt} /></> : 'Waiting for activity summaries.'}</span>
+
       </div>
     </Screen>
   );

@@ -1,4 +1,7 @@
-import type { JSX, ReactNode } from 'react';
+import { useState, type JSX, type ReactNode } from 'react';
+import { BookOpenIcon, Code2Icon, SearchIcon } from 'lucide-react';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from './components/ui/tabs';
+import { Input } from './components/ui/input';
 import type { Session } from './api';
 import { visibleTo } from './navigation';
 import { hrefOf } from './routes';
@@ -121,14 +124,13 @@ const REVIEW_GUIDES: readonly Guide[] = [
 
 function GuideCard({ guide }: Readonly<{ guide: Guide }>): JSX.Element {
   return (
-    <article className="guide-card">
-      <div>
-        <h3>{guide.title}</h3>
-        <p className="muted">{guide.purpose}</p>
+    <details className="task-guide">
+      <summary><span><strong>{guide.title}</strong><span className="muted">{guide.purpose}</span></span></summary>
+      <div className="task-guide-body">
+        <ol>{guide.steps.map((step) => <li key={step}>{step}</li>)}</ol>
+        <a className="guide-link" href={hrefOf(guide.route)}>{guide.action}</a>
       </div>
-      <ol>{guide.steps.map((step) => <li key={step}>{step}</li>)}</ol>
-      <a className="guide-link" href={hrefOf(guide.route)}>{guide.action} <span aria-hidden="true">→</span></a>
-    </article>
+    </details>
   );
 }
 
@@ -137,33 +139,47 @@ function Term({ name, children }: Readonly<{ name: string; children: ReactNode }
 }
 
 export function Help({ session }: Readonly<{ session: Session }>): JSX.Element {
+  const [query, setQuery] = useState('');
   const allowed = new Set(visibleTo(session).map((destination) => destination.route));
   const guides = [...GUIDES, ...REVIEW_GUIDES].filter((guide) => allowed.has(guide.route)
     && guide.requiredScopes?.every((scope) => session.scopes.includes(scope)) !== false);
+  const matches = guides.filter(guide => `${guide.title} ${guide.purpose}`.toLowerCase().includes(query.trim().toLowerCase()));
   return (
-    <Screen title="Help & guides" description="Common tasks in this console, with links you can use from this account.">
-      <Panel title="Get something done" description="Choose a task. Each guide ends at the screen where you can do it.">
-        {guides.length > 0
-          ? <div className="guide-grid">{guides.map((guide) => <GuideCard key={guide.title} guide={guide} />)}</div>
-          : <p className="muted">No task guides match the pages this session can use. Ask an administrator which access you need.</p>}
-      </Panel>
-      <DeveloperGuide />
-      <Panel title="Words used here" description="A few terms you will see across the console.">
-        <dl className="guide-terms">
-          <Term name="Tenant">An isolated identity workspace. Users, applications, and policy belong to a tenant.</Term>
-          <Term name="Application">Software that sends people here to sign in. Its registration defines where sign-in can return.</Term>
-          <Term name="Group">A set of users that can receive application roles together.</Term>
-          <Term name="Role">A grant that affects what a user may do. Your console role also controls which screens and actions you can use.</Term>
-          <Term name="Session">A person's current browser sign-in. Ending it requires them to sign in again.</Term>
-        </dl>
-      </Panel>
-      <Panel title="When something fails">
-        <div className="guide-grid">
-          <div className="guide-note"><strong>A screen or button is missing</strong><p>Your role may not allow that action in this tenant. The Overview page shows your active role; ask a deployment administrator to review access.</p></div>
-          <div className="guide-note"><strong>A save is refused</strong><p>Read the message beside the form, correct the named field, and try again. The draft stays on screen where the form supports it.</p></div>
-          <div className="guide-note"><strong>A tenant switch asks for sign-in</strong><p>Check the target issuer in Tenants. A different host cannot use this browser session. An existing tenant needs a planned issuer migration before it can move to the shared domain.</p></div>
-        </div>
-      </Panel>
+    <Screen title="Help & guides" description="Connect your application, understand access, and troubleshoot your integration.">
+      <Tabs defaultValue="developers">
+        <TabsList aria-label="Guide category">
+          <TabsTrigger value="developers"><Code2Icon aria-hidden="true" />Developer integration</TabsTrigger>
+          <TabsTrigger value="console"><BookOpenIcon aria-hidden="true" />Console tasks</TabsTrigger>
+          <TabsTrigger value="reference">Reference & troubleshooting</TabsTrigger>
+        </TabsList>
+        <TabsContent value="developers"><DeveloperGuide available={allowed} /></TabsContent>
+        <TabsContent value="console">
+          <Panel title="Console tasks" description="Choose a task to see its steps. Guides reflect your account’s access.">
+            <div className="guide-search"><SearchIcon aria-hidden="true" /><Input aria-label="Search console guides" type="search" placeholder="Find a task…" value={query} onChange={event => setQuery(event.target.value)} /></div>
+            {matches.length > 0
+              ? <div className="task-guide-list">{matches.map((guide) => <GuideCard key={guide.title} guide={guide} />)}</div>
+              : <p className="muted">No matching guides. Try a different search; only tasks available to your account appear here.</p>}
+          </Panel>
+        </TabsContent>
+        <TabsContent value="reference">
+          <Panel title="Words used here" description="A few terms you will see across the console.">
+            <dl className="guide-terms">
+              <Term name="Tenant">An isolated identity workspace. Users, applications, and policy belong to a tenant.</Term>
+              <Term name="Application">Software that sends people here to sign in. Its registration defines where sign-in can return.</Term>
+              <Term name="Group">A set of users that can receive application roles together.</Term>
+              <Term name="Role">A grant that affects what a user may do. Your console role also controls which screens and actions you can use.</Term>
+              <Term name="Session">A person's current browser sign-in. Ending it requires them to sign in again.</Term>
+            </dl>
+          </Panel>
+          <Panel title="When something fails">
+            <div className="guide-grid">
+              <div className="guide-note"><strong>A screen or button is missing</strong><p>Your role may not allow that action in this tenant. Your account menu shows your active role; ask a deployment administrator to review access.</p></div>
+              <div className="guide-note"><strong>A save is refused</strong><p>Read the message beside the form, correct the named field, and try again. The draft stays on screen where the form supports it.</p></div>
+              <div className="guide-note"><strong>A tenant switch asks for sign-in</strong><p>Check the target issuer in Tenants. A different host cannot use this browser session. An existing tenant needs a planned issuer migration before it can move to the shared domain.</p></div>
+            </div>
+          </Panel>
+        </TabsContent>
+      </Tabs>
     </Screen>
   );
 }

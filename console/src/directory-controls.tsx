@@ -2,12 +2,12 @@ import { CheckIcon, ListFilterIcon, SearchIcon } from 'lucide-react';
 import { DropdownMenu } from 'radix-ui';
 import { Button, Field } from './ui';
 
-export function DirectorySearch({ label, value, placeholder, onChange, onSubmit }: Readonly<{
-  label: string; value: string; placeholder: string; onChange: (value: string) => void; onSubmit: () => void;
+export function DirectorySearch({ label, value, placeholder, onChange, onSubmit, actionLabel = 'Search' }: Readonly<{
+  label: string; value: string; placeholder: string; actionLabel?: string; onChange: (value: string) => void; onSubmit: () => void;
 }>) {
   return <form className="directory-search" role="search" onSubmit={event => { event.preventDefault(); onSubmit(); }}>
     <Field label={label}>{props => <input {...props} type="search" value={value} placeholder={placeholder} onChange={event => onChange(event.target.value)} />}</Field>
-    <Button className="directory-icon-action" type="submit" title="Search" aria-label="Search"><SearchIcon aria-hidden="true" /><span className="visually-hidden">Search</span></Button>
+    <Button className="directory-icon-action" type="submit" title={actionLabel} aria-label={actionLabel}><SearchIcon aria-hidden="true" /><span className="visually-hidden">{actionLabel}</span></Button>
   </form>;
 }
 

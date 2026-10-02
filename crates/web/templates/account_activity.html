@@ -1,6 +1,6 @@
-{% extends "base.html" %}
+{% extends "account_base.html" %}
 {% block title %}{{ text.activity_title() }} — {{ tenant_name }}{% endblock %}
-{% block content %}
+{% block account_content %}
 <div class="stack tight">
 <h2>{{ text.activity_heading() }}</h2>
 <p class="muted">{{ text.activity_explains() }}</p>
@@ -13,7 +13,7 @@
 {% for event in events %}
 <li>
   <strong>{{ event.action }}</strong><br>
-  <time datetime="{{ event.occurred_at }}" class="muted">{{ event.occurred_at }}</time>
+  <time datetime="{{ event.occurred_at }}" class="muted">{{ account_time(event.occurred_at) }}</time>
 </li>
 {% endfor %}
 </ul>

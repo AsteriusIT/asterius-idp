@@ -1,6 +1,8 @@
 import { useState, type JSX } from 'react';
 import {
+  ArrowUpRightIcon,
   HeartPulseIcon,
+  ShieldCheckIcon,
   CopyIcon,
   ChevronDownIcon,
   FingerprintIcon,
@@ -67,7 +69,7 @@ function AccountMenu({
       <DropdownMenu.Trigger asChild>
         <Button variant="ghost" className="topbar-account" aria-label="Account menu">
           <span className="topbar-avatar" aria-hidden="true">
-            <UserRoundIcon />
+            {session.username.trim().slice(0, 1).toUpperCase() || <UserRoundIcon />}
           </span>
           <span className="topbar-user-copy">
             <strong title={session.username}>{session.username}</strong>
@@ -77,23 +79,36 @@ function AccountMenu({
         </Button>
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>
-        <DropdownMenu.Content className="account-menu" side="bottom" align="end" sideOffset={8}>
-          <DropdownMenu.Label className="account-menu-label">
-            <strong>{session.username}</strong>
-            <span>{sessionRoleLabel(session)}</span>
+        <DropdownMenu.Content className="account-menu" aria-label="Account actions" side="bottom" align="end" sideOffset={10} collisionPadding={12}>
+          <DropdownMenu.Label className="account-menu-identity">
+            <span className="account-menu-avatar" aria-hidden="true">{session.username.trim().slice(0, 1).toUpperCase() || <UserRoundIcon />}</span>
+            <span className="account-menu-person">
+              <strong>{session.username}</strong>
+              <span><ShieldCheckIcon aria-hidden="true" />{sessionRoleLabel(session)}</span>
+            </span>
           </DropdownMenu.Label>
-          <DropdownMenu.Item asChild className="account-menu-item">
-            <a href={hrefOf('preferences')}>
-              <Settings2Icon aria-hidden="true" />Preferences
-            </a>
-          </DropdownMenu.Item>
-          <DropdownMenu.Item className="account-menu-item" onSelect={() => void copyIdentifier()}>
-            <CopyIcon aria-hidden="true" />Copy account identifier
-          </DropdownMenu.Item>
+          <DropdownMenu.Group className="account-menu-actions">
+            <DropdownMenu.Item asChild className="account-menu-item account-menu-account">
+              <a href="/t/admin/account">
+                <UserRoundIcon aria-hidden="true" />
+                <span><strong>My account</strong><small>Profile, security and sessions</small></span>
+                <ArrowUpRightIcon className="account-menu-trailing" aria-hidden="true" />
+              </a>
+            </DropdownMenu.Item>
+            <DropdownMenu.Item asChild className="account-menu-item">
+              <a href={hrefOf('preferences')}><Settings2Icon aria-hidden="true" /><span>Preferences</span></a>
+            </DropdownMenu.Item>
+            <DropdownMenu.Item className="account-menu-item account-menu-copy" onSelect={() => void copyIdentifier()}>
+              <CopyIcon aria-hidden="true" />
+              <span><span>Copy account identifier</span><code title={session.user}>{session.user}</code></span>
+            </DropdownMenu.Item>
+          </DropdownMenu.Group>
           <DropdownMenu.Separator className="account-menu-separator" />
-          <DropdownMenu.Item className="account-menu-item" onSelect={onSignOut}>
-            <LogOutIcon aria-hidden="true" />Sign out
-          </DropdownMenu.Item>
+          <DropdownMenu.Group className="account-menu-footer">
+            <DropdownMenu.Item className="account-menu-item account-menu-signout" onSelect={onSignOut}>
+              <LogOutIcon aria-hidden="true" /><span>Sign out</span>
+            </DropdownMenu.Item>
+          </DropdownMenu.Group>
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root></>;

@@ -146,6 +146,7 @@ export function TenantSettings({
   const [notice, setNotice] = useState<string | null>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [tab, setTab] = useState('features');
   useUnsavedChanges(load.kind === 'ready' && draft !== null && JSON.stringify(draft) !== JSON.stringify(draftOf(load.settings)));
   const subject = tenant ?? session.workspace;
   const elsewhere = subject !== session.workspace;
@@ -276,7 +277,7 @@ export function TenantSettings({
           save(draft);
         }}
       >
-        <Tabs defaultValue="features"><TabsList aria-label="Tenant configuration"><TabsTrigger value="features">Capabilities</TabsTrigger><TabsTrigger value="tokens">Token lifetimes</TabsTrigger><TabsTrigger value="consent">Consent</TabsTrigger><TabsTrigger value="sessions">Sessions</TabsTrigger>{draft.acrPolicy && <TabsTrigger value="assurance">Authentication</TabsTrigger>}{settings.rate_limit_bounds !== undefined && <TabsTrigger value="rate-limits">Rate limits</TabsTrigger>}<TabsTrigger value="oidc">Protocol endpoints</TabsTrigger></TabsList>
+        <Tabs value={tab} onValueChange={setTab}><TabsList aria-label="Tenant configuration"><TabsTrigger value="features">Capabilities</TabsTrigger><TabsTrigger value="tokens">Token lifetimes</TabsTrigger><TabsTrigger value="consent">Consent</TabsTrigger><TabsTrigger value="sessions">Sessions</TabsTrigger>{draft.acrPolicy && <TabsTrigger value="assurance">Authentication</TabsTrigger>}{settings.rate_limit_bounds !== undefined && <TabsTrigger value="rate-limits">Rate limits</TabsTrigger>}<TabsTrigger value="oidc">Protocol endpoints</TabsTrigger></TabsList>
         <TabsContent value="features"><fieldset className="settings-section" disabled={busy}>
           <legend>Sign-in and access capabilities</legend>
           <p className="muted">
@@ -387,7 +388,7 @@ export function TenantSettings({
         <TabsContent value="oidc"><OidcDetails tenant={settings.tenant_id} /></TabsContent>
         </Tabs>
 
-        <Actions>
+        {(tab !== 'oidc' || isDirty(settings, draft)) && <Actions end>
           <Button
             disabled={busy || !isDirty(settings, draft)}
             onClick={() => setDraft(draftOf(settings))}
@@ -397,7 +398,7 @@ export function TenantSettings({
           <Button type="submit" variant="primary" disabled={busy}>
             Save settings
           </Button>
-        </Actions>
+        </Actions>}
       </form>
       </div>
     </Screen>

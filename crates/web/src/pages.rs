@@ -903,6 +903,100 @@ pub struct AccountPage<'a> {
     pub brand: crate::brand::Brand<'a>,
 }
 
+// All account templates share navigation, but their existing mount-aware
+// action/back links remain the source of truth. Do not infer a tenant from a username.
+fn account_root_path(path: &str) -> &str {
+    if path.ends_with("/account") {
+        path
+    } else if let Some((prefix, _)) = path.rsplit_once("/account/") {
+        &path[..prefix.len() + "/account".len()]
+    } else {
+        "/account"
+    }
+}
+
+/// Display a recorded instant in UTC, keeping malformed values available for diagnosis.
+fn account_time_label(value: &str, language: &str) -> String {
+    let Ok(instant) =
+        time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
+    else {
+        return value.to_owned();
+    };
+    let instant = instant.to_offset(time::UtcOffset::UTC);
+    let months = if language == "fr" {
+        [
+            "janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.",
+            "nov.", "déc.",
+        ]
+    } else {
+        [
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        ]
+    };
+    // Month is a validated time::Month, whose discriminants are exactly 1..=12.
+    let month = months[usize::from(instant.month() as u8) - 1];
+    if language == "fr" {
+        format!(
+            "{} {month} {}, {:02}:{:02} UTC",
+            instant.day(),
+            instant.year(),
+            instant.hour(),
+            instant.minute()
+        )
+    } else {
+        format!(
+            "{month} {}, {}, {:02}:{:02} UTC",
+            instant.day(),
+            instant.year(),
+            instant.hour(),
+            instant.minute()
+        )
+    }
+}
+
+macro_rules! account_dates {
+    ($($page:ident),+ $(,)?) => {$(
+        impl $page<'_> {
+            fn account_time(&self, value: &str) -> String {
+                account_time_label(value, self.text.lang())
+            }
+        }
+    )+};
+}
+account_dates!(
+    PasskeysPage,
+    AccountSessionsPage,
+    AccountActivityPage,
+    GrantsPage,
+    AccountProvidersPage,
+    AccountExternalApprovalsPage
+);
+
+macro_rules! account_chrome {
+    ($page:ident, $path:ident, $section:literal) => {
+        impl $page<'_> {
+            fn account_root(&self) -> &str {
+                account_root_path(self.$path)
+            }
+            fn account_section(&self) -> &'static str {
+                $section
+            }
+        }
+    };
+}
+
+account_chrome!(AccountPage, passkeys_href, "overview");
+account_chrome!(PasskeysPage, account_href, "passkeys");
+account_chrome!(AccountPasswordPage, account_href, "password");
+account_chrome!(AccountEmailPage, account_href, "email");
+account_chrome!(AccountTotpPage, account_href, "totp");
+account_chrome!(AccountSessionsPage, account_href, "sessions");
+account_chrome!(AccountActivityPage, account_href, "activity");
+account_chrome!(AccountProvidersPage, account_href, "providers");
+account_chrome!(AccountExternalApprovalsPage, account_href, "external");
+account_chrome!(GrantsPage, action, "grants");
+account_chrome!(ApprovalsPage, action, "approvals");
+
 /// Display-only upstream identity, escaped by the account template.
 #[derive(Debug)]
 pub struct AccountIdentity {
@@ -1569,6 +1663,34 @@ mod tests {
     /// and one language keeps those assertions readable. The tests that are
     /// about language are in `crate::i18n` and `crate::snapshots`.
     static ENGLISH: Catalog = Catalog::new(Locale::English);
+
+    #[test]
+    fn account_dates_are_readable_and_keep_the_recorded_instant() {
+        assert_eq!(
+            account_time_label("2026-10-02T18:30:00+02:00", "en"),
+            "Oct 2, 2026, 16:30 UTC"
+        );
+        assert_eq!(
+            account_time_label("2026-10-02T18:30:00+02:00", "fr"),
+            "2 oct. 2026, 16:30 UTC"
+        );
+        assert_eq!(account_time_label("not-a-date", "en"), "not-a-date");
+    }
+
+    #[test]
+    fn account_navigation_preserves_the_mount() {
+        for (path, expected) in [
+            ("/account", "/account"),
+            ("/account/grants/revoke", "/account"),
+            ("/t/admin/account/passkeys", "/t/admin/account"),
+            (
+                "/t/account-team/account/approvals/decide",
+                "/t/account-team/account",
+            ),
+        ] {
+            assert_eq!(account_root_path(path), expected);
+        }
+    }
 
     /// Values a client or a request can choose, each of which breaks out of
     /// HTML if it is not escaped.

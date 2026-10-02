@@ -221,6 +221,7 @@ export function Button({
 }: Readonly<{
   variant?: Variant;
   small?: boolean;
+  static?: boolean;
   // React 19 passes `ref` as an ordinary prop to a function component, so the
   // dialog can hold one without `forwardRef` in the tree.
 }> & React.ComponentProps<'button'>): JSX.Element {
@@ -233,6 +234,7 @@ export function Button({
       variant={mapped}
       size={small ? 'sm' : 'default'}
       className={cn(
+        'console-action',
         variant === 'danger' &&
           'border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive',
         className,

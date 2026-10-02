@@ -48,6 +48,20 @@ if (nonce !== '') {
   setNonce(nonce);
 }
 
+// Radix moves focus on hover. Track input modality so those moves do not
+// borrow a keyboard outline from the previously focused menu container.
+const setInputMode = (mode: 'pointer' | 'keyboard') => {
+  if (document.documentElement.dataset.consoleInputMode !== mode) {
+    document.documentElement.dataset.consoleInputMode = mode;
+  }
+};
+setInputMode('pointer');
+document.addEventListener('pointerdown', () => setInputMode('pointer'), { capture: true, passive: true });
+document.addEventListener('pointermove', () => setInputMode('pointer'), { capture: true, passive: true });
+document.addEventListener('keydown', event => {
+  if (!['Control', 'Alt', 'Meta', 'Shift'].includes(event.key)) setInputMode('keyboard');
+}, true);
+
 // Before React renders, so a browser that remembered "dark" does not paint a
 // light frame first.
 startTheme();

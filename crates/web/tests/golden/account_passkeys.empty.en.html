@@ -560,7 +560,119 @@ input[type=text]:focus, input[type=password]:focus, input[type=email]:focus { bo
 .account-connections { grid-column: 1 / -1; }
 @media (max-width: 650px) { .account-grid { grid-template-columns: 1fr; } .account-section { padding: 18px; } }
 
-.shell:has(.account-dashboard) { max-width: 72rem; }:root{--bg:#ffffff;--fg:#18181b;--muted:#71717a;--line:#71717a;--accent:#3f3fbf;--accent-fg:#ffffff;--danger:#b42318;--radius:8px;--space:8px;--font:Geist, system-ui, -apple-system, Segoe UI, sans-serif;}</style>
+.shell:has(.account-dashboard) { max-width: 72rem; }/* Standalone self-service workspace. All colors follow validated tenant tokens. */
+.account-workspace { --account-line: color-mix(in srgb, var(--line) 45%, var(--bg)); }
+.account-workspace, .account-workspace *, .account-workspace *::before, .account-workspace *::after { box-sizing: border-box; }
+.shell:has(.account-workspace) { max-width: 70rem; gap: 20px; }
+.page:has(.account-workspace) { align-items: flex-start; padding: 32px 16px; }
+.account-workspace { padding: 0; gap: 0; border: 1px solid var(--account-line); border-radius: max(12px, var(--radius)); box-shadow: var(--shadow); overflow: hidden; }
+.account-frame { display: grid; grid-template-columns: 216px minmax(0, 1fr); align-items: stretch; }
+.account-navigation { padding: 24px 12px; border-right: 1px solid var(--account-line); background: color-mix(in srgb, var(--bg) 97%, var(--fg)); min-width: 0; }
+.account-nav-home { display: block; padding: 0 12px 20px; color: var(--fg); font-size: 17px; font-weight: 600; text-decoration: none; }
+.account-navigation nav { display: grid; gap: 4px; }
+.account-nav-group { display: grid; gap: 3px; padding-top: 16px; }
+.account-nav-group h2 { margin: 0; padding: 0 12px 6px; font-size: 11px; font-weight: 500; line-height: 1.5; color: var(--muted); }
+.account-navigation nav a { display: flex; gap: 10px; align-items: center; padding: 9px 12px; min-height: 44px; border-radius: 6px; font-size: 12px; color: var(--fg); text-decoration: none; font-weight: 450; line-height: 1.45; }
+.account-navigation nav a:hover { background: color-mix(in srgb, var(--fg) 5%, var(--bg)); }
+.account-navigation nav a[aria-current='page'] { color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--bg)); font-weight: 550; }
+.account-icon { width: 18px; height: 18px; flex: none; }
+.account-navigation .account-icon { width: 16px; height: 16px; color: var(--muted); }
+.account-navigation a[aria-current='page'] .account-icon { color: var(--accent); }
+.account-content { min-width: 0; display: flex; flex-direction: column; gap: 22px; padding: 32px 36px 36px; }
+.account-content h2 { margin: 0; font-size: 27px; font-weight: 600; line-height: 1.25; letter-spacing: -.6px; overflow-wrap: anywhere; }
+.account-content h3 { margin: 0; font-size: 16px; font-weight: 550; line-height: 1.4; overflow-wrap: anywhere; }
+.account-content p { max-width: 72ch; }
+.account-content .muted { line-height: 1.6; }
+.account-hero { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 26px; border: 1px solid var(--account-line); border-radius: 9px; background: color-mix(in srgb, var(--accent) 7%, var(--bg)); }
+.account-hero-copy { display: grid; gap: 14px; min-width: 0; }
+.account-hero h3 { font-size: 34px; font-weight: 550; letter-spacing: -.7px; }
+.account-hero p { color: var(--fg); font-size: 14px; max-width: 48ch; }
+.account-primary-link { align-self: start; justify-self: start; display: inline-flex; align-items: center; min-height: 44px; padding: 10px 14px; border-radius: var(--ctl); color: var(--accent-fg); background: var(--accent); font-size: 13px; font-weight: 550; text-decoration: none; }
+.account-primary-link:hover { filter: brightness(.95); }
+.account-hero-mark { width: 112px; height: 112px; border-radius: 50%; border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--account-line)); display: grid; place-items: center; flex: none; }
+.account-hero-mark svg { width: 54px; height: 54px; color: var(--accent); stroke-width: 1.2; }
+.account-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px; }
+.account-grid > .account-section { min-width: 0; border: 0; border-radius: 0; background: none; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.account-grid .account-section h3 { margin: 0; }
+.account-access-section { grid-column: 1 / -1; }
+.account-task-list { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--account-line); }
+.account-task-list li { padding: 0; margin: 0; }
+.account-task-row { display: flex; align-items: center; gap: 12px; min-height: 80px; padding: 14px 4px; border-bottom: 1px solid var(--account-line); color: var(--fg); text-decoration: none; }
+.account-task-row:hover { background: color-mix(in srgb, var(--fg) 4%, var(--bg)); }
+.account-task-row > .account-icon { color: var(--muted); }
+.account-task-row > .account-icon:last-child { width: 13px; height: 13px; }
+.account-task-row > span { min-width: 0; flex: 1; display: grid; gap: 4px; }
+.account-task-row strong { font-size: 14px; font-weight: 550; }
+.account-task-row small { color: var(--muted); font-size: 12px; line-height: 1.55; }
+.account-advanced { border: 1px solid var(--account-line); border-radius: 7px; padding: 0 18px; }
+.account-advanced > summary { display: flex; align-items: center; gap: 10px; font-weight: 500; font-size: 13px; min-height: 54px; }
+.account-advanced > summary::after { content: '+'; margin-left: auto; font-size: 22px; color: var(--muted); font-weight: 300; }
+.account-advanced[open] > summary::after { content: '−'; }
+.account-advanced > .account-task-list { margin-bottom: 18px; }
+.account-connected-identities { padding-block: 8px 18px; }
+.account-identity-entry { margin-top: 18px; }
+.account-identity-entry h4 { margin: 0 0 8px; font-size: 14px; font-weight: 550; overflow-wrap: anywhere; }
+.account-document { margin: 0; }
+.account-document > div { display: grid; grid-template-columns: 85px minmax(0, 1fr); gap: 12px; padding: 10px 0; border-top: 1px solid var(--account-line); }
+.account-document dt { color: var(--muted); font-size: 12px; }
+.account-document dd { margin: 0; overflow-wrap: anywhere; }
+.account-document code, .account-technical code { user-select: all; font-size: 12px; }
+.account-content > .account-section { padding: 22px; border: 1px solid var(--account-line); border-radius: 8px; background: var(--bg); }
+.account-content > .account-section h3 { margin: 0; }
+.account-content > .account-record { display: grid; gap: 8px; border-top: 1px solid var(--account-line); padding-top: 22px; }
+.account-content > .account-record:has(h2) { border: 0; padding: 0; }
+.account-session-current { justify-self: start; border: 1px solid var(--account-line); border-radius: 6px; padding: 5px 9px; background: color-mix(in srgb, var(--accent) 7%, var(--bg)); }
+.account-content form { width: 100%; max-width: 560px; display: flex; flex-direction: column; gap: 18px; }
+.account-record form { margin-top: 12px; }
+.account-content input:not([type='hidden'], [type='checkbox'], [type='radio']) { min-width: 0; width: 100%; height: 44px; border-radius: var(--ctl); }
+.account-content label { font-size: 13px; }
+.account-content label .muted { font-size: 12px; font-weight: 400; }
+.account-content .actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start; padding-top: 6px; }
+.account-content button { width: auto; min-height: 44px; padding: 10px 14px; flex: none; align-self: flex-start; font-size: 13px; line-height: 1.4; }
+.account-content .secondary { color: var(--fg); border: 1px solid var(--account-line); background: var(--bg); }
+.account-content .secondary:hover { background: color-mix(in srgb, var(--fg) 5%, var(--bg)); }
+.account-remove-action { border: 1px solid var(--account-line); border-radius: var(--ctl); padding: 0 12px; max-width: 100%; min-width: 160px; }
+.account-remove-action > summary { padding: 10px 0; min-height: 44px; color: var(--danger); font-size: 13px; font-weight: 500; }
+.account-remove-action > p { font-size: 12px; margin: 4px 0 14px; }
+.account-remove-action label { margin-bottom: 16px; }
+.account-remove-action button { margin-bottom: 12px; color: var(--danger); }
+.account-technical { color: var(--muted); font-size: 12px; }
+.account-technical summary { padding-block: 8px; min-height: 36px; }
+.account-technical p { background: color-mix(in srgb, var(--fg) 3%, var(--bg)); border-radius: 6px; padding: 12px; }
+.account-content .danger-section { background: var(--bg); }
+.account-content .danger-section > summary { color: var(--danger); font-weight: 500; }
+.account-content .danger-section > p { margin-bottom: 16px; }
+.account-content .danger-section button { color: var(--danger); }
+.account-content .notice { border-radius: 7px; font-size: 13px; }
+.account-content .link-row { margin: 0; font-size: 12px; text-align: left; }
+.account-content p a { text-underline-offset: 3px; }
+.account-content > .link-row:last-child { border-top: 1px solid var(--account-line); padding-top: 16px; }
+.account-content .scopes { margin: 0; }
+.account-content .scopes li { overflow-wrap: anywhere; }
+.account-content .setup-qr { max-width: 220px; }
+.account-content .setup-key { padding: 14px; border: 1px solid var(--account-line); border-radius: var(--ctl); background: color-mix(in srgb, var(--fg) 3%, var(--bg)); }
+@media (max-width: 900px) { .account-frame { grid-template-columns: 192px minmax(0, 1fr); } .account-content { padding: 28px 24px; } .account-grid { grid-template-columns: 1fr; } .account-hero-mark { width: 90px; height: 90px; } }
+@media (max-width: 650px) {
+ .page:has(.account-workspace) { padding: 22px 12px; }
+ .account-frame { display: block; }
+ .account-navigation { padding: 10px 12px 0; border-right: 0; border-bottom: 1px solid var(--account-line); }
+ .account-nav-home, .account-nav-group h2 { display: none; }
+ .account-navigation nav { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 10px; }
+ .account-nav-group { display: contents; }
+ .account-navigation nav a { flex: none; white-space: nowrap; padding: 9px 10px; }
+ .account-content { padding: 24px 20px; gap: 20px; }
+ .account-content h2 { font-size: 25px; }
+ .account-hero { padding: 22px; }
+ .account-hero h3 { font-size: 30px; }
+ .account-hero-mark { display: none; }
+ .account-hero p { font-size: 13px; }
+ .account-grid { gap: 24px; }
+ .account-task-row { gap: 10px; }
+ .account-task-row strong { font-size: 13px; }
+ .account-advanced { padding: 0 12px; }
+ .account-document > div { grid-template-columns: 1fr; gap: 5px; }
+ .account-content > .account-section { padding: 16px; }
+}:root{--bg:#ffffff;--fg:#18181b;--muted:#71717a;--line:#71717a;--accent:#3f3fbf;--accent-fg:#ffffff;--danger:#b42318;--radius:8px;--space:8px;--font:Geist, system-ui, -apple-system, Segoe UI, sans-serif;}</style>
 </head>
 <body>
 
@@ -571,13 +683,56 @@ input[type=text]:focus, input[type=password]:focus, input[type=email]:focus { bo
 
 <h1 class="wordmark">Example Tenant</h1>
 </div>
-<main class="card">
+<main class="card account-workspace">
+
+<div class="account-frame">
+<aside class="account-navigation">
+<a class="account-nav-home" href="/account">Your account</a>
+<nav aria-label="Your account">
+<a href="/account"><svg class="account-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+<circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/>
+</svg><span>Overview</span></a>
+<div class="account-nav-group"><h2>Sign-in and recovery</h2>
+<a href="/account/passkeys" aria-current="page"><svg class="account-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+<circle cx="8" cy="8" r="5"/><path d="m12 12 9 9m-5-5 3-3m-6 0 3-3"/>
+</svg><span>Passkeys</span></a>
+<a href="/account/totp"><svg class="account-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+<rect x="6" y="2" width="12" height="20" rx="3"/><path d="M11 18h2"/>
+</svg><span>Authenticator app</span></a>
+<a href="/account/password"><svg class="account-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+<path d="M12 3 3 7v5c0 5 9 9 9 9s9-4 9-9V7z"/><path d="m8 12 3 3 5-6"/>
+</svg><span>Password</span></a>
+<a href="/account/email"><svg class="account-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 6 9 7 9-7"/>
+</svg><span>Email address</span></a>
+</div><div class="account-nav-group"><h2>Sessions and activity</h2>
+<a href="/account/sessions"><svg class="account-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+<rect x="2" y="3" width="16" height="12" rx="2"/><path d="M7 19h6m-3-4v4"/><rect x="17" y="11" width="5" height="11" rx="1"/>
+</svg><span>Where you are signed in</span></a>
+<a href="/account/activity"><svg class="account-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>
+</svg><span>Security activity</span></a>
+</div><div class="account-nav-group"><h2>Applications and permissions</h2>
+<a href="/account/grants"><svg class="account-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>
+</svg><span>Access you have allowed</span></a>
+<a href="/account/approvals"><svg class="account-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+<path d="m5 12 4 4L19 6"/>
+</svg><span>Requests waiting for you</span></a>
+<a href="/account/claims-providers"><svg class="account-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+<path d="m10 13 4-4m-5 6-2 2a4 4 0 0 1-6-6l4-4a4 4 0 0 1 6 0m2 2 2-2a4 4 0 0 1 6 6l-4 4a4 4 0 0 1-6 0"/>
+</svg><span>Connected information providers</span></a>
+<a href="/account/id-jag"><svg class="account-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+<path d="m10 13 4-4m-5 6-2 2a4 4 0 0 1-6-6l4-4a4 4 0 0 1 6 0m2 2 2-2a4 4 0 0 1 6 6l-4 4a4 4 0 0 1-6 0"/>
+</svg><span>External identity approvals</span></a>
+</div></nav></aside>
+<section class="account-content">
 
 
 
 
 
-<div class="stack tight">
+<div class="account-record">
 <h2>The passkeys registered on your account</h2>
 </div>
 
@@ -588,6 +743,9 @@ input[type=text]:focus, input[type=password]:focus, input[type=email]:focus { bo
 
 <p class="link-row"><a href="/account/passkeys/sign-in">Sign in again</a></p>
 <p class="link-row"><a href="/account">Back to your account</a></p>
+
+</section>
+</div>
 
 </main>
 

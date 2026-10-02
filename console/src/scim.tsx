@@ -1,11 +1,12 @@
 import { FormSelect } from './components/ui/select';
-import { SearchIcon } from 'lucide-react';
+import { DirectorySearch } from './directory-controls';
+import { ConnectionDocument } from './components/connection-document';
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { read, type Session } from './api';
 import type { ClientDocument } from './client-draft';
 import { hrefOf } from './routes';
-import { Badge, Button, EmptyState, Field, LoadFailure, Panel, Screen, Skeleton } from './ui';
+import { Badge, EmptyState, Field, LoadFailure, Panel, Screen, Skeleton } from './ui';
 
 interface ClientSummary {
   readonly client_id: string;
@@ -118,21 +119,17 @@ export function ScimProvisioning({ session }: Readonly<{ session: Session }>): J
   return (
     <Screen title="SCIM provisioning" description={`Configure an automation client for tenant ${session.workspace}. The provisioning API accepts client credentials tokens and DPoP proofs.`}>
       <Panel title="Connection values" description="Give these values to the external identity provider. Use the token endpoint from this tenant's discovery document.">
-        <dl>
-          <dt>SCIM base URL</dt><dd><code>{urls.base}</code></dd>
-          <dt>Token resource audience</dt><dd><code>{urls.audience}</code></dd>
-          <dt>Read scope</dt><dd><code>{READ_SCOPE}</code></dd>
-          <dt>Write scope</dt><dd><code>{WRITE_SCOPE}</code></dd>
-        </dl>
+        <ConnectionDocument entries={[
+          { label: 'SCIM base URL', value: urls.base, description: 'Users and groups provisioning endpoint.' },
+          { label: 'Token resource audience', value: urls.audience, description: 'Request this resource when obtaining an access token.' },
+          { label: 'Read scope', value: READ_SCOPE },
+          { label: 'Write scope', value: WRITE_SCOPE },
+        ]} />
         <p className="muted">The client must request a token with <code>grant_type=client_credentials</code>, <code>resource</code> set to the admin API audience, and the required scopes. It must send a DPoP proof with every SCIM request.</p>
       </Panel>
 
       <Panel title="Provisioning client" description="Inspect a registered application. This checks its stored configuration; it does not issue a token or call the SCIM endpoint.">
-        <form className="row" onSubmit={(event) => { event.preventDefault(); loadClients(query); }}>
-          <label htmlFor="scim-client-search">Find application</label>
-          <input id="scim-client-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Name or client ID" />
-          <Button type="submit" aria-label="Search applications" title="Search applications"><SearchIcon aria-hidden="true" /><span className="visually-hidden">Search applications</span></Button>
-        </form>
+        <div className="directory-toolbar"><DirectorySearch label="Find application" value={query} placeholder="Name or client ID" onChange={setQuery} onSubmit={() => loadClients(query)} actionLabel="Search applications" /></div>
         {inventory.kind === 'loading' && <Skeleton label="Loading applications" />}
         {inventory.kind === 'failed' && <LoadFailure message={inventory.message} onRetry={() => loadClients(query)} />}
         {inventory.kind === 'ready' && inventory.page.items.length === 0 && (

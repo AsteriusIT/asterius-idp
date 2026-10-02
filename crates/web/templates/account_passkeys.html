@@ -1,6 +1,6 @@
-{% extends "base.html" %}
+{% extends "account_base.html" %}
 {% block title %}{{ text.passkeys_title() }} — {{ tenant_name }}{% endblock %}
-{% block content %}
+{% block account_content %}
 {# The passkeys on an account, and what their owner can do to them
    (`ast-1xd`).
 
@@ -23,7 +23,7 @@
    ceremony lives on its own page; nothing here is a ceremony. #}
 {% include "error_summary.html" %}
 
-<div class="stack tight">
+<div class="account-record">
 <h2>{{ text.passkeys_heading() }}</h2>
 </div>
 
@@ -32,21 +32,20 @@
 {% else %}
 <p class="muted">{{ text.passkeys_explains() }}</p>
 {% for passkey in passkeys %}
-<p class="separator"></p>
-<div class="stack tight">
-<p>{{ passkey.name }}</p>
+<div class="account-record">
+<h3>{% if passkey.label.is_empty() %}{{ text.account_unnamed_passkey() }}{% else %}{{ passkey.name }}{% endif %}</h3>
 <p class="muted">
-  <time datetime="{{ passkey.registered_at }}">{{ text.passkeys_registered_on(passkey.registered_at) }}</time>
+  <time datetime="{{ passkey.registered_at }}">{{ text.passkeys_registered_on(account_time(passkey.registered_at).as_str()) }}</time>
 </p>
 <p class="muted">
 {% if let Some(used) = passkey.last_used %}
-  <time datetime="{{ used }}">{{ text.passkeys_last_used(used) }}</time>
+  <time datetime="{{ used }}">{{ text.passkeys_last_used(account_time(used).as_str()) }}</time>
 {% else %}
   {{ text.passkeys_never_used() }}
 {% endif %}
 </p>
 {% if let Some(model) = passkey.model %}
-<p class="muted">{{ text.passkeys_model(model) }}</p>
+<details class="account-technical"><summary>{{ text.account_technical_details() }}</summary><p><code>{{ text.passkeys_model(model) }}</code></p></details>
 {% endif %}
 {% if passkey.blocked %}
 <p class="muted">{{ text.passkeys_blocked() }}</p>
@@ -63,17 +62,17 @@
   <input type="text" name="label" value="{{ passkey.label }}"
          maxlength="{{ maximum_label_length }}" autocomplete="off">
 </label>
-{% if passkey.needs_password %}
+
+<div class="actions">
+  <button type="submit" name="do" value="rename">{{ text.passkeys_rename() }}</button>
+{% if passkey.removable %}
+  <details class="account-remove-action"><summary>{{ text.passkeys_remove() }}</summary><p class="muted">{{ text.passkeys_explains() }}</p>{% if passkey.needs_password %}
 <label>
   <span>{{ text.passkeys_password() }}</span>
   <input type="password" name="password" autocomplete="current-password">
   <span class="muted">{{ text.passkeys_last_needs_password() }}</span>
 </label>
-{% endif %}
-<div class="actions">
-  <button type="submit" name="do" value="rename">{{ text.passkeys_rename() }}</button>
-{% if passkey.removable %}
-  <button type="submit" name="do" value="remove" class="secondary">{{ text.passkeys_remove() }}</button>
+{% endif %}<button type="submit" name="do" value="remove" class="secondary">{{ text.passkeys_remove() }}</button></details>
 {% endif %}
 </div>
 </form>

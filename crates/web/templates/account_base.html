@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% import "account_icons.html" as icons %}
+{% block card_class %} account-workspace{% endblock %}
+{% block page_styles %}{% include "account.css" %}{% endblock %}
+{% block content %}
+<div class="account-frame">
+<aside class="account-navigation">
+<a class="account-nav-home" href="{{ account_root() }}">{{ text.account_title() }}</a>
+<nav aria-label="{{ text.account_title() }}">
+<a href="{{ account_root() }}"{% if account_section() == "overview" %} aria-current="page"{% endif %}>{% call icons::icon("user") %}{% endcall %}<span>{{ text.account_overview() }}</span></a>
+<div class="account-nav-group"><h2>{{ text.account_signin_group() }}</h2>
+<a href="{{ account_root() }}/passkeys"{% if account_section() == "passkeys" %} aria-current="page"{% endif %}>{% call icons::icon("key") %}{% endcall %}<span>{{ text.account_passkeys_link() }}</span></a>
+<a href="{{ account_root() }}/totp"{% if account_section() == "totp" %} aria-current="page"{% endif %}>{% call icons::icon("phone") %}{% endcall %}<span>{{ text.account_totp_link() }}</span></a>
+<a href="{{ account_root() }}/password"{% if account_section() == "password" %} aria-current="page"{% endif %}>{% call icons::icon("shield") %}{% endcall %}<span>{{ text.account_password_link() }}</span></a>
+<a href="{{ account_root() }}/email"{% if account_section() == "email" %} aria-current="page"{% endif %}>{% call icons::icon("mail") %}{% endcall %}<span>{{ text.account_email_link() }}</span></a>
+</div><div class="account-nav-group"><h2>{{ text.account_sessions_group() }}</h2>
+<a href="{{ account_root() }}/sessions"{% if account_section() == "sessions" %} aria-current="page"{% endif %}>{% call icons::icon("devices") %}{% endcall %}<span>{{ text.account_sessions_link() }}</span></a>
+<a href="{{ account_root() }}/activity"{% if account_section() == "activity" %} aria-current="page"{% endif %}>{% call icons::icon("clock") %}{% endcall %}<span>{{ text.account_activity_link() }}</span></a>
+</div><div class="account-nav-group"><h2>{{ text.account_access_group() }}</h2>
+<a href="{{ account_root() }}/grants"{% if account_section() == "grants" %} aria-current="page"{% endif %}>{% call icons::icon("apps") %}{% endcall %}<span>{{ text.account_grants_link() }}</span></a>
+<a href="{{ account_root() }}/approvals"{% if account_section() == "approvals" %} aria-current="page"{% endif %}>{% call icons::icon("check") %}{% endcall %}<span>{{ text.account_approvals_link() }}</span></a>
+<a href="{{ account_root() }}/claims-providers"{% if account_section() == "providers" %} aria-current="page"{% endif %}>{% call icons::icon("link") %}{% endcall %}<span>{{ text.providers_title() }}</span></a>
+<a href="{{ account_root() }}/id-jag"{% if account_section() == "external" %} aria-current="page"{% endif %}>{% call icons::icon("link") %}{% endcall %}<span>{{ text.external_approvals_title() }}</span></a>
+</div></nav></aside>
+<section class="account-content">
+{% block account_content %}{% endblock %}
+</section>
+</div>
+{% endblock %}

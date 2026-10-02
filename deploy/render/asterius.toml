@@ -12,3 +12,7 @@ mode = "behind_proxy"
 
 [keys]
 kek_env = "ASTERIUS_KEK"
+
+[mail]
+from_address = "no-reply@asteriusit.fr"
+api_key_env = "RESEND_API_KEY"

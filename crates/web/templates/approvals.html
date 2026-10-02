@@ -1,6 +1,6 @@
-{% extends "base.html" %}
+{% extends "account_base.html" %}
 {% block title %}{{ text.approvals_title() }} — {{ tenant_name }}{% endblock %}
-{% block content %}
+{% block account_content %}
 {# CIBA Core 1.0 §8: the OP identifies the end-user, authenticates them on the
    authentication device, and "MUST obtain an authorization decision as
    described in Section 3.1.2.4 of OpenID Core". This page is that decision.

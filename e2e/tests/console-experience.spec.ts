@@ -181,8 +181,15 @@ test('application secret survives tab changes and warns before leaving until ack
   });
   await page.goto(`${entry}#/clients?id=reports&tab=credentials`);
   await page.getByRole('button', { name: 'Rotate secret', exact: true }).click();
+  await expect(page.getByText('fixture-one-time-secret', { exact: true })).toHaveCount(0);
+  if (process.env.E2E_SHOTS) await page.screenshot({ path: `${process.env.E2E_SHOTS}/client-secret-hidden.png` });
+  await page.getByRole('button', { name: 'Show secret', exact: true }).click();
   await expect(page.getByText('fixture-one-time-secret', { exact: true })).toBeVisible();
   expect(writes).toBe(1);
+  if (process.env.E2E_SHOTS) await page.screenshot({ path: `${process.env.E2E_SHOTS}/client-secret-revealed.png` });
+  await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { throw new Error('Clipboard unavailable in this test'); } } }));
+  await page.getByRole('button', { name: 'Copy secret', exact: true }).click();
+  await expect(page.getByText('Copy was unavailable. Select and copy the value manually.', { exact: true })).toBeVisible();
   await page.getByRole('tab', { name: 'General', exact: true }).click();
   await page.getByRole('tab', { name: 'Credentials', exact: true }).click();
   await expect(page.getByText('fixture-one-time-secret', { exact: true })).toBeVisible();
@@ -480,7 +487,9 @@ test('manual configuration checks report missing setup without sending a mutatio
   });
   await page.goto(`${entry}#/federation`);
   await expect(page.getByText('No active federation signing key is configured.', { exact: false })).toHaveCount(0);
-  await page.getByRole('button', { name: 'Check configuration', exact: true }).click();
+  const check = page.getByRole('button', { name: 'Check configuration', exact: true });
+  expect((await check.boundingBox())?.width).toBeLessThan(240);
+  await check.click();
   await expect(page.getByText('No active federation signing key is configured.', { exact: false })).toBeVisible();
   await expect(page.getByText('Automatic rotation has no positive period configured.', { exact: false })).toBeVisible();
   expect(writes).toBe(0);
@@ -508,7 +517,7 @@ test('workspace health is reachable from the top bar and reports scoped mileston
   });
   await page.goto(`${entry}#/overview`);
   await expect(page.getByText('Workspace setup checklist')).toHaveCount(0);
-  await page.getByRole('link', { name: 'Workspace health' }).click();
+  await page.getByRole('link', { name: 'Workspace health', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Workspace setup checklist' })).toBeVisible();
   await expect(page.getByText('Needs setup')).toBeVisible();
   expect((await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa']).analyze()).violations).toEqual([]);
@@ -613,4 +622,231 @@ test('dark surfaces keep readable headings and controls across main destinations
     const violations = (await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa']).analyze()).violations;
     expect(violations).toEqual([]);
   }
+});
+
+test('developer guides reveal focused recipes and searchable account-aware tasks', async ({ page }) => {
+  const errors = await prepare(page);
+  await page.goto(`${entry}#/help`);
+  await expect(page.getByRole('tab', { name: 'Developer integration' })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('heading', { name: 'From registration to your first sign-in' })).toBeVisible();
+  await expect(page.getByText('Keep tokens in your server or backend-for-frontend')).not.toBeVisible();
+  await page.getByText('Web application or SPA with a backend', { exact: true }).click();
+  await expect(page.getByText('Keep tokens in your server or backend-for-frontend')).toBeVisible();
+  await page.getByRole('tab', { name: 'Console tasks' }).click();
+  await page.getByRole('searchbox', { name: 'Search console guides' }).fill('application');
+  await expect(page.locator('.task-guide')).toHaveCount(2);
+  await page.getByText('Connect an application', { exact: true }).click();
+  await expect(page.getByRole('link', { name: 'Open applications', exact: true })).toBeVisible();
+  await page.getByRole('searchbox').fill('no-such-task');
+  await expect(page.getByText('No matching guides.', { exact: false })).toBeVisible();
+  await page.getByRole('tab', { name: 'Developer integration' }).click();
+  await expect(page.getByRole('tabpanel', { name: 'Developer integration' }).getByRole('link', { name: 'Resource servers', exact: true })).toBeVisible();
+  await expect(page.getByRole('tabpanel', { name: 'Developer integration' }).getByRole('link', { name: 'Open architecture builder', exact: true })).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test('console actions stay compact and redesigned guides reflow in both themes', async ({ page }) => {
+  test.setTimeout(90_000);
+  const errors = await prepare(page, path => path.startsWith('overview/') ? { body: { value: 0, definition: 'Current tenant activity', collected_at: '2026-10-02T12:00:00Z' } } : undefined);
+  for (const route of ['overview', 'help', 'clients']) {
+    await page.goto(`${entry}#/${route}`);
+    for (const dark of [false, true]) {
+      await page.evaluate(value => document.documentElement.classList.toggle('dark', value), dark);
+      await expect(page.locator('.content')).toHaveCSS('color', dark ? 'rgb(245, 246, 248)' : 'rgb(24, 24, 27)');
+      await expect(page.locator('.topbar-tenant span.text-sm')).toHaveCSS('color', dark ? 'rgb(245, 246, 248)' : 'rgb(24, 24, 27)');
+      for (const width of [320, 390, 768, 1440]) {
+        await page.setViewportSize({ width, height: 900 });
+        await expect(page.locator('.screen-head h2')).toBeVisible();
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+        for (const button of await page.locator('.screen-actions .console-action').all()) {
+          const bounds = await button.boundingBox();
+          expect(bounds?.width).toBeLessThan(220);
+        }
+        if (width === 390 || width === 1440) {
+          expect((await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa']).analyze()).violations).toEqual([]);
+          if (process.env.E2E_SHOTS) await page.screenshot({ path: `${process.env.E2E_SHOTS}/${route}-${width}-${dark ? 'dark' : 'light'}.png` });
+        }
+      }
+    }
+  }
+  expect(errors).toEqual([]);
+});
+
+
+test('application lists show pagination only when another page exists', async ({ page }) => {
+  let next: string | null = null;
+  await prepare(page, path => path === 'clients' ? { body: { items: [], next_cursor: next } } : undefined);
+  await page.goto(`${entry}#/clients`);
+  await expect(page.getByText('No client matches.', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Next page', exact: true })).toHaveCount(0);
+  await page.getByText('Dynamic client registration', { exact: false }).click();
+  await expect(page.getByText('Initial access tokens are managed', { exact: false })).toBeVisible();
+  next = 'next-page';
+  await page.reload();
+  await expect(page.getByRole('button', { name: 'Next page', exact: true })).toBeEnabled();
+  await page.getByRole('button', { name: 'Next page', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'First page', exact: true })).toBeEnabled();
+});
+
+test('developer guidance stays available without offering inaccessible destinations', async ({ page }) => {
+  await prepare(page, path => path === 'session' ? { body: { ...session, scopes: [], deployment_scopes: [] } } : undefined);
+  await page.goto(`${entry}#/help`);
+  const guide = page.getByRole('tabpanel', { name: 'Developer integration' });
+  await expect(guide.getByRole('heading', { name: 'From registration to your first sign-in' })).toBeVisible();
+  await expect(guide.getByRole('link')).toHaveCount(0);
+  await page.getByRole('tab', { name: 'Console tasks' }).click();
+  await expect(page.getByText('No matching guides.', { exact: false })).toBeVisible();
+});
+
+test('groups share the directory toolbar and role assignments fit their dialog', async ({ page }) => {
+  const group = { id: 'group-1', name: 'operators', display_name: 'Operators', revision: 1, created_at: '2026-09-29T12:00:00Z', updated_at: '2026-09-29T12:00:00Z' };
+  const errors = await prepare(page, path => {
+    if (path === 'session') return { body: { ...session, scopes: [...session.scopes, 'admin.groups:read', 'admin.groups:write', 'admin.app_roles:read', 'admin.app_roles:write'] } };
+    if (path === 'groups') return { body: { items: [group], next_cursor: null } };
+    if (path === 'groups/group-1') return { body: group };
+    if (path === 'groups/group-1/app-roles') return { body: { roles: [], resource_access: {} } };
+    if (path === 'app-roles') return { body: { roles: [{ name: 'reader', description: 'Read reports' }] } };
+    return undefined;
+  });
+  await page.goto(`${entry}#/groups`);
+  const search = page.getByRole('searchbox', { name: 'Search groups', exact: true });
+  const searchButton = page.getByRole('button', { name: 'Search groups', exact: true });
+  for (const width of [390, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    // Sample both controls in one layout frame after the responsive shell settles.
+    await expect.poll(() => page.locator('.directory-search').evaluate(form => {
+      const input = form.querySelector('input')!.getBoundingClientRect();
+      const button = form.querySelector('button')!.getBoundingClientRect();
+      return Math.abs(input.y - button.y);
+    })).toBeLessThan(3);
+    const inputBounds = (await search.boundingBox())!;
+    const buttonBounds = (await searchButton.boundingBox())!;
+    expect(buttonBounds.x).toBeGreaterThan(inputBounds.x + inputBounds.width);
+  }
+  await page.getByRole('button', { name: 'View Operators' }).click();
+  await page.getByRole('button', { name: 'Assign role', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  for (const width of [320, 390, 640, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    expect(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+    await expect(dialog.getByRole('button', { name: 'Assign role', exact: true })).toBeInViewport();
+    await expect(dialog.getByRole('combobox', { name: 'Application', exact: true })).not.toHaveCSS('border-top-color', 'rgb(24, 24, 27)');
+    if (width === 390 || width === 1440) {
+      expect((await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze()).violations).toEqual([]);
+      if (process.env.E2E_SHOTS) await page.screenshot({ path: `${process.env.E2E_SHOTS}/group-role-${width}.png` });
+    }
+  }
+  expect(errors).toEqual([]);
+});
+
+test('SCIM and protocol endpoints use copyable document rows', async ({ page }) => {
+  const issuer = `${origin}/t/review`;
+  const errors = await prepare(page, path => {
+    if (path === 'tenants/review') return { body: { issuer } };
+    if (path === 'tenants/review/settings') return { body: { ...settings, limits: { max_authorization_code_lifetime_seconds: 60, max_access_token_lifetime_seconds: 3600 } } };
+    if (path === 'clients') return { body: { items: [{ client_id: 'reports', client_name: 'Reports' }], next_cursor: null } };
+    return undefined;
+  });
+  await page.route('**/.well-known/openid-configuration', route => route.fulfill({ contentType: 'application/json', body: JSON.stringify({ issuer, authorization_endpoint: `${issuer}/authorize`, token_endpoint: `${issuer}/token`, jwks_uri: `${issuer}/jwks` }) }));
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  for (const route of ['scim', 'settings']) {
+    await page.goto(`${entry}#/${route}`);
+    if (route === 'settings') await page.getByRole('tab', { name: 'Protocol endpoints', exact: true }).click();
+    const copy = page.getByRole('button', { name: route === 'scim' ? 'Copy SCIM base URL' : 'Copy Discovery document', exact: true });
+    await expect(copy).toBeVisible();
+    await copy.click();
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(route === 'scim' ? `${entry}api/v1/scim/v2` : `${issuer}/.well-known/openid-configuration`);
+    if (route === 'settings') await expect(page.getByRole('button', { name: 'Save settings', exact: true })).toHaveCount(0);
+    for (const dark of [false, true]) {
+      await page.evaluate(value => document.documentElement.classList.toggle('dark', value), dark);
+      await expect(page.locator('.content')).toHaveCSS('color', dark ? 'rgb(245, 246, 248)' : 'rgb(24, 24, 27)');
+      for (const width of [320, 390, 1440]) {
+        await page.setViewportSize({ width, height: 900 });
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+        expect((await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze()).violations).toEqual([]);
+        if (process.env.E2E_SHOTS && width !== 320) await page.screenshot({ path: `${process.env.E2E_SHOTS}/${route}-document-${width}-${dark ? 'dark' : 'light'}.png` });
+      }
+    }
+  }
+  expect(errors).toEqual([]);
+});
+
+test('architecture toolbar does not overlap the palette and details stay within their pane', async ({ page }) => {
+  const id = 'a0000000-0000-4000-8000-000000000001';
+  const errors = await prepare(page, path => {
+    if (path === 'session') return { body: { ...session, scopes: [...session.scopes, 'admin.flows:write'] } };
+    if (path === `flows/${id}`) return { body: { id, name: 'Architecture review', revision: 1, graph: { schema_version: 1, nodes: [], edges: [] } } };
+    if (path === `flows/${id}/plan`) return { body: { flow_id: id, revision: 1, digest: 'fixture', applicable: true, steps: [] } };
+    return undefined;
+  });
+  await page.goto(`${entry}#/architecture?flow=${id}&mode=edit`);
+  const toggle = page.getByRole('button', { name: 'Show object list', exact: true });
+  await expect(toggle).toBeVisible();
+  for (const width of [390, 768, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    const palette = (await page.locator('.architecture-palette').boundingBox())!;
+    const view = (await toggle.boundingBox())!;
+    expect(palette.x + palette.width <= view.x || palette.y + palette.height <= view.y).toBe(true);
+    expect(await page.locator('.architecture-sidepane').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    if (process.env.E2E_SHOTS) await page.screenshot({ path: `${process.env.E2E_SHOTS}/architecture-toolbar-${width}.png` });
+  }
+  await toggle.click();
+  await expect(page.getByRole('button', { name: 'Show canvas', exact: true })).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+
+test('account menu has clear account navigation and quiet pointer states with keyboard focus', async ({ page, context }) => {
+  const errors = await prepare(page);
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin });
+  await page.goto(`${entry}#/users`);
+  const trigger = page.getByRole('button', { name: 'Account menu', exact: true });
+  for (const dark of [false, true]) {
+    await page.evaluate(value => document.documentElement.classList.toggle('dark', value), dark);
+    for (const width of [320, 390, 1440]) {
+      await page.setViewportSize({ width, height: 900 });
+      await trigger.click();
+      const menu = page.getByRole('menu', { name: 'Account menu' });
+      await expect(menu).toBeVisible();
+      const account = menu.getByRole('menuitem', { name: /My account/ });
+      await expect(account).toHaveAttribute('href', '/t/admin/account');
+      await expect(menu).toContainText(session.username);
+      await expect(menu).toContainText(session.user);
+      const preferences = menu.getByRole('menuitem', { name: 'Preferences', exact: true });
+      await preferences.hover();
+      expect(await preferences.evaluate(element => getComputedStyle(element).outlineStyle)).toBe('none');
+      expect(await preferences.evaluate(element => getComputedStyle(element).color)).toBe(await account.evaluate(element => getComputedStyle(element).color));
+      expect(await menu.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+      const bounds = (await menu.boundingBox())!;
+      expect(bounds.x).toBeGreaterThanOrEqual(0);
+      expect(bounds.x + bounds.width).toBeLessThanOrEqual(width);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      if (width !== 320) {
+        expect((await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze()).violations).toEqual([]);
+        if (process.env.E2E_SHOTS) await page.screenshot({ path: `${process.env.E2E_SHOTS}/account-menu-${width}-${dark ? 'dark' : 'light'}.png` });
+      }
+      await page.keyboard.press('Escape');
+      await expect(menu).toHaveCount(0);
+      await expect(trigger).toBeFocused();
+    }
+  }
+  await trigger.press('ArrowDown');
+  const menu = page.getByRole('menu', { name: 'Account menu' });
+  const account = menu.getByRole('menuitem', { name: /My account/ });
+  await expect(account).toBeFocused();
+  expect(await account.evaluate(element => getComputedStyle(element).outlineStyle)).toBe('solid');
+  await page.keyboard.press('ArrowDown');
+  const preferences = menu.getByRole('menuitem', { name: 'Preferences', exact: true });
+  await expect(preferences).toBeFocused();
+  await expect(preferences).toHaveCSS('outline-width', '2px');
+  await menu.getByRole('menuitem', { name: /Copy account identifier/ }).click();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(session.user);
+  await trigger.click();
+  await menu.getByRole('menuitem', { name: 'Preferences', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Preferences', exact: true })).toBeVisible();
+  const health = page.getByRole('link', { name: 'Workspace health', exact: true });
+  await health.hover();
+  expect(await health.evaluate(element => getComputedStyle(element).outlineStyle)).toBe('none');
+  expect(errors).toEqual([]);
 });
