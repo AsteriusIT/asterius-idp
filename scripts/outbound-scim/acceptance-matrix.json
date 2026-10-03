@@ -1,0 +1,100 @@
+{
+  "ticket": "ast-dd1y.6.3",
+  "status": "prepared_not_executed",
+  "profile": "asterius-fapi-dpop-scim-v2",
+  "activation_gate": "Human acceptance of ast-dd1y.6.2; no runtime enabled by this manifest",
+  "real_fixture": {
+    "source": "owned isolated Asterius tenant/database",
+    "target": "different owned isolated Asterius tenant/database",
+    "egress": "public HTTPS through the production DNS/address/TLS guard",
+    "public_exposure": "only exact target token and SCIM paths through an owned bounded ephemeral relay",
+    "credentials": "deployment allow-listed signing reference; generated only by test operator, private files0600",
+    "cleanup": "owned relay, processes, databases and private material only; preserve existing deployment"
+  },
+  "cases": [
+    {
+      "id": "user_create_response_lost",
+      "invariant": "Remote commit then dropped response recovers exact immutable alias/externalId and one UUID"
+    },
+    {
+      "id": "group_create_two_expired_leases",
+      "invariant": "Atomic remote externalId uniqueness and local incarnation CAS retain one remote group"
+    },
+    {
+      "id": "create_followed_by_disable",
+      "invariant": "A source disable during uncertain create reaches the recovered UUID; no obsolete desired receipt clears dirty state"
+    },
+    {
+      "id": "stale_outbox_ack",
+      "invariant": "Attempt1 cannot overwrite claimed/delivered attempt2 or append misleading attempt evidence"
+    },
+    {
+      "id": "latest_email_update",
+      "invariant": "Current authoritative work email is read at delivery; no personal attributes occur in outbox payload"
+    },
+    {
+      "id": "complete_direct_group_projection",
+      "invariant": "Exactly selected active direct User assignments; exclude nested, unselected and inactive members"
+    },
+    {
+      "id": "missing_user_mapping",
+      "invariant": "Group defers and queues bounded User dependencies under separate keys, without recursively provisioning them"
+    },
+    {
+      "id": "conditional_update_drift",
+      "invariant": "Matching immutable ownership and latest ETag required;412 is visible conflict, never unconditional retry"
+    },
+    {
+      "id": "target_administrator_lock",
+      "invariant": "Disable then reactivation cannot clear target security lock"
+    },
+    {
+      "id": "target404_without_delete",
+      "invariant": "Mapped absence conflicts; no automatic recreate/adoption"
+    },
+    {
+      "id": "reviewed_delete_retry",
+      "invariant": "Only already-disabled User/empty Group, exact saved UUID/current If-Match; retry404 completes same tombstone"
+    },
+    {
+      "id": "source_delete",
+      "invariant": "Mapping and ownership survive source removal; disable/empty projection instead of unreviewed remote delete"
+    },
+    {
+      "id": "foreign_or_scim_source",
+      "invariant": "Reject cross-tenant source and SCIM-origin export loop before queue/network"
+    },
+    {
+      "id": "credential_rotation",
+      "invariant": "Same target principal with new allow-listed generation invalidates token; old job cannot advance current receipt"
+    },
+    {
+      "id": "connector_pause_during_job",
+      "invariant": "No new dispatch after disabled context; stale completion cannot clear paused/dirty work"
+    },
+    {
+      "id": "outage_then_recovery",
+      "invariant": "429/5xx/network failure backs off durably, restart recovers under current state/key"
+    },
+    {
+      "id": "dry_run",
+      "invariant": "Authentication POST permitted; every SCIM resource call is GET and no target mapping changes"
+    },
+    {
+      "id": "resource_bounds",
+      "invariant": "100Users100Groups100directmembers,25-row reconciliation page,64KiB messages and total deadline below claim lease"
+    },
+    {
+      "id": "ssrf_and_redirect",
+      "invariant": "Refuse private/mixed/loopback/link-local DNS and redirects for both token and SCIM; no shipping private-address bypass"
+    },
+    {
+      "id": "nonce_and_binding",
+      "invariant": "Fresh assertion/proof jti/method/absoluteURL/token hash; one bounded nonce retry and DPoP token_type required"
+    },
+    {
+      "id": "redacted_failures",
+      "invariant": "Errors/dead letters contain only fixed codes and job/connector IDs, no response body/email/URL/token/private key"
+    }
+  ]
+}
