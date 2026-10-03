@@ -2835,9 +2835,22 @@ mod tests {
     /// The scope strings are the vocabulary an automation client is granted,
     /// so they are a namespace and not free text.
     #[test]
-    fn every_declared_scope_is_in_the_admin_namespace() {
+    fn every_declared_scope_is_admin_or_exact_device_relay_authority() {
         for operation in registry() {
             let scope = operation.authority().scope();
+            // Relay observations are machine-only publication, distinct from
+            // human device administration. Only these exact registered routes
+            // may use the two dedicated service scopes.
+            let relay_scope = match operation.id() {
+                DEVICE_ENROLL_ID => Some("device.enrollments:write"),
+                DEVICE_POSTURE_ID => Some("device.posture:write"),
+                _ => None,
+            };
+            if let Some(expected) = relay_scope {
+                assert_eq!(scope, expected);
+                assert_eq!(operation.authority().reach(), crate::rbac::Reach::AutomationTenant);
+                continue;
+            }
             assert!(
                 scope.starts_with("admin.") && scope.contains(':'),
                 "{} declares {scope}, which is not admin.<resource>:<action>",
