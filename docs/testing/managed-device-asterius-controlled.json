@@ -1,0 +1,40 @@
+{
+  "component": "real isolated Asterius protected TLS / FAPI DPoP",
+  "status": "pass",
+  "checks": [
+    "successful_cc_signature_creates_private_exact_relay_receipt",
+    "authenticated_relay_enrolls_exact_user_leaf_and_application",
+    "sequence_replay_stale_observation_and_wrong_incarnation_refused",
+    "seeded_human_refresh_baseline_preserves_fapi_and_dpop",
+    "actual_tls_device_and_current_posture_permit_fapi_refresh_without_public_device_claim",
+    "old_grant_and_previous_success_do_not_supply_new_request_possession",
+    "caller_public_certificate_header_cannot_create_possession",
+    "real_browser_device_tls_password_par_pkce_completion",
+    "exact_original_interaction_proof_transferred_to_code_and_final_signed_identity",
+    "spent_authorization_code_and_private_proof_cannot_be_replayed",
+    "latest_noncompliance_overrides_previous_compliant_authority",
+    "current_disabled_source_and_generation_fence_refuse_new_signature",
+    "revoked_exact_cc_grant_invalidates_relay_authority"
+  ],
+  "passed": 13,
+  "binary_source_commit": "aa414e79",
+  "binary_sha256": "f09b0f90e0f8a3e70d76f0fd20554ebbedbb7508f5d0d294f5d675929d77ae47",
+  "migration_count": 114,
+  "observed_at": "2026-10-03T21:36:30Z",
+  "human_authentication": {
+    "refresh": "seeded offline refresh grants",
+    "authorization_code": "actual Chromium password authentication"
+  },
+  "source_registration": "seeded local administration controlled input",
+  "device_attestation": "controlled software PKI; no hardware attestation or live MDM claim",
+  "original_interaction_code_transfer": "actual browser FAPI PAR/PKCE and exact code spend",
+  "owned_database_only": true,
+  "human_normative_review": "pending; candidate validation only",
+  "fixture_sha256": {
+    "scripts/managed-devices/acceptance.py": "ff5a91c5ac06a996257aeacbd2ef48ff4c59aeb53e9e3fda0ba9a3073ff03753",
+    "scripts/managed-devices/runtime_controls.py": "d1d1885b93190a79201cb6b7bdcaaf7a46c8db650ac71f1e38abe9f9ae125526",
+    "scripts/managed-devices/browser_controls.mjs": "ed0321499facbd5005cb5eeff8bd43995e6c58b42375b9224faf9aa43bb1f873",
+    "scripts/managed-devices/proxy.mjs": "9e2a5be152f904fae4a5e7cffe95e25572b92d2e26968f996db6ab22798cf5bc",
+    "scripts/managed-devices/prepare-pki.sh": "a41730f257eac2ef1e6093b249a59c8b8d573a64e63f99d2fa4614fe6971ea73"
+  }
+}
