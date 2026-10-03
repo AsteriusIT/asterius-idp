@@ -295,7 +295,7 @@ fn conditional_simulation_schema() -> Value {
     json!({"type":"object","description":"Inspection only: reports active restrictions and report-only results, without returning fact values, policy literals or directory contents.","properties":{
         "enforcement_action":{"enum":crate::policies::conditional_simulation::ACTIONS},
         "legacy_would_permit":{"type":"boolean"},"active_would_permit":{"type":"boolean"},
-        "policy_revision":{"type":"string"},"acr_revision":{"type":"string"},"client_revision":{"type":"string"},
+        "policy_revision":{"type":"string"},"evaluated_policy_revision":{"type":["string","null"]},"acr_revision":{"type":"string"},"client_revision":{"type":"string"},
         "facts":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["name","availability","source","hypothetical"],"properties":{"name":{"type":"string"},"availability":{"enum":["known","absent","stale","unavailable","invalid"]},"source":{"type":"string"},"hypothetical":{"type":"boolean"}}}},
         "scopes":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"mode":{"enum":["active","report_only"]},"would_decision":{"type":"boolean"},"required_facts":{"type":"array","items":{"type":"string"}},"missing_required_evidence":{"type":"boolean"},"assurance_remedy":{"type":["string","null"]},"conditions":{"type":"array"}}}}
     }})

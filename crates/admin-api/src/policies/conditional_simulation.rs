@@ -291,7 +291,7 @@ pub fn evaluate(
         }
     }
     let facts = trusted.facts.keys().map(|name|json!({"name":name,"availability":trusted.availability(*name),"source":trusted.facts.get(name).map(|fact|fact.source.as_str()).unwrap_or("unavailable"),"hypothetical":trusted.facts.get(name).is_some_and(|fact|fact.source==EXAMPLE_SOURCE)})).collect::<Vec<_>>();
-    let response = json!({"enforcement_action":trusted.action,"legacy_would_permit":legacy.permit(),"active_would_permit":decision.permit(),"policy_revision":trusted.policy_revision,"acr_revision":trusted.acr_revision,"client_revision":trusted.client_revision,"facts":facts,"scopes":scopes});
+    let response = json!({"enforcement_action":trusted.action,"legacy_would_permit":legacy.permit(),"active_would_permit":decision.permit(),"policy_revision":trusted.policy_revision,"evaluated_policy_revision":policy.map(|policy|explanation::revision(&policy.rules)),"acr_revision":trusted.acr_revision,"client_revision":trusted.client_revision,"facts":facts,"scopes":scopes});
     (decision, response)
 }
 

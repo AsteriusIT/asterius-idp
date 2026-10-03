@@ -99,7 +99,7 @@ export interface DecisionDocument {
     readonly error?: unknown;
   };
   readonly simulation?: {
-    readonly conditional?: { readonly enforcement_action: string; readonly legacy_would_permit: boolean; readonly active_would_permit: boolean; readonly facts: readonly { readonly name: string; readonly availability: string; readonly source: string; readonly hypothetical: boolean }[]; readonly scopes: readonly { readonly id: string; readonly mode: string; readonly would_decision: boolean; readonly required_facts: readonly string[]; readonly missing_required_evidence: boolean; readonly assurance_remedy: string | null }[] };
+    readonly conditional?: { readonly enforcement_action: string; readonly evaluated_policy_revision?: string | null; readonly legacy_would_permit: boolean; readonly active_would_permit: boolean; readonly facts: readonly { readonly name: string; readonly availability: string; readonly source: string; readonly hypothetical: boolean }[]; readonly scopes: readonly { readonly id: string; readonly mode: string; readonly would_decision: boolean; readonly required_facts: readonly string[]; readonly missing_required_evidence: boolean; readonly assurance_remedy: string | null }[] };
     readonly enforced: false;
     readonly current_policy_revision: string | null;
     readonly provenance: { readonly policy: 'stored' | 'hypothetical'; readonly context_properties: 'absent' | 'hypothetical' };

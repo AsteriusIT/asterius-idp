@@ -49,7 +49,8 @@ or issues credentials. Generic context cannot populate the reserved trusted name
 
 Results report base and active decisions, matching scope modes and would-results,
 required facts, missing evidence, attainable assurance remedies and fact sources.
-They include captured policy, ACR and client revisions, without directory fact values
+They distinguish the stored snapshot revision from the evaluated document revision
+(which can be an unpublished draft), and include ACR and client revisions without directory fact values
 or condition literals. Missing required facts deny active scopes even inside `ANY`
 or `NOT`. Remedies use the current attainable ACR ladder. Every response is
 `enforced: false`: inspection provides no access authority.

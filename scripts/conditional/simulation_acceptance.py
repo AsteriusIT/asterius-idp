@@ -83,6 +83,7 @@ assert call('PUT','/policies',missing)[0]==409,'unguarded first activation refus
 publish(missing)
 status,_,result=simulate()
 assert status==200 and not result['decision'] and result['simulation']['enforced'] is False
+assert result['simulation']['conditional']['evaluated_policy_revision']==revision
 assert fact(result,'assurance')['availability']=='absent'
 assert fact(result,'authentication_age')['availability']=='absent'
 assert fact(result,'network_zone')['availability']=='absent'
@@ -155,6 +156,7 @@ before=call('GET','/policies')[2]
 draft=document({'device_compliance':'compliant'},mode='report_only')
 status,_,result=simulate(hypothetical_policy=draft)
 assert status==200 and result['simulation']['provenance']['policy']=='hypothetical'
+assert result['simulation']['conditional']['evaluated_policy_revision']!=revision
 assert call('GET','/policies')[2]==before,'preview is not publication'
 passed('policy_snapshot_and_unpublished_draft')
 print(json.dumps({'fixture':'real_https_fapi_dpop_administrative_simulation','controls':controls,'status':'pass'},sort_keys=True))

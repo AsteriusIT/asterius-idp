@@ -66,6 +66,7 @@ export function PolicySimulation({ session, revision, draft }: Readonly<{
   return <Panel title="What-if simulation" description="Choose actual tenant records, then try hypothetical context or the editor draft. Groups, roles and active grants come from the server. Transaction evidence is absent unless explicitly supplied as a hypothetical example. Each inspection is audited.">
     {!permitted ? <p>Requires policy, user, application and resource read access.</p> : <>
       <p className="muted">The selectors show the first 100 accounts and applications. A simulation grants no access and saves no policy.</p>
+      <p className="muted">Simulation stored snapshot: {snapshot ? <code>{snapshot}</code> : 'No stored policy'}. Refreshing this snapshot does not reload the editor draft.</p>
       <form className="toolbar" onSubmit={(event) => { event.preventDefault(); void simulate(); }}>
         <Field label="Tenant user">{(props) => <select {...props} required value={user} onChange={(event) => setUser(event.target.value)}>
           <option value="">Choose an account</option>{references?.users.map((row) => <option key={row.user_id} value={row.user_id}>{row.username}</option>)}
@@ -96,6 +97,7 @@ function ConditionalResult({ conditional }: Readonly<{ conditional: NonNullable<
   if (!conditional) return null;
   return <div className="stack">
     <p>Enforcement boundary: <code>{conditional.enforcement_action}</code>. Base result: {conditional.legacy_would_permit ? 'permit' : 'deny'}. With active scopes: {conditional.active_would_permit ? 'permit' : 'deny'}.</p>
+    {conditional.evaluated_policy_revision && <p className="muted">Evaluated document: <code>{conditional.evaluated_policy_revision}</code>.</p>}
     <DataTable rows={conditional.facts} rowKey={fact => fact.name} columns={[
       {key:'fact',header:'Trusted fact',cell:fact => fact.name},
       {key:'availability',header:'Availability',cell:fact => <Badge tone={fact.availability === 'known' ? 'ok' : 'warn'}>{fact.availability}</Badge>},
