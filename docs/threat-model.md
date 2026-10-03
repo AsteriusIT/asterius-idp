@@ -2571,3 +2571,12 @@ logout and expiry evidence and the exact limits are in
 [the integration recipe](integrations/vault-openbao.md). Its test cluster,
 databases, TLS services and credential files are disposable and independently
 owned; no current Kubernetes context or shared schema is modified.
+
+The GitOps acceptance delegates public CRD application to a separate Flux
+ServiceAccount without Secret read, binding write, status write or controller
+finalizer removal authority.
+Flux bootstrap remains trusted platform infrastructure. Production source
+transport trust is configured independently from the local public HTTP fixture.
+A different Terraform client can import/read an identity but cannot take its
+owner; controlled restart, compatible packaging rollback and reviewed
+Retain/import recovery must preserve the remote identity references.
