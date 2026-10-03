@@ -92,3 +92,5 @@ refresh, elapsed expiry, a root writer racing issuance, terminal owner disable
 and atomic audit/lineage. It seeds owner sessions and prior human grants; this
 is explicitly not evidence of a live human login. Slow adapter integration
 tests remain CI-only (`--run-ignored all`).
+
+The sanitized recorded run is [agent task issuance evidence](testing/agent-task-issuance-evidence.json), including the executed binary digest and controlled-fixture limitations.

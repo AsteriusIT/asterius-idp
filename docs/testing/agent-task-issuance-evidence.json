@@ -1,0 +1,44 @@
+{
+  "date": "2026-10-03T12:48:50.572405+00:00",
+  "ticket": "ast-dd1y.8.2",
+  "implementation_commit": "175f5499",
+  "result": "PASS",
+  "environment": "Disposable local PostgreSQL database and TLS Asterius listener; controlled seeded owner sessions and human-authorized root grants; independent private_key_jwt client authentication and DPoP",
+  "binary_sha256": "a3edb0be2be8c4b7bb97cd71ce5f7d6cc01505cb062b00abb7427c685897a455",
+  "reproduction": "ASTERIUS_BIN=<verified binary> ./scripts/agent-tasks-acceptance.sh",
+  "targeted_verify": {
+    "format": "pass",
+    "strict_all_target_clippy": "pass",
+    "latest_task_and_key_tests_with_source_secret_audits": 40,
+    "earlier_broader_grant_regression_tests": 104
+  },
+  "fuzz": {
+    "registered_parsers": 105,
+    "registry_documentation_format_and_strict_clippy": "pass"
+  },
+  "actual_https_checks": [
+    "Fresh owner can inspect its exact root; another owner cannot",
+    "Stale owner session requires renewed authentication",
+    "CSRF forgery and permission expansion refused",
+    "Explicit approval is immutable and approval replay refused",
+    "Task-enabled agent cannot mint without task selector",
+    "Actual private_key_jwt and DPoP authenticate successful task issuance",
+    "Actual access-token signatures, issuer, expiry and DPoP thumbprint verified",
+    "Signed task/revision correlators and exact approved actions retained; owner roles not copied",
+    "Scope, resource and action expansion each return OAuth refusal",
+    "Local token exchange preserves task/revision and source lifetime ceiling",
+    "Existing ordinary recipient refresh preserves task binding and initiating-agent TTL ceiling",
+    "Elapsed task deadline refuses both client credentials and refresh",
+    "Committed root revocation wins against a concurrent HTTP mint waiting for its fence",
+    "Owner disable is terminal and later account activation does not restore approval",
+    "Three committed access tokens have private JTI lineage and matching successful task audit events",
+    "Three explicit run approvals have immutable audit records"
+  ],
+  "cleanup": "Fixture trap stopped only its own server and removed its random database, generated keys and temporary files; worker cleaned its own Rust target after verified binary copy",
+  "limits": [
+    "Seeded sessions and human-authorized grants are controlled evidence, not a live human login or new bootstrap protocol",
+    "Five slow PostgreSQL adapter tests compile and remain ignored locally; CI runs them explicitly",
+    "No full local Rust suite, remote CI, deployment or remote push",
+    "Current online descendant withdrawal is ast-dd1y.8.3; offline JWT guarantees remain bounded expiry, not immediate withdrawal"
+  ]
+}
