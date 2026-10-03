@@ -255,6 +255,13 @@ impl ConditionalAccess {
                     && authentication.assurance_policy_revision.as_deref()
                         == Some(revision.as_str())
                     && !authentication.assurance_methods.is_empty()
+                    && !authentication.assurance_methods.iter().any(|method| {
+                        matches!(
+                            method,
+                            asterius_domain::AuthenticationMethod::FederatedOidc
+                                | asterius_domain::AuthenticationMethod::ExistingSession
+                        )
+                    })
                     && authentication.acr.as_ref().is_none_or(|class| {
                         acr.level(class)
                             .is_some_and(|level| level.is_met_by(&authentication.assurance_methods))

@@ -180,7 +180,7 @@ pub(crate) async fn establish(
         context.lifetimes,
     );
     session.acr = acr;
-    if !session.amr.is_empty() {
+    if locally_proved(&session.amr) {
         session.assurance_authenticated_at = Some(now);
         session.assurance_policy_revision = Some(asterius_domain::sha256_hex(
             context.acr.to_json().to_string().as_bytes(),
@@ -202,6 +202,18 @@ struct ClassProof {
     methods: Vec<AuthenticationMethod>,
 }
 
+// A verified upstream assertion does not establish when the upstream human
+// authenticated. Scoped human freshness requires locally verified factors.
+fn locally_proved(methods: &[AuthenticationMethod]) -> bool {
+    !methods.is_empty()
+        && !methods.iter().any(|method| {
+            matches!(
+                method,
+                AuthenticationMethod::FederatedOidc | AuthenticationMethod::ExistingSession
+            )
+        })
+}
+
 /// Preserve legacy cumulative classes while dating only known verified factors.
 fn class_proof(
     policy: &AcrPolicy,
@@ -218,7 +230,7 @@ fn class_proof(
                 .is_some_and(|level| level.is_met_by(methods))
         })
     };
-    if !proved.is_empty() && meets(proved) {
+    if locally_proved(proved) && meets(proved) {
         return Some(ClassProof {
             at: now,
             revision,
@@ -229,10 +241,20 @@ fn class_proof(
         return None;
     }
     let at = session.assurance_authenticated_at?;
-    if at > session.authenticated_at || at > now || session.assurance_methods.is_empty() {
+    if at > session.authenticated_at || at > now || !locally_proved(&session.assurance_methods) {
         return None;
     }
-    let methods = merged(&session.assurance_methods, proved);
+    let local: Vec<_> = proved
+        .iter()
+        .copied()
+        .filter(|method| {
+            !matches!(
+                method,
+                AuthenticationMethod::FederatedOidc | AuthenticationMethod::ExistingSession
+            )
+        })
+        .collect();
+    let methods = merged(&session.assurance_methods, &local);
     meets(&methods).then_some(ClassProof {
         at,
         revision,
@@ -296,6 +318,29 @@ mod tests {
         ));
         session.assurance_methods.clone_from(&session.amr);
         session
+    }
+
+    #[test]
+    fn a_federated_callback_cannot_date_upstream_human_authentication() {
+        let policy = AcrPolicy::new(vec![
+            asterius_domain::AcrLevel::new("external", [AuthenticationMethod::FederatedOidc])
+                .expect("legacy class"),
+        ])
+        .expect("ladder");
+        let now = OffsetDateTime::UNIX_EPOCH;
+        let session = proven_session(&policy, now);
+        assert!(
+            class_proof(
+                &policy,
+                &session,
+                &[AuthenticationMethod::FederatedOidc],
+                Some("external"),
+                now
+            )
+            .is_none()
+        );
+        assert!(!locally_proved(&[AuthenticationMethod::ExistingSession]));
+        assert!(locally_proved(&[AuthenticationMethod::Password]));
     }
 
     #[test]

@@ -7008,6 +7008,9 @@ mod sessions {
             original.assurance_methods.clone_from(&original.amr);
             let sessions = repo(&db.pool, "assurance");
             sessions.begin(&original).await.expect("verified session and proof committed together");
+            sessions.record_participant(&id.digest(), &ClientId::new("proof-client"), at).await.expect("real RP participant");
+            sqlx::query("insert into passkey_enrolments(tenant_id,session_id,csrf_digest,challenge,expires_at) values('assurance',$1,repeat('a',64),decode(repeat('ab',32),'hex'),$2)")
+                .bind(id.digest()).bind(at + time::Duration::minutes(5)).execute(&db.pool).await.expect("pending enrolment");
             let rotated = SessionId::generate();
             let now = at + time::Duration::seconds(30);
             let methods = [AuthenticationMethod::Passkey, AuthenticationMethod::UserVerified, AuthenticationMethod::Password];
@@ -7019,6 +7022,9 @@ mod sessions {
             let stored = sessions.find(&rotated.digest()).await.expect("lookup").expect("rotated session");
             assert_eq!(stored.authenticated_at, now);
             assert_eq!(stored.assurance_authenticated_at, Some(at));
+            assert_eq!(sessions.participants(&rotated.digest()).await.expect("logout lineage").len(), 1);
+            let pending: i64 = sqlx::query_scalar("select count(*) from passkey_enrolments where tenant_id='assurance'").fetch_one(&db.pool).await.expect("pending count");
+            assert_eq!(pending, 0, "rotation invalidates enrolment bound to old digest");
             let grants = PgGrantRepository::new(db.pool.clone(), TenantId::new("assurance"));
             let mut grant = Grant::new(TenantId::new("assurance"), ClientId::new("proof-client"), now);
             grant.user = Some(UserId::new(*user.as_uuid()));

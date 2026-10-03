@@ -119,6 +119,9 @@ retains the earliest required factor. The exact ACR policy digest and verified
 factor set are frozen with the proof. Changing the ladder, missing legacy
 provenance or an inconsistent future timestamp makes scoped assurance/age
 unavailable or invalid until a supported fresh authentication completes.
+A federated callback establishes a verified upstream assertion, not the age of
+the upstream human sign-in ([OIDC Core §2](https://openid.net/specs/openid-connect-core-1_0.html#IDToken)). Federated/remembered-session methods cannot supply
+this local freshness proof; they require a supported local ceremony.
 Existing records receive no inferred proof during migration. Grants retain
 original provenance after browser-session cleanup; refresh and exchange copy
 that evidence without renewing its clock. No provenance fields are public JWT
