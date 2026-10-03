@@ -17,17 +17,21 @@ location, or convert an existing private PEM without printing key material:
 
 ```sh
 umask 077
+outbound_key_pem=/absolute/private/operator.pem
+outbound_key_der=/absolute/private/operator.der
 openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
-  -outform DER -out <operator-private-key.der>
-# Existing PKCS#8 PEM input:
+  -out "$outbound_key_pem"
+# Convert generated or existing private PEM to the required PKCS#8 DER:
 openssl pkcs8 -topk8 -nocrypt -inform PEM -outform DER \
-  -in <existing-private-key.pem> -out <operator-private-key.der>
-chmod 600 <operator-private-key.der>
+  -in "$outbound_key_pem" -out "$outbound_key_der"
+chmod 600 "$outbound_key_pem" "$outbound_key_der"
 ```
 
 The configured `algorithm` must match the key (`ES256` here), and `kid` must
 match the public JWK registered on the target. Keep both input and output
-private; never place them in source control or upload the private key. Register the corresponding public
+private; never place them in source control or upload the private key.
+The explicit conversion uses [OpenSSL's PKCS#8 encoder](https://docs.openssl.org/3.4/man1/openssl-pkcs8/);
+raw algorithm-specific DER is not interchangeable with PKCS#8. Register the corresponding public
 key on the target client, with `admin.scim:read admin.scim:write` and the exact
 `<target-issuer>/admin/api/v1` resource. Private bytes are never supplied through
 the administration API, database or console. The registry admits 100 complete
