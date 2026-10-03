@@ -2437,3 +2437,17 @@ client authentication. The pod-deletion bound is offline freshness plus output
 TTL; granting TokenRequest creation authority is an explicit Kubernetes RBAC
 choice. Exact registered RFC9396 actions and locations cannot exceed the trust
 ceiling. See [the runtime and renewal recipe](kubernetes-workload-exchange.md).
+### GitHub workflow federation
+
+GitHub workflow tokens remain external bearer subject credentials, distinct from
+the independently authenticated FAPI client and output DPoP key. Exact numeric
+repository/owner IDs, subject, protected environment, ref, event and caller
+workflow SHA prevent copied names, forks and disallowed workflow contexts from
+inheriting authority. Pull-request events cannot be registered. Reusable jobs
+require both exact callee reference/SHA pins and cannot use ordinary-job trusts.
+The noncritical certificate thumbprint is inert bounded metadata, never a key or
+URL authority. Hosted-runner secretless client bootstrap is not introduced;
+operator provisioned runner credentials require dedicated ephemeral runners and
+trusted workflow/environment controls. No JWT or raw claims are emitted by the
+sample. Controlled CI fixtures establish local protocol interoperability only,
+not a live GitHub issuer/job or an unimplemented trusted broker.

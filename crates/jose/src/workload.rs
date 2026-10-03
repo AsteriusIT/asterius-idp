@@ -134,6 +134,7 @@ pub struct Parsed<'a> {
     algorithm: Algorithm,
     input_len: usize,
     signature: Vec<u8>,
+    certificate_thumbprint: bool,
 }
 impl std::fmt::Debug for Parsed<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -154,13 +155,24 @@ impl<'a> Parsed<'a> {
         let header = header.as_object().ok_or(Invalid)?;
         if header
             .keys()
-            .any(|key| !matches!(key.as_str(), "alg" | "kid" | "typ"))
+            .any(|key| !matches!(key.as_str(), "alg" | "kid" | "typ" | "x5t"))
             || header
                 .get("typ")
                 .is_some_and(|typ| typ.as_str() != Some("JWT"))
         {
             return Err(Invalid);
         }
+        // GitHub supplies this RFC 7515 metadata. It never selects a key or
+        // establishes certificate trust; only pinned JWKS + kid do that.
+        let certificate_thumbprint = if let Some(raw) = header.get("x5t") {
+            let encoded = raw.as_str().ok_or(Invalid)?;
+            if encoded.len() != 27 || B64.decode(encoded).map_err(|_| Invalid)?.len() != 20 {
+                return Err(Invalid);
+            }
+            true
+        } else {
+            false
+        };
         let algorithm: Algorithm =
             serde_json::from_value(header.get("alg").ok_or(Invalid)?.clone())
                 .map_err(|_| Invalid)?;
@@ -193,6 +205,7 @@ impl<'a> Parsed<'a> {
             algorithm,
             input_len: pieces[0].len() + 1 + pieces[1].len(),
             signature,
+            certificate_thumbprint,
         })
     }
     #[must_use]
@@ -225,6 +238,7 @@ impl<'a> Parsed<'a> {
         now: OffsetDateTime,
     ) -> Result<OffsetDateTime, Invalid> {
         if !config.algorithms.contains(&self.algorithm)
+            || (self.certificate_thumbprint && config.provider != Provider::Github)
             || !keys.verifies(
                 &self.kid,
                 self.algorithm,
@@ -264,6 +278,16 @@ impl<'a> Parsed<'a> {
         }
         for (pointer, expected) in &config.required_claims {
             if self.payload.pointer(pointer).and_then(Value::as_str) != Some(expected.as_str()) {
+                return Err(Invalid);
+            }
+        }
+        if config.provider == Provider::Github {
+            // Ordinary workflow trust cannot silently authorize a called
+            // reusable workflow. Both caller and callee are exact pins.
+            let pinned = config.required_claims.contains_key("/job_workflow_ref");
+            if claims.contains_key("job_workflow_ref") != pinned
+                || claims.contains_key("job_workflow_sha") != pinned
+            {
                 return Err(Invalid);
             }
         }
@@ -464,6 +488,166 @@ mod tests {
             &keys,
             OffsetDateTime::from_unix_timestamp(NOW).expect("time"),
         )
+    }
+    fn github_config() -> Config {
+        let mut config = config();
+        config.provider = Provider::Github;
+        config.issuer = "https://token.actions.githubusercontent.com".to_owned();
+        config.subject = "repo:org@456/repo@123:environment:prod".to_owned();
+        config.required_claims = [
+            ("/repository_id", "123"),
+            ("/repository_owner_id", "456"),
+            ("/environment", "prod"),
+            ("/ref", "refs/heads/main"),
+            ("/event_name", "workflow_dispatch"),
+            (
+                "/workflow_ref",
+                "org/repo/.github/workflows/deploy.yml@refs/heads/main",
+            ),
+            ("/workflow_sha", "1111111111111111111111111111111111111111"),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        .collect();
+        config
+    }
+    fn github_claims(config: &Config) -> Value {
+        let mut value = json!({"iss":config.issuer,"sub":config.subject,"aud":config.audience,"iat":NOW,"nbf":NOW,"exp":NOW+600});
+        for (pointer, expected) in &config.required_claims {
+            value[pointer.trim_start_matches('/')] = json!(expected);
+        }
+        value
+    }
+    fn github_verifies(claims: &Value, config: &Config) -> bool {
+        let (token, jwks) = fixture(claims, SigningAlgorithm::EdDsa);
+        let keys = KeySet::parse(
+            &serde_json::to_vec(&jwks).expect("JWKS"),
+            &config.algorithms,
+        )
+        .expect("keys");
+        Parsed::parse(&token)
+            .expect("JWT")
+            .verify(
+                config,
+                &keys,
+                OffsetDateTime::from_unix_timestamp(NOW).expect("time"),
+            )
+            .is_ok()
+    }
+    #[test]
+    fn github_workflow_claims_bind_ids_environment_ref_event_and_exact_workflow() {
+        let config = github_config();
+        let claims = github_claims(&config);
+        assert!(github_verifies(&claims, &config));
+        for (name, value) in [
+            ("repository_id", json!("999")),
+            ("repository_owner_id", json!("999")),
+            ("repository_id", json!(123)),
+            ("environment", json!("staging")),
+            ("ref", json!("refs/heads/untrusted")),
+            ("event_name", json!("pull_request")),
+            ("event_name", json!("pull_request_target")),
+            ("event_name", json!("dynamic")),
+            (
+                "workflow_ref",
+                json!("org/repo/.github/workflows/evil.yml@refs/heads/main"),
+            ),
+            (
+                "workflow_sha",
+                json!("2222222222222222222222222222222222222222"),
+            ),
+            ("sub", json!("repo:org@456/renamed@123:environment:prod")),
+            ("aud", json!("https://github.com/org")),
+            ("exp", json!(NOW + 601)),
+        ] {
+            let mut wrong = claims.clone();
+            wrong[name] = value;
+            assert!(!github_verifies(&wrong, &config), "{name}");
+        }
+    }
+    #[test]
+    fn github_reusable_workflow_requires_both_explicit_callee_pins() {
+        let mut config = github_config();
+        let mut claims = github_claims(&config);
+        let reference =
+            "org/automation/.github/workflows/deploy.yml@1111111111111111111111111111111111111111";
+        let sha = "1111111111111111111111111111111111111111";
+        claims["job_workflow_ref"] = json!(reference);
+        claims["job_workflow_sha"] = json!(sha);
+        assert!(!github_verifies(&claims, &config));
+        config
+            .required_claims
+            .insert("/job_workflow_ref".to_owned(), reference.to_owned());
+        config
+            .required_claims
+            .insert("/job_workflow_sha".to_owned(), sha.to_owned());
+        assert!(github_verifies(&claims, &config));
+        claims["job_workflow_sha"] = json!("untrusted");
+        assert!(!github_verifies(&claims, &config));
+        claims
+            .as_object_mut()
+            .expect("claims")
+            .remove("job_workflow_sha");
+        assert!(!github_verifies(&claims, &config));
+        assert!(!github_verifies(&github_claims(&github_config()), &config));
+    }
+    #[test]
+    fn github_certificate_thumbprint_is_bounded_metadata_never_key_authority() {
+        use aws_lc_rs::signature::{KeyPair as _, RSA_PKCS1_SHA256, RsaKeyPair};
+        let pair = RsaKeyPair::generate(aws_lc_rs::rsa::KeySize::Rsa2048).expect("RSA");
+        let public = pair.public_key();
+        let key = json!({"kid":"rsa","kty":"RSA","alg":"RS256","n":B64.encode(public.modulus().big_endian_without_leading_zero()),"e":B64.encode(public.exponent().big_endian_without_leading_zero())});
+        let mut config = github_config();
+        config.algorithms = BTreeSet::from([Algorithm::RS256]);
+        let keys = KeySet::parse(
+            &serde_json::to_vec(&json!({"keys":[key]})).expect("JWKS"),
+            &config.algorithms,
+        )
+        .expect("keys");
+        let header = json!({"typ":"JWT","alg":"RS256","kid":"rsa","x5t":B64.encode([0_u8;20])});
+        let input = format!(
+            "{}.{}",
+            B64.encode(serde_json::to_vec(&header).expect("header")),
+            B64.encode(serde_json::to_vec(&github_claims(&config)).expect("claims"))
+        );
+        let mut signature = vec![0; pair.public_modulus_len()];
+        pair.sign(
+            &RSA_PKCS1_SHA256,
+            &aws_lc_rs::rand::SystemRandom::new(),
+            input.as_bytes(),
+            &mut signature,
+        )
+        .expect("sign");
+        let token = format!("{input}.{}", B64.encode(signature));
+        let now = OffsetDateTime::from_unix_timestamp(NOW).expect("time");
+        assert!(
+            Parsed::parse(&token)
+                .expect("JWT")
+                .verify(&config, &keys, now)
+                .is_ok()
+        );
+        config.provider = Provider::Kubernetes;
+        assert!(
+            Parsed::parse(&token)
+                .expect("JWT")
+                .verify(&config, &keys, now)
+                .is_err()
+        );
+        for thumbprint in [
+            json!(null),
+            json!(42),
+            json!("invalid"),
+            json!(B64.encode([0_u8; 21])),
+        ] {
+            let mut header = header.clone();
+            header["x5t"] = thumbprint;
+            let token = format!(
+                "{}.{}.AA",
+                B64.encode(serde_json::to_vec(&header).expect("header")),
+                B64.encode(serde_json::to_vec(&github_claims(&config)).expect("claims"))
+            );
+            assert!(Parsed::parse(&token).is_err());
+        }
     }
     #[test]
     fn accepted_workload_is_bound_to_exact_profile_and_public_key() {

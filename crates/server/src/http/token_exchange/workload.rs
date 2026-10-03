@@ -1,11 +1,11 @@
-//! External Kubernetes subject profile on the independently authenticated endpoint.
+//! External workload subject profiles on the independently authenticated endpoint.
 use super::{
     AccessToken, AgentLimits, BTreeSet, Ceiling, Client, DomainError, Duration, ExchangeRequest,
     Failure, Grant, INVALID_TARGET, Issued, JwtId, Parameters, SubjectId, TARGET_REFUSED, Tenant,
     TokenExchange, issuance, subject_refused, token_exchange,
 };
 use asterius_domain::entities::client::TokenEndpointAuthMethod;
-use asterius_domain::workload::{Provider, Verified};
+use asterius_domain::workload::Verified;
 use asterius_domain::{AuthorizationDetails, AuthorizationDetailsRegistry};
 use asterius_oidc::tokens::access::Confirmation;
 
@@ -40,9 +40,6 @@ impl TokenExchange<'_> {
             .verify(&tenant.id, &client.id, request.subject_token, self.now)
             .await
             .map_err(|_| subject_refused())?;
-        if verified.provider != Provider::Kubernetes {
-            return Err(subject_refused());
-        }
         let (grant, targeting, lifetime) = self
             .workload_grant(tenant, client, params, request, &verified, &limits)
             .await?;
