@@ -309,6 +309,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "conditional_client_settings"
+path = "fuzz_targets/conditional_client_settings.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "config_parse"
 path = "fuzz_targets/config_parse.rs"
 test = false

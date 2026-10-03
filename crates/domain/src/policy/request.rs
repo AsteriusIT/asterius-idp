@@ -154,7 +154,7 @@ impl Properties {
             return Err(RequestError::TooManyProperties);
         }
         for (name, value) in members {
-            if name.is_empty() || name.len() > MAX_PROPERTY_NAME {
+            if name.is_empty() || name.len() > MAX_PROPERTY_NAME || name == "trusted" || name.starts_with("trusted.") || name.starts_with("asterius.trusted.") {
                 return Err(RequestError::PropertyName);
             }
             let mut nodes = 0usize;
@@ -623,6 +623,11 @@ impl Context {
     /// satisfy a demand for one.
     #[must_use]
     pub fn acr_at_least(&self, required: &str) -> bool {
+        if let Some(trusted) = self.trusted.as_deref()
+            && !matches!(trusted.value(super::conditional::FactName::Assurance), Some(super::conditional::FactValue::Text(value)) if Some(value.as_str()) == self.acr.as_deref())
+        {
+            return false;
+        }
         let rank = |value: &str| self.ladder.iter().position(|rung| rung == value);
         match (self.acr.as_deref().and_then(rank), rank(required)) {
             (Some(held), Some(wanted)) => held >= wanted,

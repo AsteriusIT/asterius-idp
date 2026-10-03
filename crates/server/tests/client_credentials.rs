@@ -198,7 +198,7 @@ impl Fixture {
     /// The enforcement point this fixture's handler carries.
     fn agent_policy(&self) -> AgentPolicy<'_> {
         AgentPolicy {
-            policy: self
+            conditional: None,            policy: self
                 .policy
                 .clone()
                 .map(|policy| policy as Arc<dyn IssuancePolicy>),

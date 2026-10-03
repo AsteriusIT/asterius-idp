@@ -3968,6 +3968,7 @@ fn agent_policy<'a>(
         )) as Arc<dyn asterius_domain::issuance::IssuancePolicy>
     });
     crate::http::agent_issuance::AgentPolicy {
+        conditional: Some(Arc::new(crate::http::conditional::ConditionalAccess::new(endpoints.store.clone(), endpoints.capabilities, Arc::clone(&endpoints.kek), Arc::clone(&endpoints.audit)))),
         policy: pdp,
         fail_open: endpoints
             .issuance

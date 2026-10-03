@@ -8,6 +8,30 @@ use time::OffsetDateTime;
 use super::{Condition, Decision, EvaluationRequest, PolicyDocumentError, RuleSet};
 use crate::{ClientId, TenantId};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Sensitivity { Standard, Sensitive, Critical }
+
+impl Sensitivity {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self { Self::Standard => "standard", Self::Sensitive => "sensitive", Self::Critical => "critical" }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ClientSettings {
+    pub sensitivity: Option<Sensitivity>,
+    pub revision: uuid::Uuid,
+}
+
+/// Administrative classification is separate from self-service client metadata.
+#[async_trait::async_trait]
+pub trait ConditionalSettings: std::fmt::Debug + Send + Sync {
+    async fn read(&self, tenant: &TenantId, client: &ClientId) -> Result<Option<ClientSettings>, crate::DomainError>;
+    async fn replace(&self, tenant: &TenantId, client: &ClientId, sensitivity: Option<Sensitivity>, expected: Option<uuid::Uuid>) -> Result<ClientSettings, crate::DomainError>;
+}
+
 /// Closed source vocabulary; descriptive PEP properties are separate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -193,15 +217,21 @@ impl TrustedPredicate {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnforcementMode { Active, ReportOnly }
+
 /// A bounded scope is selected from server identities, never a caller property.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConditionalScope {
+    pub mode: EnforcementMode,
     pub id: String,
     pub clients: BTreeSet<ClientId>,
     pub actions: BTreeSet<String>,
     pub required_facts: BTreeSet<FactName>,
     pub rules: RuleSet,
     pub assurance_remedy: Option<String>,
+    pub network_zones: BTreeMap<String, Vec<ipnet::IpNet>>,
 }
 
 fn referenced(condition: &Condition, required: &mut BTreeSet<FactName>) {
@@ -271,6 +301,7 @@ impl ConditionalScope {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Wire {
+            mode: EnforcementMode,
             id: String,
             clients: Vec<String>,
             actions: Vec<String>,
@@ -278,6 +309,8 @@ impl ConditionalScope {
             required_facts: Vec<FactName>,
             rules: Vec<Value>,
             assurance_remedy: Option<String>,
+            #[serde(default)]
+            network_zones: BTreeMap<String, Vec<ipnet::IpNet>>,
         }
         let wire: Wire = serde_json::from_value(value.clone()).map_err(|_| PolicyDocumentError::Malformed("invalid conditional scope"))?;
         let bounded = |values: &[String], max: usize| !values.is_empty() && values.len() <= max && values.iter().all(|value| !value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)) && values.iter().collect::<BTreeSet<_>>().len() == values.len();
@@ -288,18 +321,23 @@ impl ConditionalScope {
         if wire.actions.iter().any(|action| !ACTIONS.contains(&action.as_str())) {
             return Err(PolicyDocumentError::Malformed("unsupported conditional enforcement action"));
         }
+        if wire.network_zones.len() > 64 || wire.network_zones.iter().any(|(name, networks)| name.is_empty() || name.len() > 128 || !name.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')) || networks.is_empty() || networks.len() > 16 || networks.iter().collect::<BTreeSet<_>>().len() != networks.len()) {
+            return Err(PolicyDocumentError::Malformed("invalid bounded network zones"));
+        }
         Ok(Self {
+            mode: wire.mode,
             id: wire.id,
             clients: wire.clients.into_iter().map(ClientId::new).collect(),
             actions: wire.actions.into_iter().collect(),
             required_facts: wire.required_facts.into_iter().collect(),
             rules: RuleSet::conditional_rules(&json!({"version":1,"rules":wire.rules}))?,
             assurance_remedy: wire.assurance_remedy,
+            network_zones: wire.network_zones,
         })
     }
 
     pub(super) fn to_json(&self) -> Value {
-        json!({"id": self.id, "clients": self.clients.iter().map(ClientId::as_str).collect::<Vec<_>>(), "actions": self.actions, "required_facts": self.required_facts, "rules": self.rules.to_json()["rules"], "assurance_remedy": self.assurance_remedy})
+        json!({"mode":self.mode,"id": self.id, "clients": self.clients.iter().map(ClientId::as_str).collect::<Vec<_>>(), "actions": self.actions, "required_facts": self.required_facts, "rules": self.rules.to_json()["rules"], "assurance_remedy": self.assurance_remedy, "network_zones": self.network_zones})
     }
 }
 
@@ -318,7 +356,7 @@ mod tests {
     use crate::policy::{Action, Context, Properties, Resource, Subject};
 
     fn scope(when: Value) -> ConditionalScope {
-        ConditionalScope::parse(&json!({"id":"protected","clients":["app"],"actions":["refresh_token"],"rules":[{"id":"permit","effect":"permit","when":when}],"assurance_remedy":null})).expect("scope")
+        ConditionalScope::parse(&json!({"mode":"active","id":"protected","clients":["app"],"actions":["refresh_token"],"rules":[{"id":"permit","effect":"permit","when":when}],"assurance_remedy":null})).expect("scope")
     }
 
     fn request(facts: BTreeMap<FactName, Fact>) -> EvaluationRequest {

@@ -479,8 +479,15 @@ impl asterius_domain::ports::PolicyStore for InvalidatingPolicies {
 ///
 /// A copy-able bundle of borrows rather than three fields on each handler, so
 /// that adding a grant is adding one field and calling one method.
+/// Conditional checks are independent from the optional agent PDP/cache.
+#[async_trait::async_trait]
+pub trait ConditionalGuard: std::fmt::Debug + Send + Sync {
+    async fn permits(&self, tenant: &Tenant, client: &Client, grant: &Grant, kind: GrantType, now: OffsetDateTime) -> Result<bool, DomainError>;
+}
+
 #[derive(Clone)]
 pub struct AgentPolicy<'a> {
+    pub conditional: Option<std::sync::Arc<dyn ConditionalGuard>>,
     /// The decision point, or `None` where this deployment has none.
     ///
     /// `None` is `[features] authzen` off: a deployment with no PDP at all, in
@@ -514,6 +521,7 @@ impl<'a> AgentPolicy<'a> {
     #[must_use]
     pub fn unenforced(audit: &'a dyn AuditSink) -> Self {
         Self {
+            conditional: None,
             policy: None,
             fail_open: false,
             audit,
@@ -550,6 +558,16 @@ impl AgentPolicy<'_> {
         grant_type: GrantType,
         now: OffsetDateTime,
     ) -> Result<(), Refusal> {
+        if let Some(conditional) = &self.conditional {
+            match conditional.permits(tenant, client, grant, grant_type, now).await {
+                Ok(true) => {},
+                Ok(false) => return Err(Refusal { code: ACCESS_DENIED, description: REFUSED }),
+                Err(error) => {
+                    tracing::error!(%error, tenant = %tenant.id, "conditional access unavailable");
+                    return Err(Refusal { code: ACCESS_DENIED, description: UNDECIDED });
+                }
+            }
+        }
         let Some(profile) = client.registration.agent.as_ref() else {
             return Ok(());
         };

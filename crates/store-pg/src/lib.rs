@@ -19,6 +19,7 @@ mod claims_provider_oauth;
 mod client_key_fetches;
 mod client_usage;
 mod clients;
+mod conditional;
 mod codes;
 mod cutoffs;
 mod device_codes;
@@ -173,3 +174,5 @@ mod declarative_tenants;
 pub use declarative::PgDeclarative;
 pub mod workload;
 pub use workload::PgWorkloadTrusts;
+
+pub use conditional::PgConditionalSettings;

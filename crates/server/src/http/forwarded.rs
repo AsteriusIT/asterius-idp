@@ -24,6 +24,61 @@ pub struct ClientAddr {
     pub forwarded: bool,
 }
 
+/// Required conditional origin cannot fall back after malformed trusted metadata.
+/// Legacy rate limiting retains its existing best-effort address semantics.
+#[derive(Debug, Clone, Copy)]
+pub struct ConditionalOrigin {
+    pub availability: asterius_domain::policy::conditional::Availability,
+    pub ip: Option<IpAddr>,
+}
+
+impl ConditionalOrigin {
+    #[must_use]
+    pub const fn absent() -> Self {
+        Self { availability: asterius_domain::policy::conditional::Availability::Absent, ip: None }
+    }
+}
+
+/// An untrusted peer's forwarding headers are ignored; trusted ambiguity denies.
+#[must_use]
+// fuzz-target: forwarded_resolve
+pub fn resolve_conditional(peer: IpAddr, headers: &HeaderMap, trusted_proxies: &[IpNet]) -> ConditionalOrigin {
+    use asterius_domain::policy::conditional::Availability;
+    let known = |ip| ConditionalOrigin { availability: Availability::Known, ip: Some(ip) };
+    let invalid = || ConditionalOrigin { availability: Availability::Invalid, ip: None };
+    let standard = headers.contains_key(axum::http::header::FORWARDED);
+    let legacy = headers.contains_key("x-forwarded-for");
+    if !is_trusted(peer, trusted_proxies) || (!standard && !legacy) {
+        return known(peer);
+    }
+    if standard && legacy { return invalid(); }
+    let header = if standard { "forwarded" } else { "x-forwarded-for" };
+    let mut chain = Vec::new();
+    let mut bytes = 0usize;
+    for value in headers.get_all(header) {
+        bytes += value.as_bytes().len();
+        if bytes > 4096 { return invalid(); }
+        let Ok(value) = value.to_str() else { return invalid(); };
+        for element in value.split(',') {
+            if chain.len() >= 16 { return invalid(); }
+            let node = if standard {
+                let mut candidates = element.split(';').filter_map(|parameter| {
+                    let (key, value) = parameter.split_once('=')?;
+                    key.trim().eq_ignore_ascii_case("for").then_some(value.trim())
+                });
+                let Some(node) = candidates.next() else { return invalid(); };
+                if candidates.next().is_some() { return invalid(); }
+                node
+            } else { element.trim() };
+            let node = node.strip_prefix('"').and_then(|node| node.strip_suffix('"')).unwrap_or(node);
+            let parsed = node.parse::<IpAddr>().ok().or_else(|| node.parse::<std::net::SocketAddr>().ok().map(|socket| socket.ip()));
+            let Some(parsed) = parsed else { return invalid(); };
+            chain.push(parsed);
+        }
+    }
+    chain.into_iter().rev().find(|ip| !is_trusted(*ip, trusted_proxies)).map_or_else(invalid, known)
+}
+
 /// Resolves the client address from the socket peer and any forwarding headers.
 ///
 /// The rule is deliberately strict: the header is read only when the immediate

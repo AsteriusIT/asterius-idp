@@ -113,6 +113,7 @@ pub const POLICY: &[Retention] = &[
             grace: Duration::ZERO,
         },
     },
+    Retention { table: "conditional_client_settings", rule: Rule::Kept("administrative application classification; removed with its registered client") },
     Retention { table: "kubernetes_profiles", rule: Rule::Kept("tenant-owned cluster configuration; removed with its registered client") },
     Retention { table: "declarative_owners", rule: Rule::Kept("live ownership and deleted-resource generations prevent ABA and unsafe adoption; explicit release, cascade with tenant") },
     Retention { table: "declarative_creation_keys", rule: Rule::Kept("durable declarative retry receipts cannot expire while stale controller retries remain possible; cascade with tenant") },

@@ -442,6 +442,9 @@ impl RuleSet {
     }
 
     fn from_json_inner(document: &Value, conditional: bool) -> Result<Self, PolicyDocumentError> {
+        if serde_json::to_vec(document).map_err(|_| PolicyDocumentError::Malformed("unencodable document"))?.len() > MAX_DOCUMENT_BYTES {
+            return Err(PolicyDocumentError::TooLarge);
+        }
         let object = document
             .as_object()
             .ok_or(PolicyDocumentError::Malformed("it is not an object"))?;
@@ -493,6 +496,9 @@ impl RuleSet {
                 }
                 conditional_scopes.push(scope);
             }
+        }
+        if rules.len() + conditional_scopes.iter().map(|scope| scope.rules.rules().len()).sum::<usize>() > MAX_RULES {
+            return Err(PolicyDocumentError::TooManyRules);
         }
         Ok(Self { rules, conditional_scopes })
     }

@@ -470,7 +470,7 @@ impl Fixture {
                 certificate: None,
             },
             agent_policy: AgentPolicy {
-                policy: self
+            conditional: None,                policy: self
                     .policy
                     .clone()
                     .map(|policy| policy as Arc<dyn IssuancePolicy>),
