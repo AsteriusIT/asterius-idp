@@ -65,6 +65,13 @@ assignment generation. Remote client ID is immutable while mappings exist;
 changing the provisioning principal requires a separate connector and an explicit
 handoff, not adoption or changing owners behind an existing mapping.
 
+The operator registry key file uses DER-encoded PKCS#8, never PEM, with a
+16 KiB bound and owner-only mode (`0600`). The configured signing algorithm
+must match that key; its `kid` identifies the public JWK registered on the
+exact target client. Invalid encoding or permissions refuse startup; no command
+body can resolve or convert key material. See the candidate runbook for private
+operator generation/conversion commands.
+
 ### Authoritative projection
 
 | Resource | Source-authoritative target fields | Excluded authority |
