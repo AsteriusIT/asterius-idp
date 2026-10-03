@@ -28,3 +28,7 @@ Copy [`0000-template.md`](0000-template.md) to start one.
 | [0017](0017-id-jag-draft-profile.md) | Explicit enterprise approval for ID-JAG issuance | Provisional |
 | [0018](0018-oid4vp-verifier-profile.md) | Narrow OID4VP verifier profile | Provisional |
 | [0019](0019-caep-interop-algorithm-boundary.md) | Keep CAEP Draft 01 outside the supported SSF receiver profile | Accepted |
+
+[Task-bound agent grants](task-bound-agent-grants.md) defines the accepted task,
+approval and descendant revocation architecture under ast-dd1y.8.1; runtime
+enforcement remains tracked by ast-dd1y.8.2 and ast-dd1y.8.3.
