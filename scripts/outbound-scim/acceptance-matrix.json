@@ -8,7 +8,7 @@
     "target": "different owned isolated Asterius tenant/database",
     "egress": "public HTTPS through the production DNS/address/TLS guard",
     "public_exposure": "only exact target token and SCIM paths through an owned bounded ephemeral relay",
-    "credentials": "deployment allow-listed signing reference; generated only by test operator, private files0600",
+    "credentials": "Deployment signing registry bound to source tenant and exact target issuer/client/admin resource/SCIM origin; private operator fixture files0600",
     "cleanup": "owned relay, processes, databases and private material only; preserve existing deployment"
   },
   "cases": [
@@ -95,6 +95,10 @@
     {
       "id": "redacted_failures",
       "invariant": "Errors/dead letters contain only fixed codes and job/connector IDs, no response body/email/URL/token/private key"
+    },
+    {
+      "id": "credential_reference_full_scope",
+      "invariant": "Another source tenant, target issuer/client/admin resource/SCIM origin or arbitrary SecretRef path cannot resolve a signing credential even when reference name exists"
     }
   ]
 }

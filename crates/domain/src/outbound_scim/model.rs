@@ -9,6 +9,9 @@ use uuid::Uuid;
 pub struct CredentialBinding {
     pub reference: String,
     pub generation: Uuid,
+    pub source_tenant: TenantId,
+    pub target_admin_resource: String,
+    pub scim_origin: String,
     pub target_issuer: String,
     pub target_client: ClientId,
 }
