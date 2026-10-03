@@ -52,7 +52,7 @@ jobs:
   kubernetes-interoperability:
     name: Kubernetes real OP, helper, RBAC and expiry
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     services:
       postgres:
         image: postgres:16-alpine
@@ -90,7 +90,7 @@ jobs:
       - name: operator fixture prerequisites and focused Go checks
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y python3-cryptography
+          sudo apt-get install -y python3-cryptography postgresql-client
           cd providers/terraform
           go test ./internal/operator ./internal/client -run '^Test' -count=1
           go vet ./internal/operator ./internal/client ./cmd/asterius-operator
@@ -102,12 +102,33 @@ jobs:
         env:
           ASTERIUS_BIN: ${{ github.workspace }}/target/debug/asterius
         run: ./scripts/kubernetes-e2e.sh
+      - name: conditional boundaries, concurrent signatures and browser step-up
+        env:
+          ASTERIUS_BIN: ${{ github.workspace }}/target/debug/asterius
+          ASTERIUS_ACCEPTANCE_DB_CONTAINER: ${{ job.services.postgres.id }}
+        run: |
+          bash scripts/conditional-access-acceptance.sh
+          bash scripts/conditional-simulation-acceptance.sh
+          python3 scripts/conditional/browser_acceptance.py
       - name: real structural schemas and namespace admission
         run: bash scripts/kubernetes-crd-tests.sh
       - name: real operator reconciliation and tenant isolation
         env:
           ASTERIUS_BIN: ${{ github.workspace }}/target/debug/asterius
           ASTERIUS_ACCEPTANCE_DB_CONTAINER: ${{ job.services.postgres.id }}
+        run: bash scripts/operator-acceptance.sh
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.15.8"
+          terraform_wrapper: false
+      - uses: azure/setup-helm@v4.3.1
+        with:
+          version: v4.2.0
+      - name: real Flux delivery, Terraform ownership, upgrade and recovery
+        env:
+          ASTERIUS_BIN: ${{ github.workspace }}/target/debug/asterius
+          ASTERIUS_ACCEPTANCE_DB_CONTAINER: ${{ job.services.postgres.id }}
+          ASTERIUS_OPERATOR_GITOPS: "1"
         run: bash scripts/operator-acceptance.sh
       - name: retain public evidence only
         uses: actions/upload-artifact@v4
@@ -116,6 +137,7 @@ jobs:
           path: |
             artifacts/kubernetes-e2e.json
             artifacts/operator-e2e.json
+            artifacts/operator-gitops-e2e.json
           if-no-files-found: ignore
 
   # -------------------------------------------------------------------------

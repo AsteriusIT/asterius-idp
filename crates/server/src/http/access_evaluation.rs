@@ -993,15 +993,28 @@ pub(crate) async fn authorize(
     }
 
     let task = match (
-        verified.claim_str("task_id").and_then(|id| uuid::Uuid::parse_str(id).ok()),
-        verified.claims.get("task_approval_revision").and_then(serde_json::Value::as_i64).filter(|revision| *revision > 0),
+        verified
+            .claim_str("task_id")
+            .and_then(|id| uuid::Uuid::parse_str(id).ok()),
+        verified
+            .claims
+            .get("task_approval_revision")
+            .and_then(serde_json::Value::as_i64)
+            .filter(|revision| *revision > 0),
     ) {
-        (Some(id), Some(revision)) => Some(super::conditional::PdpTaskAuthority { jti: jti.to_owned(), id, revision }),
+        (Some(id), Some(revision)) => Some(super::conditional::PdpTaskAuthority {
+            jti: jti.to_owned(),
+            id,
+            revision,
+        }),
         _ => None,
     };
     super::conditional::bind_pdp(super::conditional::PdpAuthority {
-        tenant: context.tenant.id.clone(), client: client.clone(), grant: own_grant,
-        subject: verified.claim_str("sub").map(str::to_owned), task,
+        tenant: context.tenant.id.clone(),
+        client: client.clone(),
+        grant: own_grant,
+        subject: verified.claim_str("sub").map(str::to_owned),
+        task,
     });
     Ok(client)
 }

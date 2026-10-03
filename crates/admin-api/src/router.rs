@@ -3125,7 +3125,9 @@ impl Handling<'_> {
                 .filter(|value| {
                     value.starts_with("sha256:")
                         && value.len() == 71
-                        && value[7..].bytes().all(|byte| byte.is_ascii_hexdigit())
+                        && value[7..]
+                            .bytes()
+                            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
                 })
                 .ok_or_else(|| {
                     AdminError::Invalid("a canonical quoted policy revision is required".to_owned())

@@ -466,8 +466,16 @@ impl asterius_domain::ports::PolicyStore for InvalidatingPolicies {
         Ok(())
     }
 
-    async fn replace_if_revision(&self, tenant: &TenantId, rules: &asterius_domain::policy::RuleSet, expected: Option<&str>, now: OffsetDateTime) -> Result<(), DomainError> {
-        self.inner.replace_if_revision(tenant, rules, expected, now).await?;
+    async fn replace_if_revision(
+        &self,
+        tenant: &TenantId,
+        rules: &asterius_domain::policy::RuleSet,
+        expected: Option<&str>,
+        now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        self.inner
+            .replace_if_revision(tenant, rules, expected, now)
+            .await?;
         self.guard.invalidate(tenant);
         Ok(())
     }
@@ -488,7 +496,14 @@ impl asterius_domain::ports::PolicyStore for InvalidatingPolicies {
 /// Conditional checks are independent from the optional agent PDP/cache.
 #[async_trait::async_trait]
 pub trait ConditionalGuard: std::fmt::Debug + Send + Sync {
-    async fn permits(&self, tenant: &Tenant, client: &Client, grant: &Grant, kind: GrantType, now: OffsetDateTime) -> Result<bool, DomainError>;
+    async fn permits(
+        &self,
+        tenant: &Tenant,
+        client: &Client,
+        grant: &Grant,
+        kind: GrantType,
+        now: OffsetDateTime,
+    ) -> Result<bool, DomainError>;
 }
 
 #[derive(Clone)]
@@ -565,12 +580,23 @@ impl AgentPolicy<'_> {
         now: OffsetDateTime,
     ) -> Result<(), Refusal> {
         if let Some(conditional) = &self.conditional {
-            match conditional.permits(tenant, client, grant, grant_type, now).await {
-                Ok(true) => {},
-                Ok(false) => return Err(Refusal { code: ACCESS_DENIED, description: REFUSED }),
+            match conditional
+                .permits(tenant, client, grant, grant_type, now)
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Err(Refusal {
+                        code: ACCESS_DENIED,
+                        description: REFUSED,
+                    });
+                }
                 Err(error) => {
                     tracing::error!(%error, tenant = %tenant.id, "conditional access unavailable");
-                    return Err(Refusal { code: ACCESS_DENIED, description: UNDECIDED });
+                    return Err(Refusal {
+                        code: ACCESS_DENIED,
+                        description: UNDECIDED,
+                    });
                 }
             }
         }

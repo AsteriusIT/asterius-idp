@@ -2265,8 +2265,16 @@ pub trait PolicyStore: Debug + Send + Sync {
 
     /// Conditional publication compares the canonical content revision under
     /// a storage fence; None explicitly expects no existing policy document.
-    async fn replace_if_revision(&self, _tenant: &TenantId, _rules: &RuleSet, _expected: Option<&str>, _now: OffsetDateTime) -> Result<(), DomainError> {
-        Err(DomainError::Conflict("conditional publication unavailable".to_owned()))
+    async fn replace_if_revision(
+        &self,
+        _tenant: &TenantId,
+        _rules: &RuleSet,
+        _expected: Option<&str>,
+        _now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        Err(DomainError::Conflict(
+            "conditional publication unavailable".to_owned(),
+        ))
     }
 
     /// Removes the tenant's policy, returning `false` if there was none.

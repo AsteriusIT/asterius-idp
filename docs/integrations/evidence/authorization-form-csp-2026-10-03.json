@@ -1,0 +1,38 @@
+{
+  "date": "2026-10-03",
+  "issue": "ast-616n",
+  "baseline": {
+    "binary_sha256": "f285716d9b514d2fc1e9052d44fbbe89eafc474f99eef3b76295661bd0d224b1",
+    "observed": "Chromium form-action CSP violation; remembered-consent login POST failed net::ERR_ABORTED before callback"
+  },
+  "corrected": {
+    "binary_sha256": "b9e2eb339b815ff9e105d4fd3693a4e80637bb8509d1a3be6afd285088355fdf",
+    "composition": "main44eed658 plus ast-616n",
+    "native_reauthentication_status": 302,
+    "gateway_controls_passed": 18,
+    "products": [
+      {
+        "image": "quay.io/oauth2-proxy/oauth2-proxy:v7.15.5@sha256:8498b0d0ef0a7b29686414000a08aee467f02d0299c9ed1e006a8f33fc017916",
+        "digests": [
+          "quay.io/oauth2-proxy/oauth2-proxy@sha256:8498b0d0ef0a7b29686414000a08aee467f02d0299c9ed1e006a8f33fc017916"
+        ],
+        "version": "oauth2-proxy v7.15.5 (built with go1.26.8)"
+      },
+      {
+        "image": "envoyproxy/envoy:v1.39.1@sha256:57e14a549d7bd43c8d3f6d03e8cfa653e037d4b38e133acd9b54f38c524401b4",
+        "digests": [
+          "envoyproxy/envoy@sha256:57e14a549d7bd43c8d3f6d03e8cfa653e037d4b38e133acd9b54f38c524401b4"
+        ],
+        "version": "envoy  version: b579d07d3ad7ee11d32b105e91a5a39ad24718d7/1.39.1/Clean/RELEASE/BoringSSL"
+      }
+    ]
+  },
+  "verification": {
+    "command": "./scripts/verify.sh 'binary(interaction) or test(form_action) or test(csp)'",
+    "targeted_tests_passed": 117,
+    "fmt": true,
+    "strict_workspace_clippy": true,
+    "mandatory_source_and_secret_audits": true
+  },
+  "cleanup": "Only own native containers/networks/database/process/keyfiles removed"
+}

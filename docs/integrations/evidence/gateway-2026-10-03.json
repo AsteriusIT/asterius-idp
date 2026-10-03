@@ -1,0 +1,119 @@
+{
+  "date": "2026-10-03",
+  "source": "main44eed658 plus ast-616n bb45c783",
+  "asterius_binary_sha256": "b9e2eb339b815ff9e105d4fd3693a4e80637bb8509d1a3be6afd285088355fdf",
+  "products": [
+    {
+      "image": "quay.io/oauth2-proxy/oauth2-proxy:v7.15.5@sha256:8498b0d0ef0a7b29686414000a08aee467f02d0299c9ed1e006a8f33fc017916",
+      "digests": [
+        "quay.io/oauth2-proxy/oauth2-proxy@sha256:8498b0d0ef0a7b29686414000a08aee467f02d0299c9ed1e006a8f33fc017916"
+      ],
+      "version": "oauth2-proxy v7.15.5 (built with go1.26.8)"
+    },
+    {
+      "image": "envoyproxy/envoy:v1.39.1@sha256:57e14a549d7bd43c8d3f6d03e8cfa653e037d4b38e133acd9b54f38c524401b4",
+      "digests": [
+        "envoyproxy/envoy@sha256:57e14a549d7bd43c8d3f6d03e8cfa653e037d4b38e133acd9b54f38c524401b4"
+      ],
+      "version": "envoy  version: b579d07d3ad7ee11d32b105e91a5a39ad24718d7/1.39.1/Clean/RELEASE/BoringSSL"
+    }
+  ],
+  "configuration_sha256": {
+    "integrations/gateway/envoy.yaml.in": "60e80ca0b6dea8099ab0353ff9e6211c260fd146a52ed4b4c7a51a255b4c77bd",
+    "integrations/gateway/oauth2-proxy.cfg.in": "b90b3e206ecf7c659f0de2d814d23be71d519e5604b9d52a3aa86fee34145166"
+  },
+  "cases": [
+    {
+      "case": "private backend-network readiness control",
+      "status": 200
+    },
+    {
+      "case": "direct backend network access from frontend denied",
+      "result": "PASS"
+    },
+    {
+      "case": "backend and OAuth2 Proxy have no host ports",
+      "result": "PASS"
+    },
+    {
+      "case": "anonymous API denied",
+      "status": 401
+    },
+    {
+      "case": "anonymous forged headers denied",
+      "status": 401
+    },
+    {
+      "case": "callback without CSRF cookie denied",
+      "status": 403
+    },
+    {
+      "case": "native approved OIDC callback",
+      "status": 302
+    },
+    {
+      "case": "native login allows backend",
+      "status": 200
+    },
+    {
+      "case": "authenticated forged headers sanitized",
+      "status": 200
+    },
+    {
+      "case": "cross-site POST without gateway cookie denied",
+      "status": 401
+    },
+    {
+      "case": "source logout does not instantly revoke gateway cookie",
+      "status": 200
+    },
+    {
+      "case": "tampered session denied",
+      "status": 401
+    },
+    {
+      "case": "gateway cookie TTL bounds retained access",
+      "status": 401
+    },
+    {
+      "case": "native reauthentication after source logout and expiry",
+      "status": 302
+    },
+    {
+      "case": "gateway logout",
+      "status": 302
+    },
+    {
+      "case": "gateway logout denies next API request",
+      "status": 401
+    },
+    {
+      "case": "native unassigned identity callback denied",
+      "status": 403
+    },
+    {
+      "case": "authenticated unassigned user denied",
+      "status": 401
+    }
+  ],
+  "browser": {
+    "cookie": {
+      "secure": true,
+      "httpOnly": true,
+      "sameSite": "Lax",
+      "hostPrefix": true,
+      "ttlSeconds": 30
+    },
+    "identityForwarding": "verified user/email only; forged groups removed; no OAuth access/ID tokens forwarded",
+    "backendGatewayCookiePresent": true
+  },
+  "profile": "explicit standard OIDC confidential client; S256 PKCE/nonce/ES256; no upstream OAuth token delegation",
+  "limits": [
+    "source logout does not immediately revoke cached gateway cookie; fixture expiry30seconds bounds it",
+    "no group scope/mapping requested or authorization configured; native product can forward issuer groups if later added; backend trusts verified user/email only",
+    "host/Docker administrators and authenticated backend are trusted; isolation is not a sandbox against its owner",
+    "login callback CSRF and cross-site cookie withholding tested; application mutation CSRF is still the application responsibility",
+    "native proxy forwards sensitive gateway session cookie to trusted backend; backend must protect it from logs/disclosure/reuse"
+  ],
+  "cleanup": "only owned Docker containers/networks/database/process/keyfiles removed"
+}

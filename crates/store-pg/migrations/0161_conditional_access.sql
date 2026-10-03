@@ -27,6 +27,11 @@ begin
         end if;
     end loop;
     select settings->'options'->'acr_policy' into acr_document from tenants where tenant_id=new.tenant_id;
+    -- Missing/null settings use AcrPolicy::default(), including legacy rows.
+    -- Explicit custom ladders never inherit these aliases.
+    if acr_document is null or acr_document = 'null'::jsonb then
+        acr_document := '{"levels":[{"value":"urn:asterius:acr:pwd"},{"value":"phr"},{"value":"urn:asterius:acr:passkey"},{"value":"urn:asterius:acr:passkey-uv"}]}'::jsonb;
+    end if;
     for requested_remedy in
         select distinct scope->>'assurance_remedy'
         from jsonb_array_elements(coalesce(new.document->'conditional_scopes', '[]'::jsonb)) scope
