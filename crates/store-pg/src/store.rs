@@ -18,6 +18,7 @@ pub static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 #[derive(Debug, Clone)]
 pub struct Store {
     pool: PgPool,
+    signing_admission: std::sync::Arc<tokio::sync::Semaphore>,
 }
 
 impl Store {
@@ -31,13 +32,23 @@ impl Store {
             .max_connections(max_connections)
             .connect(url)
             .await?;
-        Ok(Self { pool })
+        Ok(Self::from_pool(pool))
     }
 
     /// Wraps an existing pool.
     #[must_use]
-    pub const fn from_pool(pool: PgPool) -> Self {
-        Self { pool }
+    pub fn from_pool(pool: PgPool) -> Self {
+        // A composed signature holds task and policy transactions, then needs
+        // an independent connection for current facts/audit. Reserve room for
+        // those reads rather than letting signers starve their own pool.
+        let slots = (pool.options().get_max_connections().saturating_sub(1) / 2).max(1);
+        Self { pool, signing_admission: std::sync::Arc::new(tokio::sync::Semaphore::new(slots as usize)) }
+    }
+
+    /// Shared across tenant/request clones; acquire before any signing fence.
+    #[must_use]
+    pub const fn signing_admission(&self) -> &std::sync::Arc<tokio::sync::Semaphore> {
+        &self.signing_admission
     }
 
     /// Applies any migrations the database has not seen.

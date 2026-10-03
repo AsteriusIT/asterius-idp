@@ -61,6 +61,10 @@ async fn conditional_publication_cas_sources_and_signing_fence() {
     sqlx::query("delete from tenant_policies where tenant_id='one'").execute(&pool).await.expect("publication after signature");
     assert!(policies.load(&tenant).await.expect("read cleared").is_none());
 
+    let default_remedy = RuleSet::from_json(&serde_json::json!({"version":1,"rules":[],"conditional_scopes":[{"id":"fresh-auth","mode":"active","clients":["app"],"actions":["authorize"],"assurance_remedy":"phr","rules":[{"id":"strong","effect":"permit","when":{"acr_at_least":"phr"}}]}]})).expect("default remedy");
+    policies.replace_if_revision(&tenant, &default_remedy, None, now).await.expect("missing settings use default ACR ladder");
+    sqlx::query("delete from tenant_policies where tenant_id='one'").execute(&pool).await.expect("clear controlled fixture");
+
     // Cross-tenant/unknown client and unsupported remedies are refused even
     // for a direct writer using valid SQL and no Rust policy port.
     for document in [

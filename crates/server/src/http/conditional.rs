@@ -347,6 +347,7 @@ pub(crate) struct ConditionalSigner<'a> {
     inner: ConditionalSignerInner<'a>,
     access: ConditionalAccess,
     tenant: Tenant,
+    admission: Option<Arc<tokio::sync::OwnedSemaphorePermit>>,
 }
 #[derive(Debug)]
 enum ConditionalSignerInner<'a> {
@@ -360,7 +361,7 @@ impl ConditionalSignerInner<'_> {
 }
 impl<'a> ConditionalSigner<'a> {
     pub(crate) fn new(inner: &'a dyn asterius_domain::Signer, access: ConditionalAccess, tenant: Tenant) -> Self {
-        Self { inner: ConditionalSignerInner::Borrowed(inner), access, tenant }
+        Self { inner: ConditionalSignerInner::Borrowed(inner), access, tenant, admission: None }
     }
     async fn fence(&self, tenant: &asterius_domain::TenantId) -> Result<asterius_store_pg::PolicyPublicationFence, DomainError> {
         if tenant != &self.tenant.id { return Err(DomainError::NotFound); }
@@ -370,8 +371,18 @@ impl<'a> ConditionalSigner<'a> {
 #[async_trait::async_trait]
 impl asterius_domain::Signer for ConditionalSigner<'_> {
     async fn prepare(&self, tenant: &asterius_domain::TenantId, algorithm: Option<asterius_domain::SigningAlgorithm>) -> Result<Option<Box<dyn asterius_domain::Signer + '_>>, DomainError> {
-        let Some(inner) = self.inner.get().prepare(tenant, algorithm).await? else { return Ok(None); };
-        Ok(Some(Box::new(ConditionalSigner { inner: ConditionalSignerInner::Prepared(inner), access: self.access.clone(), tenant: self.tenant.clone() })))
+        if self.admission.is_some() { return Ok(None); }
+        if self.access.store.pool().options().get_max_connections() < 3 {
+            return Err(DomainError::Storage("composed signing requires database.max_connections >= 3".into()));
+        }
+        let admission = tokio::time::timeout(std::time::Duration::from_secs(5), Arc::clone(self.access.store.signing_admission()).acquire_owned())
+            .await.map_err(|_| DomainError::Storage("signing admission timed out".into()))?
+            .map_err(|_| DomainError::Storage("signing admission unavailable".into()))?;
+        let inner = match self.inner.get().prepare(tenant, algorithm).await? {
+            Some(inner) => ConditionalSignerInner::Prepared(inner),
+            None => ConditionalSignerInner::Borrowed(self.inner.get()),
+        };
+        Ok(Some(Box::new(ConditionalSigner { inner, access: self.access.clone(), tenant: self.tenant.clone(), admission: Some(Arc::new(admission)) })))
     }
     async fn sign(&self, tenant: &asterius_domain::TenantId, algorithm: Option<asterius_domain::SigningAlgorithm>, typ: &'static str, claims: &serde_json::Value) -> Result<asterius_domain::CompactJws, DomainError> {
         if !matches!(typ, "at+jwt" | "oauth-id-jag+jwt") { return self.inner.get().sign(tenant, algorithm, typ, claims).await; }
