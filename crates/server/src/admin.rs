@@ -3705,6 +3705,14 @@ impl AdminBackend for Deployment {
         }))
     }
 
+    fn temporary_kubernetes(
+        &self,
+    ) -> Option<Arc<dyn asterius_domain::temporary_kubernetes::TemporaryKubernetes>> {
+        Some(Arc::new(asterius_store_pg::PgTemporaryEntitlements::new(
+            self.store.pool().clone(),
+        )))
+    }
+
     fn temporary_entitlements(
         &self,
     ) -> Option<Arc<dyn asterius_domain::temporary_entitlements::TemporaryEntitlements>> {

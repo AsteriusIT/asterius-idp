@@ -32,6 +32,7 @@ pub mod rate_limit;
 pub mod secret;
 mod secret_audit;
 pub mod temporary_entitlements;
+pub mod temporary_kubernetes;
 pub mod tenant_rate_limits;
 pub mod totp;
 

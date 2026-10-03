@@ -323,6 +323,9 @@ async fn route(
     context: &Handling<'_>,
     body: axum::body::Body,
 ) -> Result<Response, AdminError> {
+    if id.starts_with("temporary_kubernetes.") {
+        return context.temporary_kubernetes(id, body).await;
+    }
     if id.starts_with("temporary_entitlements.") {
         return context.temporary_entitlement(id, body).await;
     }
@@ -8885,6 +8888,102 @@ impl Handling<'_> {
             .get(marker + 3)
             .and_then(|s| uuid::Uuid::parse_str(s).ok());
         Ok((id, nested))
+    }
+}
+
+impl Handling<'_> {
+    async fn temporary_kubernetes(
+        &self,
+        operation: &str,
+        body: axum::body::Body,
+    ) -> Result<Response, AdminError> {
+        use asterius_domain::temporary_kubernetes::KubernetesBindingChange;
+        let segments: Vec<_> = self
+            .path
+            .split('/')
+            .filter(|part| !part.is_empty())
+            .collect();
+        let marker = if operation == crate::TEMPORARY_KUBERNETES_PROJECT_ID {
+            "temporary-access"
+        } else {
+            "temporary-entitlements"
+        };
+        let index = segments
+            .iter()
+            .position(|part| *part == marker)
+            .ok_or(AdminError::NotFound)?;
+        let id = segments
+            .get(index + 1)
+            .and_then(|part| uuid::Uuid::parse_str(part).ok())
+            .ok_or(AdminError::NotFound)?;
+        let error = |e| group_error(crate::TEMPORARY_KUBERNETES_BINDING_WRITE_ID, e);
+        if operation == crate::TEMPORARY_KUBERNETES_PROJECT_ID {
+            let Principal::Automation { subject, held } = &self.principal else {
+                return Err(AdminError::Forbidden);
+            };
+            let crate::rbac::Held::Scopes {
+                tenant: Some(realm),
+                ..
+            } = held
+            else {
+                return Err(AdminError::Forbidden);
+            };
+            if realm != &self.tenant.id {
+                return Err(AdminError::Forbidden);
+            }
+            let port = self
+                .state
+                .backend
+                .temporary_kubernetes()
+                .ok_or(AdminError::Unavailable)?;
+            let result = port
+                .project(
+                    &self.tenant.id,
+                    &asterius_domain::ClientId::new(subject.clone()),
+                    id,
+                )
+                .await
+                .map_err(error)?;
+            return Ok(json_no_store(StatusCode::OK, &serde_json::json!(result)));
+        }
+        let Principal::Console {
+            tenant: realm,
+            user,
+            ..
+        } = &self.principal
+        else {
+            return Err(AdminError::Forbidden);
+        };
+        if realm != &self.tenant.id {
+            return Err(AdminError::Forbidden);
+        }
+        let port = self
+            .state
+            .backend
+            .temporary_kubernetes()
+            .ok_or(AdminError::Unavailable)?;
+        match operation {
+            crate::TEMPORARY_KUBERNETES_BINDING_READ_ID => {
+                let result = port
+                    .binding(&self.tenant.id, user, id)
+                    .await
+                    .map_err(error)?;
+                Ok(json_no_store(
+                    StatusCode::OK,
+                    &serde_json::json!({"binding":result}),
+                ))
+            }
+            crate::TEMPORARY_KUBERNETES_BINDING_WRITE_ID => {
+                let change =
+                    KubernetesBindingChange::parse(self.parse_body(body).await?).map_err(error)?;
+                let result = port
+                    .replace_binding(&self.tenant.id, user, id, change)
+                    .await
+                    .map_err(error)?;
+                Ok(json_no_store(StatusCode::OK, &serde_json::json!(result)))
+            }
+            _ => Err(AdminError::NotFound),
+        }
     }
 }
 

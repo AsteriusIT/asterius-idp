@@ -87,6 +87,57 @@ pub fn document(tenant: &Tenant, client: &Client, profile: &KubernetesProfile) -
     })
 }
 
+/// Reviewed structured-authentication extension. Legacy flags cannot select JIT identities.
+#[must_use]
+pub fn temporary_authentication_document(
+    tenant: &Tenant,
+    client: &Client,
+    profile: &KubernetesProfile,
+    expected: &asterius_domain::temporary_kubernetes::KubernetesJitIdentity,
+) -> Value {
+    let mut value = document(tenant, client, profile)["authentication_configuration"].clone();
+    let fields = [
+        "binding_revision", "entitlement_id", "client_id", "resource", "permissions", "role",
+        "cluster", "namespace", "profile_revision", "expires_at",
+    ];
+    let mut shape = vec!["type(claims.asterius_jit) == map".to_owned(), "claims.asterius_jit.size() == 10".to_owned()];
+    for field in fields {
+        shape.push(format!("has(claims.asterius_jit.{field})"));
+    }
+    for field in ["binding_revision", "entitlement_id", "client_id", "resource", "role", "cluster", "namespace"] {
+        shape.push(format!("type(claims.asterius_jit.{field}) == string"));
+    }
+    shape.extend([
+        "type(claims.asterius_jit.permissions) == list && claims.asterius_jit.permissions.all(p, type(p) == string)".to_owned(),
+        "type(claims.asterius_jit.profile_revision) == int && claims.asterius_jit.profile_revision > 0".to_owned(),
+        "type(claims.asterius_jit.expires_at) == int && claims.asterius_jit.expires_at > 0 && claims.exp <= claims.asterius_jit.expires_at".to_owned(),
+    ]);
+    let validation = format!("!has(claims.asterius_jit) || ({})", shape.join(" && "));
+    let pins = json!({
+        "binding_revision": expected.binding_revision,
+        "entitlement_id": expected.entitlement_id,
+        "client_id": expected.client_id,
+        "resource": expected.resource,
+        "permissions": expected.permissions,
+        "role": expected.role,
+        "cluster": expected.cluster,
+        "namespace": expected.namespace,
+        "profile_revision": expected.profile_revision,
+    });
+    let matches: Vec<_> = pins.as_object().into_iter().flatten().map(|(key, value)| {
+        format!("claims.asterius_jit.{key} == {value}")
+    }).collect();
+    let jit_prefix = json!(format!("asterius-jit:{}:", expected.binding_revision));
+    let baseline_prefix = json!(profile.prefix(tenant.id.as_str()));
+    // document() always constructs this field as a validation-rule array.
+    value["jwt"][0]["claimValidationRules"].as_array_mut().expect("generated validation array")
+        .push(json!({"expression":validation,"message":"temporary identity provenance must be closed and deadline capped"}));
+    value["jwt"][0]["claimMappings"]["username"] = json!({
+        "expression":format!("has(claims.asterius_jit) && ({}) ? {jit_prefix} + claims.sub : {baseline_prefix} + claims.sub", matches.join(" && "))
+    });
+    value
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

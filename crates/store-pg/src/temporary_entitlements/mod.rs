@@ -1,6 +1,7 @@
 //! Authoritative-clock lifecycle transitions and live role resolution.
 mod configuration;
 mod lifecycle;
+mod kubernetes;
 mod records;
 mod resolution;
 use crate::error::to_domain_error;
@@ -54,7 +55,7 @@ async fn audit(
     id: Uuid,
     now: OffsetDateTime,
 ) -> Result<(), DomainError> {
-    let context: Option<(serde_json::Value,)> = sqlx::query_as("select to_jsonb(r) from temporary_entitlement_requests r where r.tenant_id=$1 and r.request_id=$2 union all select to_jsonb(r) || jsonb_build_object('activation_id',a.activation_id,'activation_expires_at',a.expires_at,'revocation_reason',a.revocation_reason) from temporary_entitlement_requests r join temporary_entitlement_activations a on a.tenant_id=r.tenant_id and a.request_id=r.request_id where a.tenant_id=$1 and a.activation_id=$2 union all select to_jsonb(e) from temporary_entitlements e where e.tenant_id=$1 and e.entitlement_id=$2 union all select to_jsonb(el) from temporary_entitlement_eligibility el where el.tenant_id=$1 and el.eligibility_id=$2 limit 1")
+    let context: Option<(serde_json::Value,)> = sqlx::query_as("select to_jsonb(r) from temporary_entitlement_requests r where r.tenant_id=$1 and r.request_id=$2 union all select to_jsonb(r) || jsonb_build_object('activation_id',a.activation_id,'activation_expires_at',a.expires_at,'revocation_reason',a.revocation_reason) from temporary_entitlement_requests r join temporary_entitlement_activations a on a.tenant_id=r.tenant_id and a.request_id=r.request_id where a.tenant_id=$1 and a.activation_id=$2 union all select to_jsonb(e) || jsonb_build_object('kubernetes_binding',(select to_jsonb(binding) from temporary_kubernetes_bindings binding where binding.tenant_id=e.tenant_id and binding.entitlement_id=e.entitlement_id)) from temporary_entitlements e where e.tenant_id=$1 and e.entitlement_id=$2 union all select to_jsonb(el) from temporary_entitlement_eligibility el where el.tenant_id=$1 and el.eligibility_id=$2 limit 1")
         .bind(tenant.as_str()).bind(id).fetch_optional(&mut *tx).await.map_err(to_domain_error)?;
     let mut detail = Detail::new()
         .text("operation", format!("temporary_entitlement.{operation}"))

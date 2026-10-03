@@ -579,6 +579,13 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
     /// [`asterius_domain::Role`]: there is no method on it that takes one.
     fn application_roles(&self) -> Arc<dyn asterius_domain::ApplicationRoleDirectory>;
 
+    /// Machine projection is a separate port; it grants no owner lifecycle commands.
+    fn temporary_kubernetes(
+        &self,
+    ) -> Option<Arc<dyn asterius_domain::temporary_kubernetes::TemporaryKubernetes>> {
+        None
+    }
+
     fn temporary_entitlements(
         &self,
     ) -> Option<Arc<dyn asterius_domain::temporary_entitlements::TemporaryEntitlements>> {

@@ -2253,6 +2253,9 @@ static REGISTRY: &[Operation] = &[
     TEMPORARY_ENTITLEMENT_REQUESTS,
     TEMPORARY_ENTITLEMENT_ACTIVATIONS,
     TEMPORARY_ENTITLEMENT_REVOKE,
+    TEMPORARY_KUBERNETES_BINDING_READ,
+    TEMPORARY_KUBERNETES_BINDING_WRITE,
+    TEMPORARY_KUBERNETES_PROJECT,
     APP_ROLE_CREATE,
     APP_ROLE_DELETE,
     CLIENT_APP_ROLES_LIST,
@@ -2473,6 +2476,31 @@ pub const TEMPORARY_ENTITLEMENT_REVOKE: Operation = Operation::mutation(
     M::Post,
     A::new(R::Tenant, "admin.app_roles:write"),
     "Console-only owner-scoped temporary entitlement revoke",
+);
+
+pub const TEMPORARY_KUBERNETES_BINDING_READ_ID: &str = "temporary_kubernetes.binding_read";
+pub const TEMPORARY_KUBERNETES_BINDING_READ: Operation = Operation::read(
+    TEMPORARY_KUBERNETES_BINDING_READ_ID,
+    "/temporary-entitlements/{id}/kubernetes-binding",
+    S::Get,
+    A::new(R::Tenant, "admin.app_roles:read"),
+    "Console-only entitlement owner reads the exact Kubernetes controller binding",
+);
+pub const TEMPORARY_KUBERNETES_BINDING_WRITE_ID: &str = "temporary_kubernetes.binding_write";
+pub const TEMPORARY_KUBERNETES_BINDING_WRITE: Operation = Operation::mutation(
+    TEMPORARY_KUBERNETES_BINDING_WRITE_ID,
+    "/temporary-entitlements/{id}/kubernetes-binding",
+    M::Put,
+    A::new(R::Tenant, "admin.app_roles:write"),
+    "Console-only entitlement owner configures one immutable controller with explicit revision CAS",
+);
+pub const TEMPORARY_KUBERNETES_PROJECT_ID: &str = "temporary_kubernetes.project";
+pub const TEMPORARY_KUBERNETES_PROJECT: Operation = Operation::read(
+    TEMPORARY_KUBERNETES_PROJECT_ID,
+    "/kubernetes/temporary-access/{id}",
+    S::Get,
+    A::new(R::Tenant, "admin.app_roles:read"),
+    "Exact mapped same-tenant DPoP controller reads complete bounded current public subjects and expiry",
 );
 
 /// The registry.
