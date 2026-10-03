@@ -227,3 +227,22 @@ Acceptance of this decision selects the target, ownership and guardrails above.
 Implementation must add the actual catalogue/domain ports/store/event producer,
 guarded authenticated transport/worker, admin setup/status/recovery and real
 source-to-target lifecycle fixture. Docs or a facade alone cannot close ast-dd1y.6.3.
+
+## Proposed lifecycle refinements from candidate implementation
+
+Before each token or SCIM request, dispatch admission rechecks the current
+connector revision, credential generation, assignment generation and desired
+source revision against the current outbox lease and database clock. A pause or
+source change stops subsequent admissions. A request already admitted and sent
+can have a remote effect after a pause; local success receipts remain fenced,
+and explicit resume reconciles that uncertain effect using the persisted alias.
+This does not promise cancellation of an already dispatched remote write.
+
+Deleting a source tenant is refused while it retains any current outbound
+assignment. Generic tenant cascade cannot substitute for remote deprovisioning.
+An explicit bounded archive command must first establish disabled owned Users or
+empty owned Groups (or verified absence for a never-mapped assignment), retain
+mapping and lifecycle evidence, and retire the current assignment. Empty connector
+catalogues may cascade normally. Deleting retained history is never a way to
+adopt a target object, evade the reviewed-delete policy, or recreate an old
+assignment incarnation. These refinements remain proposed with this ADR.
