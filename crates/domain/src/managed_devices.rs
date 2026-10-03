@@ -145,6 +145,8 @@ impl DeviceBinding {
         let latest = now.checked_add(MAX_FACT_AGE).ok_or_else(invalid)?;
         if self.source_generation <= 0
             || self.enrollment_generation <= 0
+            || self.user.as_uuid().is_nil()
+            || (self.bound_grant_id.is_none() && self.request_parent.is_some())
             || self.source.is_nil()
             || self.device.is_nil()
             || self.client.as_str().is_empty()
@@ -162,6 +164,10 @@ impl DeviceBinding {
             if id.is_nil() {
                 return Err(invalid());
             }
+        }
+        if let Some(parent) = &self.request_parent {
+            let id = Uuid::parse_str(parent.as_str()).map_err(|_| invalid())?;
+            if id.is_nil() { return Err(invalid()); }
         }
         LeafFingerprint::parse(&self.interaction_digest)?;
         LeafFingerprint::parse(&self.leaf_sha256)?;
