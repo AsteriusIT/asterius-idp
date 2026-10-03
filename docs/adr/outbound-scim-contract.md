@@ -291,7 +291,9 @@ tombstone. Concurrent and late collection POSTs cannot reuse that incarnation;
 ordinary SCIM externalIds retain their existing delete/recreate semantics. An
 explicit new generation uses a distinct externalId. Successful User DELETE for
 this exact reserved namespace also atomically clears the owned target account's
-email and email_verified flag. Its UUID, username, externalId tombstone and
+email and email_verified flag. Authenticated preview requires the extension's
+mandatory `reservedUserDeleteReleasesEmail: true` capability; a peer with a
+missing/false guarantee cannot enable this profile. Its UUID, username, externalId tombstone and
 administrator security lock remain. The current tenant/client ownership row,
 canonical namespace and exact externalId must match; ordinary SCIM deletion,
 disable and archive retain their email. This limited retirement permits a fresh
