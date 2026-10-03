@@ -633,6 +633,11 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
         None
     }
 
+    /// Operator-pinned workload trust; dedicated read/write authorities apply.
+    fn workload_trusts(&self) -> Option<Arc<dyn asterius_domain::workload::Registry>> {
+        None
+    }
+
     /// Tenant OIDC identity provider management.
     fn oidc_providers(&self) -> Option<Arc<dyn crate::oidc_providers::ProviderAdministration>> {
         None

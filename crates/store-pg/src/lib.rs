@@ -171,3 +171,5 @@ mod declarative;
 mod declarative_clients;
 mod declarative_tenants;
 pub use declarative::PgDeclarative;
+pub mod workload;
+pub use workload::PgWorkloadTrusts;

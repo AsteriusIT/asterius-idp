@@ -274,7 +274,11 @@ fn verify_claims(
     })
 }
 
-fn verify_rs256(key: &serde_json::Map<String, Value>, message: &[u8], signature: &[u8]) -> bool {
+pub(crate) fn verify_rs256(
+    key: &serde_json::Map<String, Value>,
+    message: &[u8],
+    signature: &[u8],
+) -> bool {
     let (Some(n), Some(e)) = (
         key.get("n").and_then(Value::as_str),
         key.get("e").and_then(Value::as_str),

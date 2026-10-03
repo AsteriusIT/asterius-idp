@@ -125,3 +125,4 @@ pub use groups::{
 };
 
 pub mod declarative;
+pub mod workload;

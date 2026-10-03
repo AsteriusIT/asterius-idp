@@ -2393,3 +2393,15 @@ in the existing trusted computing base. Availability/deadlock failures roll back
 require refresh/retry; no success is synthesized. Slow live store tests, parser fuzz
 coverage and the management OpenAPI describe this boundary; this change makes no new
 protocol-conformance or cryptographic-profile claim.
+### External workload assertions
+
+External JWTs cross a separate trust boundary from browser OIDC login and
+OAuth client authentication. Tenant-pinned workload trust versions require
+exact provider claims, public keys and client allowlists. JWT routing fields
+cannot supply a JWKS URL or establish issuer trust. Guarded JWKS fetches never
+extend an expired cache entry during outages. Administrative enable/disable
+changes are audited atomically; minting must lock and recheck the same live
+trust version while consuming the assertion digest and persisting its child
+grant. See [workload trust administration](workload-trusts.md) for bounds and
+[the approved decision](adr/external-workload-trust.md) for offline revocation
+and independent FAPI client authentication requirements.
