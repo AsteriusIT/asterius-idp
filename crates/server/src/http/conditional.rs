@@ -36,6 +36,8 @@ pub(crate) struct PdpAuthority {
     pub client: asterius_domain::ClientId,
     pub grant: Option<asterius_domain::GrantId>,
     pub subject: Option<String>,
+    pub scopes: std::collections::BTreeSet<String>,
+    pub resources: std::collections::BTreeSet<String>,
     pub task: Option<PdpTaskAuthority>,
 }
 #[derive(Debug, Clone)]
@@ -711,6 +713,12 @@ impl asterius_domain::ports::PolicyEngine for ConditionalPolicyEngine {
                 Some(id) => repositories.grants().find(id).await?,
                 None => None,
             };
+            // The verified PDP token can be narrower than the durable grant.
+            let grant = grant.map(|mut grant| {
+                grant.scopes.clone_from(&authority.scopes);
+                grant.resources.clone_from(&authority.resources);
+                grant
+            });
             let exact = grant.as_ref().filter(|grant| {
                 grant.tenant == *tenant
                     && grant.client == authority.client

@@ -88,8 +88,10 @@ export function TemporaryEntitlements({ session }: Readonly<{ session: Session }
   const mayLookup = session.scopes.includes('admin.users:read');
   const closeCreate = useCallback(() => { setCreating(false); setError(null); }, []);
   const closeEligibility = useCallback(() => { setEligibilityOpen(false); setError(null); }, []);
+  const closeRevoke = useCallback(() => { setRevoking(null); setError(null); }, []);
   const createGuard = useDialogDraft(creating && JSON.stringify(draft) !== JSON.stringify(emptyDraft()), busy, closeCreate);
   const eligibilityGuard = useDialogDraft(eligibilityOpen && Boolean(username || start || end), busy, closeEligibility);
+  const revokeGuard = useDialogDraft(revoking !== null && Boolean(revokeReason), busy, closeRevoke);
   const refresh = useCallback(() => {
     setLoadError(null);
     read('temporary-entitlements').then(value => setItems((value as { items: readonly Entitlement[] }).items), reason => setLoadError(failure(reason)));
@@ -225,7 +227,7 @@ export function TemporaryEntitlements({ session }: Readonly<{ session: Session }
     </Panel>}
     {creating && <Dialog open onOpenChange={open => { if (!open) createGuard.requestClose(); }}><DialogContent><DialogHeader><DialogTitle>Create temporary entitlement</DialogTitle><DialogDescription>You own this policy. Creation grants no role; eligibility and independent approval remain required.</DialogDescription></DialogHeader>
       <form onSubmit={event => { event.preventDefault(); void create(); }}>
-        {error && <Message tone="error">{error}</Message>}
+        {error && <Message tone="error">{error}</Message>}{createGuard.confirmation}
         <Field label="Application" required>{props => <FormSelect {...props} value={draft.client} onValueChange={value => { set('client', value); set('role', ''); }} options={[{ value: '', label: 'Choose an application' }, ...clients.map(client => ({ value: client.client_id, label: client.client_name || client.client_id }))]} />}</Field>
         <Field label="Client role" required>{props => <FormSelect {...props} value={draft.role} onValueChange={value => set('role', value)} options={[{ value: '', label: 'Choose an existing role' }, ...roles.map(role => ({ value: role.name, label: role.name }))]} />}</Field>
         <Field label="Resource" required>{props => <FormSelect {...props} value={draft.resource} onValueChange={value => set('resource', value)} options={[{ value: '', label: 'Choose a registered resource' }, ...resources.map(resource => ({ value: resource.identifier, label: resource.identifier }))]} />}</Field>
@@ -239,7 +241,7 @@ export function TemporaryEntitlements({ session }: Readonly<{ session: Session }
       </form>
     </DialogContent></Dialog>}
     {eligibilityOpen && <Dialog open onOpenChange={open => { if (!open) eligibilityGuard.requestClose(); }}><DialogContent><DialogHeader><DialogTitle>Grant eligibility</DialogTitle><DialogDescription>Choose who may request this fixed role and the interval in which they are eligible.</DialogDescription></DialogHeader><form onSubmit={event => { event.preventDefault(); void grantEligibility(); }}>
-      {error && <Message tone="error">{error}</Message>}
+      {error && <Message tone="error">{error}</Message>}{eligibilityGuard.confirmation}
       <Field label="Exact account username" required>{props => <input {...props} value={username} onChange={event => setUsername(event.target.value)} />}</Field>
       <Field label="Eligible from" hint="Times use your browser's local time zone." required>{props => <input {...props} type="datetime-local" value={start} onChange={event => setStart(event.target.value)} />}</Field>
       <Field label="Eligible until" required>{props => <input {...props} type="datetime-local" value={end} onChange={event => setEnd(event.target.value)} />}</Field>
@@ -247,11 +249,10 @@ export function TemporaryEntitlements({ session }: Readonly<{ session: Session }
     </form></DialogContent></Dialog>}
     {confirm && <ConfirmDialog title={confirm.enabled ? 'Enable entitlement?' : 'Disable entitlement?'} body={confirm.enabled ? 'Eligible accounts may request independent approval for this fixed role.' : 'Live activations stop supplying the role on the next online decision or issuance. Issued offline tokens expire at their recorded deadline.'} confirmLabel={confirm.enabled ? 'Enable entitlement' : 'Disable entitlement'} busy={busy} onConfirm={() => void configure()} onCancel={() => setConfirm(null)} />}
     {withdrawing && <ConfirmDialog title="Remove eligibility?" body="Pending and active privileges based on this eligibility stop authorizing access. Already issued offline tokens retain their capped expiry." confirmLabel="Remove eligibility" busy={busy} onConfirm={() => void removeEligibility()} onCancel={() => setWithdrawing(null)} />}
-    {revoking && <Dialog open onOpenChange={open => { if (!open && !busy) setRevoking(null); }}><DialogContent><DialogHeader><DialogTitle>Revoke activation</DialogTitle><DialogDescription>Online decisions and new tokens stop using this activation. Already issued offline tokens remain valid until their capped expiry.</DialogDescription></DialogHeader><form onSubmit={event => { event.preventDefault(); void revokeActivation(); }}>
-      {error && <Message tone="error">{error}</Message>}
+    {revoking && <Dialog open onOpenChange={open => { if (!open) revokeGuard.requestClose(); }}><DialogContent><DialogHeader><DialogTitle>Revoke activation</DialogTitle><DialogDescription>Online decisions and new tokens stop using this activation. Already issued offline tokens remain valid until their capped expiry.</DialogDescription></DialogHeader><form onSubmit={event => { event.preventDefault(); void revokeActivation(); }}>
+      {error && <Message tone="error">{error}</Message>}{revokeGuard.confirmation}
       <Field label="Reason for revocation" required>{props => <textarea {...props} value={revokeReason} onChange={event => setRevokeReason(event.target.value)} />}</Field>
-      <Actions><Button type="button" disabled={busy} onClick={() => setRevoking(null)}>Cancel</Button><Button type="submit" disabled={busy}>{busy ? 'Revoking…' : 'Revoke activation'}</Button></Actions>
+      <Actions><Button type="button" disabled={busy} onClick={revokeGuard.requestClose}>Cancel</Button><Button type="submit" disabled={busy}>{busy ? 'Revoking…' : 'Revoke activation'}</Button></Actions>
     </form></DialogContent></Dialog>}
-    {createGuard.confirmation}{eligibilityGuard.confirmation}
   </Screen>;
 }

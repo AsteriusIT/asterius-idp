@@ -351,7 +351,8 @@ impl CibaGrant<'_> {
             .permits(tenant, client, &grant, &audience, GrantType::Ciba, self.now)
             .await
             .map_err(|refusal| Failure::Client(refusal.code, refusal.description))?;
-        let held = issuance::held_roles(self.roles, &grant).await?;
+        let role_grant = issuance::role_grant(&grant, &targeting);
+        let held = issuance::held_roles(self.roles, &role_grant).await?;
 
         let access = AccessToken::new(
             &tenant.issuer,
@@ -397,7 +398,7 @@ impl CibaGrant<'_> {
         // flow has no authorization request to have carried one.
         let id_token = if grant.scopes.contains("openid") {
             let parts = issuance::IdTokenParts {
-                grant: &grant,
+                grant: &role_grant,
                 require_ipsie_assurance: false,
                 rp_session_lifetime_seconds: None,
                 device_secret_hash: None,

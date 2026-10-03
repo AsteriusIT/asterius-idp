@@ -3827,6 +3827,14 @@ impl userinfo::UserInfoSource for StoredClaims {
         self.roles.held_by(&self.tenant, user).await
     }
 
+    async fn roles_for_grant(
+        &self,
+        grant: &asterius_domain::Grant,
+    ) -> Result<asterius_domain::HeldRoles, asterius_domain::DomainError> {
+        use asterius_domain::ports::ApplicationRoleDirectory;
+        self.roles.held_by_grant(grant).await
+    }
+
     async fn verified_claims(
         &self,
         user: asterius_domain::UserId,
