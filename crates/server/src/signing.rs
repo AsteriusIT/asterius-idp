@@ -195,8 +195,86 @@ impl CachedSigner {
     }
 }
 
+/// Immutable in-memory key lease, bound to its tenant and selected algorithm.
+/// The enclosing policy/task decorators retain their own full signing port.
+struct PreparedKey {
+    tenant: TenantId,
+    key: Arc<(Kid, SigningKey)>,
+    clock: Arc<dyn Clock>,
+    expires_at: OffsetDateTime,
+}
+impl std::fmt::Debug for PreparedKey {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PreparedKey")
+            .finish_non_exhaustive()
+    }
+}
+#[async_trait::async_trait]
+impl Signer for PreparedKey {
+    async fn sign(
+        &self,
+        tenant: &TenantId,
+        algorithm: Option<SigningAlgorithm>,
+        typ: &'static str,
+        claims: &Value,
+    ) -> Result<CompactJws, DomainError> {
+        let (kid, signing) = self.key.as_ref();
+        if tenant != &self.tenant
+            || self.clock.now() >= self.expires_at
+            || algorithm.is_some_and(|required| required != signing.algorithm())
+        {
+            return Err(DomainError::NoSigningKey { algorithm });
+        }
+        let token = jws::sign(signing, kid, typ, claims)
+            .map_err(|error| DomainError::invalid("jws", error.to_string()))?;
+        if self.clock.now() >= self.expires_at {
+            return Err(DomainError::NoSigningKey { algorithm });
+        }
+        Ok(token)
+    }
+}
+
 #[async_trait::async_trait]
 impl Signer for CachedSigner {
+    async fn prepare(
+        &self,
+        tenant: &TenantId,
+        algorithm: Option<SigningAlgorithm>,
+    ) -> Result<Option<Box<dyn Signer + '_>>, DomainError> {
+        let key = if let Some(required) = algorithm {
+            self.resolve(tenant, required).await?
+        } else {
+            self.resolve_any(tenant).await?
+        }
+        .ok_or(DomainError::NoSigningKey { algorithm })?;
+        // A detached handle must not extend the cached key's existing lease.
+        // It fails closed after waiting too long for an authorization fence,
+        // instead of reloading a key/KEK while holding that fence.
+        let expires_at = self
+            .entries
+            .read()
+            .ok()
+            .and_then(|entries| {
+                entries
+                    .get(&(tenant.clone(), key.1.algorithm()))
+                    .and_then(|entry| {
+                        entry
+                            .key
+                            .as_ref()
+                            .filter(|cached| Arc::ptr_eq(cached, &key))
+                            .map(|_| entry.loaded_at + self.ttl.max(Duration::seconds(1)))
+                    })
+            })
+            .ok_or(DomainError::NoSigningKey { algorithm })?;
+        Ok(Some(Box::new(PreparedKey {
+            tenant: tenant.clone(),
+            key,
+            clock: Arc::clone(&self.clock),
+            expires_at,
+        })))
+    }
+
     async fn sign(
         &self,
         tenant: &TenantId,
@@ -219,5 +297,61 @@ impl Signer for CachedSigner {
 
         let (kid, signing) = key.as_ref();
         jws::sign(signing, kid, typ, claims).map_err(|e| DomainError::invalid("jws", e.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod task_preparation_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicI64, Ordering};
+
+    #[derive(Debug)]
+    struct ControlledClock(AtomicI64);
+    impl Clock for ControlledClock {
+        fn now(&self) -> OffsetDateTime {
+            OffsetDateTime::from_unix_timestamp(self.0.load(Ordering::SeqCst))
+                .expect("controlled clock")
+        }
+    }
+    #[tokio::test]
+    async fn agent_tasks_prepared_key_preserves_tenant_algorithm_and_lease() {
+        let clock = Arc::new(ControlledClock(AtomicI64::new(100)));
+        let tenant = TenantId::new("one");
+        let prepared = PreparedKey {
+            tenant: tenant.clone(),
+            key: Arc::new((
+                Kid::new("prepared"),
+                SigningKey::generate(SigningAlgorithm::EdDsa).expect("fixture key"),
+            )),
+            clock: clock.clone(),
+            expires_at: OffsetDateTime::from_unix_timestamp(110).expect("expiry"),
+        };
+        let claims = serde_json::json!({"jti":"controlled"});
+        assert!(
+            prepared
+                .sign(&tenant, Some(SigningAlgorithm::EdDsa), "at+jwt", &claims)
+                .await
+                .is_ok()
+        );
+        assert!(
+            prepared
+                .sign(&TenantId::new("other"), None, "at+jwt", &claims)
+                .await
+                .is_err()
+        );
+        assert!(
+            prepared
+                .sign(&tenant, Some(SigningAlgorithm::Es256), "at+jwt", &claims)
+                .await
+                .is_err()
+        );
+        clock.0.store(110, Ordering::SeqCst);
+        assert!(
+            prepared
+                .sign(&tenant, None, "at+jwt", &claims)
+                .await
+                .is_err()
+        );
+        assert_eq!(format!("{prepared:?}"), "PreparedKey { .. }");
     }
 }

@@ -401,6 +401,7 @@ impl Fixture {
             resources: BTreeSet::new(),
             actor_chain: Vec::new(),
             parent: None,
+            task: None,
             session: Some(asterius_domain::SessionId::new(session.id_digest.clone())),
             // What the authorization copied off the session (`ast-dlk`), which
             // is what a refresh reads once the session row is gone.
@@ -517,6 +518,9 @@ impl Fixture {
         let claims_providers = asterius_server::claims_provider::ClaimsProviders::default();
         let ida_frameworks = std::collections::BTreeSet::new();
         let handler = AuthorizationCode {
+            agent_policy: asterius_server::http::agent_issuance::AgentPolicy::unenforced(
+                self.audit.as_ref(),
+            ),
             ipsie_identity_only_clients: None,
             ipsie_rp_session_lifetimes: None,
             native_sso: &asterius_store_pg::PgNativeSso::new(

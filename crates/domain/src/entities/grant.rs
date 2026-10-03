@@ -410,6 +410,8 @@ pub struct Grant {
     /// grant is minted at the token endpoint, so it is claimed the moment it
     /// exists.
     pub parent: Option<GrantId>,
+    /// Authoritative task metadata resolved by the task preparer; never a JWT claim source.
+    pub task: Option<crate::agent_tasks::Binding>,
     /// The browser session the authorization happened in, when there was one.
     pub session: Option<SessionId>,
     /// When and how the person authenticated, as [`session`](Self::session)
@@ -518,6 +520,7 @@ impl Grant {
             resources: BTreeSet::new(),
             actor_chain: Vec::new(),
             parent: None,
+            task: None,
             session: None,
             authentication: None,
             created_at,
@@ -819,6 +822,7 @@ impl GrantRecord {
             resources,
             actor_chain,
             parent: self.parent,
+            task: None,
             session: self.session.map(SessionId::new),
             authentication,
             created_at: self.created_at,

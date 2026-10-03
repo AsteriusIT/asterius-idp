@@ -607,10 +607,8 @@ pub async fn targeting(
     implicit: ImplicitResources,
 ) -> Result<Targeting, TargetingError> {
     let registry = asterius_domain::ResourceRegistry::new(
-        grant_management_resource(tenant, implicit.grant_management)
+        implicit_resources(tenant, implicit)
             .into_iter()
-            .chain(ssf_resource(tenant, implicit.ssf))
-            .chain(ssf_poll_resource(tenant, implicit.ssf))
             .chain(resource_servers.list().await?),
     );
 
@@ -623,6 +621,19 @@ pub async fn targeting(
     let audience = Audience::new(&targets).map_err(|_| TargetingError::InvalidTarget)?;
 
     Ok(Targeting { audience, scopes })
+}
+
+/// Server-owned audience policy shared with the task signing fence.
+#[must_use]
+pub fn implicit_resources(
+    tenant: &Tenant,
+    implicit: ImplicitResources,
+) -> Vec<asterius_domain::ResourceServer> {
+    grant_management_resource(tenant, implicit.grant_management)
+        .into_iter()
+        .chain(ssf_resource(tenant, implicit.ssf))
+        .chain(ssf_poll_resource(tenant, implicit.ssf))
+        .collect()
 }
 
 /// The APIs this server hosts itself, as audiences a token may be minted for.

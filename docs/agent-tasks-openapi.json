@@ -1,0 +1,381 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Asterius account agent task approval",
+    "version": "1"
+  },
+  "servers": [
+    {
+      "url": "https://id.example/t/{tenant}",
+      "variables": {
+        "tenant": {
+          "default": "tenant"
+        }
+      }
+    }
+  ],
+  "security": [
+    {
+      "ownerSession": []
+    }
+  ],
+  "paths": {
+    "/account/agent-tasks/approval": {
+      "get": {
+        "summary": "Read existing owner authorization and obtain approval CSRF challenge",
+        "parameters": [
+          {
+            "name": "root_grant_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No-store preview; grants no task authority",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "root_grant_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "client_id": {
+                      "type": "string"
+                    },
+                    "permissions": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "scopes",
+                        "resources",
+                        "authorization_details",
+                        "max_delegation_depth"
+                      ],
+                      "properties": {
+                        "scopes": {
+                          "type": "array",
+                          "minItems": 1,
+                          "maxItems": 64,
+                          "uniqueItems": true,
+                          "items": {
+                            "type": "string",
+                            "maxLength": 256
+                          }
+                        },
+                        "resources": {
+                          "type": "array",
+                          "minItems": 1,
+                          "maxItems": 64,
+                          "uniqueItems": true,
+                          "items": {
+                            "type": "string",
+                            "format": "uri",
+                            "maxLength": 2048
+                          }
+                        },
+                        "authorization_details": {
+                          "type": "array",
+                          "maxItems": 16,
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "type",
+                              "actions",
+                              "locations"
+                            ],
+                            "properties": {
+                              "type": {
+                                "const": "urn:asterius:workload-actions"
+                              },
+                              "actions": {
+                                "type": "array",
+                                "minItems": 1,
+                                "maxItems": 64,
+                                "uniqueItems": true,
+                                "items": {
+                                  "type": "string",
+                                  "maxLength": 128
+                                }
+                              },
+                              "locations": {
+                                "type": "array",
+                                "minItems": 1,
+                                "maxItems": 1,
+                                "items": {
+                                  "type": "string",
+                                  "format": "uri",
+                                  "maxLength": 1024
+                                }
+                              }
+                            }
+                          }
+                        },
+                        "max_delegation_depth": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 8
+                        }
+                      }
+                    },
+                    "csrf": {
+                      "type": "string",
+                      "minLength": 64,
+                      "maxLength": 64
+                    },
+                    "approval_required": {
+                      "const": true
+                    },
+                    "max_lifetime_seconds": {
+                      "const": 3600
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "303": {
+            "description": "Authenticate again"
+          },
+          "404": {
+            "description": "No owner-scoped root"
+          },
+          "422": {
+            "description": "Unsupported task ceiling"
+          }
+        }
+      }
+    },
+    "/account/agent-tasks/approve": {
+      "post": {
+        "summary": "Explicitly approve a new immutable task run",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "csrf",
+                  "confirm",
+                  "root_grant_id",
+                  "label",
+                  "expires_in",
+                  "permissions"
+                ],
+                "properties": {
+                  "csrf": {
+                    "type": "string",
+                    "minLength": 64,
+                    "maxLength": 64
+                  },
+                  "confirm": {
+                    "const": "approve"
+                  },
+                  "root_grant_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "label": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "expires_in": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 3600
+                  },
+                  "permissions": {
+                    "type": "string",
+                    "description": "Strict JSON-encoded Permissions object; duplicate and unknown members refused"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Committed immutable run; no-store",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "task_id",
+                    "root_grant_id",
+                    "approval_revision",
+                    "expires_at"
+                  ],
+                  "properties": {
+                    "task_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "root_grant_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "approval_revision": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "expires_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "303": {
+            "description": "Authenticate again"
+          },
+          "400": {
+            "description": "Malformed, repeated, unknown or unsupported input"
+          },
+          "403": {
+            "description": "CSRF or explicit confirmation refused"
+          },
+          "404": {
+            "description": "No owner-scoped root"
+          },
+          "409": {
+            "description": "Root no longer active, old revision or expansion refused"
+          },
+          "413": {
+            "description": "Body exceeds 32768 bytes"
+          },
+          "503": {
+            "description": "Storage/audit unavailable"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "ownerSession": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "__Host-asterius_session",
+        "description": "Usable tenant owner session, authenticated within 120 seconds; approval also requires session-specific CSRF and explicit confirm."
+      }
+    },
+    "schemas": {
+      "Permissions": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "scopes",
+          "resources",
+          "authorization_details",
+          "max_delegation_depth"
+        ],
+        "properties": {
+          "scopes": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 64,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "maxLength": 256
+            }
+          },
+          "resources": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 64,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "format": "uri",
+              "maxLength": 2048
+            }
+          },
+          "authorization_details": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "type",
+                "actions",
+                "locations"
+              ],
+              "properties": {
+                "type": {
+                  "const": "urn:asterius:workload-actions"
+                },
+                "actions": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 64,
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "maxLength": 128
+                  }
+                },
+                "locations": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 1,
+                  "items": {
+                    "type": "string",
+                    "format": "uri",
+                    "maxLength": 1024
+                  }
+                }
+              }
+            }
+          },
+          "max_delegation_depth": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 8
+          }
+        }
+      },
+      "Binding": {
+        "type": "object",
+        "required": [
+          "task_id",
+          "root_grant_id",
+          "approval_revision",
+          "expires_at"
+        ],
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "root_grant_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "approval_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      }
+    }
+  }
+}
