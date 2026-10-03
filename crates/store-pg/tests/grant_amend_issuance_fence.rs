@@ -42,10 +42,11 @@ async fn grant_amend_issuance_fence_refuses_stale_revision_but_preserves_claim_a
         .create(&original)
         .await
         .expect("create exact grant");
-    repository
+    let claimed = repository
         .claim(&original.id, now)
         .await
         .expect("claim stamps authority without changing revision");
+    assert_eq!(claimed.id(), &original.id);
     let mut narrowed = original.clone();
     narrowed.scopes = ["openid".to_owned()].into();
     let mut signing = PgPolicies::new(pool.clone())
