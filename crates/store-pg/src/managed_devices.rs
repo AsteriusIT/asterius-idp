@@ -35,6 +35,13 @@ struct DeviceRow {
     compliant: Option<bool>,
 }
 
+#[derive(Clone, Copy)]
+enum ResolutionPhase {
+    Final,
+    ExchangePreflight,
+    AuthorizationPreflight,
+}
+
 impl PgManagedDevices {
     #[must_use]
     pub fn new(pool: PgPool, audit: Arc<dyn AuditSink>) -> Self {
@@ -152,7 +159,15 @@ impl PgManagedDevices {
         binding: Option<&DeviceBinding>,
         current_anchor: Option<&LeafFingerprint>,
     ) -> Result<Fact, DomainError> {
-        Self::resolve_on(connection, tenant, grant, binding, current_anchor, false).await
+        Self::resolve_on(
+            connection,
+            tenant,
+            grant,
+            binding,
+            current_anchor,
+            ResolutionPhase::Final,
+        )
+        .await
     }
 
     /// Early exchange evaluation only: exact verified parent authority plus a
@@ -164,7 +179,37 @@ impl PgManagedDevices {
         binding: Option<&DeviceBinding>,
         current_anchor: Option<&LeafFingerprint>,
     ) -> Result<Fact, DomainError> {
-        Self::resolve_on(connection, tenant, grant, binding, current_anchor, true).await
+        Self::resolve_on(
+            connection,
+            tenant,
+            grant,
+            binding,
+            current_anchor,
+            ResolutionPhase::ExchangePreflight,
+        )
+        .await
+    }
+
+    /// Original consent/code preflight; no claimed issued authority is inferred.
+    ///
+    /// # Errors
+    /// Returns storage errors and fails closed for invalid persisted authority.
+    pub async fn resolve_authorization_preflight_on(
+        connection: &mut PgConnection,
+        tenant: &TenantId,
+        grant: &Grant,
+        binding: Option<&DeviceBinding>,
+        current_anchor: Option<&LeafFingerprint>,
+    ) -> Result<Fact, DomainError> {
+        Self::resolve_on(
+            connection,
+            tenant,
+            grant,
+            binding,
+            current_anchor,
+            ResolutionPhase::AuthorizationPreflight,
+        )
+        .await
     }
 
     #[expect(
@@ -177,7 +222,7 @@ impl PgManagedDevices {
         grant: &Grant,
         binding: Option<&DeviceBinding>,
         current_anchor: Option<&LeafFingerprint>,
-        preflight: bool,
+        phase: ResolutionPhase,
     ) -> Result<Fact, DomainError> {
         let Some(binding) = binding else {
             return Ok(missing(Availability::Absent));
@@ -196,90 +241,37 @@ impl PgManagedDevices {
         {
             return Ok(missing(Availability::Invalid));
         }
-        let mut authority_expiry = grant.expires_at;
-        if preflight {
-            let Some(parent) = binding
-                .request_parent()
-                .filter(|id| grant.parent.as_ref() == Some(id))
-            else {
-                return Ok(missing(Availability::Unavailable));
-            };
-            let parent = Uuid::parse_str(parent.as_str()).map_err(|_| DomainError::NotFound)?;
-            let row: Option<(Option<Uuid>, Option<String>)> = sqlx::query_as(
-                "select user_id,subject from grants where tenant_id=$1 and grant_id=$2 for share",
-            )
-            .bind(tenant.as_str())
-            .bind(parent)
-            .fetch_optional(&mut *connection)
-            .await
-            .map_err(to_domain_error)?;
-            let Some((user, subject)) = row else {
-                return Ok(missing(Availability::Invalid));
-            };
-            let current: bool = sqlx::query_scalar("select claimed_at is not null and revoked_at is null and (expires_at is null or expires_at>clock_timestamp()) from grants where tenant_id=$1 and grant_id=$2")
-                .bind(tenant.as_str()).bind(parent).fetch_one(&mut *connection).await.map_err(to_domain_error)?;
-            let parent_expiry: Option<OffsetDateTime> = sqlx::query_scalar(
-                "select expires_at from grants where tenant_id=$1 and grant_id=$2",
-            )
-            .bind(tenant.as_str())
-            .bind(parent)
-            .fetch_one(&mut *connection)
-            .await
-            .map_err(to_domain_error)?;
-            if let Some(expiry) = parent_expiry {
-                authority_expiry =
-                    Some(authority_expiry.map_or(expiry, |current| current.min(expiry)));
+        let authority = match phase {
+            ResolutionPhase::ExchangePreflight => {
+                if binding.bound_grant_id() != Some(&grant.id)
+                    || binding.request_parent() != grant.parent.as_ref()
+                    || grant.parent.is_none()
+                {
+                    return Ok(missing(Availability::Invalid));
+                }
+                crate::PgGrantRepository::lock_exchange_parent_on(connection, tenant, grant)
+                    .await
+                    .map(Some)
             }
-            if !current
-                || binding.bound_grant_id() != Some(&grant.id)
-                || user != grant.user.map(|u| *u.as_uuid())
-                || subject.as_deref()
-                    != grant
-                        .subject
-                        .as_ref()
-                        .map(asterius_domain::SubjectId::as_str)
-            {
-                return Ok(missing(Availability::Invalid));
+            ResolutionPhase::AuthorizationPreflight => {
+                if binding.bound_grant_id().is_some() || binding.request_parent().is_some() {
+                    return Ok(missing(Availability::Invalid));
+                }
+                crate::PgGrantRepository::lock_authorization_preflight_on(connection, tenant, grant)
+                    .await
             }
-        }
-        if binding.bound_grant_id().is_some() && !preflight {
-            let id = Uuid::parse_str(grant.id.as_str()).map_err(|_| DomainError::NotFound)?;
-            let row: Option<(String, Option<Uuid>, Option<String>, bool)> = sqlx::query_as(
-                "select client_id,user_id,subject,claimed_at is not null and revoked_at is null \
-                 and (expires_at is null or expires_at>clock_timestamp()) from grants \
-                 where tenant_id=$1 and grant_id=$2 for share",
-            )
-            .bind(tenant.as_str())
-            .bind(id)
-            .fetch_optional(&mut *connection)
-            .await
-            .map_err(to_domain_error)?;
-            let Some((client, user, subject, live)) = row else {
-                return Ok(missing(Availability::Invalid));
-            };
-            let live_after_lock: bool = sqlx::query_scalar("select claimed_at is not null and revoked_at is null and (expires_at is null or expires_at>clock_timestamp()) from grants where tenant_id=$1 and grant_id=$2")
-                .bind(tenant.as_str()).bind(id).fetch_one(&mut *connection).await.map_err(to_domain_error)?;
-            authority_expiry = sqlx::query_scalar(
-                "select expires_at from grants where tenant_id=$1 and grant_id=$2",
-            )
-            .bind(tenant.as_str())
-            .bind(id)
-            .fetch_one(&mut *connection)
-            .await
-            .map_err(to_domain_error)?;
-            if !live
-                || !live_after_lock
-                || client != grant.client.as_str()
-                || user != grant.user.map(|user| *user.as_uuid())
-                || subject.as_deref()
-                    != grant
-                        .subject
-                        .as_ref()
-                        .map(asterius_domain::SubjectId::as_str)
-            {
-                return Ok(missing(Availability::Invalid));
+            ResolutionPhase::Final => {
+                crate::PgGrantRepository::lock_issuance_authority_on(connection, tenant, grant)
+                    .await
+                    .map(Some)
             }
-        }
+        };
+        let authority = match authority {
+            Ok(authority) => authority,
+            Err(DomainError::Invalid { .. }) => return Ok(missing(Availability::Invalid)),
+            Err(error) => return Err(error),
+        };
+        let authority_expiry = authority.and_then(|fence| fence.expires_at());
         if !source_current_on(connection, tenant, binding).await? {
             return Ok(missing(Availability::Invalid));
         }

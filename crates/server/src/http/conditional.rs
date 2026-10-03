@@ -684,6 +684,15 @@ impl super::agent_issuance::ConditionalGuard for ConditionalAccess {
                 self.device_anchors.get(tenant.id.as_str()),
             )
             .await?
+        } else if kind == GrantType::AuthorizationCode {
+            asterius_store_pg::PgManagedDevices::resolve_authorization_preflight_on(
+                fence.connection(),
+                &tenant.id,
+                grant,
+                binding,
+                self.device_anchors.get(tenant.id.as_str()),
+            )
+            .await?
         } else {
             asterius_store_pg::PgManagedDevices::resolve_for_grant_on(
                 fence.connection(),
@@ -1271,7 +1280,7 @@ impl super::authorize::ConditionalAuthorization for ConditionalAccess {
         let mut fence = PgPolicies::new(self.store.pool().clone())
             .signing_fence(&tenant.id, &tenant.issuer)
             .await?;
-        let device = asterius_store_pg::PgManagedDevices::resolve_for_grant_on(
+        let device = asterius_store_pg::PgManagedDevices::resolve_authorization_preflight_on(
             fence.connection(),
             &tenant.id,
             grant,
@@ -1582,6 +1591,12 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
                 .await;
         }
         let mut transaction = self.fence(tenant).await?;
+        let authority = asterius_store_pg::PgGrantRepository::lock_issuance_authority_on(
+            transaction.connection(),
+            tenant,
+            grant,
+        )
+        .await?;
         let device = asterius_store_pg::PgManagedDevices::resolve_for_grant_on(
             transaction.connection(),
             tenant,
@@ -1592,6 +1607,14 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
         .await?;
         let held = self.current_roles(tenant, grant, claims).await?;
         let mut identity_claims = claims.clone();
+        if let Some(deadline) = authority.expires_at() {
+            let expiry = identity_claims
+                .get("exp")
+                .and_then(serde_json::Value::as_i64)
+                .ok_or_else(|| DomainError::invalid("id_token", "integer expiry required"))?;
+            identity_claims["exp"] = serde_json::json!(expiry.min(deadline.unix_timestamp()));
+        }
+
         let identity =
             asterius_store_pg::PgTemporaryEntitlements::kubernetes_identity_for_grant_on(
                 transaction.connection(),
@@ -1722,6 +1745,12 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
             &identity_claims,
         )
         .await?;
+        if !authority.active_at(OffsetDateTime::now_utc()) {
+            return Err(DomainError::invalid(
+                "grant_authority",
+                "identity authority expired during signing",
+            ));
+        }
         transaction.commit().await?;
         Ok(signed)
     }

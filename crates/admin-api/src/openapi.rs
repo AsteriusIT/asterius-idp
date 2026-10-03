@@ -1188,11 +1188,7 @@ fn managed_device_documentation(operation: &Operation, object: &mut Value) {
             } else {
                 json!(["client_id"])
             };
-            let revision = if update {
-                uuid
-            } else {
-                json!({"type":"null"})
-            };
+            let revision = if update { uuid } else { json!({"type":"null"}) };
             json!({"type":"object","additionalProperties":false,"required":required,"properties":{
                 "client_id":client,"enabled":{"type":"boolean","default":false},"expected_revision":revision
             }})

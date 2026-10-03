@@ -1,6 +1,6 @@
 # Managed device posture uses an authenticated relay and enrolled TLS credentials
 
-- **Status:** Decided architecture; runtime is ast-dd1y.4.5
+- **Status:** Initial architecture recorded; runtime trust refinements Proposed, normative human review required by ast-dd1y.4.5
 - **Date:** 2026-10-03
 - **Bead:** ast-dd1y.4.4
 - **Refines:** [Trusted conditional access](trusted-conditional-access-context.md)
