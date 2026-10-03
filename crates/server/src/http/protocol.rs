@@ -122,6 +122,8 @@ pub struct ProtocolState {
 /// Separate from [`ProtocolState`] so that the discovery and JWKS handlers —
 /// which need none of it — can be tested without a database.
 pub struct ClientEndpoints {
+    /// Persistent external workload verifier; absence disables external exchange.
+    pub workloads: Option<Arc<dyn asterius_domain::workload::Verifier>>,
     /// Identity binding for verified upstream issuer/subject pairs. Absent
     /// until account binding is configured; upstream login then fails closed.
     pub upstream_identity_resolver: Option<Arc<dyn upstream_oidc::UpstreamIdentityResolver>>,
@@ -4120,6 +4122,15 @@ async fn dispatch_grants(
     // lives on the client the token was minted for — and this deployment's
     // keys, because the subject token is one *this* server issued and nothing
     // else can say so.
+    let workload_store = asterius_store_pg::PgWorkloadTrusts::new(endpoints.store.pool().clone());
+    let workload_types = scope.authorization_details_types();
+    let workload_context = endpoints.workloads.as_deref().map(|verifier| {
+        crate::http::token_exchange::WorkloadContext {
+            verifier,
+            store: &workload_store,
+            types: &workload_types,
+        }
+    });
     let token_exchange = crate::http::token_exchange::TokenExchange::sharing(
         &authorization_code,
         &clients,
@@ -4131,7 +4142,8 @@ async fn dispatch_grants(
             .get(tenant.id.as_str())
             .map_or(&[][..], Vec::as_slice),
         native_sso_approvals,
-    );
+    )
+    .with_workloads(workload_context);
     let refresh_token = RefreshToken::sharing(&authorization_code, endpoints.audit.as_ref());
     // The sixth grant (CIBA Core 1.0 §10.1), on the same borrows as the device
     // grant: the two flows are the same shape, and this one's redemption is

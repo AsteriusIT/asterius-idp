@@ -81,6 +81,8 @@ async fn revisions_replay_and_audit_are_tenant_bound() {
         .await
         .expect("enable");
     let verified = Verified {
+        client: asterius_domain::ClientId::new("client"),
+        provider: asterius_domain::workload::Provider::Kubernetes,
         tenant: one.clone(),
         trust_id: "inventory".into(),
         trust_version: enabled.version,

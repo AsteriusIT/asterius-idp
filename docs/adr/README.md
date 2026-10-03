@@ -37,5 +37,6 @@ The modern IDP decisions use descriptive filenames to avoid concurrent numbering
 | [External workload trust](external-workload-trust.md) | Approved design; runtime and direct secretless bootstrap tracked separately |
 | [Declarative management v1](declarative-management-contract.md) | Accepted architecture; runtime tracked in ast-dd1y.3.2 |
 | [Trusted conditional access](trusted-conditional-access-context.md) | Decided; enforcement tracked separately |
+| [Managed device posture](managed-device-posture-source.md) | Decided relay and PKI model; runtime tracked in ast-dd1y.4.5 |
 | [Temporary entitlement activation](temporary-entitlement-activation.md) | Decided; implementation tracked separately |
 | [Task-bound agent grants](task-bound-agent-grants.md) | Accepted; enforcement tracked in ast-dd1y.8.2 and ast-dd1y.8.3 |

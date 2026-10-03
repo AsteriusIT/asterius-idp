@@ -116,6 +116,7 @@ pub const POLICY: &[Retention] = &[
     Retention { table: "kubernetes_profiles", rule: Rule::Kept("tenant-owned cluster configuration; removed with its registered client") },
     Retention { table: "declarative_owners", rule: Rule::Kept("live ownership and deleted-resource generations prevent ABA and unsafe adoption; explicit release, cascade with tenant") },
     Retention { table: "declarative_creation_keys", rule: Rule::Kept("durable declarative retry receipts cannot expire while stale controller retries remain possible; cascade with tenant") },
+    Retention { table:"workload_grant_bindings", rule:Rule::Kept("external workload source provenance; cascades with the child grant") },
     Retention { table: "workload_trusts", rule: Rule::Kept("operator-pinned external workload configuration; explicit audited removal") },
     Retention {
         table: "workload_assertion_consumptions",
@@ -654,7 +655,7 @@ pub const POLICY: &[Retention] = &[
                             select g.ctid from grants g
                              where g.tenant_id = $1
                                and g.user_id is null
-                               and g.subject is null
+                               and (g.subject is null or exists (select 1 from workload_grant_bindings w where w.tenant_id=g.tenant_id and w.grant_id=g.grant_id))
                                and g.session_id is null
                                and g.expires_at is not null
                                and g.expires_at <= $2

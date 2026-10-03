@@ -158,6 +158,8 @@ impl ExternalWorkloads {
                 return Err(invalid());
             }
             selected = Some(Verified {
+                client: client.clone(),
+                provider: trust.config.provider,
                 tenant: tenant.clone(),
                 trust_id: trust.id,
                 trust_version: trust.version,
