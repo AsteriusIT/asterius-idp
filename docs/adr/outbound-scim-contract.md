@@ -246,3 +246,26 @@ mapping and lifecycle evidence, and retire the current assignment. Empty connect
 catalogues may cascade normally. Deleting retained history is never a way to
 adopt a target object, evade the reviewed-delete policy, or recreate an old
 assignment incarnation. These refinements remain proposed with this ADR.
+
+The bounded candidate catalogue admits at most 100 non-retired User assignments
+and 100 non-retired Group assignments per connector, including assignments
+waiting for deprovisioning. Unselection does not free an incarnation slot;
+verified archival does. This keeps complete resume and credential-rotation
+reconciliation bounded while preserving historical ownership evidence.
+
+A collection POST admission is durably recorded before transmission. If that
+create becomes uncertain and the source is then unselected or disappears, GET
+absence cannot prove an older POST will not arrive later. Recovery may establish
+that **same** immutable incarnation as a disabled User or empty Group, using
+the pinned target's atomic alias/externalId uniqueness. A competing create is
+recovered by exact ownership lookup and conditional deprovisioning. This is an
+exception only for an already-admitted uncertain create: never-admitted absent
+assignments remain absent, and a missing previously mapped UUID is still a
+conflict requiring explicit lifecycle action. Creation evidence cannot be cleared
+to bypass recovery or retirement checks.
+
+The candidate also bounds each source tenant to 100 live connectors and the
+process-wide operator signing catalogue/OAuth session cache to 100 exact scoped
+credential contexts. Catalogue creation is serialized under a tenant-specific
+advisory lock; source-change producers therefore have a finite connector fanout.
+These operational bounds remain part of the proposed first profile.
