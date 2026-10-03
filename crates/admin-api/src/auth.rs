@@ -81,7 +81,9 @@ impl Principal {
     #[must_use]
     pub fn verified_machine_jti(&self) -> Option<&str> {
         match self {
-            Self::Automation { credential, .. } => credential.as_ref().map(crate::backend::VerifiedMachineCredential::jti),
+            Self::Automation { credential, .. } => credential
+                .as_ref()
+                .map(crate::backend::VerifiedMachineCredential::jti),
             Self::Console { .. } => None,
         }
     }

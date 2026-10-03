@@ -445,7 +445,8 @@ pub trait Signer: fmt::Debug + Send + Sync {
         typ: &'static str,
         claims: &serde_json::Value,
     ) -> Result<CompactJws, crate::DomainError> {
-        self.sign_identity(tenant, grant, algorithm, typ, claims).await
+        self.sign_identity(tenant, grant, algorithm, typ, claims)
+            .await
     }
 
     /// Signs an access token with its durable authorization lineage available

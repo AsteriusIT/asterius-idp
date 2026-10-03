@@ -1195,7 +1195,9 @@ pub trait InteractionRepository: Debug + Send + Sync {
         _interaction_digest: &str,
         _certificate: &crate::managed_devices::DeviceCertificateEvidence,
         _now: OffsetDateTime,
-    ) -> Result<(), DomainError> { Ok(()) }
+    ) -> Result<(), DomainError> {
+        Ok(())
+    }
 
     /// The winning completion atomically spends its exact private proof.
     async fn complete_interaction_with_device(

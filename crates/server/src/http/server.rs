@@ -227,10 +227,19 @@ pub async fn serve_authenticated_proxy(
     }
     let roots = crate::managed_devices::DeviceTrustRoots::load(&hop.trust_anchors)?;
     let acceptor = tokio_rustls::TlsAcceptor::from(tls::server_config_for_proxy(
-        &hop.certificate, &hop.private_key, roots.certificates(),
+        &hop.certificate,
+        &hop.private_key,
+        roots.certificates(),
     )?);
     let listener = bind(config).await?;
-    serve_tls(listener, acceptor, app, Some(std::sync::Arc::new(hop.client_fingerprints.clone())), shutdown).await?;
+    serve_tls(
+        listener,
+        acceptor,
+        app,
+        Some(std::sync::Arc::new(hop.client_fingerprints.clone())),
+        shutdown,
+    )
+    .await?;
     Ok(())
 }
 
@@ -287,7 +296,8 @@ async fn serve_tls(
 
             let proxy_hop = if let Some(pins) = &proxy_pins {
                 let Some(proof) = crate::managed_devices::VerifiedProxyHop::from_authenticated_tls(
-                    stream.get_ref().1, pins,
+                    stream.get_ref().1,
+                    pins,
                 ) else {
                     // A CA-valid client outside the exact proxy pin set may
                     // not inject any request into the protected backend.
@@ -295,13 +305,17 @@ async fn serve_tls(
                     return;
                 };
                 Some(std::sync::Arc::new(proof))
-            } else { None };
+            } else {
+                None
+            };
 
             let service = hyper_util::service::TowerToHyperService::new(
                 app.into_service::<hyper::body::Incoming>().map_request(
                     move |mut request: axum::extract::Request<_>| {
                         request.extensions_mut().insert(ConnectInfo(peer));
-                        if let Some(hop) = &proxy_hop { request.extensions_mut().insert(std::sync::Arc::clone(hop)); }
+                        if let Some(hop) = &proxy_hop {
+                            request.extensions_mut().insert(std::sync::Arc::clone(hop));
+                        }
                         request
                     },
                 ),

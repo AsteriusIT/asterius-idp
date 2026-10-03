@@ -10,8 +10,8 @@
 mod access_reviews;
 mod governance_reports;
 mod managed_devices;
-pub use managed_devices::PgManagedDevices;
 pub use governance_reports::PgGovernanceReports;
+pub use managed_devices::PgManagedDevices;
 mod admin_seed;
 mod agent_task_lifecycle;
 mod agent_task_views;

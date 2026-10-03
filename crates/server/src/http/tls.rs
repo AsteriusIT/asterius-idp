@@ -95,10 +95,14 @@ pub(crate) fn server_config_for_proxy(
     roots: &[CertificateDer<'static>],
 ) -> Result<Arc<ServerConfig>, TlsError> {
     let mut store = rustls::RootCertStore::empty();
-    for root in roots { store.add(root.clone())?; }
+    for root in roots {
+        store.add(root.clone())?;
+    }
     let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
-        Arc::new(store), Arc::new(aws_lc_rs::default_provider()),
-    ).build()?;
+        Arc::new(store),
+        Arc::new(aws_lc_rs::default_provider()),
+    )
+    .build()?;
     server_config_with_verifier(certificate, private_key, Some(verifier))
 }
 
@@ -115,8 +119,8 @@ fn server_config_with_verifier(
         ..aws_lc_rs::default_provider()
     });
 
-    let builder = ServerConfig::builder_with_provider(provider)
-        .with_protocol_versions(PROTOCOL_VERSIONS)?;
+    let builder =
+        ServerConfig::builder_with_provider(provider).with_protocol_versions(PROTOCOL_VERSIONS)?;
     let builder = match verifier {
         Some(verifier) => builder.with_client_cert_verifier(verifier),
         None => builder.with_no_client_auth(),

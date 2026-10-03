@@ -631,16 +631,27 @@ pub const KUBERNETES_PROFILE_UPDATE: Operation = Operation::mutation(
 );
 
 pub const KUBERNETES_ONLINE_READ: Operation = Operation::read(
-    KUBERNETES_ONLINE_READ_ID,"/clients/{client_id}/kubernetes/online",S::Get,
-    A::new(R::Tenant,"admin.clients:read"),"Reads the selected online authentication reviewer",
+    KUBERNETES_ONLINE_READ_ID,
+    "/clients/{client_id}/kubernetes/online",
+    S::Get,
+    A::new(R::Tenant, "admin.clients:read"),
+    "Reads the selected online authentication reviewer",
 );
 pub const KUBERNETES_ONLINE_UPDATE: Operation = Operation::mutation(
-    KUBERNETES_ONLINE_UPDATE_ID,"/clients/{client_id}/kubernetes/online",M::Put,
-    A::new(R::Tenant,"admin.clients:write"),"Selects an exact service reviewer using the saved revision",
+    KUBERNETES_ONLINE_UPDATE_ID,
+    "/clients/{client_id}/kubernetes/online",
+    M::Put,
+    A::new(R::Tenant, "admin.clients:write"),
+    "Selects an exact service reviewer using the saved revision",
 );
 pub const KUBERNETES_REVIEW: Operation = Operation::probe(
-    KUBERNETES_REVIEW_ID,"/clients/{client_id}/kubernetes/reviews",M::Post,
-    A::new(R::AutomationTenant,asterius_domain::kubernetes_online::REVIEW_SCOPE),
+    KUBERNETES_REVIEW_ID,
+    "/clients/{client_id}/kubernetes/reviews",
+    M::Post,
+    A::new(
+        R::AutomationTenant,
+        asterius_domain::kubernetes_online::REVIEW_SCOPE,
+    ),
     "Reviews one issued identity against current exact grant and session authority",
 );
 
@@ -1146,13 +1157,55 @@ pub const OIDC_PROVIDER_CHECK: Operation = Operation::probe(
     "Checks stored provider discovery and public keys without using client credentials",
 );
 
-pub const DEVICE_SOURCES_LIST: Operation = Operation::read(DEVICE_SOURCES_LIST_ID, "/device-sources", S::Get, A::new(R::ConsoleTenant, "admin.device_sources:read"), "Lists device source generations without credentials");
-pub const DEVICE_SOURCE_CREATE: Operation = Operation::mutation(DEVICE_SOURCE_CREATE_ID, "/device-sources", M::Post, A::new(R::ConsoleTenant, "admin.device_sources:write"), "Creates a default-disabled device source");
-pub const DEVICE_SOURCE_UPDATE: Operation = Operation::mutation(DEVICE_SOURCE_UPDATE_ID, "/device-sources/{source_id}", M::Put, A::new(R::ConsoleTenant, "admin.device_sources:write"), "Changes a source with an exact revision fence");
-pub const DEVICES_LIST: Operation = Operation::read(DEVICES_LIST_ID, "/devices", S::Get, A::new(R::ConsoleTenant, "admin.devices:read"), "Lists bounded device metadata without certificates");
-pub const DEVICE_REMOVE: Operation = Operation::mutation(DEVICE_REMOVE_ID, "/devices/{device_id}", M::Delete, A::new(R::ConsoleTenant, "admin.devices:write"), "Erases identifying device state and invalidates proofs");
-pub const DEVICE_ENROLL: Operation = Operation::mutation(DEVICE_ENROLL_ID, "/device-sources/{source_id}/enrollments", M::Post, A::new(R::AutomationTenant, "device.enrollments:write"), "Enrolls an account-bound device from its exact authorized relay");
-pub const DEVICE_POSTURE: Operation = Operation::mutation(DEVICE_POSTURE_ID, "/device-sources/{source_id}/posture", M::Post, A::new(R::AutomationTenant, "device.posture:write"), "Atomically accepts bounded monotonic posture updates");
+pub const DEVICE_SOURCES_LIST: Operation = Operation::read(
+    DEVICE_SOURCES_LIST_ID,
+    "/device-sources",
+    S::Get,
+    A::new(R::ConsoleTenant, "admin.device_sources:read"),
+    "Lists device source generations without credentials",
+);
+pub const DEVICE_SOURCE_CREATE: Operation = Operation::mutation(
+    DEVICE_SOURCE_CREATE_ID,
+    "/device-sources",
+    M::Post,
+    A::new(R::ConsoleTenant, "admin.device_sources:write"),
+    "Creates a default-disabled device source",
+);
+pub const DEVICE_SOURCE_UPDATE: Operation = Operation::mutation(
+    DEVICE_SOURCE_UPDATE_ID,
+    "/device-sources/{source_id}",
+    M::Put,
+    A::new(R::ConsoleTenant, "admin.device_sources:write"),
+    "Changes a source with an exact revision fence",
+);
+pub const DEVICES_LIST: Operation = Operation::read(
+    DEVICES_LIST_ID,
+    "/devices",
+    S::Get,
+    A::new(R::ConsoleTenant, "admin.devices:read"),
+    "Lists bounded device metadata without certificates",
+);
+pub const DEVICE_REMOVE: Operation = Operation::mutation(
+    DEVICE_REMOVE_ID,
+    "/devices/{device_id}",
+    M::Delete,
+    A::new(R::ConsoleTenant, "admin.devices:write"),
+    "Erases identifying device state and invalidates proofs",
+);
+pub const DEVICE_ENROLL: Operation = Operation::mutation(
+    DEVICE_ENROLL_ID,
+    "/device-sources/{source_id}/enrollments",
+    M::Post,
+    A::new(R::AutomationTenant, "device.enrollments:write"),
+    "Enrolls an account-bound device from its exact authorized relay",
+);
+pub const DEVICE_POSTURE: Operation = Operation::mutation(
+    DEVICE_POSTURE_ID,
+    "/device-sources/{source_id}/posture",
+    M::Post,
+    A::new(R::AutomationTenant, "device.posture:write"),
+    "Atomically accepts bounded monotonic posture updates",
+);
 
 pub const WORKLOAD_TRUSTS_LIST: Operation = Operation::read(
     WORKLOAD_TRUSTS_LIST_ID,

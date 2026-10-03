@@ -270,13 +270,19 @@ impl AdminTokens for AutomationTokens {
         // These dedicated scopes require an exact private receipt created only
         // after successful client-credentials signing, not merely a client-shaped sub.
         if scopes.contains("admin.kubernetes_reviews:read")
-            && !self.status.reviewer_token_current(&issuer.id, &client_id, jti).await?
+            && !self
+                .status
+                .reviewer_token_current(&issuer.id, &client_id, jti)
+                .await?
         {
             return Ok(None);
         }
         if (scopes.contains(asterius_domain::managed_devices::ENROLLMENT_SCOPE)
             || scopes.contains(asterius_domain::managed_devices::POSTURE_SCOPE))
-            && !self.status.device_relay_token_current(&issuer.id, &client_id, jti).await?
+            && !self
+                .status
+                .device_relay_token_current(&issuer.id, &client_id, jti)
+                .await?
         {
             return Ok(None);
         }
@@ -286,7 +292,9 @@ impl AdminTokens for AutomationTokens {
             Some(issuer.id)
         };
         Ok(Some(TokenPrincipal {
-            credential: Some(asterius_admin_api::backend::VerifiedMachineCredential::from_verified_jti(jti)?),
+            credential: Some(
+                asterius_admin_api::backend::VerifiedMachineCredential::from_verified_jti(jti)?,
+            ),
             subject: client.to_owned(),
             tenant,
             scopes: scopes.into_iter().collect(),
@@ -304,11 +312,21 @@ trait AutomationTokenStatus: std::fmt::Debug + Send + Sync {
         Ok(query.approval.is_none())
     }
 
-    async fn reviewer_token_current(&self, _tenant: &TenantId, _client: &ClientId, _jti: &str) -> Result<bool, DomainError> {
+    async fn reviewer_token_current(
+        &self,
+        _tenant: &TenantId,
+        _client: &ClientId,
+        _jti: &str,
+    ) -> Result<bool, DomainError> {
         Ok(false)
     }
 
-    async fn device_relay_token_current(&self, _tenant: &TenantId, _client: &ClientId, _jti: &str) -> Result<bool, DomainError> {
+    async fn device_relay_token_current(
+        &self,
+        _tenant: &TenantId,
+        _client: &ClientId,
+        _jti: &str,
+    ) -> Result<bool, DomainError> {
         Ok(false)
     }
 
@@ -341,13 +359,30 @@ impl AutomationTokenStatus for PgAutomationTokenStatus {
             .await
     }
 
-    async fn reviewer_token_current(&self, tenant: &TenantId, client: &ClientId, jti: &str) -> Result<bool, DomainError> {
+    async fn reviewer_token_current(
+        &self,
+        tenant: &TenantId,
+        client: &ClientId,
+        jti: &str,
+    ) -> Result<bool, DomainError> {
         asterius_store_pg::kubernetes_online::PgKubernetesOnline::new(self.store.pool().clone())
-            .reviewer_token_current(tenant, client, jti).await
+            .reviewer_token_current(tenant, client, jti)
+            .await
     }
 
-    async fn device_relay_token_current(&self, tenant: &TenantId, client: &ClientId, jti: &str) -> Result<bool, DomainError> {
-        asterius_store_pg::PgManagedDevices::relay_token_current_in(self.store.pool(), tenant, client, jti).await
+    async fn device_relay_token_current(
+        &self,
+        tenant: &TenantId,
+        client: &ClientId,
+        jti: &str,
+    ) -> Result<bool, DomainError> {
+        asterius_store_pg::PgManagedDevices::relay_token_current_in(
+            self.store.pool(),
+            tenant,
+            client,
+            jti,
+        )
+        .await
     }
 
     async fn is_denylisted(&self, tenant: &TenantId, jti: &str) -> Result<bool, DomainError> {
@@ -3052,10 +3087,14 @@ impl asterius_domain::agent_task_views::Administration for DeploymentTaskViews {
 
 #[async_trait::async_trait]
 impl AdminBackend for Deployment {
-    fn kubernetes_online(&self)
-        -> Option<Arc<dyn asterius_domain::kubernetes_online::KubernetesOnline>> {
+    fn kubernetes_online(
+        &self,
+    ) -> Option<Arc<dyn asterius_domain::kubernetes_online::KubernetesOnline>> {
         Some(crate::http::kubernetes_online::OnlineAuthentication::new(
-            asterius_store_pg::kubernetes_online::PgKubernetesOnline::new(self.store.pool().clone())))
+            asterius_store_pg::kubernetes_online::PgKubernetesOnline::new(
+                self.store.pool().clone(),
+            ),
+        ))
     }
     fn agent_tasks(&self) -> Option<Arc<dyn asterius_domain::agent_task_views::Administration>> {
         Some(Arc::new(DeploymentTaskViews {
@@ -3744,10 +3783,16 @@ impl AdminBackend for Deployment {
     }
 
     fn device_registry(&self) -> Option<Arc<dyn asterius_domain::managed_devices::Registry>> {
-        Some(Arc::new(asterius_store_pg::PgManagedDevices::new(self.store.pool().clone(), self.audit())))
+        Some(Arc::new(asterius_store_pg::PgManagedDevices::new(
+            self.store.pool().clone(),
+            self.audit(),
+        )))
     }
     fn device_relay(&self) -> Option<Arc<dyn asterius_domain::managed_devices::Relay>> {
-        Some(Arc::new(asterius_store_pg::PgManagedDevices::new(self.store.pool().clone(), self.audit())))
+        Some(Arc::new(asterius_store_pg::PgManagedDevices::new(
+            self.store.pool().clone(),
+            self.audit(),
+        )))
     }
 
     fn workload_trusts(&self) -> Option<Arc<dyn asterius_domain::workload::Registry>> {
@@ -4182,11 +4227,33 @@ mod automation_tests {
         let fixture = Fixture::new(vec![routed.clone()], None);
         let audience = admin_url(&routed, asterius_admin_api::BASE_PATH);
         let url = admin_url(&routed, "/admin/api/v1/devices");
-        for (index, scope) in ["admin.kubernetes_reviews:read", asterius_domain::managed_devices::ENROLLMENT_SCOPE, asterius_domain::managed_devices::POSTURE_SCOPE].into_iter().enumerate() {
+        for (index, scope) in [
+            "admin.kubernetes_reviews:read",
+            asterius_domain::managed_devices::ENROLLMENT_SCOPE,
+            asterius_domain::managed_devices::POSTURE_SCOPE,
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let token = fixture.token(&routed, &audience, &[scope]).await;
             let proof = fixture.proof(&token, "GET", &url, &format!("receipt-denied-{index}"));
-            let result = fixture.resolver.resolve(&routed, &PresentedToken { token: &token, proof: &proof, method: "GET", url: &url }).await.expect("the stores answer");
-            assert!(result.is_none(), "a signed client-shaped subject alone must not grant {scope}");
+            let result = fixture
+                .resolver
+                .resolve(
+                    &routed,
+                    &PresentedToken {
+                        token: &token,
+                        proof: &proof,
+                        method: "GET",
+                        url: &url,
+                    },
+                )
+                .await
+                .expect("the stores answer");
+            assert!(
+                result.is_none(),
+                "a signed client-shaped subject alone must not grant {scope}"
+            );
         }
     }
 

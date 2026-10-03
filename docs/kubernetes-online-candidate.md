@@ -1,9 +1,11 @@
 # Kubernetes online candidate preparation
 
-The proposed ADR remains under its existing human review. The candidate domain
-parser is not exported, no endpoint/profile is enabled, and its tests have not
-compiled or run. Only the controlled Go zero-value wire-shape reproduction has
-executed; that is not Kubernetes authentication acceptance.
+The proposed ADR remains under its existing human review. The exported parser, optional API ports and signing/store adapters are composed
+in the isolated candidate worktree. Workspace/all-target metadata compilation
+and owned empty-database migration checks passed. Go adapter tests with real
+mTLS passed closed-response and deadline controls. The strict Rust gate and
+actual Kubernetes/issuance acceptance are still incomplete; no main delivery or
+shared deployment activation has occurred.
 
 The closed TokenReview request bounds are 65536 JSON bytes, 16384 opaque token
 bytes, and 1–16 distinct nonempty audiences of at most 2048 bytes. Unsupported
@@ -15,7 +17,7 @@ implementation. Responses have no spec, token, arbitrary extra or email and
 return only the independently pinned route audience. A parsed request or a
 response constructor establishes no source/token/identity authority.
 
-## Issuance-established digest binding (migration 0160 reserved)
+## Issuance-established digest binding (candidate migration 0160)
 
 | Field | Required source |
 | --- | --- |

@@ -64,7 +64,8 @@ pub(crate) struct ConditionalAccess {
     capabilities: Capabilities,
     kek: Arc<dyn asterius_jose::Kek>,
     audit: Arc<dyn AuditSink>,
-    device_anchors: Arc<std::collections::BTreeMap<String,asterius_domain::managed_devices::LeafFingerprint>>,
+    device_anchors:
+        Arc<std::collections::BTreeMap<String, asterius_domain::managed_devices::LeafFingerprint>>,
 }
 
 #[derive(Clone, Copy)]
@@ -92,9 +93,13 @@ impl ConditionalAccess {
         }
     }
 
-    pub(crate) fn with_device_anchors(mut self,
-        anchors: Arc<std::collections::BTreeMap<String,asterius_domain::managed_devices::LeafFingerprint>>) -> Self {
-        self.device_anchors=anchors;
+    pub(crate) fn with_device_anchors(
+        mut self,
+        anchors: Arc<
+            std::collections::BTreeMap<String, asterius_domain::managed_devices::LeafFingerprint>,
+        >,
+    ) -> Self {
+        self.device_anchors = anchors;
         self
     }
 
@@ -107,13 +112,18 @@ impl ConditionalAccess {
         kind: GrantType,
         now: OffsetDateTime,
     ) -> Result<bool, DomainError> {
-        self.check_grant_fact(tenant, client, grant, kind, now, None).await
+        self.check_grant_fact(tenant, client, grant, kind, now, None)
+            .await
     }
 
-    #[expect(clippy::too_many_arguments, reason = "Exact issuance context and the separately verified device fact must remain explicit")]
     async fn check_grant_fact(
-        &self, tenant: &Tenant, client: &Client, grant: &Grant,
-        kind: GrantType, now: OffsetDateTime, device: Option<&Fact>,
+        &self,
+        tenant: &Tenant,
+        client: &Client,
+        grant: &Grant,
+        kind: GrantType,
+        now: OffsetDateTime,
+        device: Option<&Fact>,
     ) -> Result<bool, DomainError> {
         if grant.tenant != tenant.id || client.tenant != tenant.id || grant.client != client.id {
             return Err(DomainError::invalid(
@@ -635,28 +645,53 @@ impl super::agent_issuance::ConditionalGuard for ConditionalAccess {
         self.check_grant(tenant, client, grant, kind, now).await
     }
     async fn permits_bound(
-        &self, tenant: &Tenant, client: &Client, grant: &Grant,
-        kind: GrantType, now: OffsetDateTime,
+        &self,
+        tenant: &Tenant,
+        client: &Client,
+        grant: &Grant,
+        kind: GrantType,
+        now: OffsetDateTime,
         binding: Option<&asterius_domain::managed_devices::DeviceBinding>,
     ) -> Result<bool, DomainError> {
         if binding.is_none() {
             let device = Fact::missing(Availability::Absent, "exact_request_device_proof");
-            return self.check_grant_fact(tenant,client,grant,kind,now,Some(&device)).await;
+            return self
+                .check_grant_fact(tenant, client, grant, kind, now, Some(&device))
+                .await;
         }
         if self.store.pool().options().get_max_connections() < 3 {
-            return Err(DomainError::Storage("bound device evaluation requires database.max_connections >= 3".into()));
+            return Err(DomainError::Storage(
+                "bound device evaluation requires database.max_connections >= 3".into(),
+            ));
         }
-        let _admission = tokio::time::timeout(std::time::Duration::from_secs(5),
-            Arc::clone(self.store.signing_admission()).acquire_owned()).await
-            .map_err(|_|DomainError::Storage("device evaluation admission timed out".into()))?
-            .map_err(|_|DomainError::Storage("device evaluation admission unavailable".into()))?;
+        let _admission = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            Arc::clone(self.store.signing_admission()).acquire_owned(),
+        )
+        .await
+        .map_err(|_| DomainError::Storage("device evaluation admission timed out".into()))?
+        .map_err(|_| DomainError::Storage("device evaluation admission unavailable".into()))?;
         let mut fence = PgPolicies::new(self.store.pool().clone())
-            .signing_fence(&tenant.id, &tenant.issuer).await?;
+            .signing_fence(&tenant.id, &tenant.issuer)
+            .await?;
         let device = asterius_store_pg::PgManagedDevices::resolve_for_grant_on(
-            fence.connection(), &tenant.id, grant, binding,
+            fence.connection(),
+            &tenant.id,
+            grant,
+            binding,
             self.device_anchors.get(tenant.id.as_str()),
-        ).await?;
-        let permitted = self.check_grant_fact(tenant, client, grant, kind, OffsetDateTime::now_utc(), Some(&device)).await?;
+        )
+        .await?;
+        let permitted = self
+            .check_grant_fact(
+                tenant,
+                client,
+                grant,
+                kind,
+                OffsetDateTime::now_utc(),
+                Some(&device),
+            )
+            .await?;
         fence.commit().await?;
         Ok(permitted)
     }
@@ -945,8 +980,55 @@ fn add_guard_trace(
     }
 }
 
+enum DevicePreparation {
+    CurrentAuthentication,
+    FreshAuthentication(String),
+}
+
+/// Preparation may defer only a missing device proof. Hypotheses stay local to
+/// this lookahead and never supply facts to consent, code or token issuance.
+fn device_preparation(
+    scope: &ConditionalScope,
+    request: &EvaluationRequest,
+    acr: &asterius_domain::AcrPolicy,
+) -> Option<DevicePreparation> {
+    let trusted = request.context.trusted()?;
+    if !scope
+        .required_for(request)
+        .contains(&FactName::DeviceCompliance)
+        || trusted.availability(FactName::DeviceCompliance) == Availability::Known
+    {
+        return None;
+    }
+    for value in ["compliant", "non_compliant"] {
+        let mut hypothetical = trusted.clone();
+        hypothetical.facts.insert(
+            FactName::DeviceCompliance,
+            Fact::known(
+                FactValue::Text(value.into()),
+                "hypothetical_prepare_device_only",
+                trusted.evaluated_at,
+                trusted.evaluated_at + Duration::seconds(1),
+            ),
+        );
+        let mut candidate = request.clone();
+        candidate.context = candidate.context.with_trusted(hypothetical);
+        if scope.evaluate(&candidate).permit() {
+            return Some(DevicePreparation::CurrentAuthentication);
+        }
+        if let Some(target) = scope.remedy(&candidate, acr) {
+            return Some(DevicePreparation::FreshAuthentication(target));
+        }
+    }
+    None
+}
+
 #[async_trait::async_trait]
 impl super::authorize::ConditionalAuthorization for ConditionalAccess {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep existing-session assurance remedies and device-only interaction lookahead together without releasing hypothetical authority"
+    )]
     async fn prepare(
         &self,
         tenant: &Tenant,
@@ -1024,13 +1106,24 @@ impl super::authorize::ConditionalAuthorization for ConditionalAccess {
             if decision.permit() {
                 return Ok(Some(binding));
             }
-            binding.acr = Some(scope.remedy(&request, acr).ok_or_else(|| {
-                DomainError::invalid(
-                    "conditional_access",
-                    "conditional denial cannot be repaired by authentication",
-                )
-            })?);
-            binding.max_age = Some(0);
+            // No authority is granted here: exact TLS possession is captured
+            // against the new interaction and rechecked at winning completion.
+            match device_preparation(scope, &request, acr) {
+                Some(DevicePreparation::CurrentAuthentication) => return Ok(Some(binding)),
+                Some(DevicePreparation::FreshAuthentication(target)) => {
+                    binding.acr = Some(target);
+                    binding.max_age = Some(0);
+                }
+                None => {
+                    binding.acr = Some(scope.remedy(&request, acr).ok_or_else(|| {
+                        DomainError::invalid(
+                            "conditional_access",
+                            "conditional denial cannot be repaired by authentication",
+                        )
+                    })?);
+                    binding.max_age = Some(0);
+                }
+            }
         } else {
             // Resolve identity after login, while binding any configured remedy
             // to the original pushed client and enforcing it as essential.
@@ -1072,6 +1165,68 @@ impl super::authorize::ConditionalAuthorization for ConditionalAccess {
             device: None,
         };
         self.check(tenant, client, "authorize", input, now).await
+    }
+    async fn permits_bound(
+        &self,
+        tenant: &Tenant,
+        client: &Client,
+        grant: &Grant,
+        now: OffsetDateTime,
+        binding: Option<&asterius_domain::managed_devices::DeviceBinding>,
+    ) -> Result<bool, DomainError> {
+        if grant.tenant != tenant.id || client.tenant != tenant.id || grant.client != client.id {
+            return Err(DomainError::invalid(
+                "managed_device",
+                "exact consent transaction required",
+            ));
+        }
+        if binding.is_none() {
+            return self.permits(tenant, client, grant, now).await;
+        }
+        if self.store.pool().options().get_max_connections() < 3 {
+            return Err(DomainError::Storage(
+                "bound consent requires database.max_connections >= 3".into(),
+            ));
+        }
+        let _admission = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            Arc::clone(self.store.signing_admission()).acquire_owned(),
+        )
+        .await
+        .map_err(|_| DomainError::Storage("consent admission timed out".into()))?
+        .map_err(|_| DomainError::Storage("consent admission unavailable".into()))?;
+        let mut fence = PgPolicies::new(self.store.pool().clone())
+            .signing_fence(&tenant.id, &tenant.issuer)
+            .await?;
+        let device = asterius_store_pg::PgManagedDevices::resolve_for_grant_on(
+            fence.connection(),
+            &tenant.id,
+            grant,
+            binding,
+            self.device_anchors.get(tenant.id.as_str()),
+        )
+        .await?;
+        let input = Principal {
+            user: grant.user,
+            subject: grant
+                .subject
+                .as_ref()
+                .map(asterius_domain::SubjectId::as_str),
+            authentication: grant.authentication.as_ref(),
+            grant: Some(grant),
+            device: Some(&device),
+        };
+        let permitted = self
+            .check(
+                tenant,
+                client,
+                "authorize",
+                input,
+                OffsetDateTime::now_utc(),
+            )
+            .await?;
+        fence.commit().await?;
+        Ok(permitted)
     }
 }
 
@@ -1317,8 +1472,13 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
         typ: &'static str,
         claims: &serde_json::Value,
     ) -> Result<asterius_domain::CompactJws, DomainError> {
-        self.sign_identity_bound(tenant,grant,None,algorithm,typ,claims).await
+        self.sign_identity_bound(tenant, grant, None, algorithm, typ, claims)
+            .await
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep the exact publication fence, current facts, successful signing and final authority recheck in one auditable transition"
+    )]
     async fn sign_identity_bound(
         &self,
         tenant: &asterius_domain::TenantId,
@@ -1350,9 +1510,13 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
         }
         let mut transaction = self.fence(tenant).await?;
         let device = asterius_store_pg::PgManagedDevices::resolve_for_grant_on(
-            transaction.connection(), tenant, grant, binding,
+            transaction.connection(),
+            tenant,
+            grant,
+            binding,
             self.access.device_anchors.get(tenant.as_str()),
-        ).await?;
+        )
+        .await?;
         let held = self.current_roles(tenant, grant, claims).await?;
         let mut identity_claims = claims.clone();
         let identity =
@@ -1365,16 +1529,30 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
             .await?
             .filter(|identity| identity_role_released(claims, identity));
         let online = asterius_store_pg::kubernetes_online::enabled_on(
-            transaction.connection(),tenant,&grant.client).await?;
+            transaction.connection(),
+            tenant,
+            &grant.client,
+        )
+        .await?;
         if online {
-            if identity.is_some() || typ!="JWT" || algorithm!=Some(asterius_domain::SigningAlgorithm::Es256) {
-                return Err(DomainError::invalid("kubernetes_online","plain ES256 online identity required"));
+            if identity.is_some()
+                || typ != "JWT"
+                || algorithm != Some(asterius_domain::SigningAlgorithm::Es256)
+            {
+                return Err(DomainError::invalid(
+                    "kubernetes_online",
+                    "plain ES256 online identity required",
+                ));
             }
-            let issued = identity_claims.get("iat").and_then(serde_json::Value::as_i64)
-                .ok_or_else(|| DomainError::invalid("id_token","integer issue time required"))?;
-            let expiry = identity_claims.get("exp").and_then(serde_json::Value::as_i64)
-                .ok_or_else(|| DomainError::invalid("id_token","integer expiry required"))?;
-            identity_claims["exp"]=serde_json::json!(expiry.min(issued.saturating_add(300)));
+            let issued = identity_claims
+                .get("iat")
+                .and_then(serde_json::Value::as_i64)
+                .ok_or_else(|| DomainError::invalid("id_token", "integer issue time required"))?;
+            let expiry = identity_claims
+                .get("exp")
+                .and_then(serde_json::Value::as_i64)
+                .ok_or_else(|| DomainError::invalid("id_token", "integer expiry required"))?;
+            identity_claims["exp"] = serde_json::json!(expiry.min(issued.saturating_add(300)));
         }
         if let Some(identity) = &identity {
             if algorithm != Some(asterius_domain::SigningAlgorithm::Es256) {
@@ -1427,19 +1605,52 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
             ));
         }
         // Device facts retain their original deadline across awaited signing.
-        let client = self.access.store.scope(tenant.clone()).clients(self.access.capabilities)
-            .find(&grant.client).await?.ok_or(DomainError::NotFound)?;
-        let kind = if binding.is_some() { GrantType::AuthorizationCode } else { GrantType::RefreshToken };
-        if !self.access.check_grant_fact(&self.tenant, &client, grant, kind,
-            OffsetDateTime::now_utc(), Some(&device)).await? {
-            return Err(DomainError::invalid("conditional_access", "identity device authority expired during signing"));
+        let client = self
+            .access
+            .store
+            .scope(tenant.clone())
+            .clients(self.access.capabilities)
+            .find(&grant.client)
+            .await?
+            .ok_or(DomainError::NotFound)?;
+        let kind = if binding.is_some() {
+            GrantType::AuthorizationCode
+        } else {
+            GrantType::RefreshToken
+        };
+        if !self
+            .access
+            .check_grant_fact(
+                &self.tenant,
+                &client,
+                grant,
+                kind,
+                OffsetDateTime::now_utc(),
+                Some(&device),
+            )
+            .await?
+        {
+            return Err(DomainError::invalid(
+                "conditional_access",
+                "identity device authority expired during signing",
+            ));
         }
         asterius_store_pg::kubernetes_online::record_signed_on(
-            transaction.connection(),tenant,grant,&signed,&identity_claims).await?;
+            transaction.connection(),
+            tenant,
+            grant,
+            &signed,
+            &identity_claims,
+        )
+        .await?;
         transaction.commit().await?;
         Ok(signed)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep the exact publication fence, current facts, successful signing and final authority recheck in one auditable transition"
+    )]
     async fn sign_access(
         &self,
         tenant: &asterius_domain::TenantId,
@@ -1455,9 +1666,13 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
         }
         let mut transaction = self.fence(tenant).await?;
         let device = asterius_store_pg::PgManagedDevices::resolve_for_grant_on(
-            transaction.connection(), tenant, issuance.grant, issuance.device_binding,
+            transaction.connection(),
+            tenant,
+            issuance.grant,
+            issuance.device_binding,
             self.access.device_anchors.get(tenant.as_str()),
-        ).await?;
+        )
+        .await?;
         let client = self
             .access
             .store
@@ -1550,18 +1765,41 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
             .sign_access(tenant, issuance, algorithm, typ, claims)
             .await?;
         asterius_store_pg::kubernetes_online::record_reviewer_token_on(
-            transaction.connection(),tenant,issuance,claims).await?;
+            transaction.connection(),
+            tenant,
+            issuance,
+            claims,
+        )
+        .await?;
         asterius_store_pg::PgManagedDevices::record_relay_token_on(
-            transaction.connection(),tenant,issuance,claims).await?;
+            transaction.connection(),
+            tenant,
+            issuance,
+            claims,
+        )
+        .await?;
         if !signed_roles_current(claims, &held, &narrowed.client, OffsetDateTime::now_utc()) {
             return Err(DomainError::invalid(
                 "temporary_entitlement",
                 "temporary authority expired during signing",
             ));
         }
-        if !self.access.check_grant_fact(&self.tenant, &client, &narrowed, kind,
-            OffsetDateTime::now_utc(), Some(&device)).await? {
-            return Err(DomainError::invalid("conditional_access", "device authority expired during signing"));
+        if !self
+            .access
+            .check_grant_fact(
+                &self.tenant,
+                &client,
+                &narrowed,
+                kind,
+                OffsetDateTime::now_utc(),
+                Some(&device),
+            )
+            .await?
+        {
+            return Err(DomainError::invalid(
+                "conditional_access",
+                "device authority expired during signing",
+            ));
         }
         transaction.commit().await?;
         Ok(signed)
@@ -1754,6 +1992,64 @@ mod tests {
             )
             .permit()
         );
+    }
+
+    #[test]
+    fn prepare_can_defer_device_capture_but_never_other_denials_or_live_enforcement() {
+        let now = OffsetDateTime::UNIX_EPOCH;
+        let policy = asterius_domain::policy::RuleSet::from_json(&json!({
+            "version":1,"rules":[],"conditional_scopes":[{
+                "id":"device","mode":"active","clients":["app"],"actions":["authorize"],
+                "rules":[{"id":"managed","effect":"permit","when":{"all":[
+                    {"device_compliance":"compliant"},{"application_sensitivity":"critical"}
+                ]}}]
+            }]
+        }))
+        .expect("policy");
+        let trusted = TrustedAccessContext {
+            tenant: asterius_domain::TenantId::new("tenant"),
+            subject: Some("alice".into()),
+            client: asterius_domain::ClientId::new("app"),
+            action: "authorize".into(),
+            evaluated_at: now,
+            policy_revision: "revision".into(),
+            acr_revision: "acr".into(),
+            client_revision: "client".into(),
+            facts: BTreeMap::from([
+                (
+                    FactName::DeviceCompliance,
+                    Fact::missing(Availability::Absent, "request"),
+                ),
+                (
+                    FactName::ApplicationSensitivity,
+                    known(FactValue::Text("critical".into()), "settings", now),
+                ),
+            ]),
+        };
+        let mut request = EvaluationRequest::new(
+            Subject::new("user", "alice", Properties::empty()).expect("subject"),
+            Action::new("authorize", Properties::empty()).expect("action"),
+            Resource::new("application", "app", Properties::empty()).expect("resource"),
+            Context::default().with_trusted(trusted),
+        );
+        let scope = &policy.conditional_scopes()[0];
+        assert!(!scope.evaluate(&request).permit());
+        assert!(matches!(
+            device_preparation(scope, &request, &asterius_domain::AcrPolicy::default()),
+            Some(DevicePreparation::CurrentAuthentication)
+        ));
+        // A lookahead never changes the real evidence or permits completion.
+        assert!(!scope.evaluate(&request).permit());
+        let mut changed = request.context.trusted().expect("context").clone();
+        changed.facts.insert(
+            FactName::ApplicationSensitivity,
+            known(FactValue::Text("standard".into()), "settings", now),
+        );
+        request.context = request.context.with_trusted(changed);
+        assert!(
+            device_preparation(scope, &request, &asterius_domain::AcrPolicy::default()).is_none()
+        );
+        assert!(!scope.evaluate(&request).permit());
     }
 
     #[test]

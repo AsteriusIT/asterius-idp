@@ -593,14 +593,18 @@ impl AgentPolicy<'_> {
         grant_type: GrantType,
         now: OffsetDateTime,
     ) -> Result<(), Refusal> {
-        self.permits_bound(tenant, client, grant, audience, grant_type, now, None).await
+        self.permits_bound(tenant, client, grant, audience, grant_type, now, None)
+            .await
     }
 
     /// Preserve the exact private proof through the early conditional gate.
     ///
     /// # Errors
     /// Returns refusal for a denial or unavailable mandatory policy facts.
-    #[expect(clippy::too_many_arguments, reason = "exact grant, audiences and private boundary evidence are assessed together")]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "exact grant, audiences and private boundary evidence are assessed together"
+    )]
     pub async fn permits_bound(
         &self,
         tenant: &Tenant,

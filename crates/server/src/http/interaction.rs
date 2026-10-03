@@ -1756,17 +1756,36 @@ async fn complete(
         && let Some(leaf) = context.device_leaf
     {
         let certificate = asterius_domain::managed_devices::DeviceCertificateEvidence {
-            leaf: leaf.leaf().clone(), anchor: leaf.anchor().clone(), expires_at: leaf.expires_at(),
+            leaf: leaf.leaf().clone(),
+            anchor: leaf.anchor().clone(),
+            expires_at: leaf.expires_at(),
         };
-        if context.requests.capture_device(&presented.digest(), &certificate, now).await.is_err() {
-            return error_page(context, StatusCode::BAD_REQUEST, InteractionError::NotAvailable);
+        if context
+            .requests
+            .capture_device(&presented.digest(), &certificate, now)
+            .await
+            .is_err()
+        {
+            return error_page(
+                context,
+                StatusCode::BAD_REQUEST,
+                InteractionError::NotAvailable,
+            );
         }
     }
-    let device_binding = match context.requests.complete_interaction_with_device(&presented.digest(), now).await {
+    let device_binding = match context
+        .requests
+        .complete_interaction_with_device(&presented.digest(), now)
+        .await
+    {
         Ok(binding) => binding,
         Err(error) => {
             tracing::warn!(%error, tenant = %context.tenant.id, "nothing live to complete");
-            return error_page(context, StatusCode::BAD_REQUEST, InteractionError::NotAvailable);
+            return error_page(
+                context,
+                StatusCode::BAD_REQUEST,
+                InteractionError::NotAvailable,
+            );
         }
     };
 
@@ -1778,7 +1797,17 @@ async fn complete(
             issuer,
         },
         Decision::Approved { scopes } => {
-            match mint(context, scopes, request, record, source, now, device_binding.as_ref()).await {
+            match mint(
+                context,
+                scopes,
+                request,
+                record,
+                source,
+                now,
+                device_binding.as_ref(),
+            )
+            .await
+            {
                 Ok(code) => AuthorizationResponse::Code {
                     code,
                     state,
@@ -2042,7 +2071,10 @@ async fn mint(
         return Err("invalid_request");
     }
     if let Some(guard) = &context.conditional {
-        match guard.permits_bound(context.tenant, &client, &grant, now, device_binding).await {
+        match guard
+            .permits_bound(context.tenant, &client, &grant, now, device_binding)
+            .await
+        {
             Ok(true) => {}
             Ok(false) => return Err("access_denied"),
             Err(error) => {

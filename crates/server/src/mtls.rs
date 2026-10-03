@@ -312,9 +312,13 @@ pub(crate) fn device_from_proxy_header(
     }
     let decoded = percent_decode(value)?;
     if decoded.contains("-----") {
-        let body = decoded.trim().strip_prefix("-----BEGIN CERTIFICATE-----")?
+        let body = decoded
+            .trim()
+            .strip_prefix("-----BEGIN CERTIFICATE-----")?
             .strip_suffix("-----END CERTIFICATE-----")?;
-        if body.contains("-----") { return None; }
+        if body.contains("-----") {
+            return None;
+        }
     }
     from_proxy_header(peer, headers, trusted_proxies, header_name)
 }
@@ -620,16 +624,33 @@ mod tests {
         let peer = IpAddr::from([127, 0, 0, 1]);
         let proxies = vec!["127.0.0.1/32".parse().expect("fixture network")];
         let mut headers = HeaderMap::new();
-        headers.insert("x-device-client-cert", encoded().parse().expect("fixture header"));
-        assert!(device_from_proxy_header(peer, &headers, &proxies, "x-device-client-cert").is_some());
-        headers.append("x-device-client-cert", encoded().parse().expect("fixture header"));
-        assert!(device_from_proxy_header(peer, &headers, &proxies, "x-device-client-cert").is_none());
+        headers.insert(
+            "x-device-client-cert",
+            encoded().parse().expect("fixture header"),
+        );
+        assert!(
+            device_from_proxy_header(peer, &headers, &proxies, "x-device-client-cert").is_some()
+        );
+        headers.append(
+            "x-device-client-cert",
+            encoded().parse().expect("fixture header"),
+        );
+        assert!(
+            device_from_proxy_header(peer, &headers, &proxies, "x-device-client-cert").is_none()
+        );
         headers.clear();
-        let pem = format!("-----BEGIN CERTIFICATE----- {} -----END CERTIFICATE----- ignored", encoded());
+        let pem = format!(
+            "-----BEGIN CERTIFICATE----- {} -----END CERTIFICATE----- ignored",
+            encoded()
+        );
         headers.insert("x-device-client-cert", pem.parse().expect("fixture header"));
-        assert!(device_from_proxy_header(peer, &headers, &proxies, "x-device-client-cert").is_none());
+        assert!(
+            device_from_proxy_header(peer, &headers, &proxies, "x-device-client-cert").is_none()
+        );
         let untrusted = IpAddr::from([192, 0, 2, 1]);
-        assert!(device_from_proxy_header(untrusted, &headers, &proxies, "x-device-client-cert").is_none());
+        assert!(
+            device_from_proxy_header(untrusted, &headers, &proxies, "x-device-client-cert")
+                .is_none()
+        );
     }
-
 }

@@ -74,7 +74,10 @@ impl PgCodeRepository {
         if let Some(proof) = &binding.device_binding {
             proof.validate(now)?;
             if proof.tenant() != &self.tenant || proof.client().as_str() != binding.client_id {
-                return Err(DomainError::invalid("device", "code proof binding mismatch"));
+                return Err(DomainError::invalid(
+                    "device",
+                    "code proof binding mismatch",
+                ));
             }
         }
         let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
@@ -107,10 +110,18 @@ impl PgCodeRepository {
         if let Some(proof) = &binding.device_binding {
             let value = serde_json::to_value(proof)
                 .map_err(|_| DomainError::invalid("device", "invalid private proof"))?;
-            sqlx::query("insert into managed_device_code_proofs \
-                (tenant_id, code_hash, device_id, binding, expires_at) values ($1,$2,$3,$4,$5)")
-                .bind(self.tenant.as_str()).bind(&digest).bind(proof.device()).bind(value)
-                .bind(proof.proof_expires_at()).execute(&mut *transaction).await.map_err(to_domain_error)?;
+            sqlx::query(
+                "insert into managed_device_code_proofs \
+                (tenant_id, code_hash, device_id, binding, expires_at) values ($1,$2,$3,$4,$5)",
+            )
+            .bind(self.tenant.as_str())
+            .bind(&digest)
+            .bind(proof.device())
+            .bind(value)
+            .bind(proof.proof_expires_at())
+            .execute(&mut *transaction)
+            .await
+            .map_err(to_domain_error)?;
         }
         transaction.commit().await.map_err(to_domain_error)?;
         Ok(())
@@ -160,12 +171,17 @@ impl PgCodeRepository {
                 "delete from managed_device_code_proofs where tenant_id=$1 and code_hash=$2 returning binding"
             ).bind(self.tenant.as_str()).bind(&digest).fetch_optional(&mut *transaction)
                 .await.map_err(to_domain_error)?;
-            let device_binding = value.map(serde_json::from_value::<asterius_domain::managed_devices::DeviceBinding>)
-                .transpose().map_err(|_| DomainError::invalid("device", "invalid private proof"))?;
+            let device_binding = value
+                .map(serde_json::from_value::<asterius_domain::managed_devices::DeviceBinding>)
+                .transpose()
+                .map_err(|_| DomainError::invalid("device", "invalid private proof"))?;
             if let Some(proof) = &device_binding {
                 proof.validate(now)?;
                 if proof.tenant() != &self.tenant || proof.client().as_str() != row.client_id {
-                    return Err(DomainError::invalid("device", "code proof binding mismatch"));
+                    return Err(DomainError::invalid(
+                        "device",
+                        "code proof binding mismatch",
+                    ));
                 }
             }
             transaction.commit().await.map_err(to_domain_error)?;
