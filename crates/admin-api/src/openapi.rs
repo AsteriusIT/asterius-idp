@@ -1182,8 +1182,19 @@ fn managed_device_documentation(operation: &Operation, object: &mut Value) {
     let client = json!({"type":"string","minLength":1,"maxLength":256});
     let schema = match id {
         crate::DEVICE_SOURCE_CREATE_ID | crate::DEVICE_SOURCE_UPDATE_ID => {
-            json!({"type":"object","additionalProperties":false,"required":["client_id"],"properties":{
-                "client_id":client,"enabled":{"type":"boolean","default":false},"expected_revision":{"type":["string","null"],"format":"uuid","description":"Required for update; absent/null for creation. Every update changes source generation."}
+            let update = id == crate::DEVICE_SOURCE_UPDATE_ID;
+            let required = if update {
+                json!(["client_id", "expected_revision"])
+            } else {
+                json!(["client_id"])
+            };
+            let revision = if update {
+                uuid.clone()
+            } else {
+                json!({"type":"null"})
+            };
+            json!({"type":"object","additionalProperties":false,"required":required,"properties":{
+                "client_id":client,"enabled":{"type":"boolean","default":false},"expected_revision":revision
             }})
         }
         crate::DEVICE_REMOVE_ID => {
