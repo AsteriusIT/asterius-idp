@@ -44,6 +44,11 @@ impl TemporaryKubernetes for PgTemporaryEntitlements {
         change.validate()?;
         let (mut tx, now) = self.begin(tenant).await?;
         let entitlement = records::owner(&mut tx, tenant, owner, id).await?;
+        if change.enabled {
+            let online: bool = sqlx::query_scalar("select exists(select 1 from kubernetes_online_profiles where tenant_id=$1 and client_id=$2 and enabled)")
+                .bind(tenant.as_str()).bind(&entitlement.configuration.client_id).fetch_one(&mut *tx).await.map_err(to_domain_error)?;
+            if online { return Err(DomainError::Conflict("online and temporary Kubernetes modes cannot be enabled together".into())); }
+        }
         let controller: Option<(String,)> = sqlx::query_as("select client_id from clients where tenant_id=$1 and client_id=$2 and status='active' and not is_agent and token_endpoint_auth_method='private_key_jwt' and dpop_bound_access_tokens and 'client_credentials'=any(grant_types) for share")
             .bind(tenant.as_str()).bind(&change.controller_client_id).fetch_optional(&mut *tx).await.map_err(to_domain_error)?;
         if controller.is_none() {

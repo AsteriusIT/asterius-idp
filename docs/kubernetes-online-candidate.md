@@ -69,10 +69,13 @@ until its separate composition is explicitly reviewed. Returning ordinary
 baseline groups for a JIT principal would silently change authority and is not
 an acceptable fallback.
 
-Native Kubernetes positive caching is explicitly at most 5 seconds; an in-flight
-successful review may complete after revocation within its total 3-second
-budget. The proposed 8-second bound plus scheduling/transport margin is not
-measured evidence. Multiple identical stateless adapters need verified TLS and
+The inner webhook cache is disabled (`0s`). Kubernetes 1.35 retains a global
+10-second success cache and a detached 30-second upstream lookup/HTTP timeout.
+An already successful response delayed in transport can populate that cache
+after revocation; the conservative bound is 40 seconds plus measured scheduling
+and transport margin. The adapter's local 3-second deadline does not establish a
+shorter wire-level bound. This source-derived bound is not measured evidence.
+Multiple identical stateless adapters need verified TLS and
 primary-backed Asterius replicas; all-replica outage yields no new uncached
 identity. Remove this profile's equivalent native offline OIDC authenticator,
 otherwise the offline path bypasses live revocation.

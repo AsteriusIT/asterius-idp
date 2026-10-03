@@ -20,6 +20,13 @@ impl PgKubernetesOnline {
     #[must_use]
     pub const fn new(pool: sqlx::PgPool) -> Self { Self { pool } }
 
+    pub async fn begin_review(&self) -> Result<OnlineReview<'_>,DomainError> {
+        let mut tx=self.pool.begin().await.map_err(to_domain_error)?;
+        sqlx::query("set transaction read only").execute(&mut *tx).await.map_err(to_domain_error)?;
+        sqlx::query("set local statement_timeout = '2800ms'").execute(&mut *tx).await.map_err(to_domain_error)?;
+        Ok(OnlineReview {tx})
+    }
+
     pub async fn profile(&self, tenant: &TenantId, client: &ClientId)
         -> Result<Option<OnlineProfile>, DomainError> {
         let row: Option<(String, Uuid, bool)> = sqlx::query_as(
@@ -51,10 +58,15 @@ impl PgKubernetesOnline {
                 and 'openid'=any(c.scopes) and 'authorization_code'=any(c.grant_types) and 'refresh_token'=any(c.grant_types)
                 and r.status='active' and not r.is_agent and r.compliance_profile='fapi'
                 and r.dpop_bound_access_tokens and r.token_endpoint_auth_method='private_key_jwt'
-                and 'client_credentials'=any(r.grant_types) and 'admin.kubernetes_reviews:read'=any(r.scopes))",
+                and r.grant_types=ARRAY['client_credentials']::text[] and 'admin.kubernetes_reviews:read'=any(r.scopes))",
         ).bind(tenant.as_str()).bind(client.as_str()).bind(&change.reviewer_client_id)
             .fetch_one(&mut *tx).await.map_err(to_domain_error)?;
         if !valid { return Err(invalid()); }
+        if change.enabled {
+            let jit: bool = sqlx::query_scalar("select exists(select 1 from temporary_kubernetes_bindings where tenant_id=$1 and cluster_client_id=$2 and enabled)")
+                .bind(tenant.as_str()).bind(client.as_str()).fetch_one(&mut *tx).await.map_err(to_domain_error)?;
+            if jit { return Err(DomainError::Conflict("online and temporary Kubernetes modes cannot be enabled together".into())); }
+        }
         let row: Option<(String,Uuid,bool)> = if let Some(expected) = change.expected_revision {
             sqlx::query_as("update kubernetes_online_profiles set reviewer_client_id=$3,enabled=$4 where tenant_id=$1 and client_id=$2 and revision=$5 returning reviewer_client_id,revision,enabled")
                 .bind(tenant.as_str()).bind(client.as_str()).bind(&change.reviewer_client_id)
@@ -76,6 +88,19 @@ impl PgKubernetesOnline {
         tx.commit().await.map_err(to_domain_error)?;
         Ok(OnlineProfile {reviewer_client_id,revision,enabled})
     }
+}
+
+#[derive(Debug)]
+pub struct OnlineReview<'a> { tx: sqlx::Transaction<'a,sqlx::Postgres> }
+impl OnlineReview<'_> {
+    pub async fn public_key(&mut self,tenant:&TenantId,kid:&str)->Result<Option<Value>,DomainError>{
+        public_key_on(&mut self.tx,tenant,kid).await
+    }
+    pub async fn review(&mut self,tenant:&TenantId,reviewer:&ClientId,client:&ClientId,
+        compact:&str,claims:&Value)->Result<Option<OnlineIdentity>,DomainError>{
+        review_verified_on(&mut self.tx,tenant,reviewer,client,compact,claims).await
+    }
+    pub async fn commit(self)->Result<(),DomainError>{self.tx.commit().await.map_err(to_domain_error)}
 }
 
 /// Only a selected public ES256 key is read; no signing credential is exposed.
@@ -122,7 +147,8 @@ pub async fn record_signed_on(
     let user = grant.user.as_ref().ok_or_else(invalid)?;
     let subject = grant.subject.as_ref().ok_or_else(invalid)?;
     let session = grant.session.as_ref().ok_or_else(invalid)?;
-    if grant.tenant != *tenant
+    if grant.task.is_some() || grant.parent.is_some() || !grant.actor_chain.is_empty()
+        || grant.tenant != *tenant
         || signed.as_str().len() > 16384
         || claims.get("asterius_jit").is_some()
         || claims.get("aud").and_then(Value::as_str) != Some(grant.client.as_str())
@@ -155,13 +181,19 @@ pub async fn record_signed_on(
          where p.tenant_id=$1 and p.client_id=$3 and p.enabled
            and g.subject=$7 and g.claimed_at is not null and g.revoked_at is null
            and (g.expires_at is null or g.expires_at>clock_timestamp())
+           and g.parent_grant_id is null and g.actor_chain='[]'::jsonb
+           and not exists(select 1 from agent_task_grants task where task.tenant_id=g.tenant_id and task.grant_id=g.grant_id)
            and u.status='active' and s.revoked_at is null
            and s.expires_at>clock_timestamp() and s.idle_expires_at>clock_timestamp()
            and c.status='active' and not c.is_agent and c.subject_type='public'
-           and c.compliance_profile='oidc' and c.id_token_signed_response_alg='ES256'
+           and c.compliance_profile='oidc' and c.application_type='web'
+           and c.token_endpoint_auth_method='private_key_jwt' and c.dpop_bound_access_tokens
+           and cardinality(c.redirect_uris)=1 and 'openid'=any(c.scopes)
+           and 'authorization_code'=any(c.grant_types) and 'refresh_token'=any(c.grant_types)
+           and c.id_token_signed_response_alg='ES256'
            and not c.encrypt_id_token and c.managed_groups_claim
            and r.status='active' and not r.is_agent and r.compliance_profile='fapi' and r.dpop_bound_access_tokens
-           and r.token_endpoint_auth_method='private_key_jwt' and 'client_credentials'=any(r.grant_types)
+           and r.token_endpoint_auth_method='private_key_jwt' and r.grant_types=ARRAY['client_credentials']::text[]
            and 'admin.kubernetes_reviews:read'=any(r.scopes)
            and $9>clock_timestamp() and $8<=clock_timestamp()+interval '30 seconds'
          on conflict(tenant_id,token_digest) do nothing returning grant_id",
@@ -228,11 +260,17 @@ pub async fn review_verified_on(
            and p.enabled and p.reviewer_client_id=$6 and b.reviewer_client_id=$6
            and b.expires_at>clock_timestamp() and g.claimed_at is not null and g.revoked_at is null
            and (g.expires_at is null or g.expires_at>clock_timestamp())
+           and g.parent_grant_id is null and g.actor_chain='[]'::jsonb
+           and not exists(select 1 from agent_task_grants task where task.tenant_id=g.tenant_id and task.grant_id=g.grant_id)
            and u.status='active' and s.revoked_at is null and s.expires_at>clock_timestamp() and s.idle_expires_at>clock_timestamp()
            and c.status='active' and not c.is_agent and c.subject_type='public' and c.compliance_profile='oidc'
+           and c.application_type='web' and c.token_endpoint_auth_method='private_key_jwt'
+           and c.dpop_bound_access_tokens and cardinality(c.redirect_uris)=1
+           and 'openid'=any(c.scopes) and 'authorization_code'=any(c.grant_types)
+           and 'refresh_token'=any(c.grant_types)
            and c.id_token_signed_response_alg='ES256' and not c.encrypt_id_token and c.managed_groups_claim
            and r.status='active' and not r.is_agent and r.compliance_profile='fapi' and r.dpop_bound_access_tokens
-           and r.token_endpoint_auth_method='private_key_jwt' and 'client_credentials'=any(r.grant_types)
+           and r.token_endpoint_auth_method='private_key_jwt' and r.grant_types=ARRAY['client_credentials']::text[]
            and 'admin.kubernetes_reviews:read'=any(r.scopes)",
     )
     .bind(tenant.as_str())

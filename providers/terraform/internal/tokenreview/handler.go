@@ -89,7 +89,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response, err := h.Remote.TokenReview(ctx, h.HumanClient, json.RawMessage(raw))
-	if err != nil || ctx.Err() != nil || len(response) > 65536 {
+	if err != nil || ctx.Err() != nil || len(response) > 65536 || !distinctJSON(response) {
 		reject()
 		return
 	}
@@ -105,13 +105,13 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		reject()
 		return
 	}
-	if len(status.Audiences) != 1 || status.Audiences[0] != h.HumanClient || status.User == nil || !safe(status.User.Username, h.IdentityPrefix) || len(status.User.Groups) > 100 {
+	if len(status.Audiences) != 1 || status.Audiences[0] != h.HumanClient || status.User == nil || !safe(status.User.Username, h.IdentityPrefix) || status.User.Groups == nil || len(status.User.Groups) > 100 {
 		reject()
 		return
 	}
 	seen := map[string]bool{}
 	for _, group := range status.User.Groups {
-		if !safe(group, h.IdentityPrefix+"group:") || seen[group] {
+		if !canonicalGroup(group, h.IdentityPrefix) || seen[group] {
 			reject()
 			return
 		}
@@ -135,4 +135,82 @@ func safe(value, prefix string) bool {
 		}
 	}
 	return true
+}
+
+func canonicalGroup(value, prefix string) bool {
+	groupPrefix := prefix + "group:group:"
+	if !strings.HasPrefix(value, groupPrefix) {
+		return false
+	}
+	uuid := strings.TrimPrefix(value, groupPrefix)
+	if len(uuid) != 36 {
+		return false
+	}
+	for i, c := range []byte(uuid) {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			if c != '-' {
+				return false
+			}
+			continue
+		}
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// encoding/json otherwise accepts the last duplicate known member. A bounded
+// response must have one unambiguous value for every authentication property.
+func distinctJSON(raw []byte) bool {
+	d := json.NewDecoder(bytes.NewReader(raw))
+	var walk func(int) bool
+	walk = func(depth int) bool {
+		if depth > 8 {
+			return false
+		}
+		token, err := d.Token()
+		if err != nil {
+			return false
+		}
+		delim, ok := token.(json.Delim)
+		if !ok {
+			return true
+		}
+		switch delim {
+		case '{':
+			seen := map[string]bool{}
+			for d.More() {
+				key, err := d.Token()
+				if err != nil {
+					return false
+				}
+				name, ok := key.(string)
+				if !ok || seen[name] {
+					return false
+				}
+				seen[name] = true
+				if !walk(depth + 1) {
+					return false
+				}
+			}
+			end, err := d.Token()
+			return err == nil && end == json.Delim('}')
+		case '[':
+			for d.More() {
+				if !walk(depth + 1) {
+					return false
+				}
+			}
+			end, err := d.Token()
+			return err == nil && end == json.Delim(']')
+		default:
+			return false
+		}
+	}
+	if !walk(0) {
+		return false
+	}
+	_, err := d.Token()
+	return err == io.EOF
 }

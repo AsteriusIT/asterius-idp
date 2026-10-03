@@ -124,7 +124,15 @@ func TestTokenReviewWrongSPKIAndForeignBackendIdentityFailClosed(t *testing.T) {
 	if status != 403 || !strings.Contains(body, `"authenticated":false`) {
 		t.Fatal(status, body)
 	}
-	for _, bad := range []string{strings.Replace(accepted, "cluster-client", "foreign-client", 1), strings.Replace(accepted, "asterius:team:cluster:human", "system:admin", 1), strings.Replace(accepted, `"status":`, `"spec":{"token":"must-never-echo"},"status":`, 1)} {
+	for _, bad := range []string{
+		strings.Replace(accepted, "cluster-client", "foreign-client", 1),
+		strings.Replace(accepted, "asterius:team:cluster:human", "system:admin", 1),
+		strings.Replace(accepted, `"status":`, `"spec":{"token":"must-never-echo"},"status":`, 1),
+		strings.Replace(accepted, `"authenticated":true`, `"authenticated":false,"authenticated":true`, 1),
+		strings.Replace(accepted, `"username":`, `"username":"system:admin","username":`, 1),
+		strings.Replace(accepted, `"groups":["asterius:team:cluster:group:group:00000000-0000-0000-0000-000000000001"]`, `"groups":null`, 1),
+		strings.Replace(accepted, "00000000-0000-0000-0000-000000000001", "not-a-canonical-uuid", 1),
+	} {
 		raw := bad
 		s, c := fixture(t, remoteFunc(func(context.Context, string, json.RawMessage) (json.RawMessage, error) {
 			return json.RawMessage(raw), nil

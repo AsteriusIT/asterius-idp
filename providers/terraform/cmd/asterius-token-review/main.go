@@ -59,7 +59,7 @@ func run() error {
 		return errors.New("invalid dedicated API-server CA bundle")
 	}
 	remote, err := client.New(client.Config{Issuer: *issuer, ClientID: *reviewer, KeyFile: *key, KeyID: *kid,
-		CAFile: *issuerCA, Resource: strings.TrimRight(*issuer, "/") + "/admin",
+		CAFile: *issuerCA, Resource: strings.TrimRight(*issuer, "/") + "/admin/api/v1",
 		Scopes: []string{"admin.kubernetes_reviews:read"}, Timeout: 3 * time.Second})
 	if err != nil {
 		return err

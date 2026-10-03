@@ -24,6 +24,64 @@ $$;
 create trigger kubernetes_online_revision before update on kubernetes_online_profiles
     for each row execute function kubernetes_online_revision();
 
+create function kubernetes_online_publication_fence() returns trigger language plpgsql as $$
+declare target_tenant text;
+begin
+    if tg_op='DELETE' then target_tenant:=old.tenant_id;
+    else target_tenant:=new.tenant_id;
+    end if;
+    perform tenant_id from tenants where tenant_id=target_tenant for no key update;
+    if tg_op='DELETE' then return old; end if;
+    return new;
+end
+$$;
+create trigger kubernetes_online_publication_fence before insert or update or delete on kubernetes_online_profiles
+    for each row execute function kubernetes_online_publication_fence();
+
+-- Relevant metadata changes terminally disable the selected mode. Restoring a
+-- previous configuration cannot revive an old token's profile UUID. Signing key
+-- overlap does not change this policy tuple and remains independently operable.
+create function kubernetes_online_client_changed() returns trigger language plpgsql as $$
+begin
+    if (new.status,new.is_agent,new.subject_type,new.compliance_profile,new.application_type,
+        new.token_endpoint_auth_method,new.dpop_bound_access_tokens,new.id_token_signed_response_alg,
+        new.encrypt_id_token,new.managed_groups_claim,new.grant_types,new.scopes,new.redirect_uris)
+        is distinct from
+       (old.status,old.is_agent,old.subject_type,old.compliance_profile,old.application_type,
+        old.token_endpoint_auth_method,old.dpop_bound_access_tokens,old.id_token_signed_response_alg,
+        old.encrypt_id_token,old.managed_groups_claim,old.grant_types,old.scopes,old.redirect_uris) then
+        update kubernetes_online_profiles set enabled=false
+            where tenant_id=new.tenant_id and enabled
+              and (client_id=new.client_id or reviewer_client_id=new.client_id);
+    end if;
+    return new;
+end
+$$;
+create trigger kubernetes_online_client_changed after update on clients
+    for each row execute function kubernetes_online_client_changed();
+
+create function kubernetes_online_cluster_changed() returns trigger language plpgsql as $$
+begin
+    update kubernetes_online_profiles set enabled=false
+        where tenant_id=old.tenant_id and client_id=old.client_id and enabled;
+    if tg_op='DELETE' then return old; end if;
+    return new;
+end
+$$;
+create trigger kubernetes_online_cluster_changed after update or delete on kubernetes_profiles
+    for each row execute function kubernetes_online_cluster_changed();
+
+create function kubernetes_online_tenant_changed() returns trigger language plpgsql as $$
+begin
+    if (new.status,new.issuer) is distinct from (old.status,old.issuer) then
+        update kubernetes_online_profiles set enabled=false where tenant_id=new.tenant_id and enabled;
+    end if;
+    return new;
+end
+$$;
+create trigger kubernetes_online_tenant_changed after update on tenants
+    for each row execute function kubernetes_online_tenant_changed();
+
 create table kubernetes_online_tokens (
     tenant_id text not null,
     token_digest bytea not null check (octet_length(token_digest) = 32),

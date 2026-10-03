@@ -3023,7 +3023,8 @@ impl asterius_domain::agent_task_views::Administration for DeploymentTaskViews {
 impl AdminBackend for Deployment {
     fn kubernetes_online(&self)
         -> Option<Arc<dyn asterius_domain::kubernetes_online::KubernetesOnline>> {
-        Some(crate::http::kubernetes_online::OnlineAuthentication::new(self.store.pool().clone()))
+        Some(crate::http::kubernetes_online::OnlineAuthentication::new(
+            asterius_store_pg::kubernetes_online::PgKubernetesOnline::new(self.store.pool().clone())))
     }
     fn agent_tasks(&self) -> Option<Arc<dyn asterius_domain::agent_task_views::Administration>> {
         Some(Arc::new(DeploymentTaskViews {

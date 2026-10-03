@@ -100,7 +100,7 @@ revocation.
 
 Configure `--authentication-token-webhook-version=v1`,
 `--api-audiences=<human-client-id>` and
-`--authentication-token-webhook-cache-ttl=5s` (or less), with a kubeconfig that
+`--authentication-token-webhook-cache-ttl=0s`, with a kubeconfig that
 verifies the adapter CA and supplies the dedicated API-server certificate.
 The webhook replaces native OIDC authentication for this exact issuer/client;
 leaving the equivalent offline JWT authenticator enabled bypasses online
@@ -111,12 +111,19 @@ No adapter or backend positive identity cache is permitted. The adapter gives
 each complete review a three-second deadline, including service authentication
 and live-state lookup. Timeout, storage error, invalid upstream result and
 outage return an unauthenticated result without stale identity. Failed transport
-also grants no identity. The API server can still use a previously cached
-positive result until its configured TTL expires. An in-flight successful review
-started before revocation can populate that cache afterward; the intended
-bound is therefore five seconds plus the three-second review deadline, subject
-to measured scheduling/transport margin. This is a design bound, **not measured
-acceptance evidence**. Tests must measure the actual target configuration.
+also grants no identity. Kubernetes 1.35 still wraps all authenticators in a global ten-second success
+cache; setting the inner webhook TTL to zero disables only that inner cache.
+Its shared lookup detaches from the caller with a thirty-second timeout, and
+the upstream webhook HTTP client also has a thirty-second timeout. A successful
+response already in flight can therefore arrive after revocation and populate
+the outer cache. The conservative supported bound is **40 seconds plus measured
+scheduling/transport margin**, rather than the adapter's local three-second
+deadline plus a cache TTL. This is a source-derived design bound, **not measured
+acceptance evidence**; healthy-network measurements do not establish the worst
+case. Acceptance must exercise delayed transport and the actual target settings.
+See the pinned [outer cache implementation](https://github.com/kubernetes/kubernetes/blob/v1.35.0/staging/src/k8s.io/apiserver/pkg/authentication/token/cache/cached_token_authenticator.go),
+[authenticator composition](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/kubeapiserver/authenticator/config.go)
+and [webhook transport timeout](https://github.com/kubernetes/kubernetes/blob/v1.35.0/staging/src/k8s.io/apiserver/pkg/util/webhook/webhook.go).
 
 Deploy multiple stateless adapter instances with identical pins and routes,
 verified TLS, primary-database-backed Asterius replicas, dedicated least-privilege
@@ -124,7 +131,7 @@ credentials and adequate capacity. Load balancer failover must retain client
 certificate authentication or provide authenticated end-to-end passthrough.
 Never use unauthenticated forwarded certificate headers. Renew certificates and
 reviewer keys with an explicit overlap window. When all replicas fail, new
-uncached human authentication fails; five-second cached identities remain the
+uncached human authentication fails; globally cached identities remain the
 documented availability/revocation trade-off. RBAC continues to authorize each
 request separately after authentication.
 
@@ -145,7 +152,7 @@ revocation of one grant while another remains active, session rotation and
 logout, account disable, current group removal, unsupported and malformed review
 inputs, expiry, upstream timeout/outage and replica behavior. A distinct
 throwaway Kubernetes 1.35 cluster must demonstrate real kubectl access and
-measure held-token denial with the configured five-second cache. Bounded parser
+measure held-token denial with the disabled inner webhook cache and the global ten-second success cache. Bounded parser
 mutation coverage, targeted Rust verification, operator documentation, OpenAPI
 and threat-model updates accompany implementation. This proposed document alone
 does not satisfy runtime acceptance or close the ticket.

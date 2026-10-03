@@ -5,20 +5,19 @@ use asterius_domain::kubernetes_online::{KubernetesOnline, OnlineProfile, Profil
     TokenReviewRequest, TokenReviewResponse};
 use asterius_domain::{Actor, ClientId, DomainError, SigningAlgorithm, Tenant, TenantId};
 use asterius_jose::verify::{Policy, TypRule};
-use asterius_store_pg::kubernetes_online::{PgKubernetesOnline, public_key_on, review_verified_on};
+use asterius_store_pg::kubernetes_online::PgKubernetesOnline;
 use serde_json::json;
 use time::OffsetDateTime;
 
 #[derive(Debug)]
 pub struct OnlineAuthentication {
-    pool: sqlx::PgPool,
     profiles: PgKubernetesOnline,
 }
 
 impl OnlineAuthentication {
     #[must_use]
-    pub fn new(pool: sqlx::PgPool) -> Arc<Self> {
-        Arc::new(Self {profiles: PgKubernetesOnline::new(pool.clone()),pool})
+    pub fn new(profiles: PgKubernetesOnline) -> Arc<Self> {
+        Arc::new(Self {profiles})
     }
 
     async fn review_current(&self, tenant: &Tenant, reviewer: &ClientId,
@@ -31,12 +30,8 @@ impl OnlineAuthentication {
             return Ok(TokenReviewResponse::denied());
         };
         let Some(kid) = parsed.kid() else { return Ok(TokenReviewResponse::denied()); };
-        let mut tx = self.pool.begin().await.map_err(asterius_store_pg::to_domain_error)?;
-        sqlx::query("set transaction read only").execute(&mut *tx).await
-            .map_err(asterius_store_pg::to_domain_error)?;
-        sqlx::query("set local statement_timeout = '2800ms'").execute(&mut *tx).await
-            .map_err(asterius_store_pg::to_domain_error)?;
-        let Some(key) = public_key_on(&mut tx,&tenant.id,kid.as_str()).await? else {
+        let mut read = self.profiles.begin_review().await?;
+        let Some(key) = read.public_key(&tenant.id,kid.as_str()).await? else {
             return Ok(TokenReviewResponse::denied());
         };
         let Ok(resolver) = asterius_jose::keys_from_jwk_set(&json!({"keys":[key]})) else {
@@ -57,8 +52,8 @@ impl OnlineAuthentication {
             || expiry<=now.unix_timestamp() || now.unix_timestamp().saturating_sub(issued)>300 {
             return Ok(TokenReviewResponse::denied());
         }
-        let identity = review_verified_on(&mut tx,&tenant.id,reviewer,client,compact,&verified.claims).await?;
-        tx.commit().await.map_err(asterius_store_pg::to_domain_error)?;
+        let identity = read.review(&tenant.id,reviewer,client,compact,&verified.claims).await?;
+        read.commit().await?;
         let Some(identity) = identity else { return Ok(TokenReviewResponse::denied()); };
         TokenReviewResponse::released(request,client.as_str(),identity.username,identity.groups)
     }

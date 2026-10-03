@@ -155,8 +155,8 @@ impl AdminApi {
                 if operation.id()==crate::KUBERNETES_REVIEW_ID {
                     match tokio::time::timeout(std::time::Duration::from_secs(3),dispatch(operation,state,request)).await {
                         Ok(response) => response,
-                        Err(_) => Ok(json_no_store(StatusCode::OK,&serde_json::json!(
-                            asterius_domain::kubernetes_online::TokenReviewResponse::denied()))),
+                        Err(_) => json_no_store(StatusCode::OK,&serde_json::json!(
+                            asterius_domain::kubernetes_online::TokenReviewResponse::denied())),
                     }
                 } else {
                     dispatch(operation,state,request).await
@@ -2308,7 +2308,7 @@ impl Handling<'_> {
         let client = self.client_in_path("/kubernetes/online")?;
         let change: asterius_domain::kubernetes_online::ProfileChange = self.parse_body(body).await?;
         let port = self.state.backend.kubernetes_online().ok_or(AdminError::Unavailable)?;
-        let actor = self.principal.audit_actor();
+        let actor = asterius_domain::Actor::Admin(self.principal.audit_actor());
         let profile = port.replace_profile(&self.tenant.id,&client,&actor,&change).await
             .map_err(|e|group_error(crate::KUBERNETES_ONLINE_UPDATE_ID,e))?;
         Ok(json_no_store(StatusCode::OK,&serde_json::json!(profile)))
