@@ -41,6 +41,14 @@ fn id(value: &str) -> Result<Uuid, AdminError> {
     }
     Ok(id)
 }
+fn path_id(segments: &[&str], collection: &str) -> Result<Uuid, AdminError> {
+    segments
+        .iter()
+        .position(|part| *part == collection)
+        .and_then(|offset| segments.get(offset + 1))
+        .ok_or(AdminError::NotFound)
+        .and_then(|value| id(value))
+}
 fn page(query: &str) -> Result<(Option<Uuid>, u16), AdminError> {
     let after = super::query_value(query, "after")
         .map(|value| id(&value))
@@ -71,8 +79,7 @@ impl Handling<'_> {
         if tenant != &self.tenant.id {
             return Err(AdminError::Forbidden);
         }
-        let catalogue = self
-            .state
+        self.state
             .backend
             .outbound_scim()
             .ok_or(AdminError::Unavailable)?;
@@ -88,20 +95,50 @@ impl Handling<'_> {
             self.require_fresh_totp_recovery_admin().await?;
         }
         let (after, limit) = page(&self.query)?;
+        let document = match operation {
+            "outbound_scim.read"
+            | "outbound_scim.list"
+            | "outbound_scim.credentials"
+            | "outbound_scim.assignments" => {
+                self.outbound_scim_read(operation, after, limit).await?
+            }
+            "outbound_scim.create" | "outbound_scim.configure" => {
+                self.outbound_scim_configure(operation, body, *user).await?
+            }
+            "outbound_scim.lifecycle_read" | "outbound_scim.lifecycle" => {
+                self.outbound_scim_lifecycle_command(operation, body, *user)
+                    .await?
+            }
+            "outbound_scim.dry_run" | "outbound_scim.preview" => {
+                self.outbound_scim_inspect(operation, body, *user).await?
+            }
+            "outbound_scim.select" | "outbound_scim.unselect" | "outbound_scim.reconcile" => {
+                self.outbound_scim_selection(operation, body, *user, after)
+                    .await?
+            }
+            _ => return Err(AdminError::NotFound),
+        };
+        Ok(json_no_store(StatusCode::OK, &document))
+    }
+
+    async fn outbound_scim_read(
+        &self,
+        operation: &str,
+        after: Option<Uuid>,
+        limit: u16,
+    ) -> Result<serde_json::Value, AdminError> {
+        let catalogue = self
+            .state
+            .backend
+            .outbound_scim()
+            .ok_or(AdminError::Unavailable)?;
         let segments: Vec<_> = self
             .path
             .split('/')
             .filter(|part| !part.is_empty())
             .collect();
-        let connector = || {
-            segments
-                .iter()
-                .position(|part| *part == "connectors")
-                .and_then(|offset| segments.get(offset + 1))
-                .ok_or(AdminError::NotFound)
-                .and_then(|value| id(value))
-        };
-        let document = match operation {
+        let connector = || path_id(&segments, "connectors");
+        Ok(match operation {
             "outbound_scim.read" => serde_json::json!(
                 catalogue
                     .read(&self.tenant.id, connector()?)
@@ -122,6 +159,28 @@ impl Handling<'_> {
             "outbound_scim.assignments" => {
                 serde_json::json!({"items":catalogue.assignments(&self.tenant.id,connector()?,after,limit).await.map_err(error)?})
             }
+            _ => return Err(AdminError::NotFound),
+        })
+    }
+
+    async fn outbound_scim_configure(
+        &self,
+        operation: &str,
+        body: axum::body::Body,
+        user: asterius_domain::UserId,
+    ) -> Result<serde_json::Value, AdminError> {
+        let catalogue = self
+            .state
+            .backend
+            .outbound_scim()
+            .ok_or(AdminError::Unavailable)?;
+        let segments: Vec<_> = self
+            .path
+            .split('/')
+            .filter(|part| !part.is_empty())
+            .collect();
+        let connector = || path_id(&segments, "connectors");
+        Ok(match operation {
             "outbound_scim.create" | "outbound_scim.configure" => {
                 let bytes = self.body_bytes(body).await?;
                 if bytes.len() > 8192 {
@@ -153,15 +212,28 @@ impl Handling<'_> {
                 };
                 serde_json::json!(
                     catalogue
-                        .configure(&self.tenant.id, *user, command)
+                        .configure(&self.tenant.id, user, command)
                         .await
                         .map_err(error)?
                 )
             }
-            "outbound_scim.select" => {
-                let command = parse_selection(&self.body_bytes(body).await?).map_err(error)?;
-                serde_json::json!({"items":catalogue.select(&self.tenant.id,*user,connector()?,command).await.map_err(error)?})
-            }
+            _ => return Err(AdminError::NotFound),
+        })
+    }
+
+    async fn outbound_scim_lifecycle_command(
+        &self,
+        operation: &str,
+        body: axum::body::Body,
+        user: asterius_domain::UserId,
+    ) -> Result<serde_json::Value, AdminError> {
+        let segments: Vec<_> = self
+            .path
+            .split('/')
+            .filter(|part| !part.is_empty())
+            .collect();
+        let connector = || path_id(&segments, "connectors");
+        Ok(match operation {
             "outbound_scim.lifecycle_read" => {
                 let assignment = segments
                     .iter()
@@ -191,11 +263,28 @@ impl Handling<'_> {
                     .ok_or(AdminError::Unavailable)?;
                 serde_json::json!(
                     lifecycle
-                        .enqueue(&self.tenant.id, *user, connector()?, assignment, command)
+                        .enqueue(&self.tenant.id, user, connector()?, assignment, command)
                         .await
                         .map_err(error)?
                 )
             }
+            _ => return Err(AdminError::NotFound),
+        })
+    }
+
+    async fn outbound_scim_inspect(
+        &self,
+        operation: &str,
+        body: axum::body::Body,
+        user: asterius_domain::UserId,
+    ) -> Result<serde_json::Value, AdminError> {
+        let segments: Vec<_> = self
+            .path
+            .split('/')
+            .filter(|part| !part.is_empty())
+            .collect();
+        let connector = || path_id(&segments, "connectors");
+        Ok(match operation {
             "outbound_scim.dry_run" => {
                 let bytes = self.body_bytes(body).await?;
                 if bytes.len() > 1024 {
@@ -242,13 +331,40 @@ impl Handling<'_> {
                     inspection
                         .preview(
                             &self.tenant.id,
-                            *user,
+                            user,
                             connector()?,
                             command.expected_revision
                         )
                         .await
                         .map_err(error)?
                 )
+            }
+            _ => return Err(AdminError::NotFound),
+        })
+    }
+
+    async fn outbound_scim_selection(
+        &self,
+        operation: &str,
+        body: axum::body::Body,
+        user: asterius_domain::UserId,
+        after: Option<Uuid>,
+    ) -> Result<serde_json::Value, AdminError> {
+        let catalogue = self
+            .state
+            .backend
+            .outbound_scim()
+            .ok_or(AdminError::Unavailable)?;
+        let segments: Vec<_> = self
+            .path
+            .split('/')
+            .filter(|part| !part.is_empty())
+            .collect();
+        let connector = || path_id(&segments, "connectors");
+        Ok(match operation {
+            "outbound_scim.select" => {
+                let command = parse_selection(&self.body_bytes(body).await?).map_err(error)?;
+                serde_json::json!({"items":catalogue.select(&self.tenant.id,user,connector()?,command).await.map_err(error)?})
             }
             "outbound_scim.unselect" | "outbound_scim.reconcile" => {
                 let bytes = self.body_bytes(body).await?;
@@ -258,7 +374,7 @@ impl Handling<'_> {
                 let command: RevisionBody = serde_json::from_slice(&bytes)
                     .map_err(|_| AdminError::Invalid("invalid revision command".into()))?;
                 if operation == "outbound_scim.reconcile" {
-                    serde_json::json!({"after":catalogue.reconcile(&self.tenant.id,*user,connector()?,command.expected_revision,after).await.map_err(error)?})
+                    serde_json::json!({"after":catalogue.reconcile(&self.tenant.id,user,connector()?,command.expected_revision,after).await.map_err(error)?})
                 } else {
                     let assignment = segments
                         .iter()
@@ -269,7 +385,7 @@ impl Handling<'_> {
                     catalogue
                         .unselect(
                             &self.tenant.id,
-                            *user,
+                            user,
                             connector()?,
                             assignment,
                             command.expected_revision,
@@ -280,7 +396,6 @@ impl Handling<'_> {
                 }
             }
             _ => return Err(AdminError::NotFound),
-        };
-        Ok(json_no_store(StatusCode::OK, &document))
+        })
     }
 }

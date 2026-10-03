@@ -350,25 +350,7 @@ fn operation_parameters(operation: &Operation) -> Vec<Value> {
         parameters.push(json!({"name":"limit","in":"query","required":false,"schema":{"type":"integer","minimum":1,"maximum":100,"default":50},"description":"Rows per page; values outside one to one hundred are refused."}));
     }
 
-    if operation.id().starts_with("outbound_scim.") {
-        for parameter in &mut parameters {
-            parameter["schema"] = outbound_scim_uuid_schema();
-            parameter["schema"]["pattern"] =
-                json!("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$");
-        }
-        if matches!(
-            operation.id(),
-            "outbound_scim.list" | "outbound_scim.assignments" | "outbound_scim.reconcile"
-        ) {
-            parameters.push(json!({"name":"after","in":"query","required":false,"schema":outbound_scim_uuid_schema(),"description":"UUID keyset cursor: use the exact last returned row UUID, or the reconcile response after UUID."}));
-        }
-        if matches!(
-            operation.id(),
-            "outbound_scim.list" | "outbound_scim.assignments"
-        ) {
-            parameters.push(json!({"name":"limit","in":"query","required":false,"schema":{"type":"integer","minimum":1,"maximum":100,"default":50},"description":"Values outside 1..100 are refused. No opaque cursor or offset is accepted."}));
-        }
-    }
+    outbound_scim_parameters(operation, &mut parameters);
     task_view_parameters(operation, &mut parameters);
     if operation.is_paginated() {
         parameters.push(json!({ "$ref": "#/components/parameters/cursor" }));
@@ -432,6 +414,28 @@ fn operation_parameters(operation: &Operation) -> Vec<Value> {
     }
 
     parameters
+}
+
+fn outbound_scim_parameters(operation: &Operation, parameters: &mut Vec<Value>) {
+    if operation.id().starts_with("outbound_scim.") {
+        for parameter in parameters.iter_mut() {
+            parameter["schema"] = outbound_scim_uuid_schema();
+            parameter["schema"]["pattern"] =
+                json!("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$");
+        }
+        if matches!(
+            operation.id(),
+            "outbound_scim.list" | "outbound_scim.assignments" | "outbound_scim.reconcile"
+        ) {
+            parameters.push(json!({"name":"after","in":"query","required":false,"schema":outbound_scim_uuid_schema(),"description":"UUID keyset cursor: use the exact last returned row UUID, or the reconcile response after UUID."}));
+        }
+        if matches!(
+            operation.id(),
+            "outbound_scim.list" | "outbound_scim.assignments"
+        ) {
+            parameters.push(json!({"name":"limit","in":"query","required":false,"schema":{"type":"integer","minimum":1,"maximum":100,"default":50},"description":"Values outside 1..100 are refused. No opaque cursor or offset is accepted."}));
+        }
+    }
 }
 
 fn conditional_documentation(operation: &Operation, object: &mut Value) {
