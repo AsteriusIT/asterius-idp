@@ -2886,32 +2886,47 @@ source-derived bound is forty seconds plus measured scheduling/transport margin.
 The local three-second review deadline does not establish a shorter wire-level
 bound. Actual delayed-response, outage and replica evidence is still required;
 healthy-network latency alone is not worst-case acceptance evidence.
+## Candidate managed-device registry and protected ingress (ast-dd1y.4.5)
 
-### Candidate managed-device request proof (`ast-dd1y.4.5`)
+The isolated managed-device candidate introduces three explicit authorities:
+the tenant's device CA, a separately authenticated and leaf-pinned proxy TLS
+hop, and its registered confidential client-credentials relay. A trusted proxy
+IP or publicly readable certificate header alone proves no possession. The
+edge must verify the actual device TLS handshake, strip caller evidence and
+forward only that leaf over its authenticated hop. Device and proxy CA/pin
+generations are included in the current operator trust revision. OAuth client
+authentication remains independent; a device key raises no user assurance.
 
-A device CA signature or matching enrollment fingerprint does not prove leaf-key
-possession. The supported edge verifies the actual device TLS handshake, strips
-caller identity headers, and forwards the leaf over a separately authenticated,
-CA-verified and exact-proxy-pinned TLS hop. Operator roots and pins form the
-private source revision. An IP allow-list or unprotected forwarded certificate
-cannot establish Known device state. This is not hardware attestation.
+Only an exact successful client-credentials access signature creates a private
+JTI/grant receipt for dedicated enrollment/posture ingress. The writer rechecks
+this receipt, current client mode/status and source generation after acquiring
+the tenant publication fence, before any device lock. Delegated/user/task-shaped
+tokens cannot substitute for relay authority. Bounded batches and monotonic
+sequences commit together with prepared audit events; audit failure rolls back
+state. Human source CRUD retains existing exact-realm console role/session/CSRF
+admission and does not inherit machine tokens or deployment-wide shortcuts.
 
-Interaction evidence belongs only to the winning exact PAR/interaction and
-authorization-code digest, with a nonrenewable five-minute/certificate deadline.
-Refresh and ordinary local exchange require fresh evidence on their own request;
-PDP evidence belongs to its exact verified token grant. Missing grant provenance
-cannot be repaired by another active grant or a browser session. The early
-exchange gate may inspect only its explicitly verified live parent, whereas
-final issuance requires the exact persisted and claimed child. Neither phase
-borrows a previous code or session's device proof.
+Private original proofs transfer only from a winning interaction to its exact
+code digest, with a nonrenewable five-minute/certificate deadline. Refresh, ordinary local exchange and PDP require newly verified
+request possession and an exact current grant. Only early exchange may use an
+explicit verified parent's provisional child; final signing requires the
+persisted claimed child. No other session, strongest grant, caller device hint,
+public claim or stale source observation supplies missing authority. The same
+publication connection holds current source/enrollment/authority facts through
+decisions/signing, and original proof/source/certificate/grant deadlines bound
+their release. Fresh clocks after awaited audit/cryptographic work re-evaluate
+those original deadlines. Unknown management/compliance, removal, disable and expiry deny
+active required-fact rules without a positive authority cache.
 
-The provided publication transaction reads current user/client, source and
-enrollment generations, leaf and operator revision, posture clock and grant
-state. Device updates/removal serialize against that tenant fence. Final signing
-and PDP decisions retain the fence through awaited work and re-evaluate freshness
-with the original evidence deadline. Relay writes separately require private
-successful client-credentials receipts checked again after lock waits; public
-client-like claims or old delegated credentials do not establish relay authority.
-The shared private Tailscale bridge forwards no device certificate and therefore
-cannot exercise this candidate device source. Human review, final candidate
-gates and actual Asterius enforcement acceptance remain pending.
+Removal erases the leaf/user/application/posture association and private proof
+sidecars, retaining only a minimal generation tombstone for 30 days. Re-enrollment
+receives a new server UUID and generation. This changes new protected decisions;
+it cannot withdraw already-issued offline JWTs before their expiry. A malicious
+relay or trusted proxy remains capable of lying within its explicit authority,
+and copied software keys remain usable. The controlled HTTPS/browser evidence
+uses disposable software PKI, seeded refresh/source inputs and real local user
+authentication; it claims neither live MDM verification nor hardware attestation.
+Human normative review remains pending before delivery of this candidate.
+
+The shared private Tailscale bridge forwards no device certificate and cannot
+exercise this separately configured candidate device source.
