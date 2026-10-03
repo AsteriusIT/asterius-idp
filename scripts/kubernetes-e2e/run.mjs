@@ -154,7 +154,12 @@ const report = {
 };
 const check = (name, details = {}) => {
   report.checks.push({ name, ...details });
-  process.stdout.write("PASS " + name + "\n");
+  process.stdout.write(
+    "PASS " +
+      name +
+      (Object.keys(details).length ? " " + JSON.stringify(details) : "") +
+      "\n",
+  );
 };
 async function authorize(url) {
   const selected = store.get("transaction", url.split("/").at(-1))?.cluster;
@@ -437,6 +442,41 @@ try {
     401,
   );
   check("actual different Asterius issuer identity rejected");
+  const suspendedAt = Date.now(),
+    held = latest().idToken;
+  sql(
+    "UPDATE users SET status='disabled' WHERE tenant_id='e2e-webauthn' AND user_id='3f1d5c2a-0000-4000-8000-000000000001'",
+  );
+  forceRefresh();
+  await kube(["get", "configmaps", "-n", "human-access", "-o", "name"], 1);
+  assert.equal(
+    await api(held, "/api/v1/namespaces/human-access/configmaps"),
+    200,
+  );
+  check(
+    "account disable blocks actual refresh while existing offline JWT remains usable",
+    { refreshDenialMilliseconds: Date.now() - suspendedAt },
+  );
+  sql(
+    "UPDATE users SET status='active' WHERE tenant_id='e2e-webauthn' AND user_id='3f1d5c2a-0000-4000-8000-000000000001'",
+  );
+  await kube(["get", "configmaps", "-n", "human-access", "-o", "name"]);
+  const loggedOut = latest(),
+    logoutAt = Date.now();
+  await logout();
+  assert.equal(store.get("session", loggedOut.id), undefined);
+  await assert.rejects(
+    upstreams.get("cluster-a").refresh(loggedOut),
+    /upstream_rejected/,
+  );
+  assert.equal(
+    await api(loggedOut.idToken, "/api/v1/namespaces/human-access/configmaps"),
+    200,
+  );
+  check(
+    "helper logout erases OS credential, invalidates broker and revokes actual OP refresh grant without revoking issued JWT",
+  );
+  await kube(["get", "configmaps", "-n", "human-access", "-o", "name"]);
   const beforeRotation = latest().idToken,
     beforeKid = decodeProtectedHeader(beforeRotation).kid;
   await page.goto(cluster.issuer + "/admin/");
@@ -512,40 +552,6 @@ try {
       initialKeyPropagationRejection,
       propagationMilliseconds: Date.now() - propagationStarted,
     },
-  );
-  const suspendedAt = Date.now(),
-    held = rotated.idToken;
-  sql(
-    "UPDATE users SET status='disabled' WHERE tenant_id='e2e-webauthn' AND user_id='3f1d5c2a-0000-4000-8000-000000000001'",
-  );
-  forceRefresh();
-  await kube(["get", "configmaps", "-n", "human-access", "-o", "name"], 1);
-  assert.equal(
-    await api(held, "/api/v1/namespaces/human-access/configmaps"),
-    200,
-  );
-  check(
-    "account disable blocks actual refresh while existing offline JWT remains usable",
-    { refreshDenialMilliseconds: Date.now() - suspendedAt },
-  );
-  sql(
-    "UPDATE users SET status='active' WHERE tenant_id='e2e-webauthn' AND user_id='3f1d5c2a-0000-4000-8000-000000000001'",
-  );
-  await kube(["get", "configmaps", "-n", "human-access", "-o", "name"]);
-  const loggedOut = latest(),
-    logoutAt = Date.now();
-  await logout();
-  assert.equal(store.get("session", loggedOut.id), undefined);
-  await assert.rejects(
-    upstreams.get("cluster-a").refresh(loggedOut),
-    /upstream_rejected/,
-  );
-  assert.equal(
-    await api(loggedOut.idToken, "/api/v1/namespaces/human-access/configmaps"),
-    200,
-  );
-  check(
-    "helper logout erases OS credential, invalidates broker and revokes actual OP refresh grant without revoking issued JWT",
   );
   const wait = Math.max(0, decodeJwt(held).exp * 1000 - Date.now() + 1500);
   process.stdout.write(
