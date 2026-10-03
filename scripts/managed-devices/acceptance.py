@@ -77,7 +77,7 @@ client_fingerprints = ["{(root / 'proxy-fingerprint.txt').read_text().strip()}"]
                 # Emit only known fixed bootstrap classes, never raw logs.
                 startup = (root / 'server.log').read_text() + (root / 'edge.log').read_text()
                 markers = ['Address already in use', 'configuration', 'migration', 'certificate', 'Connection refused', 'unique constraint', 'issuer']
-                raise RuntimeError('DEVICE_RUNTIME_STAGE=bootstrap_exit:' + ','.join(marker for marker in markers if marker in startup))
+                raise RuntimeError('DEVICE_RUNTIME_STAGE=bootstrap_exit:server' + str(server.poll()) + ':edge' + str(edge.poll()) + ':' + ','.join(marker for marker in markers if marker in startup))
             try:
                 with urllib.request.urlopen('https://localhost:9525/readyz', context=context, timeout=1) as answer:
                     if answer.status == 200:

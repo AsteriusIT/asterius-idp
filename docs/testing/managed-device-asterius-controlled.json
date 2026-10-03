@@ -33,25 +33,25 @@
   "binary_source_commit": "372a51de",
   "binary_sha256": "11f0d89427097dd2d4797311abea5e0fb26b973838fa3bebb70e531f453785ca",
   "migration_count": 114,
-  "observed_at": "2026-10-03T21:52:47Z",
+  "observed_at": "2026-10-03T22:00:34Z",
   "human_authentication": {
     "refresh": "seeded offline refresh grants",
-    "authorization_code": "actual Chromium password and UV WebAuthn assertions with verified signed ID claims"
+    "authorization_code": "actual Chromium password and UV WebAuthn registration/assertion via virtual CTAP2 authenticator; signed ID amr pop+user verified; no seeded authentication class proof"
   },
-  "source_registration": "primary source seeded; secondary ConsoleTenant POST/default-disabled/enable/CAS/disable/read exercised",
-  "device_attestation": "controlled software PKI; no hardware attestation or live MDM claim",
-  "original_interaction_code_transfer": "actual browser FAPI PAR/PKCE and exact code spend",
+  "source_registration": "primary source seeded; secondary real ConsoleTenant create/default-disabled/enable/CAS/disable/read",
+  "device_attestation": "controlled_software_pki_not_hardware_or_live_mdm",
+  "original_interaction_code_transfer": "real_browser_password_fapi_par_pkce_and_exact_code_spend",
   "owned_database_only": true,
   "human_normative_review": "pending; candidate validation only",
   "fixture_sha256": {
-    "scripts/managed-devices/acceptance.py": "ff5a91c5ac06a996257aeacbd2ef48ff4c59aeb53e9e3fda0ba9a3073ff03753",
+    "scripts/managed-devices/acceptance.py": "758748b52a235dc3def41c9463e2f16eb3745d70c95bd2c7ea3f24402c1982d0",
     "scripts/managed-devices/runtime_controls.py": "0076dae501919280f15cc61fce78f79ddb6636feeb71d3736a6bacf0578c4a8b",
-    "scripts/managed-devices/browser_controls.mjs": "4adcb683d048eac2bf7b5831b2cd302f71d58cc5f031070a4fe60cc29f77b73d",
+    "scripts/managed-devices/browser_controls.mjs": "c1bd54613525739f3192f91abc334812119643d3cc134069bca96e1c40a9e490",
     "scripts/managed-devices/proxy.mjs": "9e2a5be152f904fae4a5e7cffe95e25572b92d2e26968f996db6ab22798cf5bc",
     "scripts/managed-devices/prepare-pki.sh": "a41730f257eac2ef1e6093b249a59c8b8d573a64e63f99d2fa4614fe6971ea73"
   },
-  "removal_to_refusal_seconds": 0.363,
-  "stale_time_test": "controlled owned database timestamp perturbation; no real 300-second wait",
+  "removal_to_refusal_seconds": 0.357,
+  "stale_time_test": "controlled_database_timestamp_perturbation_not_real_300_second_wait",
   "source_admission": "existing exact-realm tenant administrator role/session policy and CSRF; no additional UV requirement",
   "candidate_gate": {
     "source_commit": "372a51de",
@@ -60,5 +60,9 @@
     "strict_clippy": "pass",
     "fmt": "pass",
     "reported_by": "parent integration agent"
-  }
+  },
+  "additional_assertions": [
+    "source PUT omitted revision returns400",
+    "source PUT null revision returns400"
+  ]
 }
