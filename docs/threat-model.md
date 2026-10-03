@@ -2736,6 +2736,36 @@ A recorded audit chain or historical grant constraint cannot authorize a current
 
 Withdrawal remains an authenticated, CSRF-protected mutation under `admin.grants:write`, using the exact immutable owner and root grant. The console requires explicit confirmation and describes the offline JWT expiry limit. Neither a task UUID nor the viewer's read scope supplies mutation authority. Approval expiry is immutable; reducing authority means withdrawal and a fresh approval rather than rewriting signed history.
 
+## Temporary privilege boundaries
+
+Eligibility permits a request and never grants a role. Each immutable approval
+names one human, client role, registered resource and exact resource permissions.
+Independent configured approvers cannot approve an elevation enabled by their
+own policy or eligibility edit. First-party owner commands require the exact
+tenant console session, CSRF and administrative role; administrative OAuth
+scopes alone cannot exercise those commands. Ordinary account commands reload
+the server-owned actor and frozen local authentication proof. Freshness is 120
+seconds, measured from the oldest proof required by the configured ACR class;
+cumulative step-up cannot refresh an earlier proof or extend an activation.
+
+Tenant publication fences serialize authority mutation with final access and
+role-bearing ID-token signing. Current exact-grant roles and deadlines are
+rechecked before signing, and temporary-only roles cap the issued expiry.
+Catalogue tombstones, UUID revisions and eligibility generations prevent
+disable/re-enable and delete/recreate from restoring an old activation. Live
+checks use database time even before the bounded expiration worker runs.
+Extra resource permissions, delegated agents and unrelated grants supply no
+temporary role. Independent standing role authority retains its own semantics.
+
+UserInfo narrows role resolution to verified token audiences and scopes. An
+active conditional PDP boundary can resolve current temporary authority only
+from the exact verified human grant; caller-provided role attributes cannot
+supply it. An unguarded PDP continues to resolve standing roles. A revoked
+self-contained JWT can remain usable offline until its capped expiry, so an
+immediate-withdrawal resource must enforce the supported online decision on
+each privileged operation. See [operator guidance](temporary-privileges.md)
+and [versioned acceptance evidence](testing/temporary-entitlements-evidence.json).
+
 ## Native application recipe boundaries
 
 The [application catalogue](integrations/applications.md) uses explicit per-client

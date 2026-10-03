@@ -1,0 +1,33 @@
+{
+  "ticket": "ast-dd1y.5.2",
+  "status": "pass",
+  "artifact_sha256": "55a07138bdc01d0ecd07b46023c39327d2b6a2fdd96ef923b249aff97a1de758",
+  "verification": {
+    "rust": "fmt, workspace Clippy -D warnings, 319 targeted nextest tests passed; 4082 skipped",
+    "fuzz": "111 registered parser targets formatted, built and strict lint passed",
+    "console": "TypeScript/build and four model tests passed",
+    "acceptance": {
+      "checks": [
+        "console_owner_csrf_cas_and_ordinary_boundary",
+        "real_chromium_owner_and_read_only_ui",
+        "frozen_methods_and_duration_fail_closed",
+        "independent_scope_immutable_approval_and_command_replay",
+        "administrative_dpop_automation_is_not_console_owner",
+        "real_signed_code_refresh_exact_resource_scopes_human_and_deadline",
+        "revocation_current_recheck_and_bounded_residual_tokens",
+        "database_clock_expiry_without_background_cleanup",
+        "real_active_pdp_exact_permission_current_role_and_revocation",
+        "foreign_tenant_and_agent_catalogue_aba_refusals"
+      ],
+      "fixture": "real_https_seeded_frozen_proof_code_refresh_lifecycle",
+      "status": "pass"
+    }
+  },
+  "boundaries": [
+    "Disposable tenant/database over real HTTPS, actual signed ES256 ID and EdDSA access tokens, PAR/PKCE/private_key_jwt/DPoP code and refresh flows.",
+    "Actual Chromium owner and SecurityAuditor sessions, WCAG AA axe checks, keyboard and 390px layout.",
+    "Fixture uses explicitly seeded server-owned frozen local proof; this run does not establish a new WebAuthn ceremony. Fresh ceremony provenance is separately verified by the assurance acceptance suite.",
+    "Offline JWT withdrawal remains bounded by capped expiry; current UserInfo and active PDP checks refuse revoked temporary authority.",
+    "PostgreSQL concurrency regressions are ignored locally and explicitly selected by CI."
+  ]
+}

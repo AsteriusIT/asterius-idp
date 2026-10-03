@@ -457,13 +457,7 @@ impl<'a> IdToken<'a> {
         self
     }
 
-    /// Assembles the claims set.
-    ///
-    /// # Errors
-    ///
-    /// The first [`IssuanceError`] that applies.
-    // fuzz-target: id_token_claims
-    pub fn build(self) -> Result<UnsignedToken, IssuanceError> {
+    fn expires_at(&self) -> Result<OffsetDateTime, IssuanceError> {
         let lifetime = usable_lifetime(self.lifetime, Self::MAX_LIFETIME)?;
         let temporary_deadline = self
             .role_claims
@@ -476,6 +470,17 @@ impl<'a> IdToken<'a> {
         if expires_at.unix_timestamp() <= self.issued_at.unix_timestamp() {
             return Err(IssuanceError::Lifetime);
         }
+        Ok(expires_at)
+    }
+
+    /// Assembles the claims set.
+    ///
+    /// # Errors
+    ///
+    /// The first [`IssuanceError`] that applies.
+    // fuzz-target: id_token_claims
+    pub fn build(self) -> Result<UnsignedToken, IssuanceError> {
+        let expires_at = self.expires_at()?;
 
         let subject = self.claimed.subject().ok_or(IssuanceError::NoSubject)?;
         // Present and empty is its own failure. OIDC Core §2 makes `sub`

@@ -140,7 +140,10 @@ pub trait UserInfoSource: std::fmt::Debug + Send + Sync {
     /// # Errors
     ///
     /// Returns a domain error if current role authority cannot be read.
-    async fn roles_for_grant(&self, grant: &Grant) -> Result<asterius_domain::HeldRoles, DomainError> {
+    async fn roles_for_grant(
+        &self,
+        grant: &Grant,
+    ) -> Result<asterius_domain::HeldRoles, DomainError> {
         match grant.user {
             Some(user) => self.roles(user).await,
             None => Ok(asterius_domain::HeldRoles::default()),
@@ -421,13 +424,20 @@ async fn answer(
 // Never let UserInfo recover a temporary role through the wider original row.
 fn token_role_grant(grant: &Grant, verified: &Verified) -> Grant {
     let mut exact = grant.clone();
-    exact.scopes = verified.claim_str("scope").unwrap_or_default()
-        .split_ascii_whitespace().map(str::to_owned).collect();
+    exact.scopes = verified
+        .claim_str("scope")
+        .unwrap_or_default()
+        .split_ascii_whitespace()
+        .map(str::to_owned)
+        .collect();
     exact.resources = match verified.claims.get("aud") {
         Some(Value::String(resource)) => std::iter::once(resource.clone()).collect(),
-        Some(Value::Array(resources)) => resources.iter()
-            .filter_map(Value::as_str).map(str::to_owned).collect(),
-        _ => Default::default(),
+        Some(Value::Array(resources)) => resources
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect(),
+        _ => std::collections::BTreeSet::default(),
     };
     exact
 }
@@ -852,7 +862,8 @@ mod temporary_role_tests {
         );
         grant.scopes = ["openid", "read", "write"].map(str::to_owned).into();
         grant.resources = ["https://first.test", "https://second.test"]
-            .map(str::to_owned).into();
+            .map(str::to_owned)
+            .into();
         let mut verified = Verified {
             claims: json!({"scope":"openid read", "aud":"https://first.test"}),
             kid: None,
@@ -863,8 +874,10 @@ mod temporary_role_tests {
         assert_eq!(exact.scopes, ["openid", "read"].map(str::to_owned).into());
         assert_eq!(exact.resources, ["https://first.test".to_owned()].into());
         verified.claims = json!({"scope":"openid", "aud":["https://second.test"]});
-        assert_eq!(token_role_grant(&grant, &verified).resources,
-            ["https://second.test".to_owned()].into());
+        assert_eq!(
+            token_role_grant(&grant, &verified).resources,
+            ["https://second.test".to_owned()].into()
+        );
         verified.claims = json!({});
         let absent = token_role_grant(&grant, &verified);
         assert!(absent.scopes.is_empty());

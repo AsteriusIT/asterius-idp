@@ -4,20 +4,25 @@ import {chromium} from '../../e2e/node_modules/playwright-core/index.mjs';
 import AxeBuilder from '../../e2e/node_modules/@axe-core/playwright/dist/index.mjs';
 // Only the input file contains controlled disposable credentials; never log it.
 const input=JSON.parse(await readFile(process.argv[2],'utf8'));
-const browser=await chromium.launch({headless:true,args:['--no-sandbox']});
+const browser=await chromium.launch({headless:true,args:['--no-sandbox','--host-resolver-rules=MAP localhost 127.0.0.1']});
 const checks=[];
 let stage='open real console';
+let currentPage;
 try {
  const context=await browser.newContext({ignoreHTTPSErrors:true,viewport:{width:1280,height:900}});
  await context.addCookies([{name:'__Host-asterius_session',value:input.owner_session??input.owner_cookie,url:input.origin,secure:true,httpOnly:true,sameSite:'Lax'}]);
- const page=await context.newPage();
+ const page=await context.newPage();currentPage=page;page.setDefaultTimeout(15000);
  await page.goto(input.issuer+'/admin/#temporary-privileges');
+ stage='temporary privilege screen heading';
  await page.getByRole('heading',{name:'Temporary privileges',exact:true}).waitFor();
+ stage='existing entitlement row';
  await page.getByRole('button',{name:input.role_name,exact:true}).first().click();
+ stage='entitlement details';
  await page.getByRole('button',{name:'Refresh details',exact:true}).waitFor();
  assert(await page.getByText('Permissions: '+input.permissions.join(' '),{exact:true}).isVisible());
  assert(await page.getByText('Resource: '+input.resource,{exact:true}).isVisible());
- await page.getByRole('table',{name:'Activations',exact:true}).waitFor();
+ stage='activation records table';
+ await page.getByRole('region',{name:'Activations',exact:true}).waitFor();
  checks.push('real_console_fixed_resource_permissions_and_activation_deadlines');
  stage='accessible current details';
  const accessibility=await new AxeBuilder({page}).withTags(['wcag2a','wcag2aa','wcag21aa']).analyze();
@@ -66,6 +71,7 @@ try {
  }
  console.log(JSON.stringify({fixture:'real_chromium_temporary_privileges',status:'pass',checks}));
 } catch(error) {
+ if(currentPage && input.screenshot_path) await currentPage.screenshot({path:input.screenshot_path,fullPage:true}).catch(()=>{});
  console.error('TEMPORARY_CONSOLE_STAGE='+stage+' error='+error.constructor.name);
  process.exitCode=1;
 } finally {await browser.close();}

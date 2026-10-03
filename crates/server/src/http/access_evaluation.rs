@@ -1028,13 +1028,20 @@ pub(crate) async fn authorize(
         client: client.clone(),
         grant: own_grant,
         subject: verified.claim_str("sub").map(str::to_owned),
-        scopes: verified.claim_str("scope").unwrap_or_default()
-            .split_ascii_whitespace().map(str::to_owned).collect(),
+        scopes: verified
+            .claim_str("scope")
+            .unwrap_or_default()
+            .split_ascii_whitespace()
+            .map(str::to_owned)
+            .collect(),
         resources: match verified.claims.get("aud") {
             Some(Value::String(resource)) => std::iter::once(resource.clone()).collect(),
-            Some(Value::Array(resources)) => resources.iter()
-                .filter_map(Value::as_str).map(str::to_owned).collect(),
-            _ => Default::default(),
+            Some(Value::Array(resources)) => resources
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect(),
+            _ => std::collections::BTreeSet::default(),
         },
         task,
     });

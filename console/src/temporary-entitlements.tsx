@@ -191,38 +191,41 @@ export function TemporaryEntitlements({ session }: Readonly<{ session: Session }
     actions={<Actions><a className="text-link" href="../account/entitlements">My requests and approvals</a>{mayWrite && <Button onClick={() => { setDraft(emptyDraft()); setError(null); setCreating(true); }} disabled={!mayLookup}>Create entitlement</Button>}</Actions>}>
     {notice && <Message tone="success">{notice}</Message>}{error && !creating && !eligibilityOpen && <Message tone="error">{error}</Message>}
     {loadError ? <LoadFailure message={loadError} onRetry={refresh} /> : items === null ? <Skeleton label="Loading temporary privilege records" /> : <DataTable caption="Temporary entitlement policies" rows={items} rowKey={item => item.entitlement_id}
-      empty="No temporary entitlements are configured. Create one with a role, resource and independent approvers."
+      empty={mayWrite ? "No temporary entitlements are configured for your account. Create one with a role, resource and independent approvers." : "No temporary entitlements are owned by your account."}
       columns={[
         { key: 'role', header: 'Role', cell: item => <button className="text-link" onClick={() => loadDetail(item)}>{item.role_name}</button> },
         { key: 'client', header: 'Application', cell: item => item.client_id },
         { key: 'resource', header: 'Resource', cell: item => <span className="break-all">{item.resource}</span> },
-        { key: 'duration', header: 'Maximum activation', cell: item => `${item.max_duration_seconds / 60} minutes` },
+        { key: 'duration', header: 'Maximum activation', cell: item => `${item.max_duration_seconds / 60} ${item.max_duration_seconds === 60 ? 'minute' : 'minutes'}` },
         { key: 'state', header: 'Policy', cell: item => <Badge tone={item.enabled ? 'ok' : 'neutral'}>{item.enabled ? 'Enabled' : 'Disabled'}</Badge> },
       ]} />}
     {selected && <Panel title={`${selected.role_name} · ${selected.client_id}`} actions={<Actions><Button onClick={() => loadDetail(selected)} disabled={busy}>Refresh details</Button>{mayWrite && selected.owner_user_id === session.user && <Button onClick={() => { setUsername(''); setStart(''); setEnd(''); setError(null); setEligibilityOpen(true); }} disabled={busy || !mayLookup}>Grant eligibility</Button>}{mayWrite && selected.owner_user_id === session.user && <Button onClick={() => { setError(null); setConfirm({ item: selected, enabled: !selected.enabled }); }} disabled={busy}>{selected.enabled ? 'Disable entitlement' : 'Enable entitlement'}</Button>}</Actions>}>
       <p className="break-all">Resource: {selected.resource}</p><p>Permissions: {selected.permissions.join(' ')}</p>
       <p className="muted">Eligibility permits a request. Standing role assignments keep their existing authority. Issued tokens remain usable until their capped expiry unless the resource checks current access.</p>
       {detailError ? <LoadFailure message={detailError} onRetry={() => loadDetail(selected)} /> : detail === null ? <Skeleton label="Loading temporary privilege records" /> : <>
+        <section className="mt-6" aria-label="Eligibility">{detail.eligibility.length === 0 && <h3 className="mb-2 font-medium">Eligibility</h3>}
         <DataTable caption="Eligibility" rows={detail.eligibility} rowKey={row => row.eligibility_id} empty="No accounts are eligible for this entitlement." columns={[
           { key: 'user', header: 'Account ID', cell: row => <span className="break-all">{row.user_id}</span> },
           { key: 'from', header: 'From', cell: row => entitlementDeadline(row.not_before) },
           { key: 'until', header: 'Until', cell: row => entitlementDeadline(row.expires_at) },
           { key: 'state', header: 'State', cell: row => row.revoked_at === null ? 'Eligibility recorded' : 'Removed' },
           { key: 'actions', header: 'Actions', actions: true, cell: row => mayWrite && selected.owner_user_id === session.user && row.revoked_at === null && <Button onClick={() => { setError(null); setWithdrawing(row); }}>Remove eligibility</Button> },
-        ]} />
+        ]} /></section>
+        <section className="mt-6" aria-label="Requests">{detail.requests.length === 0 && <h3 className="mb-2 font-medium">Requests</h3>}
         <DataTable caption="Requests" rows={detail.requests} rowKey={row => row.request_id} empty="No activation requests." columns={[
           { key: 'who', header: 'Requester ID', cell: row => <span className="break-all">{row.requester_user_id}</span> },
           { key: 'reason', header: 'Reason', cell: row => row.reason },
-          { key: 'duration', header: 'Requested duration', cell: row => `${row.duration_seconds / 60} minutes` },
+          { key: 'duration', header: 'Requested duration', cell: row => `${row.duration_seconds / 60} ${row.duration_seconds === 60 ? 'minute' : 'minutes'}` },
           { key: 'deadline', header: 'Decision deadline', cell: row => entitlementDeadline(row.deadline) },
           { key: 'status', header: 'State', cell: row => row.status },
-        ]} />
+        ]} /></section>
+        <section className="mt-6" aria-label="Activations">{detail.activations.length === 0 && <h3 className="mb-2 font-medium">Activations</h3>}
         <DataTable caption="Activations" rows={detail.activations} rowKey={row => row.activation_id} empty="No approved activations." columns={[
           { key: 'who', header: 'Account ID', cell: row => <span className="break-all">{row.user_id}</span> },
           { key: 'end', header: 'Exclusive expiry', cell: row => entitlementDeadline(row.expires_at) },
           { key: 'status', header: 'State', cell: row => row.status },
           { key: 'actions', header: 'Actions', actions: true, cell: row => mayWrite && selected.owner_user_id === session.user && row.revoked_at === null && row.status === 'active' && <Button onClick={() => { setError(null); setRevokeReason(''); setRevoking({ activation: row, key: crypto.randomUUID() }); }}>Revoke activation</Button> },
-        ]} />
+        ]} /></section>
       </>}
     </Panel>}
     {creating && <Dialog open onOpenChange={open => { if (!open) createGuard.requestClose(); }}><DialogContent><DialogHeader><DialogTitle>Create temporary entitlement</DialogTitle><DialogDescription>You own this policy. Creation grants no role; eligibility and independent approval remain required.</DialogDescription></DialogHeader>
