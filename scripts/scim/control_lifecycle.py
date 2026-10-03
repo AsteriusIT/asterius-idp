@@ -48,13 +48,19 @@ def run():
         h, user = req("reactivate provisioning-disabled user", "PATCH", "/Users/"+user_id, [200], patch, new_etag)
         etag = h["ETag"]
         subprocess.run([os.environ["ASTERIUS_SCIM_LOCK_COMMAND"], user_id], check=True, capture_output=True)
-        h, _ = req("read security-locked user", "GET", "/Users/"+user_id, [200])
+        h, locked = req("read security-locked user", "GET", "/Users/"+user_id, [200])
+        if locked["active"] is not False:
+            raise RuntimeError("security-locked SCIM user must be inactive")
         etag = h["ETag"]
         req("security lock cannot be cleared by SCIM", "PATCH", "/Users/"+user_id, [409], patch, etag)
-        # Keep the locked user disabled for subsequent deletion; SCIM cannot unlock it.
+        # Preserve the security lock through disable; later activation must still fail.
         patch["Operations"][0]["value"] = False
-        h, _ = req("disable locked user", "PATCH", "/Users/"+user_id, [200], patch, etag)
+        h, locked = req("disable locked user", "PATCH", "/Users/"+user_id, [200], patch, etag)
+        if locked["active"] is not False:
+            raise RuntimeError("disabled security-locked SCIM user must remain inactive")
         etag = h["ETag"]
+        patch["Operations"][0]["value"] = True
+        req("disable then activate cannot bypass security lock", "PATCH", "/Users/"+user_id, [409], patch, etag)
         patch["Operations"][0]["value"] = "False"
         req("legacy string active unsupported", "PATCH", "/Users/"+user_id, [400], patch, etag)
         extended = {**body, "userName": "entra-extension-"+nonce, "name": {"givenName": "Fixture"}}

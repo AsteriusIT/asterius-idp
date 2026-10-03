@@ -613,3 +613,35 @@ fn user_schema() -> Value {
         "meta": {"resourceType":"Schema"},
     })
 }
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+    use asterius_domain::{ClaimSet, TenantId, User, UserId};
+    use time::OffsetDateTime;
+
+    #[test]
+    fn locked_account_remains_inactive_in_the_public_scim_document() {
+        let state = ScimUserState {
+            user: User {
+                tenant: TenantId::parse("fixture").expect("fixture tenant"),
+                id: UserId::generate(),
+                username: "locked-fixture".to_owned(),
+                email: None,
+                email_verified: false,
+                status: UserStatus::Locked,
+                claims: ClaimSet::default(),
+                created_at: OffsetDateTime::UNIX_EPOCH,
+                updated_at: OffsetDateTime::UNIX_EPOCH,
+            },
+            external_id: Some("owned-fixture".to_owned()),
+            revision: 2,
+        };
+        let document = user_document(&state, "https://id.example/t/fixture/admin/api/v1/scim/v2")
+            .expect("bounded public document");
+        assert_eq!(document["active"], false);
+        assert_eq!(document["meta"]["version"], "W/\"2\"");
+        assert!(document.get("status").is_none());
+        assert!(document.get("claims").is_none());
+    }
+}

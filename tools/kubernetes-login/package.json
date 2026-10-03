@@ -1,0 +1,20 @@
+{
+  "name": "@asterius/kubernetes-login",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.4.0"
+  },
+  "bin": {
+    "asterius-kube": "src/helper.mjs",
+    "asterius-kube-broker": "src/broker-main.mjs"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "check": "node --check src/security.mjs && node --check src/store.mjs && node --check src/upstream.mjs && node --check src/broker.mjs && node --check src/helper.mjs && node --check src/broker-main.mjs && node --check src/credentials.mjs"
+  },
+  "dependencies": {
+    "jose": "6.2.12"
+  }
+}

@@ -66,7 +66,7 @@ native provisioner. They separate server profile behavior from the native barrie
 | User PATCH without `If-Match` / stale ETag | 428 / 412 |
 | Boolean active=false / provisioning reactivation with current ETag | 200 / 200 |
 | Security lock followed by SCIM active=true | 409, account remains locked |
-| Disable locked user | 200; does not grant an unlock |
+| Disable locked user | 200; original run did not test a subsequent activation |
 | Legacy string `active: "False"` | 400 |
 | User POST with default `name` mapping | 400 |
 | Create Group with direct member | 201 |
@@ -114,6 +114,27 @@ The shell trap kills its own server, drops only its random database, and removes
 private fixture files. An interrupt or host crash requires checking that recovery
 manifest; remote object cleanup cannot be guaranteed after process termination.
 
+## Security-lock follow-up
+
+The initial control proved only direct locked-to-active refusal. A later real
+HTTP regression against the same `a351d707` binary found that SCIM `active=false`
+changed Locked to Disabled, after which `active=true` returned 200. This two-step
+bypass is tracked in `ast-xxt7`. The updated control runner requires the second
+activation to remain refused (409); the store correction preserves Locked through
+SCIM disable/delete, leaving administrator unlock authority separate. Original
+historical evidence above must not be read as proof against this two-step case.
+Run the updated actual-server security regression without cloud operations:
+
+```sh
+ASTERIUS_BIN=/absolute/verified/security-fixed/asterius \
+ASTERIUS_ACCEPTANCE_DB_CONTAINER=disposable-postgres-container \
+ASTERIUS_SCIM_CONTROL_ONLY=1 \
+./scripts/scim-entra-acceptance.sh
+```
+
+This control-only mode requires no Azure CLI/tunnel and explicitly reports native
+validation as unexecuted.
+
 ## Linked gaps
 
 - `ast-9mjp`: decide a bounded native Entra-compatible authentication boundary,
@@ -125,3 +146,11 @@ manifest; remote object cleanup cannot be guaranteed after process termination.
 These are follow-up decisions outside the original epic's verification scope.
 Verification of incompatibility is complete; native provisioning compatibility is
 not advertised and requires the linked work.
+
+The corrected real-server control run is recorded in
+[`scim-security-lock-2026-10-03.json`](evidence/scim-security-lock-2026-10-03.json):
+26 scoped DPoP HTTP cases passed, including `active: false` on the locked account
+before and after disable and HTTP 409 on subsequent activation with a fresh ETag.
+The workspace gate passed 34 targeted and mandatory source/secret audit tests.
+The slow persisted Rust regression is compiled and remains reserved for CI.
+This follow-up did not rerun native Entra provisioning.

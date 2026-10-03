@@ -1,0 +1,27 @@
+name: Restricted workload exchange
+on:
+  workflow_dispatch:
+permissions: {}
+jobs:
+  api:
+    if: github.ref == 'refs/heads/main'
+    # A fresh isolated runner, enrolled by the operator for this repository only.
+    runs-on: [self-hosted, asterius-workload]
+    environment: production
+    permissions:
+      id-token: write
+    steps:
+      # Operator installs a reviewed immutable client script + independent key
+      # on the ephemeral runner. No checkout or executable PR artifact needed.
+      - name: Call permitted API
+        env:
+          ASTERIUS_ISSUER: https://id.example/t/ci
+          ASTERIUS_CLIENT_ID: workflow-client
+          ASTERIUS_CLIENT_KID: runner-client
+          ASTERIUS_CLIENT_KEY_FILE: /run/asterius/client-key.pem
+          ASTERIUS_WORKLOAD_AUDIENCE: urn:asterius:workload:ci:github-deploy
+          ASTERIUS_RESOURCE: https://inventory.example/
+          ASTERIUS_API_URL: https://inventory.example/status
+          ASTERIUS_SCOPE: inventory.read
+          ASTERIUS_ACTIONS: read
+        run: node /opt/asterius/github-workload-client.mjs

@@ -1,0 +1,26 @@
+{
+  "issuer": "https://token.actions.githubusercontent.com",
+  "audience": "urn:asterius:workload:ci:github-deploy",
+  "subject": "repo:operator-org@123456/operator-repo@456789:environment:production",
+  "provider": "github",
+  "principal": "workload:github-inventory",
+  "clients": ["workflow-client"],
+  "scopes": ["inventory.read"],
+  "resources": ["https://inventory.example/"],
+  "actions": ["read"],
+  "required_claims": {
+    "/repository_id": "456789",
+    "/repository_owner_id": "123456",
+    "/environment": "production",
+    "/ref": "refs/heads/main",
+    "/event_name": "workflow_dispatch",
+    "/workflow_ref": "operator-org/operator-repo/.github/workflows/deploy.yml@refs/heads/main",
+    "/workflow_sha": "0000000000000000000000000000000000000000"
+  },
+  "algorithms": ["RS256"],
+  "keys": {
+    "kind": "remote",
+    "uri": "https://token.actions.githubusercontent.com/.well-known/jwks"
+  },
+  "enabled": false
+}

@@ -3,7 +3,9 @@
 The approved [broker contract](adr/kubernetes-human-access.md) uses a distinct
 confidential OIDC application per tenant and cluster. Cluster profiles provide
 authentication/RBAC configuration and narrow managed group release; they do not
-implement the browser login broker or kubectl helper themselves.
+implement the browser login broker or kubectl helper themselves. The companion
+[broker/helper package](../tools/kubernetes-login/README.md) now provides those
+components and their operator installation and logout instructions.
 
 Enable the tenant's non-FAPI client permission explicitly, then register a web
 OIDC application with one exact HTTPS broker callback, `private_key_jwt`,
@@ -91,7 +93,7 @@ The verifier checks user/group mapping, absent groups, Cluster A tokens rejected
 by Cluster B, wrong issuer/audience, expired or forged tokens, unsupported
 algorithm, excess lifetime and multiple audiences. This is controlled verifier
 interoperability; it does not verify live discovery/JWKS, ingress, browser
-authentication, the future broker/helper or production cluster configuration.
+authentication, the deployed broker/helper or production cluster configuration.
 The PostgreSQL persistence test is marked slow and remains CI-only.
 
 Configuration fields follow the official
