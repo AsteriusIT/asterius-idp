@@ -8452,7 +8452,7 @@ pub const CLIENT_ADDRESS_EXTENSION: &str = "asterius_admin_api::ClientAddress";
 
 impl Handling<'_> {
     fn management_owner(&self) -> Result<String, AdminError> {
-        let Principal::Automation { subject, held } = self.principal else {
+        let Principal::Automation { subject, held, .. } = self.principal else {
             return Err(AdminError::Forbidden);
         };
         let crate::rbac::Held::Scopes { tenant, .. } = held else {

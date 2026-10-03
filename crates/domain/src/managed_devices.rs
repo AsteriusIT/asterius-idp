@@ -3,6 +3,7 @@
 //! A parsed payload is not source authentication or proof of device possession.
 
 use crate::{ClientId, DomainError, TenantId, UserId};
+use crate::audit::Actor;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use time::{Duration, OffsetDateTime};
@@ -58,6 +59,12 @@ pub struct VerifiedDeviceEvidence {
     pub anchor_sha256: String,
     pub certificate_expires_at: OffsetDateTime,
     pub proof_expires_at: OffsetDateTime,
+}
+
+impl std::fmt::Debug for VerifiedDeviceEvidence {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("VerifiedDeviceEvidence([private evidence])")
+    }
 }
 
 impl DeviceBinding {
@@ -232,6 +239,12 @@ pub struct SourceChange {
 }
 
 impl SourceChange {
+    pub fn parse(bytes: &[u8]) -> Result<Self, DomainError> {
+        if bytes.len() > MAX_UPDATE_BYTES { return Err(invalid()); }
+        let change: Self = serde_json::from_slice(bytes).map_err(|_| invalid())?;
+        change.validate()?;
+        Ok(change)
+    }
     pub fn validate(&self) -> Result<(), DomainError> {
         if self.client_id.as_str().is_empty()
             || self.client_id.as_str().len() > 256
@@ -281,6 +294,12 @@ impl std::fmt::Debug for EnrollmentRequest {
     }
 }
 impl EnrollmentRequest {
+    pub fn parse(bytes: &[u8]) -> Result<Self, DomainError> {
+        if bytes.len() > MAX_UPDATE_BYTES { return Err(invalid()); }
+        let request: Self = serde_json::from_slice(bytes).map_err(|_| invalid())?;
+        request.validate()?;
+        Ok(request)
+    }
     pub fn validate(&self) -> Result<LeafFingerprint, DomainError> {
         let unique: BTreeSet<_> = self.allowed_client_ids.iter().collect();
         if self.allowed_client_ids.len() > MAX_ALLOWED_CLIENTS
@@ -297,6 +316,81 @@ impl EnrollmentRequest {
     }
 }
 
+pub const ENROLLMENT_SCOPE: &str = "device.enrollments:write";
+pub const POSTURE_SCOPE: &str = "device.posture:write";
+
+/// Private signed machine metadata, supplied only by the authenticated ingress.
+/// Writers additionally verify the exact successful CC receipt/current grant.
+#[derive(Debug, Clone)]
+pub struct RelayCredential {
+    client: ClientId,
+    jti: crate::Secret<String>,
+}
+impl RelayCredential {
+    pub fn from_verified(client: ClientId, jti: &str) -> Result<Self, DomainError> {
+        if jti.is_empty() || jti.len() > 256 || !jti.bytes().all(|byte| byte.is_ascii_graphic()) {
+            return Err(invalid());
+        }
+        Ok(Self { client, jti: crate::Secret::new(jti.to_owned()) })
+    }
+    #[must_use]
+    pub fn client(&self) -> &ClientId { &self.client }
+    #[must_use]
+    pub fn jti(&self) -> &str { self.jti.expose() }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SourceSummary {
+    pub id: Uuid,
+    pub client_id: ClientId,
+    pub generation: i64,
+    pub revision: Uuid,
+    pub enabled: bool,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
+}
+
+/// Public administration view omits certificate digests and private proofs.
+#[derive(Debug, Clone, Serialize)]
+pub struct DeviceSummary {
+    pub id: Uuid,
+    pub source_id: Uuid,
+    pub source_generation: i64,
+    pub enrollment_generation: i64,
+    pub revision: Uuid,
+    pub user_id: Option<UserId>,
+    pub allowed_client_ids: Vec<ClientId>,
+    pub sequence: Option<i64>,
+    pub observed_at: Option<OffsetDateTime>,
+    pub source_expires_at: Option<OffsetDateTime>,
+    pub posture: Option<Posture>,
+    pub removed_at: Option<OffsetDateTime>,
+}
+
+/// Trusted HTTP adapters choose this authority after cookie/token checks.
+/// A user's removal path may act only on a device currently owned by that user.
+#[derive(Debug, Clone)]
+pub enum RemovalAuthority {
+    Administrator(Actor),
+    Owner(UserId),
+}
+
+#[async_trait::async_trait]
+pub trait Registry: std::fmt::Debug + Send + Sync {
+    async fn sources(&self, tenant: &TenantId) -> Result<Vec<SourceSummary>, DomainError>;
+    async fn save_source(
+        &self, tenant: &TenantId, id: Option<Uuid>, change: &SourceChange,
+        actor: Actor, now: OffsetDateTime,
+    ) -> Result<SourceSummary, DomainError>;
+    async fn devices(
+        &self, tenant: &TenantId, owner: Option<UserId>, after: Option<Uuid>, limit: u16,
+    ) -> Result<Vec<DeviceSummary>, DomainError>;
+    async fn remove(
+        &self, tenant: &TenantId, id: Uuid, expected: Uuid,
+        authority: RemovalAuthority, now: OffsetDateTime,
+    ) -> Result<(), DomainError>;
+}
+
 /// A source client is checked against the authenticated request, never supplied
 /// as the enrollment association in a browser hint or token-device claim.
 #[async_trait::async_trait]
@@ -305,7 +399,7 @@ pub trait Relay: std::fmt::Debug + Send + Sync {
         &self,
         tenant: &TenantId,
         source: Uuid,
-        authenticated_client: &ClientId,
+        credential: &RelayCredential,
         request: &EnrollmentRequest,
         now: OffsetDateTime,
     ) -> Result<Uuid, DomainError>;
@@ -313,7 +407,7 @@ pub trait Relay: std::fmt::Debug + Send + Sync {
         &self,
         tenant: &TenantId,
         source: Uuid,
-        authenticated_client: &ClientId,
+        credential: &RelayCredential,
         update: &Update,
         now: OffsetDateTime,
     ) -> Result<(), DomainError>;
