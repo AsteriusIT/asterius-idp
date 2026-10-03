@@ -639,13 +639,24 @@ impl super::agent_issuance::ConditionalGuard for ConditionalAccess {
         kind: GrantType, now: OffsetDateTime,
         binding: Option<&asterius_domain::managed_devices::DeviceBinding>,
     ) -> Result<bool, DomainError> {
+        if binding.is_none() {
+            let device = Fact::missing(Availability::Absent, "exact_request_device_proof");
+            return self.check_grant_fact(tenant,client,grant,kind,now,Some(&device)).await;
+        }
+        if self.store.pool().options().get_max_connections() < 3 {
+            return Err(DomainError::Storage("bound device evaluation requires database.max_connections >= 3".into()));
+        }
+        let _admission = tokio::time::timeout(std::time::Duration::from_secs(5),
+            Arc::clone(self.store.signing_admission()).acquire_owned()).await
+            .map_err(|_|DomainError::Storage("device evaluation admission timed out".into()))?
+            .map_err(|_|DomainError::Storage("device evaluation admission unavailable".into()))?;
         let mut fence = PgPolicies::new(self.store.pool().clone())
             .signing_fence(&tenant.id, &tenant.issuer).await?;
         let device = asterius_store_pg::PgManagedDevices::resolve_for_grant_on(
             fence.connection(), &tenant.id, grant, binding,
             self.device_anchors.get(tenant.id.as_str()),
         ).await?;
-        let permitted = self.check_grant_fact(tenant, client, grant, kind, now, Some(&device)).await?;
+        let permitted = self.check_grant_fact(tenant, client, grant, kind, OffsetDateTime::now_utc(), Some(&device)).await?;
         fence.commit().await?;
         Ok(permitted)
     }
