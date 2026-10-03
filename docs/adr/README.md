@@ -28,18 +28,14 @@ Copy [`0000-template.md`](0000-template.md) to start one.
 | [0017](0017-id-jag-draft-profile.md) | Explicit enterprise approval for ID-JAG issuance | Provisional |
 | [0018](0018-oid4vp-verifier-profile.md) | Narrow OID4VP verifier profile | Provisional |
 | [0019](0019-caep-interop-algorithm-boundary.md) | Keep CAEP Draft 01 outside the supported SSF receiver profile | Accepted |
-| [Temporary entitlement activation](temporary-entitlement-activation.md) | Independent immutable approval and live expiring privilege | Decided; implementation tracked separately |
 
 The modern IDP decisions use descriptive filenames to avoid concurrent numbering:
 
 | Decision | Status |
 | --- | --- |
-| [Declarative management v1](declarative-management-contract.md) | Accepted architecture; runtime implementation tracked in ast-dd1y.3.2 |
 | [Kubernetes human access](kubernetes-human-access.md) | Approved design; interoperability pending |
-| [External workload trust](external-workload-trust.md) | Provisional; human normative review and credentialless bootstrap remain open |
-
-[Task-bound agent grants](task-bound-agent-grants.md) defines the accepted task,
-approval and descendant revocation architecture under ast-dd1y.8.1; runtime
-enforcement remains tracked by ast-dd1y.8.2 and ast-dd1y.8.3.
-
-| [Trusted conditional access](trusted-conditional-access-context.md) | Server-resolved facts guard bounded declarative policies | Decided; enforcement tracked separately |
+| [External workload trust](external-workload-trust.md) | Approved design; runtime and direct secretless bootstrap tracked separately |
+| [Declarative management v1](declarative-management-contract.md) | Accepted architecture; runtime tracked in ast-dd1y.3.2 |
+| [Trusted conditional access](trusted-conditional-access-context.md) | Decided; enforcement tracked separately |
+| [Temporary entitlement activation](temporary-entitlement-activation.md) | Decided; implementation tracked separately |
+| [Task-bound agent grants](task-bound-agent-grants.md) | Accepted; enforcement tracked in ast-dd1y.8.2 and ast-dd1y.8.3 |
