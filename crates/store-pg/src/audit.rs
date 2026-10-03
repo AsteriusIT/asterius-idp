@@ -2,7 +2,10 @@
 
 use crate::error::to_domain_error;
 use asterius_domain::audit::chain::{self, Content, EventHash, Link};
-use asterius_domain::audit::query::{AuditFilter, AuditQuery, MAX_PAGE, TrailEntry};
+use asterius_domain::audit::query::{
+    AuditFilter, AuditQuery, DIAGNOSTIC_DAYS, DiagnosticEvidence, MAX_DIAGNOSTIC_BYTES, MAX_PAGE,
+    TrailEntry,
+};
 use asterius_domain::audit::record::{self, AuditRecord, StoredEvent};
 use asterius_domain::audit::trail::keys;
 use asterius_domain::audit::{AuditEvent, AuditSink};
@@ -162,6 +165,19 @@ impl PgAuditSink {
 /// question.
 #[async_trait::async_trait]
 impl AuditQuery for PgAuditSink {
+    async fn diagnostics(
+        &self,
+        tenant: &TenantId,
+        id: uuid::Uuid,
+        now: OffsetDateTime,
+    ) -> Result<Option<DiagnosticEvidence>, DomainError> {
+        let row = sqlx::query("select diagnostics, expires_at from authorization_diagnostics where tenant_id = $1 and evidence_id = $2 and expires_at > $3")
+            .bind(tenant.as_str()).bind(id).bind(now).fetch_optional(&self.pool).await.map_err(to_domain_error)?;
+        Ok(row.map(|row| DiagnosticEvidence {
+            diagnostics: row.get("diagnostics"),
+            expires_at: row.get("expires_at"),
+        }))
+    }
     async fn query(
         &self,
         tenant: &TenantId,
@@ -209,6 +225,14 @@ impl AuditQuery for PgAuditSink {
         if let Some(grant) = grant {
             sql.push(" and grant_id = ");
             sql.push_bind(grant);
+        }
+        if let Some(request_id) = &filter.request_id {
+            sql.push(" and request_id = ");
+            sql.push_bind(request_id.clone());
+        }
+        if let Some(session) = &filter.session {
+            sql.push(" and session_id = ");
+            sql.push_bind(session.as_str().to_owned());
         }
         if !filter.event_types.is_empty() {
             let names: Vec<String> = filter
@@ -315,6 +339,52 @@ pub struct VerifiedChain {
 
 #[async_trait::async_trait]
 impl AuditSink for PgAuditSink {
+    async fn record_with_diagnostics(
+        &self,
+        mut event: AuditEvent,
+        diagnostics: &asterius_domain::policy::explanation::DecisionExplanation,
+    ) -> Result<(), DomainError> {
+        let mut snapshot = diagnostics.clone();
+        for rule in &mut snapshot.rules {
+            rule.id = asterius_domain::audit::redaction::redact(&rule.id);
+        }
+        let value = loop {
+            let value = serde_json::to_value(&snapshot)
+                .map_err(|error| DomainError::invalid("diagnostics", error.to_string()))?;
+            if serde_json::to_string_pretty(&value)
+                .map_err(|error| DomainError::invalid("diagnostics", error.to_string()))?
+                .len()
+                <= MAX_DIAGNOSTIC_BYTES
+            {
+                break value;
+            }
+            if snapshot.rules.pop().is_none() {
+                return Err(DomainError::invalid(
+                    "diagnostics",
+                    "diagnostic metadata exceeds its bound",
+                ));
+            }
+            snapshot.truncated = true;
+        };
+        let id = uuid::Uuid::new_v4();
+        let expires_at = event.occurred_at + time::Duration::days(DIAGNOSTIC_DAYS);
+        // Integrity binding of already-redacted public boolean metadata, not a secrecy claim.
+        event.detail = event
+            .detail
+            .credential(
+                "diagnostic_digest",
+                asterius_domain::audit::query::canonical_diagnostics(&value),
+            )
+            .text("diagnostic_id", id.to_string())
+            .number("diagnostic_expires_at", expires_at.unix_timestamp());
+        let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
+        sqlx::query("insert into authorization_diagnostics (tenant_id, evidence_id, diagnostics, created_at, expires_at) values ($1, $2, $3, $4, $5)")
+            .bind(event.tenant.as_str()).bind(id).bind(value).bind(event.occurred_at).bind(expires_at)
+            .execute(&mut *transaction).await.map_err(to_domain_error)?;
+        append(&mut transaction, event).await?;
+        transaction.commit().await.map_err(to_domain_error)?;
+        Ok(())
+    }
     async fn record(&self, event: AuditEvent) -> Result<(), DomainError> {
         let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
         let connection = transaction.acquire().await.map_err(to_domain_error)?;

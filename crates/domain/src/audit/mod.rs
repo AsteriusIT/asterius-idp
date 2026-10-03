@@ -1068,6 +1068,24 @@ impl AuditEvent {
 /// lands in PostgreSQL, in a test vector, or nowhere.
 #[async_trait::async_trait]
 pub trait AuditSink: std::fmt::Debug + Send + Sync {
+    /// Adds trusted adapter metadata before persistence. Transactional writers
+    /// call this before appending inside their own transaction; the default
+    /// preserves the event. This hook cannot establish authorization.
+    fn prepare(&self, event: AuditEvent) -> AuditEvent {
+        event
+    }
+
+    /// Stores bounded policy evidence beside the event when supported. Adapters
+    /// without evidence storage still record the event; readers report that the
+    /// diagnostic snapshot is unavailable rather than reconstructing history.
+    async fn record_with_diagnostics(
+        &self,
+        event: AuditEvent,
+        _diagnostics: &crate::policy::explanation::DecisionExplanation,
+    ) -> Result<(), crate::DomainError> {
+        self.record(event).await
+    }
+
     /// Appends one event.
     ///
     /// # Errors

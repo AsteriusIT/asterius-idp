@@ -1,0 +1,67 @@
+{
+  "date": "2026-10-03T10:37:36.538Z",
+  "clusterVersion": "v1.35.0",
+  "checks": [
+    {
+      "name": "real Chromium WebAuthn resident passkey enrolled"
+    },
+    {
+      "name": "kubectl obtains verified ExecCredential and namespace read succeeds"
+    },
+    {
+      "name": "write denied by namespace view RBAC"
+    },
+    {
+      "name": "secret read denied by view RBAC"
+    },
+    {
+      "name": "actual helper external browser passkey login succeeds"
+    },
+    {
+      "name": "actual Asterius default stable sender-bound refresh accepted"
+    },
+    {
+      "name": "actual Asterius explicit migration refresh rotates and helper adopts it"
+    },
+    {
+      "name": "group removal blocks new refreshed identity while issued JWT remains valid",
+      "refreshDenialMilliseconds": 364
+    },
+    {
+      "name": "actual Asterius token for different cluster audience rejected"
+    },
+    {
+      "name": "actual different Asterius issuer identity rejected"
+    },
+    {
+      "name": "account disable blocks actual refresh while existing offline JWT remains usable",
+      "refreshDenialMilliseconds": 310
+    },
+    {
+      "name": "helper logout erases OS credential, invalidates broker and revokes actual OP refresh grant without revoking issued JWT"
+    },
+    {
+      "name": "real ES256 signing key rotation: old JWT retained and newly signed credential accepted",
+      "initialKeyPropagationRejection": true,
+      "propagationMilliseconds": 196315
+    },
+    {
+      "name": "disabled-user offline JWT rejected after its actual signed expiry",
+      "nativeDenialMilliseconds": 296760
+    },
+    {
+      "name": "logged-out JWT rejected after actual expiry",
+      "nativeDenialMilliseconds": 300051
+    }
+  ],
+  "binarySourceRevision": "0b8688e5",
+  "binarySha256": "04dedcb5c936f246c9819bffe9ce836dc472b31f52fa3378d1404e6a1c3b65b7",
+  "runnerSourceRevision": "4f73985b",
+  "helperNodeVersion": "24.4.0",
+  "kindVersion": "0.31.0",
+  "targetedRustVerification": {
+    "passed": 65,
+    "filter": "binary(refresh_token) or test(kubernetes) + mandatory source/secret audits",
+    "newPostgresRegressions": "ignored locally; explicitly included in CI integration filter"
+  }
+}

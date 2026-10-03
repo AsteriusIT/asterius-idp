@@ -625,6 +625,31 @@ fn policy_trial_schema() -> Value {
     })
 }
 
+fn audit_detail_schema() -> Value {
+    let mut snapshot = policy_trial_schema()["properties"]["diagnostics"].clone();
+    snapshot["description"] = json!(
+        "Redacted bounded boolean evidence of the actual evaluated policy; cached issuance retains its original revision. Expires independently after seven days. No tokens, context input values or policy literals."
+    );
+    json!({
+        "type": "object", "required": ["id", "hash", "diagnostic"],
+        "properties": {
+            "id": {"type": "integer", "minimum": 1}, "hash": {"type": "string"},
+            "request_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+            "session_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "grant_id": {"type": "string", "format": "uuid"},
+            "diagnostic": {
+                "type": "object", "required": ["status"],
+                "properties": {
+                    "status": {"type": "string", "enum": ["recorded", "expired", "unavailable", "not_recorded", "opaque"]},
+                    "expires_at": {"type": "string", "format": "date-time"}, "snapshot": snapshot,
+                    "reason": {"type": "string", "enum": ["integrity_mismatch"]}
+                },
+                "description": "Snapshot and expires_at are present only for recorded evidence. Other statuses explain missing evidence; no current-policy reconstruction."
+            }
+        }
+    })
+}
+
 fn responses(operation: &Operation) -> Value {
     if operation.id() == crate::SCIM_BULK_ID {
         return json!({
@@ -664,6 +689,8 @@ fn responses(operation: &Operation) -> Value {
         })
     } else if operation.id() == crate::POLICY_TRY_ID {
         json!({"application/json": {"schema": policy_trial_schema()}})
+    } else if operation.id() == crate::AUDIT_EVENT_READ_ID {
+        json!({"application/json": {"schema": audit_detail_schema()}})
     } else {
         json!({ "application/json": { "schema": { "type": "object" } } })
     };
@@ -714,6 +741,12 @@ fn responses(operation: &Operation) -> Value {
         );
     }
 
+    if operation.id() == crate::AUDIT_EVENT_READ_ID {
+        answers["404"] = error_response(
+            "The event does not exist in the routed tenant; evidence is looked up only after this check.",
+        );
+        answers[success]["headers"] = json!({"X-Asterius-Request-ID": {"description": "Fresh server-generated support reference, independent of any caller AuthZEN echo.", "schema": {"type": "string", "pattern": "^[0-9a-f]{32}$"}}});
+    }
     answers
 }
 

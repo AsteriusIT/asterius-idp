@@ -101,3 +101,6 @@ node_modules/
 
 /scripts/load/certs/
 /scripts/load/explain.out
+
+# Public generated controlled-cluster acceptance report (CI artifact).
+/artifacts/kubernetes-e2e.json

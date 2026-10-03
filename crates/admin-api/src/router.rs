@@ -4173,7 +4173,15 @@ impl Handling<'_> {
             .first()
             .filter(|entry| entry.id == id)
             .ok_or(AdminError::NotFound)?;
-        Ok(json_no_store(StatusCode::OK, &audit::render(entry)))
+        let document = audit::render_detail(
+            self.state.backend.audit_trail().as_ref(),
+            &self.tenant.id,
+            entry,
+            self.now,
+        )
+        .await
+        .map_err(|error| AdminError::from_storage(crate::AUDIT_EVENT_READ_ID, &error))?;
+        Ok(json_no_store(StatusCode::OK, &document))
     }
 
     async fn list_audit_events(&self) -> Result<Response, AdminError> {

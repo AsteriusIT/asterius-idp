@@ -1,0 +1,133 @@
+{
+  "control": {
+    "profile": "Asterius scoped DPoP control; not native Entra provisioning",
+    "cases": [
+      {
+        "case": "DPoP discovery ServiceProviderConfig",
+        "status": 200
+      },
+      {
+        "case": "DPoP discovery Schemas",
+        "status": 200
+      },
+      {
+        "case": "DPoP discovery ResourceTypes",
+        "status": 200
+      },
+      {
+        "case": "same token Bearer refused",
+        "status": 401
+      },
+      {
+        "case": "cross-tenant creation refused",
+        "status": 401
+      },
+      {
+        "case": "create user",
+        "status": 201
+      },
+      {
+        "case": "duplicate user retry refused",
+        "status": 409
+      },
+      {
+        "case": "exact userName filter",
+        "status": 200
+      },
+      {
+        "case": "externalId matching unsupported",
+        "status": 400
+      },
+      {
+        "case": "native shape without If-Match refused",
+        "status": 428
+      },
+      {
+        "case": "disable user with ETag",
+        "status": 200
+      },
+      {
+        "case": "stale retry refused",
+        "status": 412
+      },
+      {
+        "case": "reactivate provisioning-disabled user",
+        "status": 200
+      },
+      {
+        "case": "read security-locked user",
+        "status": 200
+      },
+      {
+        "case": "security lock cannot be cleared by SCIM",
+        "status": 409
+      },
+      {
+        "case": "disable locked user",
+        "status": 200
+      },
+      {
+        "case": "disable then activate cannot bypass security lock",
+        "status": 409
+      },
+      {
+        "case": "legacy string active unsupported",
+        "status": 400
+      },
+      {
+        "case": "default name mapping unsupported",
+        "status": 400
+      },
+      {
+        "case": "create group with member",
+        "status": 201
+      },
+      {
+        "case": "foreign controller cannot read group",
+        "status": 404
+      },
+      {
+        "case": "excludedAttributes unsupported",
+        "status": 400
+      },
+      {
+        "case": "modern member remove with ETag",
+        "status": 200
+      },
+      {
+        "case": "delete group",
+        "status": 204
+      },
+      {
+        "case": "delete user",
+        "status": 204
+      },
+      {
+        "case": "deleted user invisible",
+        "status": 404
+      }
+    ]
+  },
+  "native": {
+    "native_validation": "not executed in SCIM control-only mode"
+  },
+  "ticket": "ast-xxt7",
+  "date": "2026-10-03",
+  "source": "main 9ce8df7a with ast-xxt7 security-lock patch",
+  "binary_sha256": "73f5598c53d3b4328d1b2dfaba6e694a6865ffed1cec433a7f5d5a8547e99623",
+  "verification": {
+    "gate": "./scripts/verify.sh test(scim) or test(provisioning_reach)",
+    "fmt": "PASS",
+    "clippy": "PASS: workspace all-targets -D warnings",
+    "nextest": "34 passed including mandatory source/secret audits; slow PG regression remains ignored for CI",
+    "http": "26 real scoped DPoP cases PASS; active:false asserted on locked reads and after disable",
+    "cleanup": "isolated database, server and private-key directory removed by fixture EXIT trap"
+  },
+  "historical_regression": {
+    "binary": "a351d707",
+    "direct_locked_activation": 409,
+    "disable_locked": 200,
+    "subsequent_activation": 200,
+    "fixed_subsequent_activation": 409
+  }
+}

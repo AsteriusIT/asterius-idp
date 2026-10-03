@@ -170,7 +170,7 @@ fn federation_rotate(path: &std::path::Path, tenant: &str) -> Result<(), String>
         let keys = PgFederationKeys::new(
             store.pool().clone(),
             kek,
-            Arc::new(PgAuditSink::new(store.pool().clone())),
+            asterius_server::http::request_id::audit(PgAuditSink::new(store.pool().clone())),
         );
         let kid = keys
             .stage(
@@ -233,7 +233,9 @@ fn client_authenticator(
             // Wired here rather than at the six endpoints that need it,
             // because the authenticator is the one place all six agree on what
             // "this client failed to authenticate" means.
-            .auditing(Arc::new(PgAuditSink::new(store.pool().clone())))
+            .auditing(asterius_server::http::request_id::audit(PgAuditSink::new(
+                store.pool().clone(),
+            )))
             .with_trust_anchors(trust_anchors);
     Ok(Arc::new(authenticator))
 }
@@ -307,7 +309,7 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
             PgFederationKeys::new(
                 store.pool().clone(),
                 Arc::clone(&kek),
-                Arc::new(PgAuditSink::new(store.pool().clone())),
+                asterius_server::http::request_id::audit(PgAuditSink::new(store.pool().clone())),
             ),
         )
         .await?;
@@ -399,7 +401,7 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
                     store.pool().clone(),
                 )),
                 Arc::clone(&outbound),
-                Arc::new(PgAuditSink::new(store.pool().clone())),
+                asterius_server::http::request_id::audit(PgAuditSink::new(store.pool().clone())),
             ))),
             upstream_identity_resolver: Some(Arc::new(
                 asterius_server::http::upstream_oidc::StoreUpstreamIdentityResolver::new(
@@ -512,7 +514,7 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
             initial_access_tokens: Some(Arc::new(PgInitialAccessTokens::new(store.pool().clone()))),
             outbound,
             cimd_documents,
-            audit: Arc::new(PgAuditSink::new(store.pool().clone())),
+            audit: asterius_server::http::request_id::audit(PgAuditSink::new(store.pool().clone())),
             session_lifetimes: Lifetimes::default().clamped(),
             // Passwords are the legacy path and passkeys are primary, but
             // the parameters are checked here rather than at first login:
@@ -894,7 +896,7 @@ fn tenant_repository(
     let keys = Arc::new(TenantKeyStore::new(
         store.pool().clone(),
         Arc::clone(kek),
-        Arc::new(PgAuditSink::new(store.pool().clone())),
+        asterius_server::http::request_id::audit(PgAuditSink::new(store.pool().clone())),
     ));
     let repository = ProvisionedTenants::new(
         PgTenantRepository::new(store.pool().clone(), Arc::clone(kek)),
@@ -1027,7 +1029,7 @@ fn spawn_workers(
         Arc::clone(&clock),
         store,
         kek,
-        Arc::new(PgAuditSink::new(store.pool().clone())),
+        asterius_server::http::request_id::audit(PgAuditSink::new(store.pool().clone())),
         SsfSigning {
             signer,
             tenants: tenants_for_streams,

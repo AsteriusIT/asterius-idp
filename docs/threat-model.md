@@ -2340,6 +2340,33 @@ trail. The `admin_policy_trial` enforcement-point marker identifies a simulation
 that made no access change; it does not claim correlation with a prior live
 login or enforcement event.
 
+### Confidential Kubernetes login broker and local helper
+
+`tools/kubernetes-login` is an external high-trust relying party, not an IdP
+OAuth grant endpoint. Each cluster uses an isolated operator-configured client
+and audience; same-origin HTTPS discovery and registered callbacks are pinned.
+The broker alone holds client keys, DPoP keys and encrypted OAuth refresh tokens.
+SQLite AES-GCM rows authenticate record identity, phase and absolute expiry; an
+exclusive process lock, CAS and shared refresh promises prevent grant replay.
+Ambiguous network/rotation failures invalidate the broker session.
+
+CLI/browser account substitution is bounded by independent state, nonce, S256
+PKCE, PAR, a browser cookie and explicit account/cluster/terminal confirmation.
+Single-use result collection needs both a separate non-URL secret and helper-key
+proof. Proofs bind request method, configured URL and JSON body, with durable
+replay checks. The helper independently validates issuer, single audience, ES256
+signature and five-minute lifetime, and checks kubectl's cluster/CA information.
+
+Linux Secret Service stores only the broker handle and helper proof key; missing
+secure storage uses memory only. No reusable secret reaches kubeconfig, shell
+arguments, logs or browser storage. Credentials appear on stdout only in v1
+ExecCredential JSON. Logout/back-channel invalidation cannot resurrect sessions
+through an in-flight callback/refresh. OP logout during unresolved authorization
+cancels pending cluster transactions conservatively. Broker TLS termination,
+secret-store protection and redacted proxy logs remain operator responsibilities.
+A stolen native Kubernetes ID token still works until expiry; offline JWT
+revocation remains explicitly bounded, not immediate.
+
 ### Controlled policy simulation
 
 Simulation requires policy, user, application and resource catalogue read
@@ -2451,6 +2478,29 @@ returned cloud object IDs and random local database; an external public-ID manif
 supports recovery if cleanup fails. A process/host crash can leave owned cloud
 objects, so the operator must inspect that manifest. Linked decisions ast-9mjp and
 ast-p3p3 must precede any compatible authentication or mapping expansion.
+
+## Historical authorization evidence and support correlation
+
+Only server-generated HTTP references enter audit correlation; AuthZEN's caller
+header echo is a separate response field. Tokio task scope prevents concurrent
+requests, detached jobs and cancellation from inheriting another request's
+reference. Transactional workload issuance decorates its event before the same
+atomic grant/provenance/audit commit. Session links carry lookup digests rather
+than browser credentials. Tenant/event authorization precedes evidence lookup;
+references confer no access permission. Existing bounded keyset pagination
+applies to request/session/grant filters and exports.
+
+Boolean diagnostic snapshots identify the actual evaluated policy, including a
+cached issuance decision's original revision. They omit context inputs and
+policy literals, redact credential-shaped rule IDs, and remain bounded to
+64 KiB. They expire separately after seven days and are unreadable at the expiry
+boundary even before physical sweep. Their UUID, expiry and canonical SHA-256 fingerprint remain in the
+immutable event, whose hash-chain behavior is unchanged. Readers verify that
+fingerprint and the original expiry before displaying evidence; changed JSON or
+expiry metadata cannot be presented as a historical decision. Missing/expired evidence
+is explicit; current policies are never presented as historical decisions.
+Unintegrated downstream decisions and non-policy issuance paths are outside this
+visibility boundary. An audit outage cannot alter a completed PDP verdict.
 ### GitHub workflow federation
 
 GitHub workflow tokens remain external bearer subject credentials, distinct from
@@ -2465,3 +2515,26 @@ operator provisioned runner credentials require dedicated ephemeral runners and
 trusted workflow/environment controls. No JWT or raw claims are emitted by the
 sample. Controlled CI fixtures establish local protocol interoperability only,
 not a live GitHub issuer/job or an unimplemented trusted broker.
+# Kubernetes identity CRDs
+
+Namespaced Application/Resource/Policy objects are untrusted desired input. A
+controller instance pins its namespace, canonical tenant issuer, tenant service
+client and administrator-owned binding identity. Admission and namespace labels
+do not replace this runtime check. Separate tenant instances use separate service
+credentials; cross-namespace Secret references and deployment-wide identity
+credentials are excluded. The GitOps writer can read its public binding parameter
+but cannot read Secrets, alter bindings/admission/RBAC or forge status. The
+controller gets only explicitly named Secrets and never expands that list from a
+manifest. Referenced application JWKS must contain public keys only.
+
+Structural schemas and parameterized fail-closed CEL enforce bounded input and
+same-namespace references. RuleSet JSON retains complete policy conditions and
+requires authoritative remote planning before mutation; schema acceptance is not
+policy acceptance. Remote ownership is the authenticated service principal,
+not CRD labels. UID-based external keys, exact conditional revisions and remote
+tombstone receipts prevent name reuse from changing another incarnation.
+Finalizers retain protection/ownership/dependency errors; manually removing them
+can orphan live authority. Status/events/logs contain bounded categories and
+opaque public identity/revision only, never secrets, credentials or raw policy
+literals. [The CRD ADR](adr/kubernetes-identity-resources.md) specifies this trust
+boundary; operator runtime verification is separate.
