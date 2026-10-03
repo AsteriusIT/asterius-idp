@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { read, readUrl, mutate, type Session } from '../src/api.ts';
+import { read, readUrl, mutate, ApiError, type Session } from '../src/api.ts';
 
 test('console requests cannot escape the current workspace or send writes to public endpoints', async t => {
   const originalFetch = globalThis.fetch;
@@ -24,4 +24,21 @@ test('console requests cannot escape the current workspace or send writes to pub
   await read('users/alex?section=sessions');
   await readUrl('https://id.example/t/review/.well-known/openid-configuration');
   assert.deepEqual(calls, ['https://id.example/t/review/admin/api/v1/users/alex?section=sessions', 'https://id.example/t/review/.well-known/openid-configuration']);
+});
+
+
+test('API failures expose only validated server support references', async t => {
+  const originalFetch = globalThis.fetch;
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { location: new URL('https://id.example/t/review/admin/#/audit') } });
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+  });
+  const reference = 'a'.repeat(32);
+  globalThis.fetch = async () => new Response('{"error":{"message":"Access denied"}}', { status: 403, headers: { 'X-Asterius-Request-ID': reference } });
+  await assert.rejects(read('audit/events'), error => error instanceof ApiError && error.status === 403 && error.supportReference === reference && error.message.includes(reference));
+  globalThis.fetch = async () => new Response('{}', { status: 403, headers: { 'X-Asterius-Request-ID': 'caller-owned-echo' } });
+  await assert.rejects(read('audit/events'), error => error instanceof ApiError && error.supportReference === undefined && !error.message.includes('caller-owned-echo'));
 });

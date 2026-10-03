@@ -43,6 +43,38 @@ pub const EXPORT_MAX_RECORDS: usize = 100_000;
 /// unit of memory one request can make the server hold, not a suggestion.
 pub const MAX_PAGE: u32 = 1_000;
 
+/// Boolean policy evidence has a shorter lifecycle than the immutable trail.
+pub const DIAGNOSTIC_DAYS: i64 = 7;
+pub const MAX_DIAGNOSTIC_BYTES: usize = 65_536;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiagnosticEvidence {
+    pub diagnostics: serde_json::Value,
+    pub expires_at: OffsetDateTime,
+}
+
+/// Deterministic encoding for integrity binding, independent of PostgreSQL JSONB
+/// key order and serde feature choices. Callers supply bounded diagnostic JSON.
+#[must_use]
+pub fn canonical_diagnostics(value: &serde_json::Value) -> String {
+    fn ordered(value: &serde_json::Value) -> serde_json::Value {
+        match value {
+            serde_json::Value::Object(object) => {
+                let sorted: std::collections::BTreeMap<_, _> = object
+                    .iter()
+                    .map(|(key, value)| (key.clone(), ordered(value)))
+                    .collect();
+                serde_json::Value::Object(sorted.into_iter().collect())
+            }
+            serde_json::Value::Array(values) => {
+                serde_json::Value::Array(values.iter().map(ordered).collect())
+            }
+            other => other.clone(),
+        }
+    }
+    ordered(value).to_string()
+}
+
 /// What an operator is asking for. Every member is optional and they are
 /// conjunctive: a record matches when it satisfies all of the ones set.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -58,6 +90,10 @@ pub struct AuditFilter {
     pub user: Option<String>,
     /// Records naming this grant.
     pub grant: Option<GrantId>,
+    /// The server-generated HTTP request reference; caller headers cannot set it.
+    pub request_id: Option<String>,
+    /// Records naming this server-owned session identifier.
+    pub session: Option<crate::SessionId>,
     /// Records of any of these types. Empty means every type.
     pub event_types: Vec<EventType>,
     /// Records at or after this instant.
@@ -93,6 +129,16 @@ impl AuditFilter {
         }
         if let Some(grant) = &self.grant
             && event.grant.as_ref() != Some(grant)
+        {
+            return false;
+        }
+        if let Some(request_id) = &self.request_id
+            && event.request_id.as_ref() != Some(request_id)
+        {
+            return false;
+        }
+        if let Some(session) = &self.session
+            && event.session.as_ref() != Some(session)
         {
             return false;
         }
@@ -136,6 +182,17 @@ pub struct TrailEntry {
 /// so the admin route that holds it cannot be turned into one that appends.
 #[async_trait::async_trait]
 pub trait AuditQuery: std::fmt::Debug + Send + Sync {
+    /// Reads only unexpired evidence in the routed tenant. The event is checked
+    /// separately before its server-owned evidence reference reaches this port.
+    async fn diagnostics(
+        &self,
+        _tenant: &TenantId,
+        _id: uuid::Uuid,
+        _now: OffsetDateTime,
+    ) -> Result<Option<DiagnosticEvidence>, DomainError> {
+        Ok(None)
+    }
+
     /// The records of `tenant` matching `filter`, newest first.
     ///
     /// `before` is the id of the last record already seen, or `None` for the

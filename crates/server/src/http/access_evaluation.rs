@@ -556,6 +556,21 @@ async fn decide_many(
         semantic => short_circuit(context, &prepared, semantic).await,
     };
 
+    for (prepared, decision) in prepared.iter().zip(&decisions) {
+        if let (Some(prepared), Some(decision)) = (prepared, decision)
+            && decision.explanation().is_some()
+        {
+            record(
+                context,
+                pep,
+                prepared,
+                started,
+                Some(decision),
+                Detail::new().label("evaluation_kind", "boxcar_item"),
+            )
+            .await;
+        }
+    }
     record_many(context, pep, &request, started, &decisions).await;
 
     let body = if request.boxcar {
@@ -1121,7 +1136,16 @@ async fn record(
     .client(pep.clone())
     .detail(detail);
 
-    if let Err(error) = context.audit.record(event).await {
+    let recorded = match decision.and_then(asterius_domain::policy::Decision::explanation) {
+        Some(explanation) => {
+            context
+                .audit
+                .record_with_diagnostics(event, explanation)
+                .await
+        }
+        None => context.audit.record(event).await,
+    };
+    if let Err(error) = recorded {
         tracing::error!(
             %error,
             tenant = %context.tenant.id,

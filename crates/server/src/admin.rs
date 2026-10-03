@@ -2666,7 +2666,7 @@ impl asterius_domain::UserAdministration for DeploymentUsers {
         if !has_password && !scope.passkeys().summaries_for_user(&user).await?.is_empty() {
             // Administrative authority does not turn mailbox control into a
             // user-verified passkey. Leave credentials and sessions untouched.
-            PgAuditSink::new(self.store.pool().clone())
+            crate::http::request_id::audit(PgAuditSink::new(self.store.pool().clone()))
                 .record(
                     asterius_domain::audit::AuditEvent::new(
                         tenant.clone(),
@@ -3632,7 +3632,7 @@ impl AdminBackend for Deployment {
     }
 
     fn audit(&self) -> Arc<dyn AuditSink> {
-        Arc::new(PgAuditSink::new(self.store.pool().clone()))
+        crate::http::request_id::audit(PgAuditSink::new(self.store.pool().clone()))
     }
 
     fn rate_limit_policy(
