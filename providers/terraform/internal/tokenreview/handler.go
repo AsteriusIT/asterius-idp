@@ -65,8 +65,11 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reject := func() { _, _ = io.WriteString(w, denied) }
+	// Kubernetes 1.35 client-go carries its configured transport timeout in
+	// this exact query parameter. It never changes our local three-second
+	// deadline or supplies identity; reject every other query shape.
 	media, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if r.Method != http.MethodPost || r.URL.Path != "/review" || r.URL.RawQuery != "" || media != "application/json" || err != nil || h.Remote == nil || h.Admission == nil {
+	if r.Method != http.MethodPost || r.URL.Path != "/review" || (r.URL.RawQuery != "" && r.URL.RawQuery != "timeout=30s") || media != "application/json" || err != nil || h.Remote == nil || h.Admission == nil {
 		reject()
 		return
 	}
