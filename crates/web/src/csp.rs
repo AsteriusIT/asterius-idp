@@ -130,10 +130,10 @@ const MAX_LABEL_LENGTH: usize = 63;
 
 /// An origin that may be named in `form-action`, alongside `'self'`.
 ///
-/// This exists for `response_mode=form_post` (`ast-gxh.5`): that response is a
-/// page this server renders which auto-submits a form to the *client's*
-/// `redirect_uri`, so for that one page — and only that one — `form-action`
-/// has to name the client's origin. Everything else stays `'self'`.
+/// Authorization forms can submit or redirect to the validated client callback
+/// (`ast-gxh.5`, `ast-616n`). Browsers enforce `form-action` across a submission
+/// redirect, including login/factor forms that complete remembered consent.
+/// These pages name that exact origin; unrelated pages remain `'self'`.
 ///
 /// The origin comes from a registered `redirect_uri`, which is not attacker
 /// controlled the way a query parameter is, but is attacker *supplied*: a
@@ -286,12 +286,12 @@ impl Policy {
         Self { form_action: None }
     }
 
-    /// Adds one origin to `form-action`, for a `response_mode=form_post` page.
+    /// Adds one validated callback origin to a completing authorization form.
     ///
     /// Additive and single-valued on purpose. `form-action` is what stops an
-    /// injected form in a login page from posting the password somewhere else,
-    /// so the seam `ast-gxh.5` needs is "this one page also submits to this one
-    /// registered callback", not "a page may choose its own `form-action`".
+    /// injected form from posting to an arbitrary destination. Authorization
+    /// completion requires this one registered callback, never a wildcard or
+    /// an origin copied from unvalidated browser input.
     #[must_use]
     pub fn with_form_post_to(mut self, origin: FormActionOrigin) -> Self {
         self.form_action = Some(origin);

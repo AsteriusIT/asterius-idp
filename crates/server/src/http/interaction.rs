@@ -678,12 +678,13 @@ async fn sign_in(
             id,
             now,
             "Enter a username and password.",
+            record,
         )
         .await;
     };
 
     let attempt = context.throttle.attempt(Some(username));
-    let mut state = match gate(context, presented, state, id, &attempt, now).await {
+    let mut state = match gate(context, presented, state, id, &attempt, now, record).await {
         Ok(state) => state,
         Err(response) => return *response,
     };
@@ -723,7 +724,7 @@ async fn sign_in(
                 match context.totp_credentials.status(user, now).await {
                     Ok(asterius_store_pg::TotpStatus::Active) => {
                         state.require_totp(&user.to_string(), username);
-                        return totp_challenge(context, presented, state, id, now).await;
+                        return totp_challenge(context, presented, state, id, now, record).await;
                     }
                     Ok(_) => {}
                     Err(error) => {
@@ -780,6 +781,7 @@ async fn sign_in(
                 id,
                 now,
                 "Those details did not match.",
+                record,
             )
             .await
         }
@@ -800,11 +802,13 @@ async fn totp_challenge(
     mut state: StoredState,
     id: &str,
     now: OffsetDateTime,
+    record: &InteractionRecord,
 ) -> Response {
     let token = state.issue_csrf();
     if let Err(error) = save(context, presented, &state, None, now).await {
         return *error;
     }
+    let offer = describe(context, record).await;
     render(
         context,
         &Screen {
@@ -813,7 +817,7 @@ async fn totp_challenge(
             csrf: &token,
             id,
             message: None,
-            offer: None,
+            offer: offer.as_ref(),
             signed_in: state.username.as_deref(),
             typed: None,
             totp_challenge: true,
@@ -856,7 +860,7 @@ async fn verify_totp_sign_in(
         );
     };
     let attempt = context.throttle.attempt(Some(username));
-    let state = match gate(context, presented, state, id, &attempt, now).await {
+    let state = match gate(context, presented, state, id, &attempt, now, record).await {
         Ok(state) => state,
         Err(response) => return *response,
     };
@@ -928,7 +932,7 @@ async fn verify_totp_sign_in(
                 .catalog(locale)
                 .login_totp_failed()
                 .to_owned();
-            retry(context, presented, state, id, now, &message).await
+            retry(context, presented, state, id, now, &message, record).await
         }
         Err(error) => {
             tracing::error!(%error, tenant = %context.tenant.id, "cannot verify TOTP login code");
@@ -957,10 +961,6 @@ struct SuccessfulAuthentication<'a> {
     now: OffsetDateTime,
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "This interaction step keeps validation and state transition responses together."
-)]
 async fn authenticated(
     context: &InteractionContext<'_>,
     presented: &InteractionId,
@@ -1029,7 +1029,7 @@ async fn authenticated(
                 .catalog(locale_of(context, &state))
                 .step_up_insufficient()
                 .to_owned();
-            return retry(context, presented, state, id, now, &message).await;
+            return retry(context, presented, state, id, now, &message, record).await;
         }
         Err(error) => {
             tracing::error!(%error, "cannot start a session");
@@ -1099,13 +1099,9 @@ async fn authenticated(
         return response;
     }
 
-    // Signed in, so the next screen is consent — which needs the
-    // offer.
-    let offer = if state.stage == Stage::Consent {
-        describe(context, &record).await
-    } else {
-        None
-    };
+    // Every completing authentication form needs this authorization
+    // callback origin, including a further step-up or factor stage.
+    let offer = describe(context, &record).await;
     let mut response = render(
         context,
         &Screen {
@@ -2282,11 +2278,13 @@ async fn retry(
     id: &str,
     now: OffsetDateTime,
     message: &str,
+    record: &InteractionRecord,
 ) -> Response {
     let token = state.issue_csrf();
     if let Err(error) = save(context, presented, &state, None, now).await {
         return *error;
     }
+    let offer = describe(context, record).await;
     render(
         context,
         &Screen {
@@ -2295,7 +2293,7 @@ async fn retry(
             csrf: &token,
             id,
             message: Some(message),
-            offer: None,
+            offer: offer.as_ref(),
             signed_in: state.username.as_deref(),
             typed: None,
             totp_challenge: state.totp_user.is_some(),
@@ -2372,7 +2370,7 @@ async fn create_account(
     // unauthenticated way to write rows into `users`, so the bucket the login
     // form counts wrong guesses in is the bucket that bounds it (`ast-2vk.9`).
     let attempt = context.throttle.attempt(field("email"));
-    let state = match gate(context, presented, state, id, &attempt, now).await {
+    let state = match gate(context, presented, state, id, &attempt, now, record).await {
         Ok(state) => state,
         Err(response) => return *response,
     };
@@ -2632,6 +2630,7 @@ async fn gate(
     id: &str,
     attempt: &throttle::Attempt,
     now: OffsetDateTime,
+    record: &InteractionRecord,
 ) -> Result<StoredState, Box<Response>> {
     match context
         .throttle
@@ -2642,7 +2641,7 @@ async fn gate(
         Ok(Some(refused)) => {
             throttle::record_throttled(context.audit, &context.tenant.id, refused, now).await;
             Err(Box::new(
-                throttled(context, presented, state, id, now, refused).await,
+                throttled(context, presented, state, id, now, refused, record).await,
             ))
         }
         Err(error) => {
@@ -2709,8 +2708,9 @@ async fn throttled(
     id: &str,
     now: OffsetDateTime,
     refused: throttle::Refused,
+    record: &InteractionRecord,
 ) -> Response {
-    let mut response = retry(context, presented, state, id, now, &refused.hint()).await;
+    let mut response = retry(context, presented, state, id, now, &refused.hint(), record).await;
     // Only a rendered page is turned into a refusal. `retry` answers with an
     // error page of its own when the interaction cannot be saved, and
     // relabelling that as 429 would say the limiter refused something it did
@@ -2860,7 +2860,7 @@ struct Screen<'a> {
     id: &'a str,
     /// A previous failure, in this server's own words.
     message: Option<&'a str>,
-    /// What is being asked for, when the screen is the consent one.
+    /// The validated client request and callback origin, for OAuth screens.
     offer: Option<&'a ConsentOffer>,
     /// Who is signed in, once somebody is.
     signed_in: Option<&'a str>,
@@ -2905,12 +2905,11 @@ struct ConsentChrome<'a> {
     signed_in: Option<&'a str>,
 }
 
-/// Draws the consent screen, and widens `form-action` for it alone.
+/// Draws the consent screen with its exact validated callback origin.
 ///
-/// This form posts back to the interaction, but its answer is a 303 to the
-/// client — and `form-action` governs that redirect too, so the consent screen
-/// is the one page that names the client's origin (`ast-jsq`). No other stage
-/// does: the widening is attached here and nowhere else.
+/// Browser `form-action` also governs redirects after a submission. Login and
+/// factor forms can complete remembered consent directly, so they use the same
+/// validated origin (`ast-616n`); unrelated first-party forms remain self-only.
 fn consent_page(
     context: &InteractionContext<'_>,
     offer: &ConsentOffer,
@@ -2957,8 +2956,17 @@ fn consent_page(
             brand: presentation.brand(chrome.font_url),
         })
     });
-    match offer.form_action.clone() {
-        Some(origin) => document.with_form_post_to(origin).into_response(),
+    authorization_form_response(document, offer.form_action.as_ref())
+}
+
+/// Only the origin already derived from this stored, validated authorization
+/// may receive a completing form redirect. There is no raw browser URL here.
+fn authorization_form_response(
+    document: Document,
+    callback: Option<&FormActionOrigin>,
+) -> Response {
+    match callback {
+        Some(origin) => document.with_form_post_to(origin.clone()).into_response(),
         None => document.into_response(),
     }
 }
@@ -2969,6 +2977,8 @@ fn consent_page(
 /// and a renderer taking eight of them positionally is a renderer whose call
 /// site can transpose two.
 struct SignInPage<'a> {
+    /// A password POST may immediately complete remembered consent.
+    form_action: Option<&'a FormActionOrigin>,
     /// The words, and the language they are in.
     text: &'a Catalog,
     /// Whether this is the stronger-authentication stage.
@@ -2990,6 +3000,8 @@ struct SignInPage<'a> {
 }
 
 struct TotpPage<'a> {
+    /// A final factor POST may immediately complete remembered consent.
+    form_action: Option<&'a FormActionOrigin>,
     text: &'a Catalog,
     step_up: bool,
     action: &'a str,
@@ -3013,7 +3025,7 @@ fn totp_challenge_page(context: &InteractionContext<'_>, page: &TotpPage<'_>) ->
             brand: presentation.brand(page.font_url),
         })
     });
-    let mut response = document.into_response();
+    let mut response = authorization_form_response(document, page.form_action);
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -3032,7 +3044,7 @@ fn sign_in_page(context: &InteractionContext<'_>, page: &SignInPage<'_>) -> Resp
             href: format!("{}/upstream/{}", page.action, provider.id),
         })
         .collect();
-    Document::render(context.nonce, |nonce| {
+    let document = Document::render(context.nonce, |nonce| {
         pages::render(&LoginPage {
             preview: false,
             upstream_providers: &links,
@@ -3055,8 +3067,8 @@ fn sign_in_page(context: &InteractionContext<'_>, page: &SignInPage<'_>) -> Resp
             theme_css: &presentation.css,
             brand: presentation.brand(page.font_url),
         })
-    })
-    .into_response()
+    });
+    authorization_form_response(document, page.form_action)
 }
 
 /// What the sign-up page is drawn from.
@@ -3150,6 +3162,7 @@ fn render(context: &InteractionContext<'_>, screen: &Screen<'_>) -> Response {
         return totp_challenge_page(
             context,
             &TotpPage {
+                form_action: offer.and_then(|offer| offer.form_action.as_ref()),
                 text,
                 step_up: stage == Stage::StepUp,
                 action: &action,
@@ -3163,6 +3176,7 @@ fn render(context: &InteractionContext<'_>, screen: &Screen<'_>) -> Response {
         Stage::Login | Stage::StepUp => sign_in_page(
             context,
             &SignInPage {
+                form_action: offer.and_then(|offer| offer.form_action.as_ref()),
                 text,
                 step_up: stage == Stage::StepUp,
                 action: &action,

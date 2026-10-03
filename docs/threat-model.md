@@ -2603,3 +2603,16 @@ cannot bypass the explicit task obligation. Online descendant withdrawal is a
 separate ast-dd1y.8.3 enforcement boundary; offline use is bounded by a 300-second
 maximum and task/ancestor deadlines. See `docs/agent-task-approvals.md` for the
 activation, supported paths and retained history contract.
+
+## Completing authorization form CSP
+
+[Browser form-action navigation checks](https://www.w3.org/TR/CSP3/#directive-form-action)
+apply to redirects after form submissions. OAuth login,
+step-up and final-factor pages can complete remembered consent immediately, so
+their policy permits self plus the exact origin of this stored, validated
+registered callback through the same FormActionOrigin parser as consent.
+Unrelated first-party pages remain self-only; native/private callback schemes
+add no browser origin. This explicitly trusts one registered client origin in
+the completing form policy, never wildcard destinations or raw browser URLs.
+The source templates still escape all field content and nonce-protect scripts;
+authentication, CSRF tokens and redirect validation are unchanged.
