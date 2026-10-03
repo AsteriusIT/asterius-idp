@@ -1,9 +1,9 @@
 # External workload trust and token exchange
 
-- **Status:** Provisional; human normative review pending
+- **Status:** Accepted design; runtime implementation tracked separately
 - **Date:** 2026-10-03
 - **Bead:** ast-dd1y.2.1
-- **Deciders:** pending human approval
+- **Deciders:** User approval in the epic implementation session, 2026-10-03
 - **Refines:** ADR-0003, ADR-0006, ADR-0014
 
 ## Context and current implementation
@@ -21,7 +21,7 @@ checks may be replaced by an unverified external claim.
 (no redirects, guarded DNS and connection addresses, 64 KiB body and five-second
 whole-request timeout). Its client-key cache is not a workload trust registry.
 
-## Proposed decision
+## Decision
 
 Use an explicit, disabled-by-default tenant workload exchange profile on the
 existing RFC 8693 token endpoint. A workload JWT is a **subject token**, never
@@ -153,7 +153,7 @@ registering a caller's ephemeral key from that JWT, unauthenticated exchange,
 or accepting possession of an arbitrary DPoP key as client authentication.
 A separately named non-FAPI workload client authentication profile could solve
 credentialless bootstrap, but must be approved explicitly and must not inherit
-FAPI claims. It is outside this provisional selection.
+FAPI claims. It is outside this selection.
 
 ## Threat model and implementation gates
 
@@ -166,8 +166,9 @@ consumption bounds subsequent reuse. Compromised issuer signing keys can mint
 identities until disable/key removal bounds above; short output TTL is necessary.
 Token theft from logs is addressed by redaction and structured metadata-only audit.
 
-Implementation tickets ast-dd1y.2.2–.2.4 remain blocked by this decision's human
-review acceptance criterion. Required evidence includes negative validation and
+The user approved this document on 2026-10-03 ("ok pour les deux documents"),
+satisfying the human review prerequisite. Implementation tickets
+ast-dd1y.2.2–.2.4 retain their runtime acceptance criteria. Required evidence includes negative validation and
 cross-tenant tests, concurrent replay/disable tests, rotation/outage tests,
 provider controlled flows, parser fuzzing, OpenAPI and operator documentation.
 A documentation-only review does not establish runtime enforcement or interop.
@@ -175,8 +176,10 @@ A documentation-only review does not establish runtime enforcement or interop.
 ## Source review record
 
 Published primary sources were opened by the implementing agent on 2026-10-03.
-This is an **automated source review**, not human normative approval. No human
-reviewer, approval date or sign-off is present; ast-dd1y.2.1 remains incomplete.
+The automated source review prepared the document for human review. The user
+then approved both the Kubernetes and external workload contracts on 2026-10-03.
+That approval includes the explicitly documented limitations and does not claim
+runtime interoperability.
 
 | Source | Relevant boundary |
 |---|---|
@@ -188,7 +191,7 @@ reviewer, approval date or sign-off is present; ast-dd1y.2.1 remains incomplete.
 | [Kubernetes ServiceAccount validation](https://kubernetes.io/docs/reference/access-authn-authz/service-accounts-admin/) | Offline verification versus TokenReview and bound-object freshness |
 | [GitHub OIDC claims](https://docs.github.com/en/actions/reference/security/oidc) | Numeric repository/owner IDs and workflow/environment/ref identity |
 
-Human review must explicitly accept independent client bootstrap limitations,
-external RS256 isolation, issuer freshness/replay bounds, offline Kubernetes
-deletion bounds, and the non-human principal authorization model before changing
-this status to Accepted or closing the decision.
+The approved design preserves independent client bootstrap limitations, external
+RS256 isolation, issuer freshness/replay bounds, offline Kubernetes deletion
+bounds and the non-human principal authorization model. A secretless direct
+GitHub bootstrap needs a separate reviewed design before it is advertised.
