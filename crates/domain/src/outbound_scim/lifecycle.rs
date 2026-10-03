@@ -30,7 +30,9 @@ pub struct LifecycleCommand {
     pub expected_revision: Uuid,
     pub expected_generation: Uuid,
     pub kind: LifecycleKind,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub target: Option<Uuid>,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub etag: Option<String>,
     pub confirmed: bool,
 }
@@ -162,6 +164,14 @@ mod tests {
         value["confirmed"] = serde_json::json!(true);
         value["actor"] = serde_json::json!("tenant_admin");
         assert!(parse_lifecycle(&serde_json::to_vec(&value).expect("JSON")).is_err());
+    }
+    #[test]
+    fn absent_target_approval_requires_explicit_null_context() {
+        let mut value = serde_json::json!({"expected_revision":Uuid::from_u128(1),"expected_generation":Uuid::from_u128(2),"kind":"archive","confirmed":true});
+        assert!(parse_lifecycle(&serde_json::to_vec(&value).expect("JSON")).is_err());
+        value["target"] = serde_json::Value::Null;
+        value["etag"] = serde_json::Value::Null;
+        assert!(parse_lifecycle(&serde_json::to_vec(&value).expect("JSON")).is_ok());
     }
     #[test]
     fn deletion_cannot_be_approved_without_a_saved_target_and_version() {

@@ -108,6 +108,11 @@ pub fn value() -> Value {
                 },
             },
             "schemas": {
+                "OutboundScimConnector": outbound_scim_connector_schema(),
+                "OutboundScimCredential": outbound_scim_credential_schema(),
+                "OutboundScimAssignment": outbound_scim_assignment_schema(),
+                "OutboundScimLifecycleReceipt": outbound_scim_lifecycle_receipt_schema(),
+                "OutboundScimAssignmentPreview": outbound_scim_assignment_preview_schema(),
                 "Error": error_schema(),
                 "Page": page_schema(),
                 "AcrPolicy": acr_policy_schema(),
@@ -199,6 +204,7 @@ fn operation_object(operation: &Operation) -> Value {
                     "allow_ephemeral_subjects": {"type": "boolean"} }
         });
     }
+    outbound_scim_documentation(operation, &mut object);
     governance_documentation(operation, &mut object);
     declarative_documentation(operation, &mut object);
     client_resources_documentation(operation, &mut object);
@@ -344,6 +350,25 @@ fn operation_parameters(operation: &Operation) -> Vec<Value> {
         parameters.push(json!({"name":"limit","in":"query","required":false,"schema":{"type":"integer","minimum":1,"maximum":100,"default":50},"description":"Rows per page; values outside one to one hundred are refused."}));
     }
 
+    if operation.id().starts_with("outbound_scim.") {
+        for parameter in &mut parameters {
+            parameter["schema"] = outbound_scim_uuid_schema();
+            parameter["schema"]["pattern"] =
+                json!("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$");
+        }
+        if matches!(
+            operation.id(),
+            "outbound_scim.list" | "outbound_scim.assignments" | "outbound_scim.reconcile"
+        ) {
+            parameters.push(json!({"name":"after","in":"query","required":false,"schema":outbound_scim_uuid_schema(),"description":"UUID keyset cursor: use the exact last returned row UUID, or the reconcile response after UUID."}));
+        }
+        if matches!(
+            operation.id(),
+            "outbound_scim.list" | "outbound_scim.assignments"
+        ) {
+            parameters.push(json!({"name":"limit","in":"query","required":false,"schema":{"type":"integer","minimum":1,"maximum":100,"default":50},"description":"Values outside 1..100 are refused. No opaque cursor or offset is accepted."}));
+        }
+    }
     task_view_parameters(operation, &mut parameters);
     if operation.is_paginated() {
         parameters.push(json!({ "$ref": "#/components/parameters/cursor" }));
@@ -958,6 +983,155 @@ fn path_parameters(path: &str) -> Vec<&str> {
         .collect()
 }
 
+fn outbound_scim_uuid_schema() -> Value {
+    json!({"type":"string","format":"uuid","not":{"const":"00000000-0000-0000-0000-000000000000"}})
+}
+fn outbound_scim_optional_uuid_schema() -> Value {
+    json!({"oneOf":[outbound_scim_uuid_schema(),{"type":"null"}]})
+}
+fn outbound_scim_optional_etag_schema() -> Value {
+    json!({"oneOf":[{"type":"string","maxLength":128,"pattern":"^W/\"[1-9][0-9]*\"$","description":"Saved weak target ETag; bounded positive i64 revision, never wildcard."},{"type":"null"}]})
+}
+fn outbound_scim_failure_schema() -> Value {
+    json!({"enum":[null,"paused","credential_unavailable","credential_binding_mismatch","authentication_refused","target_unavailable","ownership_mismatch","target_absent","target_version_changed","source_protected","source_projection_invalid","user_dependencies_pending","snapshot_bound_exceeded","lease_superseded"]})
+}
+fn outbound_scim_credential_schema() -> Value {
+    json!({"type":"object","additionalProperties":false,"required":["reference","generation","target_issuer","target_client"],"properties":{
+        "reference":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},"generation":outbound_scim_uuid_schema(),
+        "target_issuer":{"type":"string","format":"uri","maxLength":2048,"description":"Canonical HTTPS issuer of the distinct, operator-approved target tenant."},
+        "target_client":{"type":"string","minLength":1,"maxLength":2048}
+    },"description":"SOURCE-tenant-filtered deployment descriptor only. Contains no private key, file path, assertion, access token or DPoP secret."})
+}
+fn outbound_scim_connector_schema() -> Value {
+    json!({"type":"object","additionalProperties":false,"required":["id","revision","target_issuer","target_client","credential_ref","credential_generation","enabled","allow_reviewed_delete"],"properties":{
+        "id":outbound_scim_uuid_schema(),"revision":outbound_scim_uuid_schema(),
+        "target_issuer":{"type":"string","format":"uri","maxLength":2048},"target_client":{"type":"string","minLength":1,"maxLength":2048},
+        "credential_ref":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},"credential_generation":outbound_scim_uuid_schema(),
+        "enabled":{"type":"boolean"},"allow_reviewed_delete":{"type":"boolean"}
+    },"description":"Current configuration revision; target issuer/client stay pinned while any assignment history exists. Credential reference authority depends on the complete source/destination context."})
+}
+fn outbound_scim_assignment_schema() -> Value {
+    json!({"type":"object","additionalProperties":false,"required":["id","kind","source","generation","selected","target","observed_etag","retired","state","failure_code","dirty"],"properties":{
+        "id":outbound_scim_uuid_schema(),"kind":{"enum":["user","group"]},"source":outbound_scim_uuid_schema(),"generation":outbound_scim_uuid_schema(),
+        "selected":{"type":"boolean"},"target":outbound_scim_optional_uuid_schema(),"observed_etag":outbound_scim_optional_etag_schema(),"retired":{"type":"boolean"},
+        "state":{"enum":["pending","waiting_dependencies","applied","paused","conflict","dead_letter","deleted"]},"failure_code":outbound_scim_failure_schema(),"dirty":{"type":"boolean"}
+    },"description":"Public IDs and fixed diagnostics only; no personal-data snapshot, signing material or raw peer error. Unselection retains mapping authority until explicitly verified archival."})
+}
+fn outbound_scim_lifecycle_receipt_schema() -> Value {
+    json!({"type":"object","additionalProperties":false,"required":["id","kind","completed","replacement","failure_code","cancelled"],"properties":{
+        "id":outbound_scim_uuid_schema(),"kind":{"enum":["archive","delete","recreate"]},"completed":{"type":"boolean"},"replacement":outbound_scim_optional_uuid_schema(),
+        "failure_code":outbound_scim_failure_schema(),"cancelled":{"type":"boolean"}
+    },"description":"Durable explicit approval result. Completed retries are no-ops; replacement is the fresh local assignment UUID, not permission to adopt another remote UUID."})
+}
+fn outbound_scim_assignment_preview_schema() -> Value {
+    json!({"type":"object","additionalProperties":false,"required":["assignment","generation","desired_revision","action","target","target_version"],"properties":{
+        "assignment":outbound_scim_uuid_schema(),"generation":outbound_scim_uuid_schema(),"desired_revision":outbound_scim_uuid_schema(),
+        "action":{"enum":["recover_deprovision","unchanged_absent","create","unchanged","disable","empty_group","update"]},
+        "target":outbound_scim_optional_uuid_schema(),"target_version":outbound_scim_optional_etag_schema()
+    },"description":"Observed ownership/drift from authenticated GET only. This response never establishes a mapping, mutates a target, or authorizes a future write."})
+}
+fn outbound_scim_page_schema(name: &str, bound: usize) -> Value {
+    json!({"type":"object","additionalProperties":false,"required":["items"],"properties":{"items":{"type":"array","maxItems":bound,"items":{"$ref":format!("#/components/schemas/{name}")}}}})
+}
+fn outbound_scim_documentation(operation: &Operation, object: &mut Value) {
+    if !operation.id().starts_with("outbound_scim.") {
+        return;
+    }
+    object["security"] = json!([{"consoleSession":[]}]);
+    object["x-console-only"] = json!(true);
+    object["x-fresh-phishing-resistant-write"] =
+        json!(operation.authority().scope().ends_with(":write"));
+    object["x-candidate-contract-review"] = json!(
+        "ast-dd1y.6.2 Proposed; delivery/shared enablement awaits review and real first-target acceptance"
+    );
+    object["description"] = json!(
+        "Same-realm human administration only; tokens and foreign reserved administrators cannot act for this tenant. Writes require current active tenant administrator, fresh console proof, CSRF and declared scope. Only configured SOURCE-tenant-bound deployment credentials can be selected. No posted actor, private key, filesystem path, token or personal-data snapshot is accepted. Pausing fences subsequent admissions but cannot cancel a remote request already dispatched. Target mappings require immutable ownership and version checks; missing mapped UUIDs do not authorize automatic recreation."
+    );
+    let revision = json!({"type":"object","additionalProperties":false,"required":["expected_revision"],"properties":{"expected_revision":outbound_scim_uuid_schema()}});
+    let request = match operation.id() {
+        "outbound_scim.create" | "outbound_scim.configure" => {
+            let creating = operation.id() == "outbound_scim.create";
+            let mut required = vec![
+                "target_issuer",
+                "target_client",
+                "credential_ref",
+                "credential_generation",
+                "enabled",
+                "allow_reviewed_delete",
+            ];
+            if !creating {
+                required.push("expected_revision");
+            }
+            Some(
+                json!({"type":"object","additionalProperties":false,"required":required,"properties":{
+                "expected_revision":if creating{json!({"type":"null"})}else{outbound_scim_uuid_schema()},
+                "target_issuer":{"type":"string","format":"uri","maxLength":2048,"description":"Canonical, operator-approved distinct HTTPS issuer; no userinfo/query/fragment/IP/localhost/redirect aliases."},
+                "target_client":{"type":"string","minLength":1,"maxLength":2048},"credential_ref":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
+                "credential_generation":outbound_scim_uuid_schema(),"enabled":if creating{json!({"const":false})}else{json!({"type":"boolean"})},"allow_reviewed_delete":{"type":"boolean"}
+            },"description":"Create mints its UUID server-side and starts disabled; max100 live connectors per source tenant. Enable requires exact authenticated preview within five minutes. Credential rotation needs pause/configure/preview/enable. Target principal remains pinned by retained history."}),
+            )
+        }
+        "outbound_scim.select" => Some(
+            json!({"type":"object","additionalProperties":false,"required":["expected_revision","kind","sources"],"properties":{"expected_revision":outbound_scim_uuid_schema(),"kind":{"enum":["user","group"]},"sources":{"type":"array","minItems":1,"maxItems":100,"uniqueItems":true,"items":outbound_scim_uuid_schema()}},"description":"Select explicit current local sources; inbound SCIM ownership is refused. Max100 non-retired assignments per kind, including quiescing assignments. Group direct active selected User projection is separately bounded to100 members."}),
+        ),
+        "outbound_scim.lifecycle" => Some(
+            json!({"type":"object","additionalProperties":false,"required":["expected_revision","expected_generation","kind","target","etag","confirmed"],"properties":{"expected_revision":outbound_scim_uuid_schema(),"expected_generation":outbound_scim_uuid_schema(),"kind":{"enum":["archive","delete","recreate"]},"target":outbound_scim_optional_uuid_schema(),"etag":outbound_scim_optional_etag_schema(),"confirmed":{"const":true}},"allOf":[{"if":{"properties":{"kind":{"const":"delete"}}},"then":{"properties":{"target":outbound_scim_uuid_schema(),"etag":{"type":"string","maxLength":128,"pattern":"^W/\"[1-9][0-9]*\"$"}}}},{"oneOf":[{"properties":{"target":{"type":"null"},"etag":{"type":"null"}}},{"properties":{"target":outbound_scim_uuid_schema(),"etag":{"type":"string"}}}]}],"description":"Exact connector/generation/target/ETag CAS and explicit human confirmation. Five-minute database-clock approval; each mutation rechecks admission. Archive fences inactive/empty owned target or safe never-created absence. DELETE additionally requires enabled policy and a disabled/empty owned saved UUID; admitted same-UUID404 may recover only that delete receipt. Recreate verifies absence or fences inactive/empty old incarnation and queues a fresh generation while retaining history."}),
+        ),
+        "outbound_scim.unselect"
+        | "outbound_scim.reconcile"
+        | "outbound_scim.preview"
+        | "outbound_scim.dry_run" => Some(revision),
+        _ => None,
+    };
+    if let Some(schema) = request {
+        object["requestBody"] =
+            json!({"required":true,"content":{"application/json":{"schema":schema}}});
+    }
+    let response = match operation.id() {
+        "outbound_scim.list" => outbound_scim_page_schema("OutboundScimConnector", 100),
+        "outbound_scim.credentials" => outbound_scim_page_schema("OutboundScimCredential", 100),
+        "outbound_scim.assignments" | "outbound_scim.select" => {
+            outbound_scim_page_schema("OutboundScimAssignment", 100)
+        }
+        "outbound_scim.lifecycle_read" => {
+            outbound_scim_page_schema("OutboundScimLifecycleReceipt", 25)
+        }
+        "outbound_scim.lifecycle" => {
+            json!({"$ref":"#/components/schemas/OutboundScimLifecycleReceipt"})
+        }
+        "outbound_scim.dry_run" => {
+            json!({"$ref":"#/components/schemas/OutboundScimAssignmentPreview"})
+        }
+        "outbound_scim.preview" => {
+            json!({"type":"object","additionalProperties":false,"required":["connector","revision","filter_supported","etag_supported"],"properties":{"connector":outbound_scim_uuid_schema(),"revision":outbound_scim_uuid_schema(),"filter_supported":{"const":true},"etag_supported":{"const":true}},"description":"Authenticated GET verified filter/ETag and exact reserved-incarnation capability; receipt authorizes enablement only for this revision/credential generation within five minutes."})
+        }
+        "outbound_scim.reconcile" => {
+            json!({"type":"object","additionalProperties":false,"required":["after"],"properties":{"after":outbound_scim_optional_uuid_schema()},"description":"At most25 jobs queued. Continue with the returned after UUID; null means the final page. Queue acknowledgement is not target delivery."})
+        }
+        "outbound_scim.unselect" => {
+            json!({"type":"object","additionalProperties":false,"required":["accepted"],"properties":{"accepted":{"const":true}}})
+        }
+        _ => json!({"$ref":"#/components/schemas/OutboundScimConnector"}),
+    };
+    if let Some(responses) = object["responses"].as_object_mut() {
+        responses.retain(|status, _| !status.starts_with('2'));
+    }
+    object["responses"]["200"] = json!({"description":"Current tenant-scoped result; queued commands are not target completion","content":{"application/json":{"schema":response}}});
+    for (status, description) in [
+        ("400", "Malformed, oversized or closed-profile input"),
+        ("401", "Authentication or fresh console step-up required"),
+        ("403", "Same-realm human authority, scope or CSRF refused"),
+        ("404", "Source-tenant connector or assignment absent"),
+        (
+            "409",
+            "Configuration/generation/version conflict, ownership refusal, paused peer, approval expiry or bounded catalogue refusal",
+        ),
+        ("503", "Deployment registry/runtime or storage unavailable"),
+    ] {
+        object["responses"][status] = error_response(description);
+    }
+}
+
 fn governance_documentation(operation: &Operation, object: &mut Value) {
     if operation.id() == "governance.findings" {
         governance_reports_documentation(object);
@@ -1315,6 +1489,39 @@ mod tests {
             CHECKED_IN, generated,
             "docs/admin-api-openapi.json is stale. Regenerate it:\n    {REGENERATE_COMMAND}"
         );
+    }
+
+    #[test]
+    fn outbound_provisioning_contract_is_console_only_closed_and_exactly_scoped() {
+        let document = value();
+        let create = &document["paths"][crate::OUTBOUND_SCIM_CREATE.full_path()]["post"];
+        assert_eq!(create["security"], json!([{"consoleSession":[]}]));
+        assert_eq!(create["x-fresh-phishing-resistant-write"], json!(true));
+        assert!(create["responses"].get("201").is_none());
+        let command = &create["requestBody"]["content"]["application/json"]["schema"];
+        assert_eq!(command["additionalProperties"], json!(false));
+        assert_eq!(command["properties"]["enabled"]["const"], json!(false));
+        for forbidden in ["id", "actor", "key_file", "private_key", "access_token"] {
+            assert!(command["properties"].get(forbidden).is_none());
+        }
+        let lifecycle = &document["paths"][crate::OUTBOUND_SCIM_LIFECYCLE.full_path()]["post"]["requestBody"]
+            ["content"]["application/json"]["schema"];
+        assert_eq!(lifecycle["properties"]["confirmed"]["const"], json!(true));
+        for required in ["expected_revision", "expected_generation", "target", "etag"] {
+            assert!(
+                lifecycle["required"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!(required))
+            );
+        }
+        let receipts = &document["paths"][crate::OUTBOUND_SCIM_LIFECYCLE_READ.full_path()]["get"];
+        assert_eq!(
+            receipts["responses"]["200"]["content"]["application/json"]["schema"]["properties"]["items"]
+                ["maxItems"],
+            json!(25)
+        );
+        assert!(receipts.get("requestBody").is_none());
     }
 
     #[test]
