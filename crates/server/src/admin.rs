@@ -234,6 +234,18 @@ impl AdminTokens for AutomationTokens {
             return Ok(None);
         }
 
+        let Ok(task_query) =
+            asterius_domain::agent_tasks::TokenQuery::from_claims(&verified.claims)
+        else {
+            return Ok(None);
+        };
+        if !self
+            .status
+            .task_token_active(&issuer.id, &task_query)
+            .await?
+        {
+            return Ok(None);
+        }
         if self.status.is_denylisted(&issuer.id, jti).await? {
             return Ok(None);
         }
@@ -270,6 +282,14 @@ impl AdminTokens for AutomationTokens {
 
 #[async_trait::async_trait]
 trait AutomationTokenStatus: std::fmt::Debug + Send + Sync {
+    async fn task_token_active(
+        &self,
+        _tenant: &TenantId,
+        query: &asterius_domain::agent_tasks::TokenQuery,
+    ) -> Result<bool, DomainError> {
+        Ok(query.approval.is_none())
+    }
+
     async fn is_denylisted(&self, tenant: &TenantId, jti: &str) -> Result<bool, DomainError>;
 
     async fn revoked_before(
@@ -287,6 +307,18 @@ struct PgAutomationTokenStatus {
 
 #[async_trait::async_trait]
 impl AutomationTokenStatus for PgAutomationTokenStatus {
+    async fn task_token_active(
+        &self,
+        tenant: &TenantId,
+        query: &asterius_domain::agent_tasks::TokenQuery,
+    ) -> Result<bool, DomainError> {
+        self.store
+            .scope(tenant.clone())
+            .grants()
+            .task_token_active(query)
+            .await
+    }
+
     async fn is_denylisted(&self, tenant: &TenantId, jti: &str) -> Result<bool, DomainError> {
         self.store
             .scope(tenant.clone())
@@ -2607,6 +2639,19 @@ impl asterius_domain::UserAdministration for DeploymentUsers {
             .await
     }
 
+    async fn grant_owned(
+        &self,
+        tenant: &TenantId,
+        user: UserId,
+        grant: &GrantId,
+    ) -> Result<bool, DomainError> {
+        self.store
+            .scope(tenant.clone())
+            .grants()
+            .owned_by(grant, &user)
+            .await
+    }
+
     async fn revoke_grant(
         &self,
         tenant: &TenantId,
@@ -2621,15 +2666,17 @@ impl asterius_domain::UserAdministration for DeploymentUsers {
         // No live access tokens are named, for the reason
         // `ClientEndpoints::revoke` gives: this caller holds none of the
         // grant's tokens, and what withdraws them is the cutoff.
+        let audit = crate::http::request_id::audit(PgAuditSink::new(self.store.pool().clone()));
         match self
             .store
             .scope(tenant.clone())
             .grants()
-            .revoke(
+            .revoke_with_audit(
                 grant,
                 asterius_domain::RevocationReason::AdminRevoked,
                 &[],
                 now,
+                audit.as_ref(),
             )
             .await
         {

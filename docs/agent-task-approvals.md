@@ -77,9 +77,9 @@ with their tenant for authoritative lifecycle checks and history. Client/root
 removal clears nullable references and preserves the terminal approval
 correlators; deleting the tenant removes its task data.
 
-This ticket supplies the issuance fence. Descendant withdrawal and authoritative
-online task/token checks are delivered by ast-dd1y.8.3, and the owner-facing
-history viewer by ast-dd1y.8.4. An offline verifier continues to have only the
+The issuance fence and descendant withdrawal share the root lock. Authoritative
+online task/token checks inspect the exact private lineage; the owner-facing
+history viewer is delivered by ast-dd1y.8.4. An offline verifier continues to have only the
 bounded token expiry guarantee. The complete contract is
 [the task-grant ADR](adr/task-bound-agent-grants.md); HTTP shapes are in
 [the account task OpenAPI document](agent-tasks-openapi.json).
@@ -94,3 +94,71 @@ is explicitly not evidence of a live human login. Slow adapter integration
 tests remain CI-only (`--run-ignored all`).
 
 The sanitized recorded run is [agent task issuance evidence](testing/agent-task-issuance-evidence.json), including the executed binary digest and controlled-fixture limitations.
+
+
+## Descendant withdrawal
+
+A freshly authenticated owner posts `task_id`, `confirm=revoke` and the same
+session-specific challenge from the task preview to
+`/account/agent-tasks/revoke`. A task UUID supplies no authority. The operation
+is idempotent for that owner; another owner or tenant receives the same missing
+answer. Existing owner grant withdrawal and tenant-authorized administrative
+grant withdrawal use the same fence. Revoking the root ends the whole task;
+revoking an intermediate grant ends only its subtree. Siblings and independent
+runs stay valid.
+
+Authoritative online checks resolve exact private JTI lineage even when public
+grant IDs are hidden. They check current task/revision, owner and initiating
+client, every ancestor's status/expiry, and recipient client state. These reads
+are uncached and fail closed on database failure. Introspection (both access
+and refresh), PDP, UserInfo, Grant Management, SSF resources, administrative
+automation, credential issuance and local token exchange use that lifecycle.
+A task-enabled client cannot use a taskless JWT at these protected APIs.
+
+First activation binds historical stored descendants under the root lock.
+Child insertion and legacy descendant signing share that lock, so creation
+racing activation cannot leave a valid future credential outside task lineage.
+Historical JWTs issued before task activation cannot acquire signed task claims
+or private JTI records retroactively: the existing legacy JWT expiry bound
+continues to apply, especially where public grant IDs were hidden. New refresh,
+exchange and issuance from their stored descendants inherit the current task
+and cannot evade its withdrawal.
+
+Withdrawal commits a root/task or intermediate-grant tombstone, cutoff and
+`agent.task.withdrawn` audit with immutable identifiers and request correlation.
+The tombstone is effective at the next uncached online read; a response already
+authorized may finish. Physical descendant cleanup follows a durable cursor,
+processing at most 512 candidate grants and ten ancestor rows per candidate on
+one retention sweep. Cleanup marks grants and refresh credentials, writes the
+existing grant cutoffs and denylist, and survives process restart. Cleanup
+backlog is reported by `Sweep.more_to_do` and does not extend online authority.
+Existing owner/client lifecycle transitions also enqueue cleanup when their
+terminal Task tombstone is written; their account/client audit event records
+the cause. Explicit Task/grant withdrawal records `agent.task.withdrawn`. Existing owner/account/session SSF
+notifications retain their current meanings; no fabricated session-revoked
+SET claims that withdrawing one task revoked an unrelated human session.
+
+An external resource server must use authorized introspection for prompt
+withdrawal and cap its response cache at five seconds and token expiry. An
+offline task JWT verifier may accept the previously issued token for at most
+its remaining lifetime (maximum 300 seconds), plus explicit clock leeway.
+Outbox/event delivery is a hint and carries no hard global propagation promise.
+
+The reproducible withdrawal acceptance uses
+`ASTERIUS_BIN=<verified binary> ./scripts/agent-task-withdrawal-acceptance.sh`.
+It creates only its own disposable local database/listener, uses independently
+authenticated management and agent clients, and prints sanitized assertions.
+The owner session and human authorization roots are controlled fixture inputs;
+they are not evidence of a live human authentication ceremony. PostgreSQL
+regression tests for backfill, subtree isolation and bounded cleanup remain
+ignored locally and are reserved to CI.
+
+The committed [withdrawal evidence](testing/agent-task-withdrawal-evidence.json)
+records the executed binary digest, UTC time and eleven real HTTPS control
+checks. The [baseline](testing/agent-task-withdrawal-baseline.json) records the
+previous administrative owner-path substitution defect. Final local validation
+passed strict formatting/Clippy, 198 targeted tests including mandatory source
+and secret audits, and the compile/lint/registry gate for all 108 fuzz targets.
+The ignored PostgreSQL concurrency, legacy activation, maximum-depth and
+resumable 512-row cleanup regressions are prepared for CI, not claimed as run
+locally.

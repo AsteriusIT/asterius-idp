@@ -261,6 +261,66 @@
           }
         }
       }
+    },
+    "/account/agent-tasks/revoke": {
+      "post": {
+        "operationId": "revokeOwnedAgentTask",
+        "summary": "Idempotently withdraw a fresh signed-in owner task and its descendants",
+        "security": [
+          {
+            "ownerSession": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "task_id",
+                  "csrf",
+                  "confirm"
+                ],
+                "properties": {
+                  "task_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "csrf": {
+                    "type": "string",
+                    "maxLength": 256
+                  },
+                  "confirm": {
+                    "const": "revoke"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Own task is terminal; repeated withdrawal also succeeds. Cache-Control no-store."
+          },
+          "303": {
+            "description": "Fresh owner authentication required"
+          },
+          "400": {
+            "description": "Strict bounded form invalid"
+          },
+          "403": {
+            "description": "Session-specific CSRF invalid"
+          },
+          "404": {
+            "description": "No task owned by this authenticated tenant account"
+          },
+          "503": {
+            "description": "Authoritative withdrawal unavailable; no success acknowledged"
+          }
+        }
+      }
     }
   },
   "components": {

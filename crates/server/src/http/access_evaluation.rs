@@ -201,6 +201,15 @@ pub struct ResolvedSubject {
 /// port named for what it does here. The implementations are the same rows.
 #[async_trait::async_trait]
 pub trait PdpTokenStatus: std::fmt::Debug + Send + Sync {
+    /// Uncached task/ancestor state after JWT and sender verification.
+    /// Compatibility implementations refuse every task-linked credential.
+    async fn task_token_active(
+        &self,
+        query: &asterius_domain::agent_tasks::TokenQuery,
+    ) -> Result<bool, DomainError> {
+        Ok(query.approval.is_none())
+    }
+
     /// Whether this `jti` was revoked individually (RFC 7009).
     ///
     /// # Errors
@@ -967,6 +976,11 @@ pub(crate) async fn authorize(
     let jti = verified
         .claim_str("jti")
         .ok_or(UserInfoError::InvalidToken)?;
+    let task_query = asterius_domain::agent_tasks::TokenQuery::from_claims(&verified.claims)
+        .map_err(|_| UserInfoError::InvalidToken)?;
+    if !context.tokens.task_token_active(&task_query).await? {
+        return Err(UserInfoError::InvalidToken.into());
+    }
     if context.tokens.is_denylisted(jti).await? {
         return Err(UserInfoError::InvalidToken.into());
     }
