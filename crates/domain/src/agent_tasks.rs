@@ -110,6 +110,59 @@ impl Permissions {
     }
 }
 
+/// Public signed token linkage, parsed only after signature verification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokenQuery {
+    pub jti: String,
+    pub client: crate::ClientId,
+    pub approval: Option<SignedApproval>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SignedApproval {
+    pub task_id: Uuid,
+    pub revision: i64,
+}
+
+impl TokenQuery {
+    /// This parser provides no authentication; callers first verify the JWT
+    /// signature, issuer, audience, expiry and required sender constraint.
+    // fuzz-target: agent_task_token_linkage
+    pub fn from_claims(claims: &Value) -> Result<Self, DomainError> {
+        let jti = claims
+            .get("jti")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty() && value.len() <= 256)
+            .ok_or_else(invalid)?;
+        let client = claims
+            .get("client_id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty() && value.len() <= 256)
+            .ok_or_else(invalid)?;
+        let approval = match (claims.get("task_id"), claims.get("task_approval_revision")) {
+            (None, None) => None,
+            (Some(task), Some(revision)) => {
+                let task = task.as_str().ok_or_else(invalid)?;
+                let task_id = Uuid::parse_str(task).map_err(|_| invalid())?;
+                if task_id.hyphenated().to_string() != task {
+                    return Err(invalid());
+                }
+                let revision = revision
+                    .as_i64()
+                    .filter(|value| *value > 0)
+                    .ok_or_else(invalid)?;
+                Some(SignedApproval { task_id, revision })
+            }
+            _ => return Err(invalid()),
+        };
+        Ok(Self {
+            jti: jti.to_owned(),
+            client: crate::ClientId::new(client.to_owned()),
+            approval,
+        })
+    }
+}
+
 /// Public correlators, never credentials or owner identity.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Binding {
@@ -165,6 +218,52 @@ mod strict_details {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn agent_task_token_linkage_refuses_partial_untyped_or_unbounded_claims() {
+        let id = Uuid::new_v4();
+        let base = json!({"jti":"private-correlation","client_id":"recipient"});
+        assert!(
+            TokenQuery::from_claims(&base)
+                .expect("legacy facts")
+                .approval
+                .is_none()
+        );
+        let claims = json!({"jti":"private-correlation","client_id":"recipient","task_id":id.to_string(),"task_approval_revision":7,"grant_id":"ignored-public-correlator"});
+        let query = TokenQuery::from_claims(&claims).expect("signed task facts");
+        assert_eq!(
+            query.approval,
+            Some(SignedApproval {
+                task_id: id,
+                revision: 7
+            })
+        );
+        for (field, value) in [
+            ("task_id", Value::Null),
+            ("task_id", json!(id.to_string().to_uppercase())),
+            ("task_id", json!(id.simple().to_string())),
+            ("task_approval_revision", json!("7")),
+            ("task_approval_revision", json!(0)),
+            ("task_approval_revision", json!(-1)),
+            ("task_approval_revision", json!(7.5)),
+            ("jti", json!("")),
+            ("jti", json!("j".repeat(257))),
+            ("client_id", json!("")),
+            ("client_id", json!("c".repeat(257))),
+        ] {
+            let mut refused = claims.clone();
+            refused[field] = value;
+            assert!(TokenQuery::from_claims(&refused).is_err(), "field {field}");
+        }
+        for field in ["task_id", "task_approval_revision", "jti", "client_id"] {
+            let mut refused = claims.clone();
+            refused.as_object_mut().expect("object").remove(field);
+            assert!(
+                TokenQuery::from_claims(&refused).is_err(),
+                "missing {field}"
+            );
+        }
+    }
 
     fn permissions() -> Permissions {
         Permissions {

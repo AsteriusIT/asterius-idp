@@ -2688,3 +2688,25 @@ denial. Console publication/history restoration use the reviewed revision and ex
 confirmation; the atomic store guard protects conditional changes outside the console.
 Sensitivity updates compare the reviewed UUID. Conflicts preserve drafts and never
 retry automatically against newer state. See [operator controls](conditional-access-operations.md).
+### Task descendant withdrawal and historical lineage
+
+A task-root or intermediate-grant tombstone denies all bound descendants at the
+next authoritative uncached token/grant read, independent of cleanup or PDP
+allow-cache entries. Private JTI linkage, signed task/revision and exact issued
+client must agree; public grant claims and subject-based grant searches cannot
+replace them. Owner/client removal or disable is terminal. An intermediate
+withdrawal leaves siblings and independent tasks active.
+
+First approval backfills existing stored descendants and serializes child
+insertion plus legacy signing with its root fence. This prevents an ordinary
+recipient from racing activation to create an unbound renewable descendant.
+Historical pre-task JWTs cannot be retroactively identified when public grant
+and private JTI linkage were absent; their original legacy expiry guarantee is
+preserved explicitly. Every subsequent bound mint receives durable linkage.
+
+Physical withdrawal follows a durable bounded cursor while online validity
+continues to inspect ancestor tombstones. Task/lineage/cleanup evidence stays
+with its tenant. A stale introspection response is useful only until its five
+second cache cap or token expiry; offline JWTs retain the maximum 300 second task
+expiry plus configured leeway. Neither SSF hints nor cleanup completion claims
+instant global revocation or undo an already authorized action.

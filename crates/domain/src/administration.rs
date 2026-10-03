@@ -404,6 +404,21 @@ pub trait UserAdministration: Debug + Send + Sync {
     /// [`DomainError::Storage`] if the store could not be reached.
     async fn grants(&self, tenant: &TenantId, user: UserId) -> Result<Vec<Grant>, DomainError>;
 
+    /// Exact relation needed when an authorized user-scoped operation names a
+    /// grant. A UUID does not substitute for ownership of the path's user.
+    async fn grant_owned(
+        &self,
+        tenant: &TenantId,
+        user: UserId,
+        grant: &crate::GrantId,
+    ) -> Result<bool, DomainError> {
+        Ok(self
+            .grants(tenant, user)
+            .await?
+            .iter()
+            .any(|owned| &owned.id == grant))
+    }
+
     /// Withdraws one authorization, with Grant Management ID1 §6.5's
     /// semantics: the refresh tokens go, the access-token cutoff is written,
     /// and the grant is stamped last.
