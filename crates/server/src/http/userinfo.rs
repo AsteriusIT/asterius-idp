@@ -410,15 +410,13 @@ async fn answer(
         ))
     })?;
     let role_grant = token_role_grant(&grant, &verified);
-    let mut held = context.source.roles_for_grant(&role_grant).await?;
+    let held = context.source.roles_for_grant(&role_grant).await?;
     let groups = context
         .source
         .managed_group_ids(user, &grant.client)
         .await?;
-    held.retain_current_temporary_roles(time::OffsetDateTime::now_utc());
-    let body = userinfo::with_roles(body, grant.client.as_str(), &held);
     let body = userinfo::with_managed_groups(body, groups);
-    render(context, &grant, body).await
+    render(context, &grant, body, held).await
 }
 
 // A verified access token may carry narrower bounds than its durable grant.
@@ -710,11 +708,16 @@ async fn render(
     context: &UserInfoContext<'_>,
     grant: &Grant,
     body: Map<String, Value>,
+    mut held: asterius_domain::HeldRoles,
 ) -> Result<Response, Refused> {
     // Read here rather than before the token was verified: the client is the
     // one the *grant* names, and until `live_grant` ran the only `client_id`
     // available came out of a token this code had not checked.
     let policy = context.source.response_policy(&grant.client).await?;
+    // Response-policy/key lookup can outlive a temporary activation or proof.
+    // Only standing authority may survive that final response clock.
+    held.retain_current_temporary_roles(time::OffsetDateTime::now_utc());
+    let body = userinfo::with_roles(body, grant.client.as_str(), &held);
     let Some(algorithm) = policy.signing_algorithm else {
         if policy.encryption_jwks.is_some() {
             return Err(Refused::from(DomainError::invalid(
@@ -753,6 +756,13 @@ async fn render(
     } else {
         signed.as_str().to_owned()
     };
+    let issued_roles = held.for_client(&grant.client);
+    held.retain_current_temporary_roles(time::OffsetDateTime::now_utc());
+    if held.for_client(&grant.client).clients != issued_roles.clients {
+        return Err(Refused::Server(DomainError::invalid(
+            "temporary_entitlement", "temporary authority expired while rendering UserInfo",
+        )));
+    }
     Ok(no_store(
         (
             StatusCode::OK,

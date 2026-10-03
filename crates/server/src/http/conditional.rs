@@ -1493,11 +1493,24 @@ mod tests {
             Resource::new("application", "app", Properties::empty()).expect("resource"),
             Context::default(),
         );
+        let policy = StoredPolicy {
+            rules: asterius_domain::policy::RuleSet::from_json(&json!({
+                "version":1,"rules":[{"id":"elevation","effect":"permit",
+                    "when":{"role":{"name":"temporary","owner":"app"}}}]
+            })).expect("policy"),
+            updated_at: now,
+        };
         let owner = asterius_domain::RoleOwner::Client(client);
+        assert!(asterius_domain::policy::explanation::evaluate(
+            Some(&policy), &request, "access_evaluation",
+        ).permit());
         assert!(request.subject.holds_role(Some(&owner), &temporary));
         advance_clock(&mut request, now + Duration::seconds(2));
         assert!(!request.subject.holds_role(Some(&owner), &temporary));
         assert!(request.subject.holds_role(Some(&owner), &standing));
+        assert!(!asterius_domain::policy::explanation::evaluate(
+            Some(&policy), &request, "access_evaluation",
+        ).permit());
     }
 
     #[test]
