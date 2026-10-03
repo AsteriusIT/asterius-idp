@@ -1,6 +1,6 @@
 # Native Kubernetes RBAC for approved temporary privilege
 
-Status: proposed normative extension; human review and interoperability acceptance pending.
+Status: proposed normative extension; isolated interoperability verified, human review pending.
 Refs: ast-dd1y.5.3; approved baseline login ast-dd1y.1.1; temporary lifecycle ast-dd1y.5.1.
 
 A temporary RoleBinding must never use the ordinary Kubernetes username. Otherwise
@@ -10,7 +10,7 @@ and a separate username generation. The existing baseline subject/group contract
 ES256 signing, confidential broker, PAR/PKCE and DPoP remain unchanged.
 
 The human review delta is the private ID-token provenance claim below, its exact
-server-authority derivation, and the CEL username selection. Approval of the
+server-authority derivation, CEL username selection, and cache-bounded offline expiry. Approval of the
 baseline ADR did not approve these additions. Production enablement and main merge
 are gated on this review. Source implementation and disposable acceptance can proceed.
 
@@ -112,10 +112,10 @@ measured polling/request window. An old unexpired JIT token then receives 403.
 During controller or API unavailability the stale binding can remain, but all
 previous JIT tokens expire no later than their activation deadline and newly issued
 ordinary tokens have a different username. Thus outage residual access is bounded
-by already issued token expiry, never by eventual controller recovery. Revocation
+by already issued token expiry plus the API server successful-authentication cache, never by eventual controller recovery. Revocation
 cannot immediately invalidate offline JWTs during an outage; the documented maximum
 residual is the smaller of remaining activation and ID-token lifetime (five-minute
-profile ceiling). No token issued after current revocation may receive JIT provenance.
+profile ceiling), plus the verified successful-authentication cache ceiling and clock skew. Kubernetes v1.35 defaults this cache to ten seconds: [authentication options](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/kubeapiserver/options/authentication.go#L152-L157) and [JWT cache composition](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/kubeapiserver/authenticator/config.go#L186-L193). The reviewed deployment must preserve an independently verified finite cache ceiling; a changed server implementation/configuration requires remeasurement. A signed expired token can therefore remain authenticated for up to ten seconds after exp on this supported profile. Disposable acceptance measures this residual rather than claiming immediate expiry. No token issued after current revocation may receive JIT provenance.
 
 Disposable acceptance must prove real code/refresh issuance, old JIT expiry and
 new ordinary-token denial with the controller stopped, healthy revocation access

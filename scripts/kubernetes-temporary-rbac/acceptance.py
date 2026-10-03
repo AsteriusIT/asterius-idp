@@ -141,7 +141,8 @@ def activations():
     result=owner.admin('GET',path+'/activations'); assert result[0] == 200; return result[2]['items']
 def submit(duration=30):
     command={'entitlement_id':entitlement_id,'duration_seconds':duration,'reason':'<script>incident</script> '+secrets.token_hex(4),'idempotency_key':str(uuid.uuid4())}
-    assert requester.command('request',command)[0] == 303, 'ordinary request'
+    status, _, result=requester.command('request',command)
+    assert status == 303, f'ordinary request status={status} freshness_prompt={isinstance(result,str) and "Sign in again with" in result}'
     request_id=next(item['request_id'] for item in requests() if item['status']=='pending' and item['reason']==command['reason'])
     assert requester.command('request',command)[0] == 303, 'same body replay'
     assert requester.command('request',{**command,'duration_seconds':duration+1})[0] == 404, 'changed replay payload refused'
@@ -305,7 +306,11 @@ def wait_subjects(expected, timeout=8):
         status, current=kube_http(sa,'GET',binding_path); assert status==200
         subjects=current.get('subjects') or []
         if (len(subjects)==expected if type(expected) is int else bool(subjects)==expected): return time.monotonic()-started
-        assert time.monotonic()-started<timeout, 'bounded real reconciliation window'
+        if time.monotonic()-started>=timeout:
+            status, _, snapshot=automation.request('GET',api+'/kubernetes/temporary-access/'+entitlement_id)
+            print(json.dumps({'projection_status':status,'projection_enabled':snapshot.get('binding',{}).get('enabled'),'projection_subject_count':len(snapshot.get('subjects',[])),'native_subject_count':len(subjects)}),flush=True)
+            print((root/'controller.log').read_text()[-2000:],flush=True)
+            raise AssertionError('bounded real reconciliation window')
         assert controller is not None and controller.poll() is None, 'controller remains running'
         time.sleep(.1)
 
@@ -334,7 +339,8 @@ def approve(duration):
 try:
     controller=start_controller()
     active=approve(45)
-    overlap=approve(50)
+    overlapping_request=submit(50)
+    assert approver.command('decide',{'request_id':overlapping_request,'decision':'approve','idempotency_key':str(uuid.uuid4())})[0]==404, 'existing active approval cannot be silently replaced'
     assert owner.admin('POST',path+'/eligibilities',{'user_id':ids['stranger'],'not_before':int(time.time())-1,'expires_at':int(time.time())+600,'expected_revision':None})[0]==200
     other_reason='Second independent actor '+secrets.token_hex(8)
     assert stranger.command('request',{'entitlement_id':entitlement_id,'duration_seconds':50,'reason':other_reason,'idempotency_key':str(uuid.uuid4())})[0]==303
@@ -344,13 +350,13 @@ try:
     issued, _, identity=code_tokens()
     assert identity['asterius_jit']['binding_revision']==mapping['revision']
     assert identity['exp']<=active['expires_at'] and identity['exp']<=identity['asterius_jit']['expires_at']
+    other_issued, _, other_identity=code_tokens(browser=stranger)
     enabled_seconds=wait_subjects(2)
     status, _, projection=automation.request('GET',api+'/kubernetes/temporary-access/'+entitlement_id)
-    assert status==200 and len(projection['subjects'])==2, 'overlapping live approvals yield one complete native subject'
+    assert status==200 and len(projection['subjects'])==2, 'complete projection retains both independently approved native subjects'
     assert len({item['username'] for item in projection['subjects']})==2
-    assert overlap['activation_id'] in [item['activation_id'] for item in projection['subjects']], 'representative matches latest live approval deadline'
-    other_issued, _, other_identity=code_tokens(browser=stranger)
-    assert kube_http(other_issued['id_token'],'GET',secret_path)[0]==200, 'overlap never clears another legitimate subject'
+    assert active['activation_id'] in [item['activation_id'] for item in projection['subjects']], 'refused overlap preserves the current valid approval'
+    assert kube_http(other_issued['id_token'],'GET',secret_path)[0]==200, 'refused overlap never clears another legitimate subject'
     assert kube_http(issued['id_token'],'GET',secret_path)[0]==200, 'real signed JIT token reaches fixed Role'
     assert kube_http(issued['id_token'],'GET','/api/v1/namespaces/'+namespace+'/secrets')[0]==403, 'get does not grant list'
     assert kube_http(baseline_issued['id_token'],'GET',secret_path)[0]==403, 'ordinary username cannot borrow active JIT binding'
@@ -389,8 +395,6 @@ try:
 
     status, _, revoked=owner.admin('POST',path+'/activations/'+active['activation_id']+'/revoke',{'activation_id':active['activation_id'],'reason':'Native RBAC proof','idempotency_key':str(uuid.uuid4())})
     assert status==200
-    assert kube_http(issued['id_token'],'GET',secret_path)[0]==200, 'independent overlapping approval remains legitimate'
-    assert owner.admin('POST',path+'/activations/'+overlap['activation_id']+'/revoke',{'activation_id':overlap['activation_id'],'reason':'Overlap complete','idempotency_key':str(uuid.uuid4())})[0]==200
     revoked_seconds=wait_subjects(1)
     assert kube_http(other_issued['id_token'],'GET',secret_path)[0]==200, 'another actor survives independent revocation'
     assert kube_http(issued['id_token'],'GET',secret_path)[0]==403
@@ -409,7 +413,13 @@ try:
     time.sleep(max(0,outage_identity['exp']-time.time()+.5))
     status, stale=kube_http(sa,'GET',binding_path)
     assert status==200 and stale.get('subjects'), 'outage leaves stale native binding'
-    assert kube_http(outage_issued['id_token'],'GET',secret_path)[0]==401, 'expired JIT token cannot reach stale binding'
+    expiry_probe_started=time.monotonic()
+    while True:
+        expiry_status=kube_http(outage_issued['id_token'],'GET',secret_path)[0]
+        if expiry_status==401:break
+        assert expiry_status==200 and time.time()<=outage_identity['exp']+12, 'bounded Kubernetes successful-authentication cache residual'
+        time.sleep(.1)
+    expiry_residual_seconds=max(0,time.time()-outage_identity['exp'])
     ordinary, _, ordinary_identity=code_tokens()
     assert 'asterius_jit' not in ordinary_identity
     assert kube_http(ordinary['id_token'],'GET',secret_path)[0]==403, 'new ordinary token cannot reuse stale JIT username'
@@ -450,4 +460,4 @@ try:
 finally:
     if controller is not None: controller.terminate(); controller.wait(timeout=10)
     controller_log.close()
-print(json.dumps({'status':'pass','controls':checks,'measured_enable_seconds':round(enabled_seconds,3),'measured_revoke_seconds':round(revoked_seconds,3)}))
+print(json.dumps({'status':'pass','controls':checks,'measured_enable_seconds':round(enabled_seconds,3),'measured_revoke_seconds':round(revoked_seconds,3),'measured_expiry_residual_seconds':round(expiry_residual_seconds,3),'kubernetes_success_authentication_cache_ceiling_seconds':10}))
