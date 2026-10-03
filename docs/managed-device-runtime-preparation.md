@@ -24,6 +24,19 @@ changes, missing/cyclic/deeper-than-ten lineage, revocation and expiry after loc
 waits. The minimum current lineage expiry caps the signed identity and is
 rechecked after cryptography and online digest persistence. Separate consent/code
 and exact-parent exchange preflight helpers never establish final issued authority.
+A further correction pins the exact loaded permission/authentication revision
+(`grants.updated_at`) after all row waits, using the same PostgreSQL timestamp
+encoding as insertion. First claim changes only `claimed_at`; audience/scope
+narrowing and task preparation do not change this revision. Exact-parent exchange
+preflight copies the parent's observed revision, rather than the child's timestamp.
+An amendment that wins before final identity signing therefore refuses the stale
+loaded grant. The CI regression checks normal first claim/narrowing, stale leaf
+refusal after a real repository amendment, and success after authoritative reload.
+This additional leaf-revision correction is not yet in the recorded runtime binary.
+Parent permission derivation is tracked separately as ast-dd1y.9: reloading a fresh
+parent revision cannot establish that a previously derived child ceiling belongs
+to that revision. Candidate delivery requires that race to be resolved as well.
+
 The corrected binary passed the full 26 normal HTTPS/browser controls, including
 original-code identity issuance. That run does not claim to exercise withdrawal
 between the access-token and identity signatures. Focused ignored PostgreSQL
