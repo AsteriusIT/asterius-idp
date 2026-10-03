@@ -1,0 +1,452 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Asterius Kubernetes relying-party broker",
+    "version": "0.1.0"
+  },
+  "servers": [
+    {
+      "url": "https://kube-login.example.com"
+    }
+  ],
+  "paths": {
+    "/v1/transactions": {
+      "post": {
+        "security": [
+          {
+            "HelperProof": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["cluster", "secret"],
+                "properties": {
+                  "cluster": {
+                    "type": "string"
+                  },
+                  "secret": {
+                    "type": "string",
+                    "format": "password",
+                    "writeOnly": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "No-store success; poll may return 202 pending.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["transaction", "browserUrl", "expiresIn"],
+                  "properties": {
+                    "transaction": {
+                      "type": "string"
+                    },
+                    "browserUrl": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "expiresIn": {
+                      "const": 300
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed bounded request"
+          },
+          "401": {
+            "description": "Expired session/transaction, invalid proof or replay"
+          },
+          "409": {
+            "description": "Already consumed or refresh in progress"
+          },
+          "503": {
+            "description": "Fail-closed broker/upstream/storage unavailable"
+          }
+        }
+      }
+    },
+    "/v1/poll": {
+      "post": {
+        "security": [
+          {
+            "HelperProof": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["transaction", "secret"],
+                "properties": {
+                  "transaction": {
+                    "type": "string"
+                  },
+                  "secret": {
+                    "type": "string",
+                    "format": "password",
+                    "writeOnly": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "No-store success; poll may return 202 pending.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Credential"
+                    },
+                    {
+                      "type": "object",
+                      "required": ["handle"],
+                      "properties": {
+                        "handle": {
+                          "type": "string",
+                          "format": "password"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed bounded request"
+          },
+          "401": {
+            "description": "Expired session/transaction, invalid proof or replay"
+          },
+          "409": {
+            "description": "Already consumed or refresh in progress"
+          },
+          "503": {
+            "description": "Fail-closed broker/upstream/storage unavailable"
+          },
+          "202": {
+            "description": "Pending browser authorization/confirmation; retry with a fresh proof."
+          }
+        }
+      }
+    },
+    "/v1/cancel": {
+      "post": {
+        "security": [
+          {
+            "HelperProof": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["transaction", "secret"],
+                "properties": {
+                  "transaction": {
+                    "type": "string"
+                  },
+                  "secret": {
+                    "type": "string",
+                    "format": "password",
+                    "writeOnly": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "No-store success; poll may return 202 pending."
+          },
+          "400": {
+            "description": "Malformed bounded request"
+          },
+          "401": {
+            "description": "Expired session/transaction, invalid proof or replay"
+          },
+          "409": {
+            "description": "Already consumed or refresh in progress"
+          },
+          "503": {
+            "description": "Fail-closed broker/upstream/storage unavailable"
+          }
+        }
+      }
+    },
+    "/v1/credential": {
+      "post": {
+        "security": [
+          {
+            "HelperProof": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["handle"],
+                "properties": {
+                  "handle": {
+                    "type": "string",
+                    "format": "password",
+                    "writeOnly": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "No-store success; poll may return 202 pending.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Credential"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed bounded request"
+          },
+          "401": {
+            "description": "Expired session/transaction, invalid proof or replay"
+          },
+          "409": {
+            "description": "Already consumed or refresh in progress"
+          },
+          "503": {
+            "description": "Fail-closed broker/upstream/storage unavailable"
+          }
+        }
+      }
+    },
+    "/v1/logout": {
+      "post": {
+        "security": [
+          {
+            "HelperProof": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["handle"],
+                "properties": {
+                  "handle": {
+                    "type": "string",
+                    "format": "password",
+                    "writeOnly": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "No-store success; poll may return 202 pending."
+          },
+          "400": {
+            "description": "Malformed bounded request"
+          },
+          "401": {
+            "description": "Expired session/transaction, invalid proof or replay"
+          },
+          "409": {
+            "description": "Already consumed or refresh in progress"
+          },
+          "503": {
+            "description": "Fail-closed broker/upstream/storage unavailable"
+          }
+        }
+      }
+    },
+    "/login/{transaction}": {
+      "get": {
+        "description": "Starts single-use browser authorization, sets Secure HttpOnly cookie; 303 to pinned PAR authorization URI.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "transaction",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No-store response"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Binding or signature failed"
+          },
+          "410": {
+            "description": "Expired transaction"
+          }
+        }
+      }
+    },
+    "/callback/{cluster}": {
+      "get": {
+        "description": "Exact registered OAuth callback; validates state, issuer, cookie, exchanges code and displays explicit confirmation.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cluster",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No-store response"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Binding or signature failed"
+          },
+          "410": {
+            "description": "Expired transaction"
+          }
+        }
+      }
+    },
+    "/confirm/{transaction}": {
+      "post": {
+        "description": "Same-origin form/cookie/one-use confirmation; approve or cancel.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "transaction",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No-store response"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Binding or signature failed"
+          },
+          "410": {
+            "description": "Expired transaction"
+          }
+        }
+      }
+    },
+    "/backchannel/{cluster}": {
+      "post": {
+        "description": "Registered OP logout receiver. Form logout_token validated against pinned issuer JWKS, audience, logout+jwt, events and replay.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cluster",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No-store response"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Binding or signature failed"
+          },
+          "410": {
+            "description": "Expired transaction"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "HelperProof": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "Asterius-Proof",
+        "description": "ES256 typ asterius-kubernetes-proof+jwt; public JWK, audience broker origin, htm POST, htu exact URI, body SHA256 of transmitted JSON, iat/exp<=60s, random 32-byte jti. Key-bound to created transaction/session, persistent replay rejection."
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "Credential": {
+        "type": "object",
+        "required": ["idToken", "expiration", "subject"],
+        "properties": {
+          "idToken": {
+            "type": "string",
+            "description": "Verified short-lived Kubernetes ID token; never an OAuth access token."
+          },
+          "expiration": {
+            "type": "integer"
+          },
+          "subject": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

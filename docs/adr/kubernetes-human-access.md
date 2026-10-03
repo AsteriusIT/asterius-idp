@@ -125,8 +125,9 @@ five-minute ID tokens plus clock tolerance and observed JWKS propagation.
 
 ## Refresh, local storage and revocation
 
-The broker rotates refresh tokens on the existing OP refresh path and keeps
-them encrypted server side. Refresh must recheck the tenant/client enablement,
+The broker honors the existing OP refresh policy and keeps refresh tokens
+encrypted server side. The default policy returns the same sender-bound token;
+only the explicit migration policy rotates it. Refresh must recheck the tenant/client enablement,
 user status, session and current managed-group release policy. Never replay a
 previous refresh credential after a failed or ambiguous rotation; reconcile
 through the existing rotation semantics or require a fresh browser login.
@@ -216,8 +217,10 @@ algorithms.
 This proves controlled signing/configuration interoperability, not live
 discovery/JWKS, browser login, broker/helper behavior, signing-key propagation
 or production authorization. Live workflow and rotation/disablement/refresh
-verification remain implementation integration work. The broker and helper
-described here are contracts, not implemented components.
+verification remain implementation integration work. The external broker and
+helper are now implemented in [tools/kubernetes-login](../../tools/kubernetes-login/README.md)
+(ast-dd1y.1.3), with signed-fixture HTTP and concurrency verification; deployment
+and full Asterius/browser/Kubernetes integration remain ast-dd1y.1.4.
 The user approved this document's human normative review on 2026-10-03
 ("ok pour les deux documents"). The decision's acceptance is met by this
 approval, contract and controlled target verifier evidence. Dependent work may

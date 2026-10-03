@@ -2465,3 +2465,29 @@ operator provisioned runner credentials require dedicated ephemeral runners and
 trusted workflow/environment controls. No JWT or raw claims are emitted by the
 sample. Controlled CI fixtures establish local protocol interoperability only,
 not a live GitHub issuer/job or an unimplemented trusted broker.
+### Confidential Kubernetes login broker and local helper
+
+`tools/kubernetes-login` is an external high-trust relying party, not an IdP
+OAuth grant endpoint. Each cluster uses an isolated operator-configured client
+and audience; same-origin HTTPS discovery and registered callbacks are pinned.
+The broker alone holds client keys, DPoP keys and encrypted OAuth refresh tokens.
+SQLite AES-GCM rows authenticate record identity, phase and absolute expiry; an
+exclusive process lock, CAS and shared refresh promises prevent grant replay.
+Ambiguous network/rotation failures invalidate the broker session.
+
+CLI/browser account substitution is bounded by independent state, nonce, S256
+PKCE, PAR, a browser cookie and explicit account/cluster/terminal confirmation.
+Single-use result collection needs both a separate non-URL secret and helper-key
+proof. Proofs bind request method, configured URL and JSON body, with durable
+replay checks. The helper independently validates issuer, single audience, ES256
+signature and five-minute lifetime, and checks kubectl's cluster/CA information.
+
+Linux Secret Service stores only the broker handle and helper proof key; missing
+secure storage uses memory only. No reusable secret reaches kubeconfig, shell
+arguments, logs or browser storage. Credentials appear on stdout only in v1
+ExecCredential JSON. Logout/back-channel invalidation cannot resurrect sessions
+through an in-flight callback/refresh. OP logout during unresolved authorization
+cancels pending cluster transactions conservatively. Broker TLS termination,
+secret-store protection and redacted proxy logs remain operator responsibilities.
+A stolen native Kubernetes ID token still works until expiry; offline JWT
+revocation remains explicitly bounded, not immediate.
