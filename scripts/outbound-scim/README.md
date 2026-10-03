@@ -66,3 +66,9 @@ no credential values are printed. Inspect only those disposable resources and
 create `diagnostic-release` in the recorded owned root to resume cleanup. The
 metadata file is removed before the normal container/database cleanup proceeds.
 The default runner never holds failed fixtures.
+
+`runtime-diagnostics.json` records partial real runs and the exact failures that
+prevented completion. It is separate from a successful full-matrix receipt:
+passed earlier controls do not prove later retirement/recreation controls or a
+subsequently rebuilt authentication fence. `retirement-sql-evidence.json` records
+only the isolated exact SQL controls, not HTTP lifecycle completion.
