@@ -214,14 +214,23 @@ pub fn parse_review(bytes: &[u8]) -> Result<StartReview,DomainError> {
 #[serde(deny_unknown_fields)]
 pub struct RecordedDecision { pub decision:Decision,pub reason:String }
 
+/// Keeps human evidence bounded and refuses invisible direction overrides.
+// fuzz-target: access_review_requests
+pub fn validate_reason(reason:&str)->Result<(),DomainError>{
+    if reason.len()>4000 || reason.trim().is_empty() || reason.chars().count()>1000 || reason.chars().any(|c| {
+        c.is_control() || matches!(c,'\u{061c}'|'\u{200e}'|'\u{200f}'|'\u{202a}'..='\u{202e}'|'\u{2066}'..='\u{2069}')
+    }) {
+        return Err(DomainError::invalid("reason","one to one thousand printable characters are required"));
+    }
+    Ok(())
+}
+
 // fuzz-target: access_review_requests
 pub fn parse_decision(bytes:&[u8])->Result<RecordedDecision,DomainError>{
     if bytes.len()>8192 { return Err(DomainError::invalid("decision","request exceeds the bounded size")); }
     let request:RecordedDecision=serde_json::from_slice(bytes)
         .map_err(|_|DomainError::invalid("decision","malformed decision request"))?;
-    if request.reason.trim().is_empty() || request.reason.chars().count()>1000 || request.reason.chars().any(char::is_control) {
-        return Err(DomainError::invalid("reason","one to one thousand printable characters are required"));
-    }
+    validate_reason(&request.reason)?;
     Ok(request)
 }
 
@@ -255,6 +264,7 @@ mod tests {
     fn decision_never_accepts_control_characters_or_a_silent_empty_reason(){
         assert!(parse_decision(br#"{"decision":"remove","reason":" "}"#).is_err());
         assert!(parse_decision(br#"{"decision":"remove","reason":"line\nline"}"#).is_err());
+        assert!(parse_decision(br#"{"decision":"remove","reason":"review\u202eoverride"}"#).is_err());
         assert!(parse_decision(br#"{"decision":"remove","reason":"Departed project"}"#).is_ok());
     }
 }

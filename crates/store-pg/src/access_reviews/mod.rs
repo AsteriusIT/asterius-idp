@@ -193,9 +193,7 @@ impl AccessReviews for PgAccessReviews {
             .fetch_all(&self.pool).await.map_err(to_domain_error)?.into_iter().map(TryInto::try_into).collect()
     }
     async fn decide(&self,tenant:&TenantId,actor:UserId,review:Uuid,id:Uuid,decision:Decision,reason:String)->Result<Item,DomainError>{
-        if reason.trim().is_empty() || reason.chars().count()>1000 || reason.chars().any(char::is_control) {
-            return Err(DomainError::invalid("reason","one to one thousand printable characters are required"));
-        }
+        asterius_domain::access_reviews::validate_reason(&reason)?;
         let mut tx=self.pool.begin().await.map_err(to_domain_error)?;
         let review_row=review_on(&mut tx,tenant,review).await?;
         let item=item_on(&mut tx,tenant,review,id).await?;
