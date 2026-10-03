@@ -90,6 +90,10 @@ pub struct PostResponse {
     pub cache_control: Option<String>,
     /// Whether more body bytes existed beyond the returned bound.
     pub truncated: bool,
+    /// Conditional resource version, never a URL to follow.
+    pub etag: Option<String>,
+    /// Bounded proof challenge; kept out of Debug and persisted diagnostics.
+    pub dpop_nonce: Option<String>,
 }
 
 impl std::fmt::Debug for PostResponse {
@@ -173,6 +177,10 @@ pub struct PostRequest<'a> {
     /// request". It is the receiver's credential, so it is never logged and
     /// never part of an error.
     pub authorization: Option<&'a str>,
+    /// A per-request proof, sent as a sensitive header.
+    pub dpop: Option<&'a str>,
+    /// The exact previously verified resource version.
+    pub if_match: Option<&'a str>,
 }
 
 /// Written by hand so that the credential is reported as present or absent and
@@ -198,7 +206,23 @@ impl<'a> PostRequest<'a> {
             accept: None,
             content_language: None,
             authorization: None,
+            dpop: None,
+            if_match: None,
         }
+    }
+
+    /// Attach a fresh proof without exposing it through Debug.
+    #[must_use]
+    pub const fn proved_by(mut self, proof: &'a str) -> Self {
+        self.dpop = Some(proof);
+        self
+    }
+
+    /// Preserve the previously verified conditional version.
+    #[must_use]
+    pub const fn matching(mut self, version: Option<&'a str>) -> Self {
+        self.if_match = version;
+        self
     }
 
     /// The same delivery, saying what it will read back.
@@ -449,7 +473,56 @@ impl HttpsPoster {
         let target = ssrf::check_url(url).map_err(FetchError::from)?;
         let addresses = vetted_addresses(&target).await?;
         let stream = self.connections.connect(&target, &addresses).await?;
-        exchange(&target, request, body, method, stream, response_bound).await
+        let response = exchange(&target, request, body, method, stream, response_bound).await?;
+        if !(200..300).contains(&response.status) {
+            return Err(PostError::Refused {
+                host: target.host,
+                status: response.status,
+                body: response.body,
+            });
+        }
+        Ok(response)
+    }
+
+    /// SCIM/token callers need the bounded nonce on a protocol refusal. They
+    /// receive status/metadata through the same vetted connection and never
+    /// follow redirects or persist the untrusted response body as diagnostics.
+    pub async fn authenticated_response(
+        &self,
+        url: &str,
+        method: hyper::Method,
+        request: PostRequest<'_>,
+        body: &[u8],
+    ) -> Result<PostResponse, PostError> {
+        if body.len() > 64 * 1024 {
+            return Err(PostError::TooLarge {
+                size: body.len(),
+                limit: 64 * 1024,
+            });
+        }
+        if ![
+            hyper::Method::GET,
+            hyper::Method::POST,
+            hyper::Method::PUT,
+            hyper::Method::DELETE,
+        ]
+        .contains(&method)
+            || request.dpop.is_none()
+        {
+            return Err(PostError::BadHeader { header: "DPoP" });
+        }
+        tokio::time::timeout(TOTAL_TIMEOUT, async {
+            let target = ssrf::check_url(url).map_err(FetchError::from)?;
+            let addresses = vetted_addresses(&target).await?;
+            let stream = self.connections.connect(&target, &addresses).await?;
+            exchange(&target, request, body, method, stream, 64 * 1024).await
+        })
+        .await
+        .unwrap_or_else(|_| {
+            Err(PostError::Reach(FetchError::TimedOut {
+                host: "the configured target".to_owned(),
+            }))
+        })
     }
 }
 
@@ -485,7 +558,7 @@ async fn exchange(
         // One request per connection, as in `super::jwks`: nothing here reuses
         // it, and saying so lets the receiver close rather than hold a socket.
         .header(hyper::header::CONNECTION, "close");
-    if method == hyper::Method::POST {
+    if method == hyper::Method::POST || method == hyper::Method::PUT {
         builder = builder.header(CONTENT_TYPE, request.content_type);
     }
     if let Some(accept) = request.accept {
@@ -508,6 +581,17 @@ async fn exchange(
         let mut value = value;
         value.set_sensitive(true);
         builder = builder.header(AUTHORIZATION, value);
+    }
+    for (header, contents, sensitive) in [
+        ("DPoP", request.dpop, true),
+        ("If-Match", request.if_match, false),
+    ] {
+        if let Some(contents) = contents {
+            let mut value =
+                HeaderValue::from_str(contents).map_err(|_| PostError::BadHeader { header })?;
+            value.set_sensitive(sensitive);
+            builder = builder.header(header, value);
+        }
     }
     let request = builder
         .body(Full::<Bytes>::new(Bytes::copy_from_slice(body)))
@@ -533,6 +617,17 @@ async fn exchange(
         .and_then(|value| value.to_str().ok())
         .filter(|value| value.len() <= 128)
         .map(str::to_owned);
+
+    let bounded_header = |name: &str, bound: usize| {
+        response
+            .headers()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .filter(|value| value.len() <= bound)
+            .map(str::to_owned)
+    };
+    let etag = bounded_header("ETag", 128);
+    let dpop_nonce = bounded_header("DPoP-Nonce", 512);
 
     // Read to a bound rather than to the end. A receiver that answers and
     // then never finishes would otherwise keep the connection until timeout.
@@ -562,25 +657,59 @@ async fn exchange(
             status: status.as_u16(),
         }));
     }
-    if !status.is_success() {
-        return Err(PostError::Refused {
-            host: target.host.clone(),
-            status: status.as_u16(),
-            body: kept,
-        });
-    }
     Ok(PostResponse {
         status: status.as_u16(),
         body: kept,
         content_type,
         cache_control,
         truncated,
+        etag,
+        dpop_nonce,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn authenticated_exchange_requires_a_proof_before_dialling() {
+        let poster = HttpsPoster::new().expect("poster");
+        let result = poster
+            .authenticated_response(
+                "https://127.0.0.1/scim",
+                hyper::Method::GET,
+                PostRequest::of("application/scim+json"),
+                &[],
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(PostError::BadHeader { header: "DPoP" })
+        ));
+    }
+
+    #[test]
+    fn proof_and_nonce_are_absent_from_transport_debug() {
+        let request = PostRequest::of("application/scim+json")
+            .proved_by("private-proof-value")
+            .authorized_by(Some("DPoP private-token-value"));
+        let rendered = format!("{request:?}");
+        assert!(!rendered.contains("private-proof-value"));
+        assert!(!rendered.contains("private-token-value"));
+        let response = PostResponse {
+            status: 401,
+            body: b"untrusted-private-response".to_vec(),
+            content_type: None,
+            cache_control: None,
+            truncated: false,
+            etag: None,
+            dpop_nonce: Some("private-nonce-value".to_owned()),
+        };
+        let rendered = format!("{response:?}");
+        assert!(!rendered.contains("private-nonce-value"));
+        assert!(!rendered.contains("untrusted-private-response"));
+    }
 
     /// A body this server built is bounded before a socket is opened. The
     /// check is on the *request*, so an oversized payload becomes a dead

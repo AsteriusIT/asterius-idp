@@ -20,6 +20,7 @@ pub mod mtls;
 pub mod observability;
 pub mod oid4vp;
 pub mod outbound;
+pub mod outbound_scim;
 pub mod outbox;
 pub mod provider_commands;
 pub mod retention;

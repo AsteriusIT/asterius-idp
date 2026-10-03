@@ -1,6 +1,8 @@
 //! Prepared worker boundary; no runtime registration until contract acceptance.
 
-use super::model::{Assignment, Connector, CredentialBinding, DeliveryFence, FailureCode, MappingReceipt};
+use super::model::{
+    CredentialBinding, DeliveryFence, FailureCode, MappingReceipt, PreparedDelivery,
+};
 use crate::{DomainError, Secret, TenantId};
 use uuid::Uuid;
 
@@ -13,7 +15,7 @@ pub trait OutboundScimJobs: std::fmt::Debug + Send + Sync {
         outbox_id: i64,
         attempt: u32,
         assignment: Uuid,
-    ) -> Result<(Connector, Assignment, DeliveryFence), DomainError>;
+    ) -> Result<PreparedDelivery, DomainError>;
 
     /// Compare every context pin and current lease before advancing a receipt.
     /// A different existing target UUID is always an ownership conflict.
@@ -41,8 +43,5 @@ pub trait OutboundScimCredentials: std::fmt::Debug + Send + Sync {
     /// Resolve every source/target context pin in the deployment registry, then
     /// mint a fresh bounded assertion using the adapter's trusted clock/jti.
     /// The tenant caller cannot provide arbitrary claims or select a raw key.
-    async fn assertion(
-        &self,
-        binding: &CredentialBinding,
-    ) -> Result<Secret<String>, DomainError>;
+    async fn assertion(&self, binding: &CredentialBinding) -> Result<Secret<String>, DomainError>;
 }

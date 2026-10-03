@@ -547,6 +547,10 @@ impl EventType {
     /// retry is audited by its deliverer as any other; this one says the
     /// delivery was somebody's decision rather than the worker's schedule.
     pub const OUTBOX_RETRIED: Self = Self("outbox.retried");
+    /// An owned outbound SCIM mapping was acknowledged by its current worker.
+    pub const OUTBOUND_SCIM_DELIVERED: Self = Self("outbound_scim.delivered");
+    /// A current outbound SCIM attempt recorded a closed diagnostic code.
+    pub const OUTBOUND_SCIM_REFUSED: Self = Self("outbound_scim.refused");
     /// An operator removed an abandoned outbox row for good (`ast-f7m.8`).
     ///
     /// The one record of the row's existence once it is gone: the outbox
@@ -719,6 +723,8 @@ impl EventType {
         Self::PROVIDER_COMMAND_DELIVERED,
         Self::SSF_VERIFICATION_REQUESTED,
         Self::OUTBOX_RETRIED,
+        Self::OUTBOUND_SCIM_DELIVERED,
+        Self::OUTBOUND_SCIM_REFUSED,
         Self::OUTBOX_DROPPED,
     ];
 

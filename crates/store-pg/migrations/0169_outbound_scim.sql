@@ -1,7 +1,7 @@
 -- Prepared catalogue storage for ast-dd1y.6.3. Runtime wiring/enablement awaits
 -- acceptance of docs/adr/outbound-scim-contract.md; no credential enters SQL.
 create table outbound_scim_connectors (
-    tenant_id text not null references tenants(tenant_id) on delete restrict,
+    tenant_id text not null references tenants(tenant_id) on delete cascade,
     connector_id uuid not null default gen_random_uuid(),
     revision uuid not null default gen_random_uuid(),
     target_issuer text not null check (length(target_issuer) between 1 and 2048),
@@ -47,7 +47,7 @@ create table outbound_scim_assignments (
     updated_at timestamptz not null default now(),
     primary key (tenant_id, assignment_id),
     foreign key (tenant_id, connector_id)
-        references outbound_scim_connectors(tenant_id, connector_id) on delete restrict,
+        references outbound_scim_connectors(tenant_id, connector_id) on delete cascade,
     unique (tenant_id, connector_id, immutable_alias),
     unique (tenant_id, connector_id, external_id),
     check (target_id is not null or observed_etag is null),
@@ -77,7 +77,7 @@ create table outbound_scim_reviewed_deletes (
     completed_at timestamptz,
     primary key (tenant_id, delete_id),
     foreign key (tenant_id, assignment_id)
-        references outbound_scim_assignments(tenant_id, assignment_id) on delete restrict,
+        references outbound_scim_assignments(tenant_id, assignment_id) on delete cascade,
     unique (tenant_id, assignment_id, assignment_generation, target_id)
 );
 
@@ -155,3 +155,94 @@ end;
 $$;
 create trigger outbound_scim_assignment_guard before insert or update
     on outbound_scim_assignments for each row execute function outbound_scim_guard_assignment();
+
+-- Callers already hold the connector lock before locking an assignment. The
+-- payload is an incarnation locator, never a source attribute or credential.
+create function outbound_scim_enqueue_assignment(p_tenant text, p_assignment uuid)
+returns void language plpgsql as $$
+declare item outbound_scim_assignments%rowtype;
+begin
+    select * into item from outbound_scim_assignments
+      where tenant_id=p_tenant and assignment_id=p_assignment for update;
+    if not found or item.retired_at is not null or item.state='deleted' then return; end if;
+    update outbound_scim_assignments set dirty=true, desired_revision=gen_random_uuid(),
+      failure_code=null, state='pending'
+      where tenant_id=p_tenant and assignment_id=p_assignment;
+    -- Keep at most one queued successor to an in-flight claim. Delivery always
+    -- rereads the latest projection, so coalescing pending changes loses no state.
+    if not exists (select 1 from outbox where tenant_id=p_tenant
+      and ordering_key='outbound_scim:' || p_assignment::text
+      and status in ('pending','failed')) then
+        insert into outbox (tenant_id,kind,destination,payload,ordering_key)
+        values (p_tenant,'outbound_scim.reconcile',item.connector_id::text,
+          jsonb_build_object('assignment',item.assignment_id,'generation',item.generation),
+          'outbound_scim:' || item.assignment_id::text);
+    end if;
+end;
+$$;
+
+-- Every ordinary writer participates, including source deletion cascades. A
+-- source UUID is deliberately historical: deleting it must still deactivate its
+-- mapped User or empty its mapped Group after the source transaction commits.
+create function outbound_scim_dirty_source(p_tenant text, p_kind text, p_source uuid)
+returns void language plpgsql as $$
+declare parent uuid; item uuid;
+begin
+    for parent in select c.connector_id from outbound_scim_connectors c
+      where c.tenant_id=p_tenant and c.removed_at is null and exists (
+        select 1 from outbound_scim_assignments a
+        where a.tenant_id=c.tenant_id and a.connector_id=c.connector_id
+          and a.retired_at is null and a.state<>'deleted' and (
+            (a.kind=p_kind and a.source_id=p_source) or
+            (p_kind='user' and a.kind='group' and exists (
+              select 1 from group_memberships m where m.tenant_id=p_tenant
+                and m.group_id=a.source_id and m.user_id=p_source))))
+      ) order by c.connector_id for update
+    loop
+      for item in select a.assignment_id from outbound_scim_assignments a
+        where a.tenant_id=p_tenant and a.connector_id=parent
+          and a.retired_at is null and a.state<>'deleted' and (
+            (a.kind=p_kind and a.source_id=p_source) or
+            (p_kind='user' and a.kind='group' and exists (
+              select 1 from group_memberships m where m.tenant_id=p_tenant
+                and m.group_id=a.source_id and m.user_id=p_source))))
+        order by a.assignment_id
+      loop
+        perform outbound_scim_enqueue_assignment(p_tenant,item);
+      end loop;
+    end loop;
+end;
+$$;
+
+create function outbound_scim_source_changed() returns trigger language plpgsql as $$
+begin
+    if tg_table_name='users' then
+      if tg_op='DELETE' then
+        perform outbound_scim_dirty_source(old.tenant_id,'user',old.user_id);
+      elsif tg_op='INSERT' or (new.status,new.email) is distinct from (old.status,old.email) then
+        perform outbound_scim_dirty_source(new.tenant_id,'user',new.user_id);
+      end if;
+    elsif tg_table_name='managed_groups' then
+      if tg_op='DELETE' then
+        perform outbound_scim_dirty_source(old.tenant_id,'group',old.group_id);
+      else
+        perform outbound_scim_dirty_source(new.tenant_id,'group',new.group_id);
+      end if;
+    else
+      if tg_op in ('DELETE','UPDATE') then
+        perform outbound_scim_dirty_source(old.tenant_id,'group',old.group_id);
+      end if;
+      if tg_op='INSERT' or (tg_op='UPDATE' and
+        (new.tenant_id,new.group_id) is distinct from (old.tenant_id,old.group_id)) then
+        perform outbound_scim_dirty_source(new.tenant_id,'group',new.group_id);
+      end if;
+    end if;
+    return null;
+end;
+$$;
+create trigger outbound_scim_user_changed after insert or update or delete on users
+  for each row execute function outbound_scim_source_changed();
+create trigger outbound_scim_group_changed after insert or update or delete on managed_groups
+  for each row execute function outbound_scim_source_changed();
+create trigger outbound_scim_membership_changed after insert or update or delete on group_memberships
+  for each row execute function outbound_scim_source_changed();

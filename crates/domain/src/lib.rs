@@ -27,6 +27,7 @@ pub mod limits;
 pub mod locale;
 pub mod messages;
 pub mod notification;
+pub mod outbound_scim;
 pub mod outbox;
 pub mod policy;
 pub mod ports;

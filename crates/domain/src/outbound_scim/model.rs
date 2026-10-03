@@ -1,4 +1,4 @@
-//! Prepared outbound lifecycle model; not exported or enabled before ADR review.
+//! Candidate outbound lifecycle model; activation requires accepted ADR review.
 
 use crate::{ClientId, TenantId};
 use time::OffsetDateTime;
@@ -64,6 +64,8 @@ pub struct Assignment {
     pub source: Uuid,
     pub generation: Uuid,
     pub desired_revision: Uuid,
+    pub immutable_alias: String,
+    pub external_id: String,
     pub selected: bool,
     pub target: Option<Uuid>,
     pub observed_etag: Option<String>,
@@ -98,6 +100,27 @@ pub enum FailureCode {
     UserDependenciesPending,
     SnapshotBoundExceeded,
     LeaseSuperseded,
+}
+
+impl FailureCode {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Paused => "paused",
+            Self::CredentialUnavailable => "credential_unavailable",
+            Self::CredentialBindingMismatch => "credential_binding_mismatch",
+            Self::AuthenticationRefused => "authentication_refused",
+            Self::TargetUnavailable => "target_unavailable",
+            Self::OwnershipMismatch => "ownership_mismatch",
+            Self::TargetAbsent => "target_absent",
+            Self::TargetVersionChanged => "target_version_changed",
+            Self::SourceProtected => "source_protected",
+            Self::SourceProjectionInvalid => "source_projection_invalid",
+            Self::UserDependenciesPending => "user_dependencies_pending",
+            Self::SnapshotBoundExceeded => "snapshot_bound_exceeded",
+            Self::LeaseSuperseded => "lease_superseded",
+        }
+    }
 }
 
 /// Personal source attributes are read just before delivery and never queued.
@@ -155,4 +178,21 @@ pub struct ReviewedDelete {
     pub reviewed_by: Uuid,
     pub reviewed_at: OffsetDateTime,
     pub completed_at: Option<OffsetDateTime>,
+}
+
+/// The complete projection is read from one bounded source snapshot. Missing
+/// users are inactive; missing groups project an empty member list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Projection {
+    User(UserProjection),
+    Group(GroupProjection),
+}
+
+/// No connection/transaction survives delivery preparation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedDelivery {
+    pub connector: Connector,
+    pub assignment: Assignment,
+    pub fence: DeliveryFence,
+    pub projection: Projection,
 }
