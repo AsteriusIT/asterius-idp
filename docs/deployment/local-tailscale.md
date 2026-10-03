@@ -12,6 +12,32 @@ Asterius role: the existing admin password and TOTP challenge still apply.
 
 ## Current verified deployment
 
+The latest 2026-10-03 image includes the read-only **Governance findings** screen
+in addition to temporary privileges, access reviews and the deadline correction.
+It uses local main `4066e08f`, verified binary SHA-256
+`c79b1caedc1ce9ff655b7d2c2adbc1498f26c7a501a50a4d66b3fe3b957c5cbd`,
+and image `asterius-idp:local-ast-496l-c79b1caedc1c`, running image ID
+`sha256:9d87b09c6657558a09d5f685d698676356b7eaeab612400a54851934109edb2c`.
+The composed runtime passed 73 targeted tests, 113 fuzz targets and 18 real
+HTTPS/browser controls before rollout. No Rust rebuild was performed.
+
+A fresh private recovery snapshot is retained at
+`~/.local/share/asterius/backups/ast-496l-20261003T191746Z-201a6c4f`
+(directory 0700, files 0600). The isolated restricted-image restore and live
+update preserved the exact account, credential and encrypted TOTP rows.
+Both databases retain 110 successful migrations; this report update applied
+no new migration. Configuration, secrets, security contexts, the loopback bridge
+and private Serve routes remain unchanged. The live pod is ready and matches
+the validated image ID. Strict HTTPS readiness, canonical discovery and protected
+account/console redirects passed; the report rejects anonymous access with 401.
+The preceding corrected image and earlier recovery snapshots are retained.
+See [the governance report deployment evidence](evidence/local-governance-update-2026-10-03.json).
+
+After signing in, open **Governance findings** under **People** in the console.
+The report supplies evidence for review and performs no automatic cleanup.
+
+## Previous privilege and review update
+
 The follow-up 2026-10-03 update uses the corrected binary composed in local main
 `94835e14`, SHA-256
 `b5196af3f01c2b6b3762f6fbc03e2d55eeecaaa5abf40603a6fa93071b09d777`,
