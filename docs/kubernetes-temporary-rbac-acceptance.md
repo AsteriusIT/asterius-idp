@@ -54,10 +54,19 @@ The successful run reported nine control groups:
 Observed projection-to-binding enable time was 0.003 seconds after both public
 subjects had been established by token issuance; this is not full approval latency.
 Healthy revocation was 0.210 seconds. Expired JWT refusal was 3.614 seconds after
-`exp`, within the supported Kubernetes v1.35 ten-second successful-authentication
-cache ceiling. The fixture allows two seconds of measurement scheduling tolerance;
-the contractual cache bound and clock-skew requirement are documented in the ADR.
-No immediate offline expiry or outage revocation is claimed.
+`exp` in this warm-key run, with a ten-second successful-authentication cache.
+The fixture allows two seconds of scheduling tolerance for that observed path.
+It did not inject delayed JWKS retrieval and does not establish a ten-second
+worst-case expiry guarantee. The [ADR](adr/kubernetes-temporary-rbac.md#expiry-and-revocation-boundaries)
+now records the source-derived conservative supported limit of 40 seconds after
+exp, plus scheduling margin and clock skew: up to 30 seconds of an already-started
+verification followed by ten seconds of successful-authentication caching.
+Kubernetes v1.35's
+[vendored expiry-before-signature ordering](https://github.com/kubernetes/kubernetes/blob/v1.35.0/vendor/github.com/coreos/go-oidc/verify.go#L257-L307)
+and [detached cache lookup/insertion](https://github.com/kubernetes/kubernetes/blob/v1.35.0/staging/src/k8s.io/apiserver/pkg/authentication/token/cache/cached_token_authenticator.go#L171-L197)
+justify that conservative inference. Delayed-JWKS measurement was not performed;
+no immediate offline expiry or outage revocation is claimed. The refinement
+changes only the pending review documents and requires no Rust build.
 
 Source validation passed `cargo check --all-targets`, strict formatting/Clippy and
 85 targeted tests via `./scripts/verify.sh temporary kubernetes roles sign_identity
