@@ -2603,3 +2603,12 @@ cannot bypass the explicit task obligation. Online descendant withdrawal is a
 separate ast-dd1y.8.3 enforcement boundary; offline use is bounded by a 300-second
 maximum and task/ancestor deadlines. See `docs/agent-task-approvals.md` for the
 activation, supported paths and retained history contract.
+
+The GitOps acceptance delegates public CRD application to a separate Flux
+ServiceAccount without Secret read, binding write, status write or controller
+finalizer removal authority.
+Flux bootstrap remains trusted platform infrastructure. Production source
+transport trust is configured independently from the local public HTTP fixture.
+A different Terraform client can import/read an identity but cannot take its
+owner; controlled restart, compatible packaging rollback and reviewed
+Retain/import recovery must preserve the remote identity references.

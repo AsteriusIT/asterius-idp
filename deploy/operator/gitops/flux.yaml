@@ -1,0 +1,30 @@
+# Platform administrator provisions this account and RoleBinding separately.
+# The delivery repository contains only Application, Resource and Policy specs.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: asterius-public-identity
+  namespace: identity-acme
+spec:
+  interval: 1m
+  url: https://git.example/identity-config.git
+  ref: {branch: main}
+  # For private repositories, provision a read-only source credential outside Git
+  # and configure secretRef here. Keep it separate from the Asterius client keys.
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: asterius-public-identity
+  namespace: identity-acme
+spec:
+  interval: 1m
+  retryInterval: 30s
+  timeout: 1m
+  path: ./identity
+  prune: true
+  targetNamespace: identity-acme
+  serviceAccountName: identity-gitops
+  sourceRef: {kind: GitRepository, name: asterius-public-identity}
+  # Remote Ready is checked separately, including matching observedGeneration.
+  wait: false
