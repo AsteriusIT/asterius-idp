@@ -5,7 +5,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// Every reference is resolved through a deployment allow-list, never a client path.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct CredentialBinding {
     pub reference: String,
     pub generation: Uuid,
@@ -16,8 +16,17 @@ pub struct CredentialBinding {
     pub target_client: ClientId,
 }
 
+impl std::fmt::Debug for CredentialBinding {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CredentialBinding")
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Immutable principal pins survive rotations of the same client's credential.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Connector {
     pub tenant: TenantId,
     pub id: Uuid,
@@ -27,6 +36,17 @@ pub struct Connector {
     pub credential: CredentialBinding,
     pub enabled: bool,
     pub allow_reviewed_delete: bool,
+}
+
+impl std::fmt::Debug for Connector {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Connector")
+            .field("id", &self.id)
+            .field("revision", &self.revision)
+            .field("enabled", &self.enabled)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
