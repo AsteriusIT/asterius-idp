@@ -166,3 +166,32 @@ this architecture record itself enables no runtime profile.
 Sources checked on 2026-10-03. Algorithm and FAPI/OIDC profile boundaries remain
 the existing repository decisions; this does not admit public OAuth clients or
 external certificate identities as OAuth client registrations.
+
+## Protected-hop candidate clarification (pending human review)
+
+Source inspection shows the existing `behind_proxy` listener is plain HTTP.
+A trusted CIDR and a public leaf forwarded in a header do not establish the
+protected-hop key-possession boundary above. The candidate therefore requires
+mandatory proxy client TLS authentication on the edge-to-Asterius hop, against
+a separately configured bounded proxy CA bundle, plus an exact operator pin of
+the proxy client leaf SHA256 digest. No configuration boolean or caller-supplied
+field may create the private authenticated-hop context. Ordinary HTTP never
+supplies managed-device facts. The selected device adapter remains behind the
+edge for issuer and forwarding semantics; the protected backend listener uses
+existing rustls/aws-lc TLS1.2/1.3 suites, with mandatory client authentication.
+The edge must validate the backend server chain/name, verify the device client
+TLS handshake, strip incoming device fields and forward the actual device leaf.
+
+The current private trust revision combines the dedicated tenant device CA,
+proxy CA and sorted proxy pins. Each original interaction proof expires no later
+than either the device or proxy leaf expiry, in addition to the existing300s
+bound. Root/pin changes invalidate older proof generations. This does not assert
+physical hardware attestation and does not alter OAuth client authentication.
+The exact transport refinement must be included in human review before delivery;
+source implementation and isolated validation do not constitute that review.
+
+[CertificateVerify in RFC8446 §4.4.3](https://www.rfc-editor.org/rfc/rfc8446.html#section-4.4.3)
+provides TLS private-key possession rather than merely parsing a public leaf.
+[ClientAuth usage in RFC5280 §4.2.1.12](https://www.rfc-editor.org/rfc/rfc5280.html#section-4.2.1.12)
+keeps the dedicated device/proxy certificate purpose explicit. Neither RFC
+specifies this repository's enrollment or management protocol.

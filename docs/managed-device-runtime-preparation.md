@@ -238,3 +238,20 @@ facts. A dedicated proxy client TLS handshake plus operator pin adapter is still
 required. No configuration boolean, raw leaf digest or proxy header may create
 that context. The upcoming candidate will document and test this transport
 boundary before claiming certificate possession or runtime enforcement.
+
+
+The protected-hop candidate now uses mandatory rustls TLS client authentication
+against a separate bounded proxy CA bundle, followed by an exact operator proxy
+client leaf SHA256 pin. Only the successful TLS accept adapter can construct
+`VerifiedProxyHop`; ordinary HTTP, an unauthenticated handshake, a CA-valid
+unlisted client or an expired proxy leaf cannot insert it. The edge must still
+verify device key possession and strip caller fields. The selected profile uses
+`[managed_devices.proxy_hop]` with backend certificate/key, dedicated proxy CA
+and1..32 exact client leaf pins. The backend remains `behind_proxy` for issuer
+and forwarded-origin semantics; it listens with TLS solely for the authenticated
+hop. Existing listeners retain their previous transport configuration.
+The current proof trust digest combines the dedicated tenant device CA bundle,
+proxy CA bundle and sorted proxy pins. The verified leaf deadline is capped by
+both device and proxy certificate expiry; certificate renewal or trust changes
+cannot retain an old proof through a stale revision. The candidate is still
+uncompiled and has no real handshake/edge fixture evidence yet.

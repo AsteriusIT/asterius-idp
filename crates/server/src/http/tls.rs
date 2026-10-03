@@ -70,6 +70,9 @@ pub enum TlsError {
     /// rustls rejected the certificate and key pair.
     #[error("rustls rejected the certificate or key: {0}")]
     Rustls(#[from] rustls::Error),
+    /// The mandatory proxy client certificate verifier could not be built.
+    #[error("cannot construct authenticated proxy client verifier: {0}")]
+    ClientVerifier(#[from] rustls::server::VerifierBuilderError),
 }
 
 /// Builds the server's TLS configuration from a certificate chain and key.
@@ -83,6 +86,27 @@ pub fn server_config(
     certificate: &Path,
     private_key: &Path,
 ) -> Result<Arc<ServerConfig>, TlsError> {
+    server_config_with_verifier(certificate, private_key, None)
+}
+
+pub(crate) fn server_config_for_proxy(
+    certificate: &Path,
+    private_key: &Path,
+    roots: &[CertificateDer<'static>],
+) -> Result<Arc<ServerConfig>, TlsError> {
+    let mut store = rustls::RootCertStore::empty();
+    for root in roots { store.add(root.clone())?; }
+    let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
+        Arc::new(store), Arc::new(aws_lc_rs::default_provider()),
+    ).build()?;
+    server_config_with_verifier(certificate, private_key, Some(verifier))
+}
+
+fn server_config_with_verifier(
+    certificate: &Path,
+    private_key: &Path,
+    verifier: Option<Arc<dyn rustls::server::danger::ClientCertVerifier>>,
+) -> Result<Arc<ServerConfig>, TlsError> {
     let certs = load_certificates(certificate)?;
     let key = load_private_key(private_key)?;
 
@@ -91,10 +115,13 @@ pub fn server_config(
         ..aws_lc_rs::default_provider()
     });
 
-    let mut config = ServerConfig::builder_with_provider(provider)
-        .with_protocol_versions(PROTOCOL_VERSIONS)?
-        .with_no_client_auth()
-        .with_single_cert(certs, key)?;
+    let builder = ServerConfig::builder_with_provider(provider)
+        .with_protocol_versions(PROTOCOL_VERSIONS)?;
+    let builder = match verifier {
+        Some(verifier) => builder.with_client_cert_verifier(verifier),
+        None => builder.with_no_client_auth(),
+    };
+    let mut config = builder.with_single_cert(certs, key)?;
 
     // HTTP/2 first, HTTP/1.1 as the fallback. Advertised through ALPN so that
     // a client cannot negotiate a protocol the server did not offer.
