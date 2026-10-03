@@ -1,0 +1,23 @@
+{
+  "ticket": "ast-dd1y.6.3",
+  "status": "infrastructure_preflight_only",
+  "observed_at": "2026-10-03T22:42:16Z",
+  "baseline_binary_sha256": "c79b1caedc1ce9ff655b7d2c2adbc1498f26c7a501a50a4d66b3fe3b957c5cbd",
+  "certificate_sha256": "dcf7eb10d3f1e5e3b69b35fac69f7a03de1bc0c3ec49c2ff037cdc5467d8d8a1",
+  "checks": [
+    "private_existing_hostname_certificate_export_without_serve_changes",
+    "synthetic_global_address_bound_only_in_owned_namespace_loopback",
+    "controlled_database_network_reachable_from_owned_helper",
+    "nonroot_capability_dropped_readonly_runtime_started_in_owned_namespace",
+    "strict_webpki_hostname_https_readiness_against_real_asterius",
+    "closed_token_scim_path_allowlist_controls",
+    "python_and_javascript_source_syntax"
+  ],
+  "owned_probe_containers_and_database_cleaned": true,
+  "shared_serve_funnel_resolver_or_runtime_changed": false,
+  "public_exposure": false,
+  "internet_reachability_claimed": false,
+  "production_connector_dispatch_executed": false,
+  "candidate_outbound_lifecycle_executed": false,
+  "normative_contract_review": "pending"
+}

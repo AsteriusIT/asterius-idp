@@ -6,10 +6,11 @@
   "real_fixture": {
     "source": "owned isolated Asterius tenant/database",
     "target": "different owned isolated Asterius tenant/database",
-    "egress": "public HTTPS through the production DNS/address/TLS guard",
-    "public_exposure": "only exact target token and SCIM paths through an owned bounded ephemeral relay",
+    "egress": "Production DNS/address/connect-once/TLS guard in an owned network namespace; exact WebPKI hostname resolves to a synthetic globally classified namespace loopback address",
+    "public_exposure": "None: no Serve/Funnel changes, global DNS modifications or public publishing",
     "credentials": "Deployment signing registry bound to source tenant and exact target issuer/client/admin resource/SCIM origin; private operator fixture files0600",
-    "cleanup": "owned relay, processes, databases and private material only; preserve existing deployment"
+    "cleanup": "owned relay, processes, databases and private material only; preserve existing deployment",
+    "limits": "Namespace routing proves guarded dispatch and strict trusted-host TLS, not Internet public reachability"
   },
   "cases": [
     {
