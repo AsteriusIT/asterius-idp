@@ -123,6 +123,7 @@ pub struct TokenReviewRequest {
     audiences: Vec<String>,
 }
 impl TokenReviewRequest {
+    // fuzz-target: kubernetes_token_review
     pub fn parse(bytes: &[u8]) -> Result<Self, DomainError> {
         if bytes.len() > MAX_REQUEST_BYTES {
             return Err(invalid());
