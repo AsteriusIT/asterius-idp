@@ -2728,6 +2728,14 @@ second cache cap or token expiry; offline JWTs retain the maximum 300 second tas
 expiry plus configured leeway. Neither SSF hints nor cleanup completion claims
 instant global revocation or undo an already authorized action.
 
+### Task permission viewer
+
+The administrative task viewer reads tenant-local public provenance under the existing `admin.audit:read` scope. It exposes immutable owner UUIDs, client/task/grant identifiers and the task's operator-provided label, and omits user names, email fields, credentials, private token JTIs and session data. Labels and identifiers remain escaped text in the console. Guessing another tenant's task UUID must return no metadata, even when the caller can read its own audit trail.
+
+A recorded audit chain or historical grant constraint cannot authorize a current request. Current ceilings are independently computed in one read-only repeatable-read snapshot, bounded to fifty rows and ten ancestry nodes per path, intersecting approval, ancestor/principal state and current tenant/client/resource policy. Per-resource scope and lifetime ceilings remain explicit; a union of scope names conveys no permission across all audiences. The snapshot's observation time and a stale indication prevent presenting an old display as an active grant. Conditional/PDP decisions are explicitly not evaluated in this administrative read.
+
+Withdrawal remains an authenticated, CSRF-protected mutation under `admin.grants:write`, using the exact immutable owner and root grant. The console requires explicit confirmation and describes the offline JWT expiry limit. Neither a task UUID nor the viewer's read scope supplies mutation authority. Approval expiry is immutable; reducing authority means withdrawal and a fresh approval rather than rewriting signed history.
+
 ## Native application recipe boundaries
 
 The [application catalogue](integrations/applications.md) uses explicit per-client

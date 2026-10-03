@@ -278,6 +278,8 @@ pub const USER_SESSION_REVOKE_ID: &str = "users.sessions.revoke";
 /// The `operationId` of `GET /users/{user_id}/grants`.
 pub const USER_GRANTS_LIST_ID: &str = "users.grants.list";
 /// The `operationId` of `DELETE /users/{user_id}/grants/{grant_id}`.
+pub const AGENT_TASKS_LIST_ID: &str = "agents.tasks.list";
+pub const AGENT_TASK_READ_ID: &str = "agents.tasks.read";
 pub const USER_GRANT_REVOKE_ID: &str = "users.grants.revoke";
 /// The `operationId` of `GET /users/{user_id}/roles`.
 pub const USER_ROLES_READ_ID: &str = "users.roles.read";
@@ -1531,6 +1533,22 @@ pub const USER_GRANTS_LIST: Operation = Operation::read(
     "Lists the authorizations one account has granted",
 );
 
+/// Bounded tenant-local task provenance, separate from recorded audit.
+pub const AGENT_TASKS_LIST: Operation = Operation::read(
+    AGENT_TASKS_LIST_ID,
+    "/agents/tasks",
+    S::Get,
+    A::new(R::Tenant, "admin.audit:read"),
+    "Lists bounded task approval provenance and current lifecycle state",
+);
+pub const AGENT_TASK_READ: Operation = Operation::read(
+    AGENT_TASK_READ_ID,
+    "/agents/tasks/{task_id}",
+    S::Get,
+    A::new(R::Tenant, "admin.audit:read"),
+    "Reads current task ceilings and bounded stored descendant lineage",
+);
+
 /// Withdraws one authorization, with Grant Management ID1 §6.5's semantics.
 ///
 /// The same call the client-facing `DELETE /grants/{grant_id}` makes, through
@@ -2186,6 +2204,8 @@ static REGISTRY: &[Operation] = &[
     USER_SESSION_REVOKE,
     USER_GRANTS_LIST,
     USER_GRANT_REVOKE,
+    AGENT_TASKS_LIST,
+    AGENT_TASK_READ,
     USER_ROLES_READ,
     USER_ROLES_UPDATE,
     FLOWS_LIST,

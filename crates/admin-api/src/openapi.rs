@@ -204,6 +204,7 @@ fn operation_object(operation: &Operation) -> Value {
     kubernetes_documentation(operation, &mut object);
     conditional_documentation(operation, &mut object);
     invitation_documentation(operation, &mut object);
+    agent_task_documentation(operation, &mut object);
     theme_documentation(operation, &mut object);
     if let Some(request_body) = group_request_body(operation) {
         object["requestBody"] = request_body;
@@ -327,6 +328,7 @@ fn operation_parameters(operation: &Operation) -> Vec<Value> {
         parameters.push(json!({"name":"If-Match","in":"header","required":false,"schema":{"type":"string"},"description":"Quoted canonical sha256 revision from GET /policies. Required when adding, modifying or removing conditional scopes; use If-None-Match: * only for a first publication."}));
         parameters.push(json!({"name":"If-None-Match","in":"header","required":false,"schema":{"type":"string","const":"*"},"description":"Explicitly expects no existing policy. Mutually exclusive with If-Match."}));
     }
+    task_view_parameters(operation, &mut parameters);
     if operation.is_paginated() {
         parameters.push(json!({ "$ref": "#/components/parameters/cursor" }));
         parameters.push(json!({ "$ref": "#/components/parameters/limit" }));
@@ -427,6 +429,60 @@ fn conditional_documentation(operation: &Operation, object: &mut Value) {
             "Policy revision changed, or conditional publication lacks an exact precondition.",
         );
     }
+}
+
+fn task_ceiling_schema() -> Value {
+    json!({"type":"object","additionalProperties":false,
+        "required":["scopes","resources","actions","resource_ceilings","max_delegation_depth"],
+        "properties":{
+            "scopes":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"string"}},
+            "resources":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"string","format":"uri"}},
+            "actions":{"type":"array","maxItems":32,"items":{"type":"object","additionalProperties":false,"required":["resource","actions"],"properties":{"resource":{"type":"string","format":"uri"},"actions":{"type":"array","uniqueItems":true,"items":{"type":"string"}}}}},
+            "resource_ceilings":{"type":"array","maxItems":64,"items":{"type":"object","additionalProperties":false,"required":["resource","scopes","maximum_token_ttl_seconds"],"properties":{"resource":{"type":"string","format":"uri"},"scopes":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"string"}},"maximum_token_ttl_seconds":{"type":"integer","minimum":0,"maximum":300}}}},
+            "max_delegation_depth":{"type":"integer","minimum":1,"maximum":8}
+        },"description":"A ceiling, never a request-specific authorization. Resource-specific scope/TTL bounds apply separately; unknown, expired or withdrawn authority yields empty permissions."})
+}
+
+fn agent_task_documentation(operation: &Operation, object: &mut Value) {
+    if !matches!(
+        operation.id(),
+        crate::AGENT_TASKS_LIST_ID | crate::AGENT_TASK_READ_ID
+    ) {
+        return;
+    }
+    let task = json!({"type":"object","additionalProperties":false,
+    "required":["task_id","root_grant_id","owner_user_id","initiating_client_id","approval_revision","label","approved_at","expires_at","revoked_at","state"],
+    "properties":{
+        "task_id":{"type":"string","format":"uuid"},"root_grant_id":{"type":"string","format":"uuid"},"owner_user_id":{"type":"string","format":"uuid"},
+        "initiating_client_id":{"type":"string"},"approval_revision":{"type":"integer","minimum":1},"label":{"type":"string"},
+        "approved_at":{"type":"string","format":"date-time"},"expires_at":{"type":"string","format":"date-time"},"revoked_at":{"type":["string","null"],"format":"date-time"},
+        "state":{"type":"string","enum":["active","expired","withdrawn","principal_unavailable","ancestor_unavailable"]}
+    }});
+    let schema = if operation.id() == crate::AGENT_TASKS_LIST_ID {
+        json!({"type":"object","additionalProperties":false,"required":["items","next_cursor","observed_at"],"properties":{
+            "items":{"type":"array","maxItems":50,"items":task},"next_cursor":{"type":["string","null"],"format":"uuid"},"observed_at":{"type":"string","format":"date-time"}}})
+    } else {
+        json!({"type":"object","additionalProperties":false,"required":["task","approved_ceiling","current_issuance_ceiling","current_grant_types","maximum_new_token_ttl_seconds","observed_at","lineage","next_cursor","conditional_decision"],"properties":{
+        "task":task,"approved_ceiling":task_ceiling_schema(),"current_issuance_ceiling":task_ceiling_schema(),
+        "current_grant_types":{"type":"array","items":{"type":"string"}},"maximum_new_token_ttl_seconds":{"type":"integer","minimum":0,"maximum":300},
+        "observed_at":{"type":"string","format":"date-time"},"next_cursor":{"type":["string","null"],"format":"uuid"},
+        "conditional_decision":{"const":"not_evaluated"},"lineage":{"type":"array","maxItems":50,"items":{
+            "type":"object","additionalProperties":false,
+            "required":["grant_id","parent_grant_id","client_id","depth","ancestry","expires_at","revoked_at","state","recorded_ceiling","current_issuance_ceiling"],
+            "properties":{
+                "grant_id":{"type":"string","format":"uuid"},"parent_grant_id":{"type":["string","null"],"format":"uuid"},
+                "client_id":{"type":"string"},"depth":{"type":"integer","minimum":0,"maximum":9},
+                "ancestry":{"type":"array","maxItems":10,"items":{"type":"string","format":"uuid"}},
+                "expires_at":{"type":["string","null"],"format":"date-time"},"revoked_at":{"type":["string","null"],"format":"date-time"},
+                "state":{"type":"string","enum":["active","expired","withdrawn","principal_unavailable","ancestor_unavailable"]},
+                "recorded_ceiling":task_ceiling_schema(),"current_issuance_ceiling":task_ceiling_schema()
+            }
+        }}}})
+    };
+    object["responses"]["200"]["content"]["application/json"]["schema"] = schema;
+    object["description"] = json!(
+        "Tenant-local public identifiers only, no user names, emails, raw credentials or private JTIs. No-store current read-only snapshot independent of recorded audit. Withdrawal uses the existing owner-bound grant endpoint and admin.grants:write, with offline signed-expiry limits."
+    );
 }
 
 fn invitation_documentation(operation: &Operation, object: &mut Value) {
@@ -928,6 +984,24 @@ fn declarative_documentation(operation: &Operation, object: &mut Value) {
             properties["deletion_protection"] = json!({"type":"boolean","default":true});
         }
         object["requestBody"] = json!({"required":true,"content":{"application/json":{"schema":{"type":"object","additionalProperties":false,"required":required,"properties":properties}}}});
+    }
+}
+
+fn task_view_parameters(operation: &Operation, parameters: &mut Vec<Value>) {
+    if matches!(
+        operation.id(),
+        crate::AGENT_TASKS_LIST_ID | crate::AGENT_TASK_READ_ID
+    ) {
+        parameters.push(json!({"name":"cursor","in":"query","required":false,
+            "schema":{"type":"string","format":"uuid"},
+            "description":"Canonical UUID keyset cursor from the previous bounded page"}));
+        parameters.push(json!({"name":"limit","in":"query","required":false,
+            "schema":{"type":"integer","minimum":1,"maximum":50,"default":25},
+            "description":"Out-of-range values, duplicates and unknown query names fail"}));
+        if operation.id() == crate::AGENT_TASKS_LIST_ID {
+            parameters.push(json!({"name":"owner","in":"query","required":false,"schema":{"type":"string","format":"uuid"}}));
+            parameters.push(json!({"name":"agent","in":"query","required":false,"schema":{"type":"string","minLength":1,"maxLength":256}}));
+        }
     }
 }
 

@@ -90,6 +90,8 @@ pub struct AuditFilter {
     pub user: Option<String>,
     /// Records naming this grant.
     pub grant: Option<GrantId>,
+    /// Recorded immutable Task correlation; it does not imply current authority.
+    pub task: Option<uuid::Uuid>,
     /// The server-generated HTTP request reference; caller headers cannot set it.
     pub request_id: Option<String>,
     /// Records naming this server-owned session identifier.
@@ -131,6 +133,15 @@ impl AuditFilter {
             && event.grant.as_ref() != Some(grant)
         {
             return false;
+        }
+        if let Some(task) = self.task {
+            let expected = task.to_string();
+            if !event.detail.iter().any(|(key, value)| {
+                key == "task_id"
+                    && matches!(value,super::DetailValue::Text(value) if value==&expected)
+            }) {
+                return false;
+            }
         }
         if let Some(request_id) = &self.request_id
             && event.request_id.as_ref() != Some(request_id)
@@ -241,6 +252,22 @@ mod tests {
             actor,
             at(seconds),
         )
+    }
+
+    #[test]
+    fn agent_task_audit_filter_requires_exact_recorded_task_uuid() {
+        let task = uuid::Uuid::new_v4();
+        let filter = AuditFilter {
+            task: Some(task),
+            ..AuditFilter::default()
+        };
+        let recorded = event(EventType::AGENT_TASK_WITHDRAWN, Actor::System, 1)
+            .detail(crate::audit::Detail::new().text("task_id", task.to_string()));
+        assert!(filter.matches(&recorded));
+        let another = event(EventType::AGENT_TASK_WITHDRAWN, Actor::System, 1)
+            .detail(crate::audit::Detail::new().text("task_id", uuid::Uuid::new_v4().to_string()));
+        assert!(!filter.matches(&another));
+        assert!(!filter.matches(&event(EventType::AGENT_TASK_WITHDRAWN, Actor::System, 1)));
     }
 
     /// The `ast-lh3.9` chain: user alice → agent A → agent B. What each

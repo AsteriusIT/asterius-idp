@@ -367,6 +367,860 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/admin/api/v1/agents/tasks": {
+      "get": {
+        "description": "Tenant-local public identifiers only, no user names, emails, raw credentials or private JTIs. No-store current read-only snapshot independent of recorded audit. Withdrawal uses the existing owner-bound grant endpoint and admin.grants:write, with offline signed-expiry limits.",
+        "operationId": "agents.tasks.list",
+        "parameters": [
+          {
+            "description": "Canonical UUID keyset cursor from the previous bounded page",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Out-of-range values, duplicates and unknown query names fail",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 50,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "owner",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "agent",
+            "required": false,
+            "schema": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "approval_revision": {
+                            "minimum": 1,
+                            "type": "integer"
+                          },
+                          "approved_at": {
+                            "format": "date-time",
+                            "type": "string"
+                          },
+                          "expires_at": {
+                            "format": "date-time",
+                            "type": "string"
+                          },
+                          "initiating_client_id": {
+                            "type": "string"
+                          },
+                          "label": {
+                            "type": "string"
+                          },
+                          "owner_user_id": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "revoked_at": {
+                            "format": "date-time",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "root_grant_id": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "state": {
+                            "enum": [
+                              "active",
+                              "expired",
+                              "withdrawn",
+                              "principal_unavailable",
+                              "ancestor_unavailable"
+                            ],
+                            "type": "string"
+                          },
+                          "task_id": {
+                            "format": "uuid",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "task_id",
+                          "root_grant_id",
+                          "owner_user_id",
+                          "initiating_client_id",
+                          "approval_revision",
+                          "label",
+                          "approved_at",
+                          "expires_at",
+                          "revoked_at",
+                          "state"
+                        ],
+                        "type": "object"
+                      },
+                      "maxItems": 50,
+                      "type": "array"
+                    },
+                    "next_cursor": {
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "observed_at": {
+                      "format": "date-time",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "next_cursor",
+                    "observed_at"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.audit:read"
+            ]
+          }
+        ],
+        "summary": "Lists bounded task approval provenance and current lifecycle state",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.audit:read"
+      }
+    },
+    "/admin/api/v1/agents/tasks/{task_id}": {
+      "get": {
+        "description": "Tenant-local public identifiers only, no user names, emails, raw credentials or private JTIs. No-store current read-only snapshot independent of recorded audit. Withdrawal uses the existing owner-bound grant endpoint and admin.grants:write, with offline signed-expiry limits.",
+        "operationId": "agents.tasks.read",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Canonical UUID keyset cursor from the previous bounded page",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Out-of-range values, duplicates and unknown query names fail",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 50,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "approved_ceiling": {
+                      "additionalProperties": false,
+                      "description": "A ceiling, never a request-specific authorization. Resource-specific scope/TTL bounds apply separately; unknown, expired or withdrawn authority yields empty permissions.",
+                      "properties": {
+                        "actions": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "actions": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array",
+                                "uniqueItems": true
+                              },
+                              "resource": {
+                                "format": "uri",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "resource",
+                              "actions"
+                            ],
+                            "type": "object"
+                          },
+                          "maxItems": 32,
+                          "type": "array"
+                        },
+                        "max_delegation_depth": {
+                          "maximum": 8,
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "resource_ceilings": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "maximum_token_ttl_seconds": {
+                                "maximum": 300,
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "resource": {
+                                "format": "uri",
+                                "type": "string"
+                              },
+                              "scopes": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "maxItems": 64,
+                                "type": "array",
+                                "uniqueItems": true
+                              }
+                            },
+                            "required": [
+                              "resource",
+                              "scopes",
+                              "maximum_token_ttl_seconds"
+                            ],
+                            "type": "object"
+                          },
+                          "maxItems": 64,
+                          "type": "array"
+                        },
+                        "resources": {
+                          "items": {
+                            "format": "uri",
+                            "type": "string"
+                          },
+                          "maxItems": 64,
+                          "type": "array",
+                          "uniqueItems": true
+                        },
+                        "scopes": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "maxItems": 64,
+                          "type": "array",
+                          "uniqueItems": true
+                        }
+                      },
+                      "required": [
+                        "scopes",
+                        "resources",
+                        "actions",
+                        "resource_ceilings",
+                        "max_delegation_depth"
+                      ],
+                      "type": "object"
+                    },
+                    "conditional_decision": {
+                      "const": "not_evaluated"
+                    },
+                    "current_grant_types": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "current_issuance_ceiling": {
+                      "additionalProperties": false,
+                      "description": "A ceiling, never a request-specific authorization. Resource-specific scope/TTL bounds apply separately; unknown, expired or withdrawn authority yields empty permissions.",
+                      "properties": {
+                        "actions": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "actions": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array",
+                                "uniqueItems": true
+                              },
+                              "resource": {
+                                "format": "uri",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "resource",
+                              "actions"
+                            ],
+                            "type": "object"
+                          },
+                          "maxItems": 32,
+                          "type": "array"
+                        },
+                        "max_delegation_depth": {
+                          "maximum": 8,
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "resource_ceilings": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "maximum_token_ttl_seconds": {
+                                "maximum": 300,
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "resource": {
+                                "format": "uri",
+                                "type": "string"
+                              },
+                              "scopes": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "maxItems": 64,
+                                "type": "array",
+                                "uniqueItems": true
+                              }
+                            },
+                            "required": [
+                              "resource",
+                              "scopes",
+                              "maximum_token_ttl_seconds"
+                            ],
+                            "type": "object"
+                          },
+                          "maxItems": 64,
+                          "type": "array"
+                        },
+                        "resources": {
+                          "items": {
+                            "format": "uri",
+                            "type": "string"
+                          },
+                          "maxItems": 64,
+                          "type": "array",
+                          "uniqueItems": true
+                        },
+                        "scopes": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "maxItems": 64,
+                          "type": "array",
+                          "uniqueItems": true
+                        }
+                      },
+                      "required": [
+                        "scopes",
+                        "resources",
+                        "actions",
+                        "resource_ceilings",
+                        "max_delegation_depth"
+                      ],
+                      "type": "object"
+                    },
+                    "lineage": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "ancestry": {
+                            "items": {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            "maxItems": 10,
+                            "type": "array"
+                          },
+                          "client_id": {
+                            "type": "string"
+                          },
+                          "current_issuance_ceiling": {
+                            "additionalProperties": false,
+                            "description": "A ceiling, never a request-specific authorization. Resource-specific scope/TTL bounds apply separately; unknown, expired or withdrawn authority yields empty permissions.",
+                            "properties": {
+                              "actions": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "actions": {
+                                      "items": {
+                                        "type": "string"
+                                      },
+                                      "type": "array",
+                                      "uniqueItems": true
+                                    },
+                                    "resource": {
+                                      "format": "uri",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "resource",
+                                    "actions"
+                                  ],
+                                  "type": "object"
+                                },
+                                "maxItems": 32,
+                                "type": "array"
+                              },
+                              "max_delegation_depth": {
+                                "maximum": 8,
+                                "minimum": 1,
+                                "type": "integer"
+                              },
+                              "resource_ceilings": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "maximum_token_ttl_seconds": {
+                                      "maximum": 300,
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    },
+                                    "resource": {
+                                      "format": "uri",
+                                      "type": "string"
+                                    },
+                                    "scopes": {
+                                      "items": {
+                                        "type": "string"
+                                      },
+                                      "maxItems": 64,
+                                      "type": "array",
+                                      "uniqueItems": true
+                                    }
+                                  },
+                                  "required": [
+                                    "resource",
+                                    "scopes",
+                                    "maximum_token_ttl_seconds"
+                                  ],
+                                  "type": "object"
+                                },
+                                "maxItems": 64,
+                                "type": "array"
+                              },
+                              "resources": {
+                                "items": {
+                                  "format": "uri",
+                                  "type": "string"
+                                },
+                                "maxItems": 64,
+                                "type": "array",
+                                "uniqueItems": true
+                              },
+                              "scopes": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "maxItems": 64,
+                                "type": "array",
+                                "uniqueItems": true
+                              }
+                            },
+                            "required": [
+                              "scopes",
+                              "resources",
+                              "actions",
+                              "resource_ceilings",
+                              "max_delegation_depth"
+                            ],
+                            "type": "object"
+                          },
+                          "depth": {
+                            "maximum": 9,
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "expires_at": {
+                            "format": "date-time",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "grant_id": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "parent_grant_id": {
+                            "format": "uuid",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "recorded_ceiling": {
+                            "additionalProperties": false,
+                            "description": "A ceiling, never a request-specific authorization. Resource-specific scope/TTL bounds apply separately; unknown, expired or withdrawn authority yields empty permissions.",
+                            "properties": {
+                              "actions": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "actions": {
+                                      "items": {
+                                        "type": "string"
+                                      },
+                                      "type": "array",
+                                      "uniqueItems": true
+                                    },
+                                    "resource": {
+                                      "format": "uri",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "resource",
+                                    "actions"
+                                  ],
+                                  "type": "object"
+                                },
+                                "maxItems": 32,
+                                "type": "array"
+                              },
+                              "max_delegation_depth": {
+                                "maximum": 8,
+                                "minimum": 1,
+                                "type": "integer"
+                              },
+                              "resource_ceilings": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "maximum_token_ttl_seconds": {
+                                      "maximum": 300,
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    },
+                                    "resource": {
+                                      "format": "uri",
+                                      "type": "string"
+                                    },
+                                    "scopes": {
+                                      "items": {
+                                        "type": "string"
+                                      },
+                                      "maxItems": 64,
+                                      "type": "array",
+                                      "uniqueItems": true
+                                    }
+                                  },
+                                  "required": [
+                                    "resource",
+                                    "scopes",
+                                    "maximum_token_ttl_seconds"
+                                  ],
+                                  "type": "object"
+                                },
+                                "maxItems": 64,
+                                "type": "array"
+                              },
+                              "resources": {
+                                "items": {
+                                  "format": "uri",
+                                  "type": "string"
+                                },
+                                "maxItems": 64,
+                                "type": "array",
+                                "uniqueItems": true
+                              },
+                              "scopes": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "maxItems": 64,
+                                "type": "array",
+                                "uniqueItems": true
+                              }
+                            },
+                            "required": [
+                              "scopes",
+                              "resources",
+                              "actions",
+                              "resource_ceilings",
+                              "max_delegation_depth"
+                            ],
+                            "type": "object"
+                          },
+                          "revoked_at": {
+                            "format": "date-time",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "state": {
+                            "enum": [
+                              "active",
+                              "expired",
+                              "withdrawn",
+                              "principal_unavailable",
+                              "ancestor_unavailable"
+                            ],
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "grant_id",
+                          "parent_grant_id",
+                          "client_id",
+                          "depth",
+                          "ancestry",
+                          "expires_at",
+                          "revoked_at",
+                          "state",
+                          "recorded_ceiling",
+                          "current_issuance_ceiling"
+                        ],
+                        "type": "object"
+                      },
+                      "maxItems": 50,
+                      "type": "array"
+                    },
+                    "maximum_new_token_ttl_seconds": {
+                      "maximum": 300,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "next_cursor": {
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "observed_at": {
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "task": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "approval_revision": {
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "approved_at": {
+                          "format": "date-time",
+                          "type": "string"
+                        },
+                        "expires_at": {
+                          "format": "date-time",
+                          "type": "string"
+                        },
+                        "initiating_client_id": {
+                          "type": "string"
+                        },
+                        "label": {
+                          "type": "string"
+                        },
+                        "owner_user_id": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "revoked_at": {
+                          "format": "date-time",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "root_grant_id": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "state": {
+                          "enum": [
+                            "active",
+                            "expired",
+                            "withdrawn",
+                            "principal_unavailable",
+                            "ancestor_unavailable"
+                          ],
+                          "type": "string"
+                        },
+                        "task_id": {
+                          "format": "uuid",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "task_id",
+                        "root_grant_id",
+                        "owner_user_id",
+                        "initiating_client_id",
+                        "approval_revision",
+                        "label",
+                        "approved_at",
+                        "expires_at",
+                        "revoked_at",
+                        "state"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "task",
+                    "approved_ceiling",
+                    "current_issuance_ceiling",
+                    "current_grant_types",
+                    "maximum_new_token_ttl_seconds",
+                    "observed_at",
+                    "lineage",
+                    "next_cursor",
+                    "conditional_decision"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.audit:read"
+            ]
+          }
+        ],
+        "summary": "Reads current task ceilings and bounded stored descendant lineage",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.audit:read"
+      }
+    },
     "/admin/api/v1/app-roles": {
       "get": {
         "operationId": "app_roles.tenant.list",
@@ -630,6 +1484,16 @@
             "$ref": "#/components/parameters/limit"
           },
           {
+            "description": "A canonical Task UUID. Recorded correlated evidence, not currently active permission.",
+            "in": "query",
+            "name": "task",
+            "required": false,
+            "schema": {
+              "maxLength": 256,
+              "type": "string"
+            }
+          },
+          {
             "description": "A client_id. Records the agent caused, or took part in as a link of the RFC 8693 act chain.",
             "in": "query",
             "name": "agent",
@@ -791,6 +1655,16 @@
       "get": {
         "operationId": "audit.events.export",
         "parameters": [
+          {
+            "description": "A canonical Task UUID. Recorded correlated evidence, not currently active permission.",
+            "in": "query",
+            "name": "task",
+            "required": false,
+            "schema": {
+              "maxLength": 256,
+              "type": "string"
+            }
+          },
           {
             "description": "A client_id. Records the agent caused, or took part in as a link of the RFC 8693 act chain.",
             "in": "query",
