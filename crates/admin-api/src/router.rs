@@ -9436,6 +9436,8 @@ mod tests {
 
     #[derive(Debug, Default)]
     struct Fake {
+        /// Governance ports reached by the registry walk, with exact realm.
+        governance_calls: Mutex<Vec<(TenantId, &'static str)>>,
         tenants: Mutex<Vec<Tenant>>,
         sessions: Mutex<BTreeMap<String, Session>>,
         roles: Mutex<BTreeMap<String, Vec<Role>>>,
@@ -9573,6 +9575,144 @@ mod tests {
 
     #[derive(Debug, Clone)]
     struct Handle(Arc<Fake>);
+
+    impl Handle {
+        fn record_governance_call(&self, tenant: &TenantId, operation: &'static str) {
+            self.0
+                .governance_calls
+                .lock()
+                .expect("an uncontended lock")
+                .push((tenant.clone(), operation));
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl asterius_domain::governance_reports::GovernanceReports for Handle {
+        async fn findings(
+            &self,
+            tenant: &TenantId,
+            _actor: UserId,
+            query: &asterius_domain::governance_reports::Query,
+        ) -> Result<asterius_domain::governance_reports::Page, DomainError> {
+            self.record_governance_call(tenant, "findings");
+            Ok(asterius_domain::governance_reports::Page {
+                section: query.section,
+                observed_at: OffsetDateTime::UNIX_EPOCH,
+                thresholds: asterius_domain::governance_reports::Thresholds::default(),
+                items: Vec::new(),
+                next: None,
+                scanned: 0,
+                read_only: true,
+            })
+        }
+    }
+
+    // An empty configured governance service: list operations succeed, but no
+    // ownership, review or item exists for detail/mutation requests. These
+    // adapters are test-only; production absence and storage outages still 503.
+    #[async_trait::async_trait]
+    impl asterius_domain::access_reviews::AccessReviews for Handle {
+        async fn reviewers(
+            &self,
+            tenant: &TenantId,
+            _after: Option<uuid::Uuid>,
+            _limit: u16,
+        ) -> Result<Vec<asterius_domain::access_reviews::Reviewer>, DomainError> {
+            self.record_governance_call(tenant, "reviewers");
+            Ok(Vec::new())
+        }
+        async fn ownerships(
+            &self,
+            tenant: &TenantId,
+            _after: Option<uuid::Uuid>,
+            _limit: u16,
+        ) -> Result<Vec<asterius_domain::access_reviews::Ownership>, DomainError> {
+            self.record_governance_call(tenant, "ownership.list");
+            Ok(Vec::new())
+        }
+        async fn configure(
+            &self,
+            tenant: &TenantId,
+            _actor: UserId,
+            _request: asterius_domain::access_reviews::ConfigureOwnership,
+        ) -> Result<asterius_domain::access_reviews::Ownership, DomainError> {
+            self.record_governance_call(tenant, "ownership.configure");
+            Err(DomainError::NotFound)
+        }
+        async fn start(
+            &self,
+            tenant: &TenantId,
+            _actor: UserId,
+            _request: asterius_domain::access_reviews::StartReview,
+        ) -> Result<asterius_domain::access_reviews::Review, DomainError> {
+            self.record_governance_call(tenant, "review.start");
+            Err(DomainError::NotFound)
+        }
+        async fn review(
+            &self,
+            tenant: &TenantId,
+            _actor: UserId,
+            _administrative: bool,
+            _id: uuid::Uuid,
+        ) -> Result<asterius_domain::access_reviews::Review, DomainError> {
+            self.record_governance_call(tenant, "review.read");
+            Err(DomainError::NotFound)
+        }
+        async fn reviews(
+            &self,
+            tenant: &TenantId,
+            _actor: UserId,
+            _administrative: bool,
+            _after: Option<uuid::Uuid>,
+            _limit: u16,
+        ) -> Result<Vec<asterius_domain::access_reviews::Review>, DomainError> {
+            self.record_governance_call(tenant, "review.list");
+            Ok(Vec::new())
+        }
+        async fn items(
+            &self,
+            tenant: &TenantId,
+            _actor: UserId,
+            _administrative: bool,
+            _review: uuid::Uuid,
+            _after: Option<uuid::Uuid>,
+            _limit: u16,
+        ) -> Result<Vec<asterius_domain::access_reviews::Item>, DomainError> {
+            self.record_governance_call(tenant, "review.items");
+            Err(DomainError::NotFound)
+        }
+        async fn decide(
+            &self,
+            tenant: &TenantId,
+            _actor: UserId,
+            _review: uuid::Uuid,
+            _item: uuid::Uuid,
+            _decision: asterius_domain::access_reviews::Decision,
+            _reason: String,
+        ) -> Result<asterius_domain::access_reviews::Item, DomainError> {
+            self.record_governance_call(tenant, "review.decide");
+            Err(DomainError::NotFound)
+        }
+        async fn apply(
+            &self,
+            tenant: &TenantId,
+            _actor: UserId,
+            _review: uuid::Uuid,
+            _item: uuid::Uuid,
+        ) -> Result<asterius_domain::access_reviews::Item, DomainError> {
+            self.record_governance_call(tenant, "review.apply");
+            Err(DomainError::NotFound)
+        }
+        async fn cancel(
+            &self,
+            tenant: &TenantId,
+            _actor: UserId,
+            _review: uuid::Uuid,
+        ) -> Result<asterius_domain::access_reviews::Review, DomainError> {
+            self.record_governance_call(tenant, "review.cancel");
+            Err(DomainError::NotFound)
+        }
+    }
 
     #[async_trait::async_trait]
     impl asterius_domain::GroupDirectory for Handle {
@@ -11836,6 +11976,17 @@ mod tests {
 
     #[async_trait::async_trait]
     impl AdminBackend for Handle {
+        fn governance_reports(
+            &self,
+        ) -> Option<Arc<dyn asterius_domain::governance_reports::GovernanceReports>> {
+            Some(Arc::new(self.clone()))
+        }
+        fn access_reviews(
+            &self,
+        ) -> Option<Arc<dyn asterius_domain::access_reviews::AccessReviews>> {
+            Some(Arc::new(self.clone()))
+        }
+
         fn agent_tasks(
             &self,
         ) -> Option<Arc<dyn asterius_domain::agent_task_views::Administration>> {
@@ -13046,6 +13197,8 @@ mod tests {
         let path = operation
             .full_path()
             .replace("{tenant_id}", "acme")
+            .replace("{review_id}", "10000000-0000-4000-8000-000000000001")
+            .replace("{item_id}", "10000000-0000-4000-8000-000000000002")
             .replace("{import_id}", "WyJhY21lIiwicG9saWN5IiwicG9saWN5Il0")
             .replace("{id}", "1")
             .replace("{kid}", SEEDED_KID)
@@ -13134,6 +13287,17 @@ mod tests {
             return test_logo_body();
         }
         let document = match operation.id() {
+            "governance.ownership.configure" => serde_json::json!({
+                "target":{"kind":"membership","group_id":SEEDED_GROUP_ID,"user_id":SEEDED_USER_ID},
+                "owner_user_id":SEEDED_USER_ID,"reviewers":[SEEDED_USER_ID],"enabled":true,"expected_revision":null
+            }),
+            "governance.review.start" => {
+                serde_json::json!({"ownership_ids":["10000000-0000-4000-8000-000000000001"],"reviewer_id":SEEDED_USER_ID,"due_at":"2050-01-01T00:00:00Z"})
+            }
+            "governance.review.decide" => {
+                serde_json::json!({"decision":"retain","reason":"Registry fixture review"})
+            }
+
             crate::WORKLOAD_TRUST_PUT_ID => registry_workload_trust_body(),
             crate::WORKLOAD_TRUST_DELETE_ID => serde_json::json!({"expected_version":1}),
             crate::KUBERNETES_PROFILE_UPDATE_ID => {
@@ -15295,6 +15459,18 @@ mod tests {
             // Optional outbound ports are intentionally absent in this fixture.
             // A mounted handler must identify absence rather than mask it as an outage.
             assert_eq!(status, StatusCode::NOT_FOUND);
+        } else if matches!(
+            operation.id(),
+            "governance.ownership.configure"
+                | "governance.review.start"
+                | "governance.review.read"
+                | "governance.review.items"
+                | "governance.review.decide"
+                | "governance.review.apply"
+                | "governance.review.cancel"
+        ) {
+            // The deterministic configured service has no persisted targets.
+            assert_eq!(status, StatusCode::NOT_FOUND);
         } else if operation.id() == crate::KUBERNETES_PROFILE_READ_ID {
             // This fixture has no cluster profile persisted.
             assert_eq!(status, StatusCode::NOT_FOUND);
@@ -15437,6 +15613,31 @@ mod tests {
 
             assert_registered_status(operation, response.status());
         }
+        let calls = world
+            .handle
+            .0
+            .governance_calls
+            .lock()
+            .expect("an uncontended lock");
+        assert!(calls.iter().all(|(realm, _)| realm == &tenant));
+        let reached: std::collections::BTreeSet<_> =
+            calls.iter().map(|(_, operation)| *operation).collect();
+        assert_eq!(
+            reached,
+            std::collections::BTreeSet::from([
+                "findings",
+                "reviewers",
+                "ownership.list",
+                "ownership.configure",
+                "review.list",
+                "review.start",
+                "review.read",
+                "review.items",
+                "review.decide",
+                "review.apply",
+                "review.cancel"
+            ])
+        );
     }
 
     #[tokio::test]
