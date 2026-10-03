@@ -562,7 +562,7 @@ impl RefreshToken<'_> {
         // refreshed after a role was withdrawn must not still assert it.
         let role_grant = issuance::role_grant(&narrowed, &targeting);
         let device_binding = match self.device_request {
-            Some(context) => context.bind(&tenant.id,&role_grant,self.now).await?,
+            Some(context) => context.bind(&tenant.id, &role_grant, self.now).await?,
             None => None,
         };
         let held = issuance::held_roles(self.roles, &role_grant).await?;
