@@ -44,6 +44,20 @@ impl std::fmt::Debug for DeviceBinding {
     }
 }
 
+/// Certificate evidence from the dedicated authenticated TLS adapter only.
+/// No HTTP deserializer is provided: parsing a fingerprint proves no possession.
+#[derive(Clone)]
+pub struct DeviceCertificateEvidence {
+    pub leaf: LeafFingerprint,
+    pub anchor: LeafFingerprint,
+    pub expires_at: OffsetDateTime,
+}
+impl std::fmt::Debug for DeviceCertificateEvidence {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("DeviceCertificateEvidence([verified transport])")
+    }
+}
+
 /// Input to the trusted possession adapter, after chain verification and exact
 /// tenant/user/application/interaction lookup. It must never be decoded from HTTP.
 pub struct VerifiedDeviceEvidence {

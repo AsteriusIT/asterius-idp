@@ -1187,6 +1187,26 @@ pub trait InteractionRepository: Debug + Send + Sync {
         now: OffsetDateTime,
     ) -> Result<(), DomainError>;
 
+    /// Capture possession only against the exact current interaction's live
+    /// authenticated account and registered application. Repeated captures
+    /// must preserve the first proof deadline.
+    async fn capture_device(
+        &self,
+        _interaction_digest: &str,
+        _certificate: &crate::managed_devices::DeviceCertificateEvidence,
+        _now: OffsetDateTime,
+    ) -> Result<(), DomainError> { Ok(()) }
+
+    /// The winning completion atomically spends its exact private proof.
+    async fn complete_interaction_with_device(
+        &self,
+        interaction_digest: &str,
+        now: OffsetDateTime,
+    ) -> Result<Option<crate::managed_devices::DeviceBinding>, DomainError> {
+        self.complete_interaction(interaction_digest, now).await?;
+        Ok(None)
+    }
+
     /// Destroys an interaction and the request behind it.
     ///
     /// Used when the id in the path and the id in the cookie disagree. That is

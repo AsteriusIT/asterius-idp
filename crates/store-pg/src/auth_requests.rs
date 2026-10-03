@@ -193,6 +193,7 @@ impl asterius_domain::InteractionRepository for PgAuthRequestRepository {
         // This update races safely with `complete_interaction`: the row lock
         // makes either the completion consume the request first, or this
         // replacement make the earlier interaction id inert first.
+        let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
         let updated = sqlx::query!(
             "update auth_requests
                 set interaction_id_hash = $3,
@@ -209,7 +210,7 @@ impl asterius_domain::InteractionRepository for PgAuthRequestRepository {
             interaction,
             now,
         )
-        .execute(&self.pool)
+        .execute(&mut *transaction)
         .await
         .map_err(|error| match &error {
             sqlx::Error::Database(db) if db.is_unique_violation() => {
@@ -219,6 +220,9 @@ impl asterius_domain::InteractionRepository for PgAuthRequestRepository {
         })?;
 
         if updated.rows_affected() == 1 {
+            sqlx::query("delete from managed_device_interaction_proofs where tenant_id=$1 and request_uri_hash=$2")
+                .bind(self.tenant.as_str()).bind(request).execute(&mut *transaction).await.map_err(to_domain_error)?;
+            transaction.commit().await.map_err(to_domain_error)?;
             return Ok(());
         }
 
@@ -321,6 +325,43 @@ impl asterius_domain::InteractionRepository for PgAuthRequestRepository {
             // resurrect a request whose window has closed.
             Err(DomainError::NotFound)
         }
+    }
+
+    async fn capture_device(
+        &self,
+        interaction_digest: &str,
+        certificate: &asterius_domain::managed_devices::DeviceCertificateEvidence,
+        now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        crate::managed_devices::capture_interaction(&self.pool, &self.tenant, interaction_digest, certificate, now).await
+    }
+
+    async fn complete_interaction_with_device(
+        &self,
+        interaction_digest: &str,
+        now: OffsetDateTime,
+    ) -> Result<Option<asterius_domain::managed_devices::DeviceBinding>, DomainError> {
+        let interaction = Self::digest_bytes(interaction_digest)?;
+        let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
+        let request: Option<Vec<u8>> = sqlx::query_scalar(
+            "update auth_requests set consumed_at=$3 where tenant_id=$1 and interaction_id_hash=$2 \
+             and consumed_at is null and expires_at>$3 returning request_uri_hash"
+        ).bind(self.tenant.as_str()).bind(&interaction).bind(now)
+            .fetch_optional(&mut *transaction).await.map_err(to_domain_error)?;
+        let Some(request) = request else { return Err(DomainError::NotFound); };
+        let value: Option<serde_json::Value> = sqlx::query_scalar(
+            "delete from managed_device_interaction_proofs where tenant_id=$1 and request_uri_hash=$2 \
+             and interaction_id_hash=$3 returning binding"
+        ).bind(self.tenant.as_str()).bind(request).bind(interaction)
+            .fetch_optional(&mut *transaction).await.map_err(to_domain_error)?;
+        let proof = value.map(serde_json::from_value::<asterius_domain::managed_devices::DeviceBinding>)
+            .transpose().map_err(|_| DomainError::invalid("device_proof", "invalid stored interaction evidence"))?;
+        if let Some(proof) = &proof {
+            proof.validate(now)?;
+            if proof.tenant() != &self.tenant || proof.interaction_digest() != interaction_digest { return Err(DomainError::NotFound); }
+        }
+        transaction.commit().await.map_err(to_domain_error)?;
+        Ok(proof)
     }
 
     async fn complete_interaction(
