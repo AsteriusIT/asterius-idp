@@ -1,0 +1,262 @@
+{
+  "apiVersion": "v1",
+  "kind": "List",
+  "items": [
+    {
+      "apiVersion": "v1",
+      "kind": "ServiceAccount",
+      "metadata": {
+        "name": "asterius-controller",
+        "namespace": "identity-acme"
+      },
+      "automountServiceAccountToken": false
+    },
+    {
+      "apiVersion": "rbac.authorization.k8s.io/v1",
+      "kind": "Role",
+      "metadata": {
+        "name": "asterius-controller",
+        "namespace": "identity-acme"
+      },
+      "rules": [
+        {
+          "apiGroups": [
+            "identity.asterius.io"
+          ],
+          "resources": [
+            "applications",
+            "resources",
+            "policies"
+          ],
+          "verbs": [
+            "get",
+            "list",
+            "watch",
+            "patch",
+            "update"
+          ]
+        },
+        {
+          "apiGroups": [
+            "identity.asterius.io"
+          ],
+          "resources": [
+            "applications/status",
+            "resources/status",
+            "policies/status"
+          ],
+          "verbs": [
+            "get",
+            "patch",
+            "update"
+          ]
+        },
+        {
+          "apiGroups": [
+            "identity.asterius.io"
+          ],
+          "resources": [
+            "asteriustenantbindings"
+          ],
+          "resourceNames": [
+            "default"
+          ],
+          "verbs": [
+            "get"
+          ]
+        },
+        {
+          "apiGroups": [
+            ""
+          ],
+          "resources": [
+            "secrets"
+          ],
+          "resourceNames": [
+            "asterius-auth-key",
+            "asterius-dpop-key",
+            "asterius-ca",
+            "application-public-jwks"
+          ],
+          "verbs": [
+            "get"
+          ]
+        },
+        {
+          "apiGroups": [
+            "coordination.k8s.io"
+          ],
+          "resources": [
+            "leases"
+          ],
+          "resourceNames": [
+            "asterius-controller"
+          ],
+          "verbs": [
+            "get",
+            "update",
+            "patch"
+          ]
+        }
+      ]
+    },
+    {
+      "apiVersion": "rbac.authorization.k8s.io/v1",
+      "kind": "RoleBinding",
+      "metadata": {
+        "name": "asterius-controller",
+        "namespace": "identity-acme"
+      },
+      "subjects": [
+        {
+          "kind": "ServiceAccount",
+          "name": "asterius-controller",
+          "namespace": "identity-acme"
+        }
+      ],
+      "roleRef": {
+        "apiGroup": "rbac.authorization.k8s.io",
+        "kind": "Role",
+        "name": "asterius-controller"
+      }
+    },
+    {
+      "apiVersion": "rbac.authorization.k8s.io/v1",
+      "kind": "Role",
+      "metadata": {
+        "name": "asterius-gitops",
+        "namespace": "identity-acme"
+      },
+      "rules": [
+        {
+          "apiGroups": [
+            "identity.asterius.io"
+          ],
+          "resources": [
+            "applications",
+            "resources",
+            "policies"
+          ],
+          "verbs": [
+            "get",
+            "list",
+            "watch",
+            "create",
+            "patch",
+            "update",
+            "delete"
+          ]
+        },
+        {
+          "apiGroups": [
+            "identity.asterius.io"
+          ],
+          "resources": [
+            "asteriustenantbindings"
+          ],
+          "resourceNames": [
+            "default"
+          ],
+          "verbs": [
+            "get"
+          ]
+        }
+      ]
+    },
+    {
+      "apiVersion": "rbac.authorization.k8s.io/v1",
+      "kind": "RoleBinding",
+      "metadata": {
+        "name": "asterius-gitops",
+        "namespace": "identity-acme"
+      },
+      "subjects": [
+        {
+          "kind": "Group",
+          "name": "asterius-gitops:identity-acme",
+          "apiGroup": "rbac.authorization.k8s.io"
+        }
+      ],
+      "roleRef": {
+        "apiGroup": "rbac.authorization.k8s.io",
+        "kind": "Role",
+        "name": "asterius-gitops"
+      }
+    },
+    {
+      "apiVersion": "coordination.k8s.io/v1",
+      "kind": "Lease",
+      "metadata": {
+        "name": "asterius-controller",
+        "namespace": "identity-acme"
+      },
+      "spec": {
+        "leaseDurationSeconds": 30
+      }
+    },
+    {
+      "apiVersion": "admissionregistration.k8s.io/v1",
+      "kind": "ValidatingAdmissionPolicy",
+      "metadata": {
+        "name": "asterius-identity-acme"
+      },
+      "spec": {
+        "failurePolicy": "Fail",
+        "paramKind": {
+          "apiVersion": "identity.asterius.io/v1alpha1",
+          "kind": "AsteriusTenantBinding"
+        },
+        "matchConstraints": {
+          "namespaceSelector": {
+            "matchLabels": {
+              "kubernetes.io/metadata.name": "identity-acme"
+            }
+          },
+          "resourceRules": [
+            {
+              "apiGroups": [
+                "identity.asterius.io"
+              ],
+              "apiVersions": [
+                "v1alpha1"
+              ],
+              "operations": [
+                "CREATE",
+                "UPDATE"
+              ],
+              "resources": [
+                "applications",
+                "resources",
+                "policies"
+              ]
+            }
+          ]
+        },
+        "validations": [
+          {
+            "expression": "request.namespace == 'identity-acme' && object.spec.tenantRef == params.metadata.name",
+            "message": "identity must reference the administrator-owned binding in its own namespace"
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "admissionregistration.k8s.io/v1",
+      "kind": "ValidatingAdmissionPolicyBinding",
+      "metadata": {
+        "name": "asterius-identity-acme"
+      },
+      "spec": {
+        "policyName": "asterius-identity-acme",
+        "validationActions": [
+          "Deny"
+        ],
+        "paramRef": {
+          "name": "default",
+          "namespace": "identity-acme",
+          "parameterNotFoundAction": "Deny"
+        }
+      }
+    }
+  ]
+}

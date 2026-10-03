@@ -95,6 +95,8 @@ jobs:
         env:
           ASTERIUS_BIN: ${{ github.workspace }}/target/debug/asterius
         run: ./scripts/kubernetes-e2e.sh
+      - name: real structural schemas and namespace admission
+        run: bash scripts/kubernetes-crd-tests.sh
       - name: retain public evidence only
         uses: actions/upload-artifact@v4
         with:
@@ -230,7 +232,7 @@ jobs:
       # These database/race regressions stay ignored in local worker runs;
       # explicitly select them here so the persistence contracts are exercised.
       - name: Managed groups and session policy PostgreSQL regressions
-        run: cargo nextest run --workspace --all-features --run-ignored only -E 'binary(groups) or test(session_policy) or test(disabled_and_locked_accounts_refuse)' --no-fail-fast
+        run: cargo nextest run --workspace --all-features --run-ignored only -E 'binary(groups) or test(session_policy) or binary(authorization_diagnostics) or test(disabled_and_locked_accounts_refuse) or test(scim_disable_then_reactivate)' --no-fail-fast
 
       # Same reason: `cargo test` aborts after the first failing doctest
       # binary otherwise.
