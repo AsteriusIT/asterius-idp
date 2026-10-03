@@ -17044,7 +17044,7 @@ mod tests {
                 .status(),
             StatusCode::FORBIDDEN
         );
-        // The same UUID in the correct realm reaches the missing fixture port,
+        // The same UUID in the correct realm reaches the configured empty port,
         // proving the refusal above came before any owner persistence lookup.
         let local = world.sign_in_as("acme", seeded_user_id(), &[Role::TenantAdmin]);
         assert_eq!(
@@ -17052,7 +17052,17 @@ mod tests {
                 .get(&crate::TEMPORARY_ENTITLEMENT_LIST, &local)
                 .await
                 .status(),
-            StatusCode::SERVICE_UNAVAILABLE
+            StatusCode::OK
+        );
+        assert_eq!(
+            world
+                .handle
+                .0
+                .governance_calls
+                .lock()
+                .expect("an uncontended lock")
+                .as_slice(),
+            &[(TenantId::new("acme"), "temporary.list")]
         );
     }
 

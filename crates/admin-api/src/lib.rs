@@ -2800,7 +2800,7 @@ pub const TEMPORARY_KUBERNETES_PROJECT: Operation = Operation::read(
     S::Get,
     A::new(R::Tenant, "admin.app_roles:read"),
     "Exact mapped same-tenant DPoP controller reads complete bounded current public subjects and expiry",
-);
+).for_services();
 
 /// The registry.
 #[must_use]
