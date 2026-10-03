@@ -3632,7 +3632,7 @@ impl AdminBackend for Deployment {
     }
 
     fn audit(&self) -> Arc<dyn AuditSink> {
-        Arc::new(PgAuditSink::new(self.store.pool().clone()))
+        crate::http::request_id::audit(PgAuditSink::new(self.store.pool().clone()))
     }
 
     fn rate_limit_policy(

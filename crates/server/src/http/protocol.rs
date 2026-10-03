@@ -2966,7 +2966,8 @@ async fn access_search_dispatch(
     let policies = asterius_store_pg::PgPolicies::new(endpoints.store.pool().clone());
     let engine = asterius_domain::policy::DeclarativeEngine::new(Arc::new(
         asterius_store_pg::PgPolicies::new(endpoints.store.pool().clone()),
-    ));
+    ))
+    .with_explanations("access_evaluation");
     let subjects = StoredSubjects {
         users: scope.users(Arc::clone(&endpoints.kek)),
         groups: asterius_store_pg::PgGroups::new(endpoints.store.pool().clone()),
@@ -3079,7 +3080,8 @@ async fn access_evaluation_dispatch(
     let scope = endpoints.store.scope(tenant.id.clone());
     let engine = asterius_domain::policy::DeclarativeEngine::new(Arc::new(
         asterius_store_pg::PgPolicies::new(endpoints.store.pool().clone()),
-    ));
+    ))
+    .with_explanations("access_search");
     let subjects = StoredSubjects {
         users: scope.users(Arc::clone(&endpoints.kek)),
         groups: asterius_store_pg::PgGroups::new(endpoints.store.pool().clone()),
@@ -3953,7 +3955,8 @@ fn agent_policy<'a>(
     let pdp = endpoints.issuance.as_ref().map(|guard| {
         let engine = asterius_domain::policy::DeclarativeEngine::new(Arc::new(
             asterius_store_pg::PgPolicies::new(endpoints.store.pool().clone()),
-        ));
+        ))
+        .with_explanations("token_issuance");
         let subjects = StoredSubjects::of(&endpoints.store, Arc::clone(&endpoints.kek), tenant);
         Arc::new(crate::http::agent_issuance::PdpIssuance::new(
             Box::new(engine),

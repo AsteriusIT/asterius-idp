@@ -317,6 +317,7 @@ impl IssuancePolicy for PdpIssuance {
         } else {
             IssuanceDecision::deny(decision.context().reason_admin().map(str::to_owned))
         };
+        let answer = answer.with_diagnostics(decision.explanation().cloned());
         self.guard.remember(tenant, key, &answer, self.now);
         Ok(answer)
     }
@@ -557,8 +558,14 @@ impl AgentPolicy<'_> {
         };
         let query = query(client, profile.owner(), grant, audience, grant_type);
         match policy.permits(&tenant.id, &query).await {
-            Ok(decision) if decision.permitted() => Ok(()),
+            Ok(decision) if decision.permitted() => {
+                self.record_diagnostics(tenant, client, grant, &decision, now)
+                    .await;
+                Ok(())
+            }
             Ok(decision) => {
+                self.record_diagnostics(tenant, client, grant, &decision, now)
+                    .await;
                 self.record(tenant, client, &query, decision.reason_admin(), false, now)
                     .await;
                 Err(Refusal {
@@ -604,6 +611,40 @@ impl AgentPolicy<'_> {
                     description: UNDECIDED,
                 })
             }
+        }
+    }
+
+    async fn record_diagnostics(
+        &self,
+        tenant: &Tenant,
+        client: &Client,
+        grant: &Grant,
+        decision: &IssuanceDecision,
+        now: OffsetDateTime,
+    ) {
+        let Some(diagnostics) = decision.diagnostics() else {
+            return;
+        };
+        let event = AuditEvent::new(
+            tenant.id.clone(),
+            EventType::ACCESS_EVALUATED,
+            if decision.permitted() {
+                Outcome::Success
+            } else {
+                Outcome::Failure
+            },
+            Actor::Client(client.id.clone()),
+            now,
+        )
+        .client(client.id.clone())
+        .grant(grant.id.clone())
+        .detail(
+            Detail::new()
+                .label("enforcement_point", "token_issuance")
+                .flag("decision", decision.permitted()),
+        );
+        if let Err(error) = self.audit.record_with_diagnostics(event, diagnostics).await {
+            tracing::error!(%error, tenant = %tenant.id, "issuance diagnostics were not recorded");
         }
     }
 

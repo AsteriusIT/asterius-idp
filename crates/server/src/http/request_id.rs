@@ -7,6 +7,62 @@ use axum::response::Response;
 
 /// The header this id travels in, on the way out.
 pub const HEADER: HeaderName = HeaderName::from_static("x-request-id");
+/// Always server generated, including when AuthZEN echoes the PEP's header.
+pub const SUPPORT_HEADER: HeaderName = HeaderName::from_static("x-asterius-request-id");
+
+tokio::task_local! {
+    static AUDIT_REQUEST: RequestId;
+}
+
+/// Adds the current HTTP reference to ordinary and transactional audit writes.
+/// Tokio scopes it to the request future: concurrent requests, spawned jobs and
+/// cancellation cannot inherit another caller's reference.
+#[derive(Debug)]
+pub struct RequestAuditSink {
+    inner: std::sync::Arc<dyn asterius_domain::AuditSink>,
+}
+
+impl RequestAuditSink {
+    #[must_use]
+    pub const fn new(inner: std::sync::Arc<dyn asterius_domain::AuditSink>) -> Self {
+        Self { inner }
+    }
+}
+
+#[async_trait::async_trait]
+impl asterius_domain::AuditSink for RequestAuditSink {
+    fn prepare(&self, mut event: asterius_domain::AuditEvent) -> asterius_domain::AuditEvent {
+        if let Ok(id) = AUDIT_REQUEST.try_with(|id| id.as_str().to_owned()) {
+            event.request_id = Some(id);
+        }
+        self.inner.prepare(event)
+    }
+
+    async fn record(
+        &self,
+        event: asterius_domain::AuditEvent,
+    ) -> Result<(), asterius_domain::DomainError> {
+        self.inner.record(self.prepare(event)).await
+    }
+
+    async fn record_with_diagnostics(
+        &self,
+        event: asterius_domain::AuditEvent,
+        diagnostics: &asterius_domain::policy::explanation::DecisionExplanation,
+    ) -> Result<(), asterius_domain::DomainError> {
+        self.inner
+            .record_with_diagnostics(self.prepare(event), diagnostics)
+            .await
+    }
+}
+
+/// The HTTP composition's sink. Background/CLI writes retain their own metadata.
+#[must_use]
+pub fn audit(
+    inner: impl asterius_domain::AuditSink + 'static,
+) -> std::sync::Arc<dyn asterius_domain::AuditSink> {
+    std::sync::Arc::new(RequestAuditSink::new(std::sync::Arc::new(inner)))
+}
 
 /// A 128-bit request identifier, rendered as lower-case hex.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,8 +118,11 @@ impl std::fmt::Display for RequestId {
 pub async fn layer(mut request: Request, next: Next) -> Response {
     let id = RequestId::generate();
     let header = HeaderValue::from_str(id.as_str()).expect("hex is a valid header value");
-    request.extensions_mut().insert(id);
-    let mut response = next.run(request).await;
+    request.extensions_mut().insert(id.clone());
+    let mut response = AUDIT_REQUEST.scope(id, next.run(request)).await;
+    response
+        .headers_mut()
+        .insert(SUPPORT_HEADER, header.clone());
     if !response.headers().contains_key(HEADER) {
         response.headers_mut().insert(HEADER, header);
     }
@@ -74,6 +133,52 @@ pub async fn layer(mut request: Request, next: Next) -> Response {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[tokio::test]
+    async fn audit_scope_isolated_across_requests_and_spawned_tasks() {
+        let first = RequestId::generate();
+        let second = RequestId::generate();
+        let a = AUDIT_REQUEST.scope(first.clone(), async {
+            tokio::task::yield_now().await;
+            assert!(
+                tokio::spawn(async { AUDIT_REQUEST.try_with(Clone::clone).is_err() })
+                    .await
+                    .expect("spawn")
+            );
+            AUDIT_REQUEST.with(Clone::clone)
+        });
+        let b = AUDIT_REQUEST.scope(second.clone(), async {
+            tokio::task::yield_now().await;
+            AUDIT_REQUEST.with(Clone::clone)
+        });
+        let (observed_a, observed_b) = tokio::join!(a, b);
+        assert_eq!(observed_a, first);
+        assert_eq!(observed_b, second);
+        assert!(AUDIT_REQUEST.try_with(Clone::clone).is_err());
+    }
+
+    #[tokio::test]
+    async fn support_reference_cannot_be_spoofed_by_an_authzen_echo() {
+        let app = axum::Router::new()
+            .route(
+                "/",
+                axum::routing::get(async || {
+                    (
+                        [
+                            (HEADER, "caller-chosen"),
+                            (SUPPORT_HEADER, "also-caller-chosen"),
+                        ],
+                        "body",
+                    )
+                }),
+            )
+            .layer(axum::middleware::from_fn(layer));
+        let response = call(app).await;
+        assert_eq!(response.headers()[HEADER], "caller-chosen");
+        let support = response.headers()[SUPPORT_HEADER].to_str().expect("header");
+        assert_eq!(support.len(), 32);
+        assert_ne!(support, "also-caller-chosen");
+    }
 
     /// The ordinary case: a handler that says nothing gets this server's own
     /// identifier on the response.

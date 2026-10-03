@@ -95,6 +95,14 @@ pub const PARAMETERS: &[(&str, &str)] = &[
         "A grant id (UUID). Records naming this authorization.",
     ),
     (
+        "request_id",
+        "A server-generated HTTP support reference (32 lowercase hexadecimal characters).",
+    ),
+    (
+        "session",
+        "A session lookup digest (64 lowercase hexadecimal characters), never the browser cookie.",
+    ),
+    (
         "type",
         "An event type such as token.exchanged. Repeatable, or comma separated; the result is the union.",
     ),
@@ -150,6 +158,34 @@ pub fn parse_filter(query: &str) -> Result<AuditFilter, AdminError> {
             "agent" => set_once(&mut filter.agent, ClientId::new(value), name)?,
             "owner" => set_once(&mut filter.owner, value, name)?,
             "user" => set_once(&mut filter.user, value, name)?,
+            "request_id" => {
+                if value.len() != 32
+                    || !value
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                {
+                    return Err(AdminError::Invalid(
+                        "request_id must be a server support reference".to_owned(),
+                    ));
+                }
+                set_once(&mut filter.request_id, value, name)?;
+            }
+            "session" => {
+                if value.len() != 64
+                    || !value
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                {
+                    return Err(AdminError::Invalid(
+                        "session must be a server lookup digest".to_owned(),
+                    ));
+                }
+                set_once(
+                    &mut filter.session,
+                    asterius_domain::SessionId::new(value),
+                    name,
+                )?;
+            }
             "grant" => {
                 let uuid: uuid::Uuid = value
                     .parse()
@@ -235,6 +271,42 @@ pub fn render(entry: &TrailEntry) -> Value {
             "opaque": reason.column(),
         }),
     }
+}
+
+/// Adds historical evidence only after the routed tenant's event was found.
+pub async fn render_detail(
+    query: &dyn asterius_domain::audit::AuditQuery,
+    tenant: &asterius_domain::TenantId,
+    entry: &TrailEntry,
+    now: OffsetDateTime,
+) -> Result<Value, DomainError> {
+    let mut document = render(entry);
+    let diagnostic = match &entry.record {
+        AuditRecord::Opaque { .. } => json!({"status": "opaque"}),
+        AuditRecord::Event(event) => {
+            let id = event
+                .detail
+                .iter()
+                .find_map(|(key, value)| match (key.as_str(), value) {
+                    ("diagnostic_id", DetailValue::Text(id)) => uuid::Uuid::parse_str(id).ok(),
+                    _ => None,
+                });
+            match id {
+                None => json!({"status": "not_recorded"}),
+                Some(id) => match query.diagnostics(tenant, id, now).await? {
+                    Some(evidence) => {
+                        json!({"status": "recorded", "expires_at": timestamp(evidence.expires_at), "snapshot": evidence.diagnostics})
+                    }
+                    None => {
+                        let expired = event.detail.iter().any(|(key, value)| matches!((key.as_str(), value), ("diagnostic_expires_at", DetailValue::Number(until)) if *until <= now.unix_timestamp()));
+                        json!({"status": if expired {"expired"} else {"unavailable"}})
+                    }
+                },
+            }
+        }
+    };
+    document["diagnostic"] = diagnostic;
+    Ok(document)
 }
 
 fn event_document(event: &AuditEvent) -> Map<String, Value> {
@@ -414,6 +486,28 @@ impl futures_core::Stream for Export {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn correlation_filters_are_exact_server_references() {
+        let request = "a".repeat(32);
+        let session = "b".repeat(64);
+        let filter = super::parse_filter(&format!("request_id={request}&session={session}"))
+            .expect("server references");
+        assert_eq!(filter.request_id.as_deref(), Some(request.as_str()));
+        assert_eq!(
+            filter.session.as_ref().map(|id| id.as_str()),
+            Some(session.as_str())
+        );
+        for bad in [
+            "request_id=x",
+            "request_id=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "session=cookie",
+            "session=abc",
+            "request_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&request_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ] {
+            assert!(super::parse_filter(bad).is_err());
+        }
+    }
+
     use super::*;
     use asterius_domain::audit::chain::EventHash;
     use asterius_domain::audit::{Detail, Outcome};

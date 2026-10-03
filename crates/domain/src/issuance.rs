@@ -212,15 +212,32 @@ impl IssuanceQuery {
 pub struct IssuanceDecision {
     permit: bool,
     reason_admin: Option<String>,
+    diagnostics: Option<crate::policy::explanation::DecisionExplanation>,
 }
 
 impl IssuanceDecision {
+    /// Evidence from the actual evaluated snapshot, including cached decisions.
+    #[must_use]
+    pub fn with_diagnostics(
+        mut self,
+        diagnostics: Option<crate::policy::explanation::DecisionExplanation>,
+    ) -> Self {
+        self.diagnostics = diagnostics;
+        self
+    }
+
+    #[must_use]
+    pub const fn diagnostics(&self) -> Option<&crate::policy::explanation::DecisionExplanation> {
+        self.diagnostics.as_ref()
+    }
+
     /// A permit, with the reason the decision point gave.
     #[must_use]
     pub const fn permit(reason_admin: Option<String>) -> Self {
         Self {
             permit: true,
             reason_admin,
+            diagnostics: None,
         }
     }
 
@@ -230,6 +247,7 @@ impl IssuanceDecision {
         Self {
             permit: false,
             reason_admin,
+            diagnostics: None,
         }
     }
 

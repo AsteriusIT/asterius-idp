@@ -1121,7 +1121,16 @@ async fn record(
     .client(pep.clone())
     .detail(detail);
 
-    if let Err(error) = context.audit.record(event).await {
+    let recorded = match decision.and_then(asterius_domain::policy::Decision::explanation) {
+        Some(explanation) => {
+            context
+                .audit
+                .record_with_diagnostics(event, explanation)
+                .await
+        }
+        None => context.audit.record(event).await,
+    };
+    if let Err(error) = recorded {
         tracing::error!(
             %error,
             tenant = %context.tenant.id,
