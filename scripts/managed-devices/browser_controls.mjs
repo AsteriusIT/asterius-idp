@@ -117,6 +117,8 @@ try{
  const source=createdSource;
  const enabled=await admin('PUT','device-sources/'+source.id,{client_id:'device-relay-secondary',enabled:true,expected_revision:source.revision});assert.equal(enabled.status(),200);
  const active=await enabled.json();assert(active.enabled);assert.notEqual(active.generation,source.generation);assert.notEqual(active.revision,source.revision);
+ assert.equal((await admin('PUT','device-sources/'+source.id,{client_id:'device-relay-secondary',enabled:false})).status(),400);
+ assert.equal((await admin('PUT','device-sources/'+source.id,{client_id:'device-relay-secondary',enabled:false,expected_revision:null})).status(),400);
  assert.equal((await admin('PUT','device-sources/'+source.id,{client_id:'device-relay-secondary',enabled:false,expected_revision:source.revision})).status(),409);
  const disabled=await admin('PUT','device-sources/'+source.id,{client_id:'device-relay-secondary',enabled:false,expected_revision:active.revision});assert.equal(disabled.status(),200);assert.equal((await disabled.json()).enabled,false);
  assert.equal((await admin('GET','device-sources')).status(),200);assert.equal((await admin('GET','devices?limit=1')).status(),200);

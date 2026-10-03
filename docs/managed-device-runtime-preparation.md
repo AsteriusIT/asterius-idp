@@ -22,7 +22,7 @@ Its stale observation check perturbs an owned database timestamp; it does not
 claim to measure a real 300-second outage. Source/enrollment incarnation,
 monotonic replay, tenant/user bounds, audit rollback, removal erasure and a
 concurrent source publication/signature fence are exercised. The measured owner
-removal-to-next-refusal interval was 0.363 seconds. Already-issued offline JWTs
+removal-to-next-refusal interval was 0.357 seconds. Already-issued offline JWTs
 remain bounded by their expiry and resource-server enforcement.
 
 Source administration uses established exact-realm `ConsoleTenant` administrator
