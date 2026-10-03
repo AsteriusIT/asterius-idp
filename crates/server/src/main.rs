@@ -356,6 +356,12 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
             TenantState::new(directory.clone(), &config.server).with_themes(themes.clone()),
             &config,
         )?;
+        let device_roots = Arc::new(asterius_server::managed_devices::TenantDeviceRoots::load(&config.managed_devices)
+            .map_err(|error| format!("cannot load managed-device trust anchors: {error}"))?);
+        let device_anchors = device_roots.revisions();
+        let tenant_state = tenant_state.with_managed_devices(
+            Arc::new(config.managed_devices.clone()), device_roots,
+        );
         let operations = operational_routes(&store, &config, metrics);
 
         // Client-facing endpoints: the ones that need an authenticated client
@@ -389,6 +395,7 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
         )?);
 
         let client_endpoints = Arc::new(ClientEndpoints {
+            device_anchors: Arc::clone(&device_anchors),
             workloads: Some(Arc::new(asterius_server::workload::ExternalWorkloads::new(
                 Arc::new(asterius_store_pg::PgWorkloadTrusts::new(
                     store.pool().clone(),
