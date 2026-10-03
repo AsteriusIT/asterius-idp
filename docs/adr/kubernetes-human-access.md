@@ -1,6 +1,6 @@
 # Kubernetes human access uses a confidential browser-login broker
 
-- **Status:** Approved design; implementation interoperability outstanding
+- **Status:** Approved design; controlled Kubernetes signature interoperability verified
 - **Date:** 2026-10-03
 - **Bead:** ast-dd1y.1.1
 - **Refines:** [ADR-0014](0014-explicitly-gated-standard-oidc-clients.md)
@@ -191,15 +191,38 @@ is RS256. The version-pinned Kubernetes source also includes ES256 in the
 authenticator allow-list. This validates the algorithm/configuration choice,
 not successful authentication or interoperability with Asterius.
 
-The selected configuration must still be exercised on a disposable configured
-API server with actual Asterius ES256 ID tokens: authorized access, wrong
-issuer/audience, expired/forged token, disallowed algorithm, absent groups,
-cross-cluster use, signing rotation and disablement/refresh behavior. The
-broker and helper described here are contracts, not implemented components.
+The generated AuthenticationConfiguration was subsequently strictly decoded
+and its CEL validated by the exact Kubernetes v1.35.0 authenticator library
+(`k8s.io/apiserver v0.35.0`). Disposable fictional identity tokens signed by
+Asterius's actual ES256 JOSE provider authenticated with the expected subject
+and group prefixes. Wrong audience/issuer, expired/forged signatures, EdDSA,
+excess lifetime and multiple audiences were rejected; missing groups produced
+an unprivileged identity; Cluster A's token was rejected by Cluster B.
+The reproducible implementation artifacts are
+`crates/jose/examples/kubernetes_fixture.rs`,
+`scripts/kubernetes-interop/main.go` and its pinned Go module, and
+`docs/examples/kubernetes-authentication.json` (ast-dd1y.1.2).
+Commands: `SQLX_OFFLINE=true cargo run --quiet -p asterius-jose --example
+kubernetes_fixture > /tmp/asterius-kubernetes-fixtures.json`, then from
+`scripts/kubernetes-interop`, `go run .
+../../docs/examples/kubernetes-authentication.json
+/tmp/asterius-kubernetes-fixtures.json`. These checks passed on 2026-10-03
+without modifying the live cluster. The verifier uses ES256-only signing
+configuration equivalent to the selected legacy flags. Structured
+AuthenticationConfiguration has no algorithm allow-list field; the generated
+client still issues ES256 and its verifier recognizes Kubernetes' supported
+algorithms.
+
+This proves controlled signing/configuration interoperability, not live
+discovery/JWKS, browser login, broker/helper behavior, signing-key propagation
+or production authorization. Live workflow and rotation/disablement/refresh
+verification remain implementation integration work. The broker and helper
+described here are contracts, not implemented components.
 The user approved this document's human normative review on 2026-10-03
-("ok pour les deux documents"). `ast-dd1y.1.1` remains open until signing
-interoperability is recorded. Dependent work may use the approved design but
-must not mark the integration supported without implementation evidence.
+("ok pour les deux documents"). The decision's acceptance is met by this
+approval, contract and controlled target verifier evidence. Dependent work may
+use the approved design; supporting a complete integration still requires its
+own runtime and live workflow evidence.
 
 ## Normative and implementation references
 
