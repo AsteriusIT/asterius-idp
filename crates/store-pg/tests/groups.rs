@@ -113,6 +113,117 @@ fn legacy_claims() -> serde_json::Value {
     json!({"groups": {"value": ["Legacy Admins", "legacy", 7, "legacy"], "source": "admin", "verified_at": null}})
 }
 
+fn kubernetes_client(tenant: &TenantId) -> asterius_domain::Client {
+    use asterius_domain::{
+        Capabilities, Client, ClientComplianceProfile, ClientId, ClientRegistration, ClientStatus,
+    };
+    let registration = ClientRegistration::from_json_with_profile(
+        json!({
+            "client_name": "Cluster broker", "redirect_uris": ["https://broker.example/callback"],
+            "grant_types": ["authorization_code", "refresh_token"], "scope": "openid",
+            "jwks_uri": "https://broker.example/jwks", "id_token_signed_response_alg": "ES256",
+            "managed_groups_claim": true
+        })
+        .to_string()
+        .as_bytes(),
+        Capabilities::default(),
+        ClientComplianceProfile::Oidc,
+    )
+    .unwrap();
+    Client {
+        tenant: tenant.clone(),
+        id: ClientId::new("cluster-a"),
+        registration,
+        status: ClientStatus::Active,
+        created_at: now(),
+        updated_at: now(),
+    }
+}
+
+#[tokio::test]
+#[ignore = "slow: requires PostgreSQL"]
+async fn kubernetes_profiles_isolate_tenant_groups_and_reject_stale_or_rebound_audiences() {
+    use asterius_domain::Capabilities;
+    use asterius_domain::kubernetes::KubernetesProfile;
+    let db = TestDb::setup().await;
+    let selected = db.group("selected").await;
+    let hidden = db.group("hidden").await;
+    db.groups
+        .add_member(&db.tenant, selected.id, db.user, now())
+        .await
+        .unwrap();
+    db.groups
+        .add_member(&db.tenant, hidden.id, db.user, now())
+        .await
+        .unwrap();
+    let foreign = db
+        .groups
+        .create(&db.other, &metadata("foreign"), now())
+        .await
+        .unwrap();
+    let client = kubernetes_client(&db.tenant);
+    let clients = asterius_store_pg::PgClientRepository::new(
+        db.pool.clone(),
+        db.tenant.clone(),
+        Capabilities::default(),
+    );
+    clients.upsert(&client).await.unwrap();
+    let invalid = KubernetesProfile::parse("a", "default", vec![foreign.id.as_uuid()], 0).unwrap();
+    assert!(matches!(
+        db.groups
+            .replace_kubernetes_profile(&db.tenant, &client.id, &invalid)
+            .await,
+        Err(DomainError::Invalid { .. })
+    ));
+    let profile = KubernetesProfile::parse("a", "default", vec![selected.id.as_uuid()], 0).unwrap();
+    let saved = db
+        .groups
+        .replace_kubernetes_profile(&db.tenant, &client.id, &profile)
+        .await
+        .unwrap();
+    assert_eq!(saved.revision(), 1);
+    assert_eq!(
+        db.groups
+            .released_group_ids(&client, db.user)
+            .await
+            .unwrap(),
+        vec![selected.id.to_string()]
+    );
+    assert!(
+        db.groups
+            .kubernetes_profile(&db.other, &client.id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(matches!(
+        db.groups
+            .replace_kubernetes_profile(&db.tenant, &client.id, &profile)
+            .await,
+        Err(DomainError::Conflict(_))
+    ));
+    let rebound = KubernetesProfile::parse("b", "default", vec![], saved.revision()).unwrap();
+    assert!(matches!(
+        db.groups
+            .replace_kubernetes_profile(&db.tenant, &client.id, &rebound)
+            .await,
+        Err(DomainError::Conflict(_))
+    ));
+    let clear = KubernetesProfile::parse("a", "default", vec![], saved.revision()).unwrap();
+    db.groups
+        .replace_kubernetes_profile(&db.tenant, &client.id, &clear)
+        .await
+        .unwrap();
+    assert!(
+        db.groups
+            .released_group_ids(&client, db.user)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    db.cleanup().await;
+}
+
 #[tokio::test]
 #[ignore = "slow: requires PostgreSQL"]
 async fn groups_migration_and_managed_writes_preserve_legacy_claim_authority() {

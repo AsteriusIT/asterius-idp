@@ -18,6 +18,7 @@ pub mod issuance;
 pub mod issuer;
 pub mod json_sentinel;
 pub mod keys;
+pub mod kubernetes;
 pub mod limits;
 pub mod locale;
 pub mod messages;

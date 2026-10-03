@@ -300,6 +300,110 @@ async fn lock_revision(
 
 #[async_trait::async_trait]
 impl GroupDirectory for PgGroups {
+    async fn released_group_ids(
+        &self,
+        client: &asterius_domain::Client,
+        user: UserId,
+    ) -> Result<Vec<String>, DomainError> {
+        if let Some(profile) = self.kubernetes_profile(&client.tenant, &client.id).await? {
+            profile.check_client(client)?;
+            // The selected set is at most 100; intersect in SQL rather than walk
+            // the user's entire directory or truncate before the intersection.
+            let selected: Vec<_> = profile.groups().iter().copied().collect();
+            let ids: Vec<Uuid> = sqlx::query_scalar("select group_id from group_memberships where tenant_id = $1 and user_id = $2 and group_id = any($3) order by group_id")
+                .bind(client.tenant.as_str()).bind(user.as_uuid()).bind(&selected).fetch_all(&self.pool).await.map_err(to_domain_error)?;
+            return Ok(ids
+                .into_iter()
+                .map(|id| GroupId::from_uuid(id).to_string())
+                .collect());
+        }
+        if !client.registration.managed_groups_claim.is_issued() {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .groups_for_user(&client.tenant, user, None, 100)
+            .await?
+            .into_iter()
+            .map(|group| group.id.to_string())
+            .collect())
+    }
+    async fn kubernetes_profile(
+        &self,
+        tenant: &TenantId,
+        client: &ClientId,
+    ) -> Result<Option<asterius_domain::kubernetes::KubernetesProfile>, DomainError> {
+        let row: Option<(String, String, Vec<Uuid>, i64)> = sqlx::query_as("select cluster_id, namespace, group_ids, revision from kubernetes_profiles where tenant_id = $1 and client_id = $2")
+            .bind(tenant.as_str()).bind(client.as_str()).fetch_optional(&self.pool).await.map_err(to_domain_error)?;
+        row.map(|(cluster, namespace, groups, revision)| {
+            asterius_domain::kubernetes::KubernetesProfile::parse(
+                &cluster, &namespace, groups, revision,
+            )
+        })
+        .transpose()
+    }
+
+    async fn replace_kubernetes_profile(
+        &self,
+        tenant: &TenantId,
+        client: &ClientId,
+        profile: &asterius_domain::kubernetes::KubernetesProfile,
+    ) -> Result<asterius_domain::kubernetes::KubernetesProfile, DomainError> {
+        let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
+        // The client lock serializes profile creation/replacement and client updates.
+        let existing: Option<(String,)> = sqlx::query_as(
+            "select client_id from clients where tenant_id = $1 and client_id = $2 for update",
+        )
+        .bind(tenant.as_str())
+        .bind(client.as_str())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(to_domain_error)?;
+        if existing.is_none() {
+            return Err(DomainError::NotFound);
+        }
+        let ids: Vec<_> = profile.groups().iter().copied().collect();
+        let count: (i64,) = sqlx::query_as(
+            "select count(*) from managed_groups where tenant_id = $1 and group_id = any($2)",
+        )
+        .bind(tenant.as_str())
+        .bind(&ids)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(to_domain_error)?;
+        if count.0
+            != i64::try_from(ids.len())
+                .map_err(|_| DomainError::invalid("kubernetes.group_ids", "too many groups"))?
+        {
+            return Err(DomainError::invalid(
+                "kubernetes.group_ids",
+                "every selected group must exist in this tenant",
+            ));
+        }
+        let row: Option<(i64,)> = sqlx::query_as("insert into kubernetes_profiles(tenant_id, client_id, cluster_id, namespace, group_ids, revision) select $1, $2, $3, $4, $5, 1 where $6::bigint = 0 on conflict(tenant_id, client_id) do nothing returning revision")
+            .bind(tenant.as_str()).bind(client.as_str()).bind(profile.cluster()).bind(profile.namespace()).bind(&ids).bind(profile.revision())
+            .fetch_optional(&mut *tx).await.map_err(to_domain_error)?;
+        // A replacement needs a separate update: insert-select is empty for nonzero revisions.
+        let revision = if let Some((revision,)) = row {
+            revision
+        } else if profile.revision() > 0 {
+            let row: Option<(i64,)> = sqlx::query_as("update kubernetes_profiles set namespace = $4, group_ids = $5, revision = revision + 1 where tenant_id = $1 and client_id = $2 and cluster_id = $3 and revision = $6 returning revision")
+                .bind(tenant.as_str()).bind(client.as_str()).bind(profile.cluster()).bind(profile.namespace()).bind(&ids).bind(profile.revision()).fetch_optional(&mut *tx).await.map_err(to_domain_error)?;
+            row.map(|value| value.0).ok_or_else(|| {
+                DomainError::Conflict("Kubernetes profile changed; reload before saving".to_owned())
+            })?
+        } else {
+            return Err(DomainError::Conflict(
+                "Kubernetes profile already exists; reload before saving".to_owned(),
+            ));
+        };
+        tx.commit().await.map_err(to_domain_error)?;
+        asterius_domain::kubernetes::KubernetesProfile::parse(
+            profile.cluster(),
+            profile.namespace(),
+            ids,
+            revision,
+        )
+    }
     async fn scim_create(
         &self,
         tenant: &TenantId,

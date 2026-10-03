@@ -656,6 +656,36 @@ mod tests {
         .into_claims()
     }
 
+    #[test]
+    fn kubernetes_cluster_tokens_have_one_distinct_audience_and_server_owned_claims() {
+        let mut cluster_a = grant_with(Some(SubjectId::new("stable-user")));
+        cluster_a.client = ClientId::new("cluster-a");
+        let mut cluster_b = cluster_a.clone();
+        cluster_b.client = ClientId::new("cluster-b");
+        let build = |grant: &Grant| {
+            let claimed = grant.claim(now()).expect("fixture grant is live");
+            IdToken::new(
+                &issuer(),
+                &claimed,
+                SigningAlgorithm::Es256,
+                authentication(),
+                ACCESS_TOKEN,
+                now(),
+            )
+            .build()
+            .expect("valid cluster ID token")
+            .claims()
+            .clone()
+        };
+        let a = build(&cluster_a);
+        let b = build(&cluster_b);
+        assert_eq!(a["aud"], "cluster-a");
+        assert_eq!(b["aud"], "cluster-b");
+        assert_ne!(a["aud"], b["aud"]);
+        assert_eq!(a["sub"], b["sub"]);
+        assert_eq!(a["exp"].as_i64().unwrap() - a["iat"].as_i64().unwrap(), 300);
+    }
+
     // --- at_hash (OIDC Core §3.1.3.6) -------------------------------------
 
     /// The pair OIDC Core publishes in Appendix A.3: an `access_token` of

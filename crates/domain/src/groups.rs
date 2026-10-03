@@ -179,6 +179,66 @@ pub struct ScimGroupReplacement {
 /// cascades memberships; deleting a user leaves the group itself intact.
 #[async_trait::async_trait]
 pub trait GroupDirectory: Debug + Send + Sync {
+    /// Reads a tenant-owned Kubernetes audience's group release policy.
+    async fn kubernetes_profile(
+        &self,
+        _tenant: &TenantId,
+        _client: &ClientId,
+    ) -> Result<Option<crate::kubernetes::KubernetesProfile>, DomainError> {
+        Ok(None)
+    }
+    /// Creates or replaces a cluster profile with optimistic concurrency.
+    async fn replace_kubernetes_profile(
+        &self,
+        _tenant: &TenantId,
+        _client: &ClientId,
+        _profile: &crate::kubernetes::KubernetesProfile,
+    ) -> Result<crate::kubernetes::KubernetesProfile, DomainError> {
+        Err(DomainError::invalid("kubernetes", "unsupported adapter"))
+    }
+    /// Releases stable memberships through a cluster's exact audience allow-list.
+    /// Existing non-cluster clients retain their explicit directory opt-in.
+    async fn released_group_ids(
+        &self,
+        client: &crate::Client,
+        user: UserId,
+    ) -> Result<Vec<String>, DomainError> {
+        let profile = self.kubernetes_profile(&client.tenant, &client.id).await?;
+        if let Some(profile) = &profile {
+            profile.check_client(client)?;
+        }
+        if !client.registration.managed_groups_claim.is_issued() {
+            return Ok(Vec::new());
+        }
+        let Some(profile) = profile else {
+            return Ok(self
+                .groups_for_user(&client.tenant, user, None, 100)
+                .await?
+                .into_iter()
+                .map(|group| group.id.to_string())
+                .collect());
+        };
+        let mut after = None;
+        let mut released = BTreeSet::new();
+        loop {
+            let page = self
+                .groups_for_user(&client.tenant, user, after, 200)
+                .await?;
+            if page.is_empty() {
+                break;
+            }
+            for group in &page {
+                if profile.releases(group.id) {
+                    released.insert(group.id.to_string());
+                }
+            }
+            after = page.last().map(|group| group.id);
+            if page.len() < 200 {
+                break;
+            }
+        }
+        Ok(released.into_iter().collect())
+    }
     /// Creates a client-owned SCIM group with its members atomically.
     async fn scim_create(
         &self,

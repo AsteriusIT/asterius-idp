@@ -81,6 +81,7 @@ import {
 } from './ui';
 import { redirectUris } from './validation';
 import { ClientSecurity } from './client-setup';
+import { KubernetesProfileSetup } from './kubernetes-profile';
 import { clientConfiguration, clientFieldError, publicKeyError, readClientDiscovery, type ClientDiscovery } from './client-onboarding';
 import { resourceChoices, type ResourceServerSummary } from './client-resources';
 import {
@@ -585,6 +586,7 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
             {discovery !== null ? <JsonView value={clientConfiguration(editing.document, discovery)} label="Saved client configuration" />
               : <p>Discovery must load before a connection configuration can be exported.</p>}
           </Panel>
+          <KubernetesProfileSetup clientId={editing.document.client_id} session={session} canWrite={canWrite} />
         </TabsContent>}
         </Tabs>
       </Screen>

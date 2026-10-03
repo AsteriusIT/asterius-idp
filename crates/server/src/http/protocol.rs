@@ -3764,16 +3764,7 @@ impl userinfo::UserInfoSource for StoredClaims {
         let Some(client) = self.clients.find(client).await? else {
             return Ok(Vec::new());
         };
-        if !client.registration.managed_groups_claim.is_issued() {
-            return Ok(Vec::new());
-        }
-        Ok(self
-            .groups
-            .groups_for_user(&self.tenant, user, None, 100)
-            .await?
-            .into_iter()
-            .map(|group| group.id.to_string())
-            .collect())
+        self.groups.released_group_ids(&client, user).await
     }
 
     async fn user(
