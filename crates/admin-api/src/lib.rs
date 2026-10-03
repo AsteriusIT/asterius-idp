@@ -2958,7 +2958,10 @@ mod tests {
             };
             if let Some(expected) = relay_scope {
                 assert_eq!(scope, expected);
-                assert_eq!(operation.authority().reach(), crate::rbac::Reach::AutomationTenant);
+                assert_eq!(
+                    operation.authority().reach(),
+                    crate::rbac::Reach::AutomationTenant
+                );
                 continue;
             }
             assert!(
