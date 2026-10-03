@@ -90,25 +90,38 @@ impl KubernetesJitIdentity {
 
     // fuzz-target: temporary_entitlement_configuration
     pub fn validate(&self) -> Result<(), DomainError> {
-        crate::kubernetes::KubernetesProfile::parse(&self.cluster, &self.namespace, vec![], self.profile_revision)?;
+        crate::kubernetes::KubernetesProfile::parse(
+            &self.cluster,
+            &self.namespace,
+            vec![],
+            self.profile_revision,
+        )?;
         crate::RoleName::parse(&self.role)
             .map_err(|error| DomainError::invalid("asterius_jit.role", error.to_string()))?;
         crate::ResourceIdentifier::parse(&self.resource)
             .map_err(|error| DomainError::invalid("asterius_jit.resource", error.to_string()))?;
         let unique: std::collections::BTreeSet<_> = self.permissions.iter().collect();
-        if self.binding_revision.is_nil() || self.entitlement_id.is_nil()
-            || self.client_id.is_empty() || self.client_id.len() > 2048
+        if self.binding_revision.is_nil()
+            || self.entitlement_id.is_nil()
+            || self.client_id.is_empty()
+            || self.client_id.len() > 2048
             || self.client_id.chars().any(char::is_control)
-            || self.profile_revision <= 0 || self.profile_revision > 9_007_199_254_740_991
-            || self.expires_at <= 0 || self.expires_at > 9_007_199_254_740_991
-            || self.permissions.is_empty() || self.permissions.len() > 64
+            || self.profile_revision <= 0
+            || self.profile_revision > 9_007_199_254_740_991
+            || self.expires_at <= 0
+            || self.expires_at > 9_007_199_254_740_991
+            || self.permissions.is_empty()
+            || self.permissions.len() > 64
             || unique.len() != self.permissions.len()
             || self.permissions.iter().any(|scope| {
                 !crate::entities::grant::is_scope_token(scope)
                     || !crate::temporary_entitlements::is_resource_permission(scope)
             })
         {
-            return Err(DomainError::invalid("asterius_jit", "bounded exact temporary provenance required"));
+            return Err(DomainError::invalid(
+                "asterius_jit",
+                "bounded exact temporary provenance required",
+            ));
         }
         Ok(())
     }
@@ -170,7 +183,7 @@ mod tests {
         for (key, value) in [
             ("username", serde_json::json!("system:admin")),
             ("permissions", serde_json::json!(["openid"])),
-            ("permissions", serde_json::json!(["read","read"])),
+            ("permissions", serde_json::json!(["read", "read"])),
             ("namespace", serde_json::json!("../foreign")),
             ("expires_at", serde_json::json!(9_007_199_254_740_992_i64)),
         ] {

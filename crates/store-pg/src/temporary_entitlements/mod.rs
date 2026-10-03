@@ -1,7 +1,7 @@
 //! Authoritative-clock lifecycle transitions and live role resolution.
 mod configuration;
-mod lifecycle;
 mod kubernetes;
+mod lifecycle;
 mod records;
 mod resolution;
 use crate::error::to_domain_error;

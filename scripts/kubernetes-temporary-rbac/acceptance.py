@@ -194,13 +194,13 @@ def claims(token, audience, algorithm="EdDSA"):
     assert result['exp']>time.time(), 'valid signed expiry'
     return result
 
-def code_tokens(selected_resource=resource, scopes='openid offline_access read'):
+def code_tokens(selected_resource=resource, scopes='openid offline_access read', browser=requester):
     verifier=secrets.token_urlsafe(32); state=secrets.token_urlsafe(24); nonce=secrets.token_urlsafe(24)
     status, _, pushed=client.authenticated('/par',{'response_type':'code','redirect_uri':callback,'scope':scopes,'resource':selected_resource,'state':state,'nonce':nonce,'code_challenge_method':'S256','code_challenge':b64(hashlib.sha256(verifier.encode()).digest())})
     assert status==201, 'real authenticated PAR'
     url=issuer+'/authorize?'+urllib.parse.urlencode({'client_id':'app','request_uri':pushed['request_uri']})
     for _ in range(8):
-        status, headers, body=requester.request('GET',url)
+        status, headers, body=browser.request('GET',url)
         if status in (302,303):
             location=urllib.parse.urljoin(url,headers['Location'])
             if location.startswith(callback): break
@@ -208,7 +208,7 @@ def code_tokens(selected_resource=resource, scopes='openid offline_access read')
         assert status==200, 'strong seeded session reaches consent'
         forms=Forms(); forms.feed(body)
         consent=next(form for form in forms.forms if 'csrf' in form['values'] and any(name=='scope' for name,_ in form['all']))
-        status, headers, _=requester.request('POST',urllib.parse.urljoin(url,consent['action']),urllib.parse.urlencode(consent['all']+[('decision','allow')]).encode(),{'Content-Type':'application/x-www-form-urlencoded','Origin':origin})
+        status, headers, _=browser.request('POST',urllib.parse.urljoin(url,consent['action']),urllib.parse.urlencode(consent['all']+[('decision','allow')]).encode(),{'Content-Type':'application/x-www-form-urlencoded','Origin':origin})
         assert status in (302,303), 'consent advances'
         location=urllib.parse.urljoin(url,headers['Location'])
         if location.startswith(callback): break
@@ -232,7 +232,7 @@ profile = {'cluster_id':'incident','namespace':namespace,'group_ids':[],'revisio
 status, _, saved_profile = owner.admin('PUT','/clients/app/kubernetes',profile)
 assert status == 200, 'real owner profile configuration'
 status, _, mapping = owner.admin('PUT',path+'/kubernetes-binding',{'controller_client_id':'controller','expected_revision':None,'enabled':True})
-assert status == 200, 'real owner controller mapping CAS'
+assert status == 200, f'real owner controller mapping CAS status={status} error={mapping}'
 assert owner.admin('PUT',path+'/kubernetes-binding',{'controller_client_id':'controller','expected_revision':None,'enabled':True})[0] == 409, 'mapping creation replay is stale CAS'
 assert automation.request('PUT',api+path+'/kubernetes-binding',{'controller_client_id':'controller','expected_revision':mapping['revision'],'enabled':False},{'Content-Type':'application/json'})[0] == 403, 'controller cannot mutate mapping'
 status, _, document = owner.admin('GET',path+'/kubernetes-binding')
@@ -303,7 +303,8 @@ def wait_subjects(expected, timeout=8):
     started=time.monotonic()
     while True:
         status, current=kube_http(sa,'GET',binding_path); assert status==200
-        if bool(current.get('subjects'))==expected: return time.monotonic()-started
+        subjects=current.get('subjects') or []
+        if (len(subjects)==expected if type(expected) is int else bool(subjects)==expected): return time.monotonic()-started
         assert time.monotonic()-started<timeout, 'bounded real reconciliation window'
         assert controller is not None and controller.poll() is None, 'controller remains running'
         time.sleep(.1)
@@ -329,14 +330,27 @@ checks.append('real_baseline_oidc_identity_and_independent_binding')
 def approve(duration):
     request_id=submit(duration)
     assert approver.command('decide',{'request_id':request_id,'decision':'approve','idempotency_key':str(uuid.uuid4())})[0]==303
-    return next(item for item in activations() if item['status']=='active')
+    return next(item for item in activations() if item['status']=='active' and item['request_id']==request_id)
 try:
     controller=start_controller()
-    active=approve(30)
+    active=approve(45)
+    overlap=approve(50)
+    assert owner.admin('POST',path+'/eligibilities',{'user_id':ids['stranger'],'not_before':int(time.time())-1,'expires_at':int(time.time())+600,'expected_revision':None})[0]==200
+    other_reason='Second independent actor '+secrets.token_hex(8)
+    assert stranger.command('request',{'entitlement_id':entitlement_id,'duration_seconds':50,'reason':other_reason,'idempotency_key':str(uuid.uuid4())})[0]==303
+    other_request=next(item['request_id'] for item in requests() if item['reason']==other_reason)
+    assert approver.command('decide',{'request_id':other_request,'decision':'approve','idempotency_key':str(uuid.uuid4())})[0]==303
+    other_active=next(item for item in activations() if item['request_id']==other_request)
     issued, _, identity=code_tokens()
     assert identity['asterius_jit']['binding_revision']==mapping['revision']
     assert identity['exp']<=active['expires_at'] and identity['exp']<=identity['asterius_jit']['expires_at']
-    enabled_seconds=wait_subjects(True)
+    enabled_seconds=wait_subjects(2)
+    status, _, projection=automation.request('GET',api+'/kubernetes/temporary-access/'+entitlement_id)
+    assert status==200 and len(projection['subjects'])==2, 'overlapping live approvals yield one complete native subject'
+    assert len({item['username'] for item in projection['subjects']})==2
+    assert overlap['activation_id'] in [item['activation_id'] for item in projection['subjects']], 'representative matches latest live approval deadline'
+    other_issued, _, other_identity=code_tokens(browser=stranger)
+    assert kube_http(other_issued['id_token'],'GET',secret_path)[0]==200, 'overlap never clears another legitimate subject'
     assert kube_http(issued['id_token'],'GET',secret_path)[0]==200, 'real signed JIT token reaches fixed Role'
     assert kube_http(issued['id_token'],'GET','/api/v1/namespaces/'+namespace+'/secrets')[0]==403, 'get does not grant list'
     assert kube_http(baseline_issued['id_token'],'GET',secret_path)[0]==403, 'ordinary username cannot borrow active JIT binding'
@@ -375,7 +389,13 @@ try:
 
     status, _, revoked=owner.admin('POST',path+'/activations/'+active['activation_id']+'/revoke',{'activation_id':active['activation_id'],'reason':'Native RBAC proof','idempotency_key':str(uuid.uuid4())})
     assert status==200
-    revoked_seconds=wait_subjects(False)
+    assert kube_http(issued['id_token'],'GET',secret_path)[0]==200, 'independent overlapping approval remains legitimate'
+    assert owner.admin('POST',path+'/activations/'+overlap['activation_id']+'/revoke',{'activation_id':overlap['activation_id'],'reason':'Overlap complete','idempotency_key':str(uuid.uuid4())})[0]==200
+    revoked_seconds=wait_subjects(1)
+    assert kube_http(other_issued['id_token'],'GET',secret_path)[0]==200, 'another actor survives independent revocation'
+    assert kube_http(issued['id_token'],'GET',secret_path)[0]==403
+    assert owner.admin('POST',path+'/activations/'+other_active['activation_id']+'/revoke',{'activation_id':other_active['activation_id'],'reason':'Other actor complete','idempotency_key':str(uuid.uuid4())})[0]==200
+    wait_subjects(False)
     assert claims(issued['id_token'],'app','ES256')['exp']>time.time(), 'revoked token remains cryptographically valid'
     assert kube_http(issued['id_token'],'GET',secret_path)[0]==403, 'healthy revocation denies old valid ID'
     checks.append('healthy_revocation_old_valid_token_access_loss')

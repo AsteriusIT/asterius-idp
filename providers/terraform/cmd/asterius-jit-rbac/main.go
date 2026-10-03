@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -23,9 +24,9 @@ func main() {
 		fmt.Fprintln(os.Stderr, "controller configuration unavailable")
 		os.Exit(1)
 	}
-	info, err := input.Stat()
-	if err != nil || info.Size() > 65536 {
-		input.Close()
+	raw, err := io.ReadAll(io.LimitReader(input, 65537))
+	input.Close()
+	if err != nil || len(raw) > 65536 {
 		fmt.Fprintln(os.Stderr, "controller configuration exceeds bound")
 		os.Exit(1)
 	}
@@ -33,14 +34,13 @@ func main() {
 		Controller                                                                           jitrbac.Config
 		Issuer, KeyFile, KeyID, CAFile, KubernetesURL, KubernetesTokenFile, KubernetesCAFile string
 	}
-	d := json.NewDecoder(io.LimitReader(input, 65537))
+	d := json.NewDecoder(bytes.NewReader(raw))
 	d.DisallowUnknownFields()
 	err = d.Decode(&cfg)
 	var trailing any
 	if err == nil && d.Decode(&trailing) != io.EOF {
 		err = fmt.Errorf("trailing configuration data")
 	}
-	input.Close()
 	if err != nil || cfg.Controller.Validate() != nil {
 		fmt.Fprintln(os.Stderr, "controller configuration refused")
 		os.Exit(1)

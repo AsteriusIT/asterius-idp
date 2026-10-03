@@ -97,16 +97,35 @@ pub fn temporary_authentication_document(
 ) -> Value {
     let mut value = document(tenant, client, profile)["authentication_configuration"].clone();
     let fields = [
-        "binding_revision", "entitlement_id", "client_id", "resource", "permissions", "role",
-        "cluster", "namespace", "profile_revision", "expires_at",
+        "binding_revision",
+        "entitlement_id",
+        "client_id",
+        "resource",
+        "permissions",
+        "role",
+        "cluster",
+        "namespace",
+        "profile_revision",
+        "expires_at",
     ];
     // Kubernetes v1.35 newClaimsValue decodes JSON numbers as float64/CEL double.
     // Require exact integral bounded values, rather than an unreachable CEL int type.
-    let mut shape = vec!["type(claims.asterius_jit) == map".to_owned(), "claims.asterius_jit.size() == 10".to_owned()];
+    let mut shape = vec![
+        "type(claims.asterius_jit) == map".to_owned(),
+        "claims.asterius_jit.size() == 10".to_owned(),
+    ];
     for field in fields {
         shape.push(format!("has(claims.asterius_jit.{field})"));
     }
-    for field in ["binding_revision", "entitlement_id", "client_id", "resource", "role", "cluster", "namespace"] {
+    for field in [
+        "binding_revision",
+        "entitlement_id",
+        "client_id",
+        "resource",
+        "role",
+        "cluster",
+        "namespace",
+    ] {
         shape.push(format!("type(claims.asterius_jit.{field}) == string"));
     }
     shape.extend([
@@ -126,13 +145,18 @@ pub fn temporary_authentication_document(
         "namespace": expected.namespace,
         "profile_revision": expected.profile_revision,
     });
-    let matches: Vec<_> = pins.as_object().into_iter().flatten().map(|(key, value)| {
-        if key == "profile_revision" {
-            format!("claims.asterius_jit.{key} == double({value})")
-        } else {
-            format!("claims.asterius_jit.{key} == {value}")
-        }
-    }).collect();
+    let matches: Vec<_> = pins
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(key, value)| {
+            if key == "profile_revision" {
+                format!("claims.asterius_jit.{key} == double({value})")
+            } else {
+                format!("claims.asterius_jit.{key} == {value}")
+            }
+        })
+        .collect();
     let jit_prefix = json!(format!("asterius-jit:{}:", expected.binding_revision));
     let baseline_prefix = json!(profile.prefix(tenant.id.as_str()));
     // document() always constructs this field as a validation-rule array.
