@@ -1189,7 +1189,7 @@ fn managed_device_documentation(operation: &Operation, object: &mut Value) {
                 json!(["client_id"])
             };
             let revision = if update {
-                uuid.clone()
+                uuid
             } else {
                 json!({"type":"null"})
             };
