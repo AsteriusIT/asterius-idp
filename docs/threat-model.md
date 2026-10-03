@@ -2849,10 +2849,13 @@ window. During controller outage native bindings may linger, but old JIT credent
 expire at their signed activation-capped deadline and newly ordinary credentials
 cannot match that identity. Offline revocation during outage retains only the bounded
 already issued JWT residual plus the independently verified successful-authentication
-cache and clock skew. The supported Kubernetes v1.35 profile has a ten-second
-success-cache ceiling; disposable acceptance measures old-token refusal after exp
-within that ceiling, instead of claiming immediate offline expiry. Baseline bindings
-and credentials remain independent.
+cache and clock skew. Kubernetes v1.35 retains a ten-second success cache, but
+its detached authenticator can complete an already-started lookup for thirty
+seconds. The pinned OIDC verifier checks expiry before awaited key resolution;
+a late positive can populate that cache. The conservative source-derived residual
+is expiry plus forty seconds and scheduling/clock margin. Healthy warm-key
+acceptance does not establish the worst-case delayed-key-resolution bound.
+Baseline bindings and credentials remain independent.
 
 ### Candidate Kubernetes online review boundary (`ast-dd1y.1.5`)
 
@@ -2883,3 +2886,32 @@ source-derived bound is forty seconds plus measured scheduling/transport margin.
 The local three-second review deadline does not establish a shorter wire-level
 bound. Actual delayed-response, outage and replica evidence is still required;
 healthy-network latency alone is not worst-case acceptance evidence.
+
+### Candidate managed-device request proof (`ast-dd1y.4.5`)
+
+A device CA signature or matching enrollment fingerprint does not prove leaf-key
+possession. The supported edge verifies the actual device TLS handshake, strips
+caller identity headers, and forwards the leaf over a separately authenticated,
+CA-verified and exact-proxy-pinned TLS hop. Operator roots and pins form the
+private source revision. An IP allow-list or unprotected forwarded certificate
+cannot establish Known device state. This is not hardware attestation.
+
+Interaction evidence belongs only to the winning exact PAR/interaction and
+authorization-code digest, with a nonrenewable five-minute/certificate deadline.
+Refresh and ordinary local exchange require fresh evidence on their own request;
+PDP evidence belongs to its exact verified token grant. Missing grant provenance
+cannot be repaired by another active grant or a browser session. The early
+exchange gate may inspect only its explicitly verified live parent, whereas
+final issuance requires the exact persisted and claimed child. Neither phase
+borrows a previous code or session's device proof.
+
+The provided publication transaction reads current user/client, source and
+enrollment generations, leaf and operator revision, posture clock and grant
+state. Device updates/removal serialize against that tenant fence. Final signing
+and PDP decisions retain the fence through awaited work and re-evaluate freshness
+with the original evidence deadline. Relay writes separately require private
+successful client-credentials receipts checked again after lock waits; public
+client-like claims or old delegated credentials do not establish relay authority.
+The shared private Tailscale bridge forwards no device certificate and therefore
+cannot exercise this candidate device source. Human review, final candidate
+gates and actual Asterius enforcement acceptance remain pending.
