@@ -1,0 +1,94 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Asterius GitHub Actions workload exchange profile",
+    "version": "1.0",
+    "description": "Existing RFC8693 endpoint; approved GitHub subject JWT, independent FAPI confidential client authentication and DPoP remain mandatory. Direct hosted-runner credentialless bootstrap is not enabled."
+  },
+  "servers": [
+    {
+      "url": "https://id.example/t/ci"
+    }
+  ],
+  "paths": {
+    "/token": {
+      "post": {
+        "operationId": "exchangeGithubWorkflow",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "DPoP",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "grant_type",
+                  "subject_token_type",
+                  "subject_token",
+                  "client_id",
+                  "resource"
+                ],
+                "properties": {
+                  "grant_type": {
+                    "const": "urn:ietf:params:oauth:grant-type:token-exchange"
+                  },
+                  "subject_token_type": {
+                    "const": "urn:ietf:params:oauth:token-type:jwt"
+                  },
+                  "subject_token": {
+                    "type": "string",
+                    "maxLength": 8192
+                  },
+                  "client_id": {
+                    "type": "string"
+                  },
+                  "client_assertion_type": {
+                    "const": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+                  },
+                  "client_assertion": {
+                    "type": "string"
+                  },
+                  "resource": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "scope": {
+                    "type": "string"
+                  },
+                  "authorization_details": {
+                    "type": "string",
+                    "description": "Bounded RFC9396 JSON for the registered urn:asterius:workload-actions type"
+                  },
+                  "requested_token_type": {
+                    "const": "urn:ietf:params:oauth:token-type:access_token"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "DPoP access token, no refresh/ID token, expires_in <=300"
+          },
+          "400": {
+            "description": "Uniform subject denial, scope/action/resource widening or missing DPoP"
+          },
+          "401": {
+            "description": "Independent client authentication refused"
+          }
+        }
+      }
+    }
+  }
+}

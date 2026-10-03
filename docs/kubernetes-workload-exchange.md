@@ -17,8 +17,8 @@ Requests specify exactly one `resource` or equivalent `audience`, optionally
 narrow `scope`, and present a fresh DPoP proof. No actor token, impersonation,
 refresh token or ID token is supported. Issuer hints select an existing trust;
 local-issuer JWTs stay on the local verification path without an external
-fallback. This implementation enables Kubernetes providers only; GitHub trust
-verification does not enable GitHub exchange until its separate integration.
+fallback. The separate [GitHub profile](github-actions-workload-exchange.md)
+shares issuance limits while enforcing its own workflow claims.
 
 The response carries a DPoP-bound access token whose `sub` is the pinned
 `workload:` principal and whose `act` names the independently authenticated

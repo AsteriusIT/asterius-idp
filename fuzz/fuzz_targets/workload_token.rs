@@ -11,6 +11,18 @@ fuzz_target!(|bytes: &[u8]| {
     ]
     .into_iter()
     .collect();
+    if bytes.len() <= 65536 {
+        if let Ok(config) = serde_json::from_slice::<asterius_domain::workload::Config>(bytes) {
+            let _ = config.validate(&asterius_domain::TenantId::new("fuzz"), "source");
+        }
+        if let Ok(details) = serde_json::from_slice::<Vec<serde_json::Value>>(bytes) {
+            let _ = asterius_domain::workload::validate_actions(
+                &details,
+                &["read".to_owned()].into_iter().collect(),
+                &["https://api.example/".to_owned()].into_iter().collect(),
+            );
+        }
+    }
     if let Ok(keys) = asterius_jose::workload::KeySet::parse(bytes, &algorithms) {
         assert!(bytes.len() <= 65536);
         assert!(!keys.fingerprints().is_empty() && keys.fingerprints().len() <= 16);

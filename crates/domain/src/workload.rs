@@ -122,6 +122,7 @@ fn invalid() -> DomainError {
     DomainError::invalid("workload_trust", "invalid workload trust configuration")
 }
 impl Config {
+    // fuzz-target: workload_token
     pub fn validate(&self, tenant: &TenantId, id: &str) -> Result<(), DomainError> {
         if !valid_id(id)
             || !text(&self.issuer, 1024)
@@ -387,6 +388,7 @@ mod tests {
 }
 
 /// Exact action/location ceilings for the registered RFC 9396 workload dialect.
+// fuzz-target: workload_token
 pub fn validate_actions(
     details: &[Value],
     allowed: &BTreeSet<String>,
