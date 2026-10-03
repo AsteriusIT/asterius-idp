@@ -2848,4 +2848,8 @@ granted. Healthy reconciliation removes revoked/expired subjects within a measur
 window. During controller outage native bindings may linger, but old JIT credentials
 expire at their signed activation-capped deadline and newly ordinary credentials
 cannot match that identity. Offline revocation during outage retains only the bounded
-already issued JWT residual. Baseline bindings and credentials remain independent.
+already issued JWT residual plus the independently verified successful-authentication
+cache and clock skew. The supported Kubernetes v1.35 profile has a ten-second
+success-cache ceiling; disposable acceptance measures old-token refusal after exp
+within that ceiling, instead of claiming immediate offline expiry. Baseline bindings
+and credentials remain independent.

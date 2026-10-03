@@ -1,6 +1,6 @@
 # Native Kubernetes RBAC for approved temporary privilege
 
-Status: proposed normative extension; human review and interoperability acceptance pending.
+Status: proposed normative extension; isolated interoperability verified, human review pending.
 Refs: ast-dd1y.5.3; approved baseline login ast-dd1y.1.1; temporary lifecycle ast-dd1y.5.1.
 
 A temporary RoleBinding must never use the ordinary Kubernetes username. Otherwise
@@ -10,7 +10,7 @@ and a separate username generation. The existing baseline subject/group contract
 ES256 signing, confidential broker, PAR/PKCE and DPoP remain unchanged.
 
 The human review delta is the private ID-token provenance claim below, its exact
-server-authority derivation, and the CEL username selection. Approval of the
+server-authority derivation, CEL username selection, and cache-bounded offline expiry. Approval of the
 baseline ADR did not approve these additions. Production enablement and main merge
 are gated on this review. Source implementation and disposable acceptance can proceed.
 
@@ -109,13 +109,39 @@ no subjects or credentials. Existing baseline bindings are never addressed.
 
 Healthy reconciliation removes subjects after revocation or expiry within a
 measured polling/request window. An old unexpired JIT token then receives 403.
-During controller or API unavailability the stale binding can remain, but all
-previous JIT tokens expire no later than their activation deadline and newly issued
-ordinary tokens have a different username. Thus outage residual access is bounded
-by already issued token expiry, never by eventual controller recovery. Revocation
-cannot immediately invalidate offline JWTs during an outage; the documented maximum
-residual is the smaller of remaining activation and ID-token lifetime (five-minute
-profile ceiling). No token issued after current revocation may receive JIT provenance.
+During controller or API unavailability the stale binding can remain. Previously
+issued JIT tokens have signed expiry no later than their activation deadline;
+newly issued ordinary tokens have a different username. Acceptance of an already
+issued credential can nevertheless extend beyond its signed expiry during a
+Kubernetes verification already in flight, followed by authentication caching.
+
+The supported Kubernetes v1.35 source-derived conservative residual is up to
+**40 seconds after exp, plus scheduling margin and clock skew**: a verification
+started just before exp can spend up to 30 seconds waiting for signature/JWKS
+verification, then enter the ten-second successful-authentication cache. This is
+an inference from the upstream ordering and bounds, not a measured delayed-JWKS
+acceptance result. Kubernetes actually vendors go-oidc v2.3.0+incompatible in its
+[module inventory](https://github.com/kubernetes/kubernetes/blob/v1.35.0/vendor/modules.txt#L106-L108).
+That [vendored verifier](https://github.com/kubernetes/kubernetes/blob/v1.35.0/vendor/github.com/coreos/go-oidc/verify.go#L257-L307)
+checks expiry before signature verification and does not recheck expiry afterward.
+The [asynchronous JWKS wait](https://github.com/kubernetes/kubernetes/blob/v1.35.0/vendor/github.com/coreos/go-oidc/jwks.go#L140-L176)
+obeys the verification context. The outer
+[token-cache lookup](https://github.com/kubernetes/kubernetes/blob/v1.35.0/staging/src/k8s.io/apiserver/pkg/authentication/token/cache/cached_token_authenticator.go#L171-L197)
+uses a detached 30-second context and inserts successful results afterward.
+[Authentication defaults](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/kubeapiserver/options/authentication.go#L152-L157)
+set the success-cache TTL to ten seconds;
+[JWT composition](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/kubeapiserver/authenticator/config.go#L186-L193)
+applies that outer cache to OIDC too.
+
+Offline revocation during an outage therefore retains at most the smaller of
+remaining activation and ID-token lifetime (five-minute profile ceiling), plus
+this 40-second verification/cache residual and the stated margins. The observed
+warm-key fixture refused its expired token 3.614 seconds after exp; it does not
+prove a ten-second worst-case expiry guarantee. A changed server implementation,
+cache or verification configuration requires renewed source review and
+remeasurement. No token issued after current revocation may receive JIT provenance,
+and no bound relies on eventual controller recovery. These revised limits remain
+part of the pending human normative review.
 
 Disposable acceptance must prove real code/refresh issuance, old JIT expiry and
 new ordinary-token denial with the controller stopped, healthy revocation access

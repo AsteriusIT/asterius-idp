@@ -76,8 +76,10 @@ bindings can be used with their ordinary credentials.
 Monitor reconciliation refusals and the dedicated binding's resourceVersion.
 Read/apply timeouts and bad projections clear only dedicated subjects. Shutdown
 attempts a bounded clear. A crash may leave the native binding in place; the old
-JIT JWT still expires no later than its activation deadline, and a new ordinary
-JWT cannot match its username. During outages revocation has this bounded offline
+JIT JWT has a signed expiry no later than its activation deadline, and a new ordinary
+JWT cannot match its username. Kubernetes v1.35 caches successful token authentication
+for ten seconds; a cached expired credential may remain accepted for that additional
+window. Verify this finite cache ceiling and clock skew in the reviewed server profile. During outages revocation has this bounded offline
 residual, while healthy revocation is measured through actual old-token access loss.
 All JWT readers and API servers need synchronized clocks.
 
