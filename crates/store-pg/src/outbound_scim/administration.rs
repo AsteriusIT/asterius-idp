@@ -311,12 +311,12 @@ impl OutboundScimAdministration for PgOutboundScimAdministration {
             "outbound_scim.configure",
         )
         .await?;
-        if let Some(deadline) = activation_deadline {
-            if clock(&mut transaction).await? >= deadline {
-                return Err(DomainError::Conflict(
-                    "read-only preview expired before activation".into(),
-                ));
-            }
+        if let Some(deadline) = activation_deadline
+            && clock(&mut transaction).await? >= deadline
+        {
+            return Err(DomainError::Conflict(
+                "read-only preview expired before activation".into(),
+            ));
         }
         let result = connector_on(&mut transaction, tenant, command.id)
             .await?

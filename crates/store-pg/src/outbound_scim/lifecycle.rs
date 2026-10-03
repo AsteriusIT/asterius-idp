@@ -163,6 +163,46 @@ async fn lease(
     Ok(times)
 }
 
+// Archive a completed same-incarnation deletion without admitting remote work.
+// The caller retains its actor, connector and assignment locks through commit.
+async fn archive_deleted_receipt(
+    connection: &mut PgConnection,
+    tenant: &TenantId,
+    actor: UserId,
+    connector: &Connector,
+    assignment: &Assignment,
+) -> Result<LifecycleView, DomainError> {
+    // A prior completed same-incarnation DELETE is a durable absence
+    // receipt. Archiving it grants no new target effect or replacement.
+    let deleted:bool=sqlx::query_scalar("select exists(select 1 from outbound_scim_lifecycle_requests where tenant_id=$1 and assignment_id=$2 and assignment_generation=$3 and target_id=$4 and kind='delete' and delete_admitted and completed_at is not null)")
+        .bind(tenant.as_str()).bind(assignment.id).bind(assignment.generation).bind(assignment.target).fetch_one(&mut *connection).await.map_err(to_domain_error)?;
+    if !deleted {
+        return Err(conflict("ownership_mismatch"));
+    }
+    let now = admin::clock(connection).await?;
+    let id = Uuid::new_v4();
+    sqlx::query("insert into outbound_scim_lifecycle_requests(tenant_id,request_id,assignment_id,assignment_generation,connector_revision,credential_generation,desired_revision,kind,target_id,expected_etag,reviewed_by,reviewed_at,expires_at,completed_at) values($1,$2,$3,$4,$5,$6,$7,'archive',$8,$9,$10,$11,$11::timestamptz+interval '5 minutes',$11)")
+        .bind(tenant.as_str()).bind(id).bind(assignment.id).bind(assignment.generation).bind(connector.revision).bind(connector.credential.generation).bind(assignment.desired_revision).bind(assignment.target).bind(&assignment.observed_etag).bind(actor.as_uuid()).bind(now).execute(&mut *connection).await.map_err(to_domain_error)?;
+    sqlx::query("update outbound_scim_assignments set retired_at=$3 where tenant_id=$1 and assignment_id=$2")
+        .bind(tenant.as_str()).bind(assignment.id).bind(now).execute(&mut *connection).await.map_err(to_domain_error)?;
+    admin::evidence(
+        connection,
+        tenant,
+        actor,
+        id,
+        "outbound_scim_deleted_receipt_archived",
+    )
+    .await?;
+    Ok(LifecycleView {
+        id,
+        kind: LifecycleKind::Archive,
+        completed: true,
+        replacement: None,
+        failure_code: None,
+        cancelled: false,
+    })
+}
+
 #[async_trait::async_trait]
 impl OutboundScimLifecycle for PgOutboundScimLifecycle {
     async fn recent(
@@ -230,36 +270,10 @@ impl OutboundScimLifecycle for PgOutboundScimLifecycle {
         .await
         .map_err(to_domain_error)?;
         if state == "deleted" && command.kind == LifecycleKind::Archive {
-            // A prior completed same-incarnation DELETE is a durable absence
-            // receipt. Archiving it grants no new target effect or replacement.
-            let deleted:bool=sqlx::query_scalar("select exists(select 1 from outbound_scim_lifecycle_requests where tenant_id=$1 and assignment_id=$2 and assignment_generation=$3 and target_id=$4 and kind='delete' and delete_admitted and completed_at is not null)")
-                .bind(tenant.as_str()).bind(assignment_id).bind(assignment.generation).bind(assignment.target).fetch_one(&mut *tx).await.map_err(to_domain_error)?;
-            if !deleted {
-                return Err(conflict("ownership_mismatch"));
-            }
-            let now = admin::clock(&mut tx).await?;
-            let id = Uuid::new_v4();
-            sqlx::query("insert into outbound_scim_lifecycle_requests(tenant_id,request_id,assignment_id,assignment_generation,connector_revision,credential_generation,desired_revision,kind,target_id,expected_etag,reviewed_by,reviewed_at,expires_at,completed_at) values($1,$2,$3,$4,$5,$6,$7,'archive',$8,$9,$10,$11,$11::timestamptz+interval '5 minutes',$11)")
-                .bind(tenant.as_str()).bind(id).bind(assignment_id).bind(assignment.generation).bind(connector.revision).bind(connector.credential.generation).bind(assignment.desired_revision).bind(assignment.target).bind(&assignment.observed_etag).bind(actor.as_uuid()).bind(now).execute(&mut *tx).await.map_err(to_domain_error)?;
-            sqlx::query("update outbound_scim_assignments set retired_at=$3 where tenant_id=$1 and assignment_id=$2")
-                .bind(tenant.as_str()).bind(assignment_id).bind(now).execute(&mut *tx).await.map_err(to_domain_error)?;
-            admin::evidence(
-                &mut tx,
-                tenant,
-                actor,
-                id,
-                "outbound_scim_deleted_receipt_archived",
-            )
-            .await?;
+            let receipt =
+                archive_deleted_receipt(&mut tx, tenant, actor, &connector, &assignment).await?;
             tx.commit().await.map_err(to_domain_error)?;
-            return Ok(LifecycleView {
-                id,
-                kind: command.kind,
-                completed: true,
-                replacement: None,
-                failure_code: None,
-                cancelled: false,
-            });
+            return Ok(receipt);
         }
         if !connector.enabled || state == "deleted" && command.kind != LifecycleKind::Recreate {
             return Err(conflict("paused"));
