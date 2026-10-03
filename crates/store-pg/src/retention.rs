@@ -113,6 +113,8 @@ pub const POLICY: &[Retention] = &[
             grace: Duration::ZERO,
         },
     },
+    Retention { table: "session_assurance_proofs", rule: Rule::Kept("verified class provenance cascades with its browser session") },
+    Retention { table: "grant_assurance_proofs", rule: Rule::Kept("original assurance clock survives session cleanup and cascades with its grant") },
     Retention { table: "conditional_client_settings", rule: Rule::Kept("administrative application classification; removed with its registered client") },
     Retention { table: "agent_task_withdrawals", rule: Rule::Kept("durable bounded descendant withdrawal cursor and terminal evidence; cascade with task/grant") },
     Retention { table: "agent_task_clients", rule: Rule::Kept("persistent task obligation survives client recreation; removed only with tenant") },

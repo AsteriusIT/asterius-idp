@@ -294,7 +294,7 @@ pub struct Session {
     /// actually proved who they are, which is *not* `created_at` after a
     /// step-up.
     pub authenticated_at: OffsetDateTime,
-    /// Oldest verified proof needed for the current class; independent of auth_time.
+    /// Oldest verified proof needed for the current class; independent of `auth_time`.
     pub assurance_authenticated_at: Option<OffsetDateTime>,
     /// A class cannot inherit proof after its configured meaning changes.
     pub assurance_policy_revision: Option<String>,

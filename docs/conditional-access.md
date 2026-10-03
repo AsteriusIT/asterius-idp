@@ -94,8 +94,8 @@ requirements to that question. Missing required evidence denies active scopes.
 
 | Fact | Authority |
 | --- | --- |
-| Assurance | Exact verified human grant/session authentication, validated against the current tenant ACR ladder and recorded methods |
-| Authentication age | Original verified authentication time; refresh and token `iat` do not reset it |
+| Assurance | Exact server-owned assurance proof, matched to the current ACR ladder revision and its frozen verified factors |
+| Authentication age | Oldest factor needed for the proven class; refresh, token `iat` and weaker cumulative step-up do not reset it |
 | Application sensitivity | Current administrative classification for the exact client |
 | Network zone | This request's direct peer, or a valid operator-trusted proxy chain, matched to configured CIDRs |
 | Groups, roles, grants | Current tenant repositories for the relevant subject; directory failures refuse the evaluation |
@@ -110,6 +110,19 @@ An agent or delegated actor cannot borrow a human parent's assurance. AuthZEN
 uses an exact signed public grant link, or the signed task/JTI/revision private
 link after full token verification, sender, audience, revocation and scope
 checks; it never selects an unrelated elevated grant.
+
+Assurance provenance is separate from public OIDC `auth_time` and cumulative
+`amr`. A fresh password can advance the public authentication time while a
+class that still depends on an older passkey retains that passkey's original
+proof age. A complete fresh proof replaces the age; a multi-factor combination
+retains the earliest required factor. The exact ACR policy digest and verified
+factor set are frozen with the proof. Changing the ladder, missing legacy
+provenance or an inconsistent future timestamp makes scoped assurance/age
+unavailable or invalid until a supported fresh authentication completes.
+Existing records receive no inferred proof during migration. Grants retain
+original provenance after browser-session cleanup; refresh and exchange copy
+that evidence without renewing its clock. No provenance fields are public JWT
+claims. Ordinary unscoped cumulative ACR/AMR behavior remains compatible.
 
 Define network zones in the scope, for example
 `"network_zones":{"office":["192.0.2.0/24","2001:db8::/32"]}`. Forwarded headers
