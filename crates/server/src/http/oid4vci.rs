@@ -198,6 +198,11 @@ async fn authorized_subject(
     verified: &asterius_jose::verify::Verified,
 ) -> Result<AuthorizedSubject, Refused> {
     let jti = verified.claim_str("jti").ok_or_else(invalid_token)?;
+    let query = asterius_domain::agent_tasks::TokenQuery::from_claims(&verified.claims)
+        .map_err(|_| invalid_token())?;
+    if !context.grants.task_token_active(&query).await? {
+        return Err(invalid_token());
+    }
     if context.grants.is_denylisted(jti).await? {
         return Err(invalid_token());
     }

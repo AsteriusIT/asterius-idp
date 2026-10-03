@@ -169,6 +169,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "agent_task_token_linkage"
+path = "fuzz_targets/agent_task_token_linkage.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "agent_task_withdrawal_form"
+path = "fuzz_targets/agent_task_withdrawal_form.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "approval_decision"
 path = "fuzz_targets/approval_decision.rs"
 test = false

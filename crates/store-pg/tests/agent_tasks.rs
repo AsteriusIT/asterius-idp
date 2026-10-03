@@ -161,6 +161,48 @@ impl Fixture {
         let now = OffsetDateTime::now_utc().unix_timestamp();
         json!({"iat":now,"exp":now+60,"jti":jti,"client_id":grant.client.as_str(),"scope":"read","aud":["https://api.example/"],"authorization_details":grant.authorization_details,"roles":["owner-admin"],"resource_access":{"agent":{"roles":["admin"]}}})
     }
+    async fn issue(&self, grant: &Grant, jti: &str) -> Value {
+        let inner = ControlledSigner { fail: false };
+        let signer = TaskSigner {
+            tasks: &self.tasks,
+            inner: &inner,
+            audit: &self.audit,
+        };
+        let jwt = signer
+            .sign_access(
+                &self.tenant,
+                AccessIssuance {
+                    grant,
+                    kind: GrantType::ClientCredentials,
+                    implicit_resources: &[],
+                },
+                None,
+                "at+jwt",
+                &Self::claims(grant, jti),
+            )
+            .await
+            .expect("controlled fenced issuance");
+        serde_json::from_str(jwt.as_str()).expect("controlled signed claims")
+    }
+    async fn derived(&self, parent: &Grant) -> Grant {
+        let now = OffsetDateTime::now_utc();
+        let mut child = Grant::new(self.tenant.clone(), parent.client.clone(), now);
+        child.parent = Some(parent.id.clone());
+        child.scopes = parent.scopes.clone();
+        child.resources = parent.resources.clone();
+        self.tasks
+            .prepare(
+                &mut child,
+                None,
+                None,
+                now,
+                Duration::seconds(60),
+                &self.audit,
+            )
+            .await
+            .expect("inherited approval");
+        child
+    }
     async fn cleanup(self) {
         self.pool.close().await;
         sqlx::query(&format!("drop schema {} cascade", self.schema))
@@ -360,6 +402,17 @@ async fn agent_task_owner_disable_expiry_and_refresh_cannot_reactivate() {
         .execute(&fixture.pool)
         .await
         .expect("reactivate account only");
+    let queued: bool = sqlx::query_scalar("select exists(select 1 from agent_task_withdrawals where tenant_id='task' and task_id=$1 and completed_at is null)")
+        .bind(binding.task_id).fetch_one(&fixture.pool).await.expect("owner lifecycle cleanup queue");
+    assert!(queued);
+    assert!(
+        !fixture
+            .tasks
+            .grant_active(&fixture.tenant, &fixture.root.id)
+            .await
+            .expect("reactivation does not restore authority")
+    );
+
     let inner = ControlledSigner { fail: false };
     let signer = TaskSigner {
         tasks: &fixture.tasks,
@@ -530,5 +583,420 @@ async fn agent_task_refresh_deadlines_and_client_teardown_keep_terminal_approval
             .await
             .expect("mode tombstone")
     );
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL; CI runs ignored store tests"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One isolated subtree fixture compares immediate intermediate, sibling and terminal owner withdrawal"
+)]
+async fn agent_task_intermediate_withdrawal_is_immediate_and_preserves_siblings() {
+    use asterius_domain::agent_tasks::TokenQuery;
+    let fixture = Fixture::new().await;
+    let binding = fixture.approve().await;
+    let first = fixture.child(&binding).await;
+    let first_claims = fixture.issue(&first, "withdraw-first").await;
+    let descendant = fixture.derived(&first).await;
+    let descendant_claims = fixture.issue(&descendant, "withdraw-descendant").await;
+    let sibling = fixture.child(&binding).await;
+    let sibling_claims = fixture.issue(&sibling, "withdraw-sibling").await;
+    let first_query = TokenQuery::from_claims(&first_claims).expect("first tuple");
+    let descendant_query = TokenQuery::from_claims(&descendant_claims).expect("descendant tuple");
+    let sibling_query = TokenQuery::from_claims(&sibling_claims).expect("sibling tuple");
+    let repository = PgGrantRepository::new(fixture.pool.clone(), fixture.tenant.clone());
+    assert!(
+        fixture
+            .tasks
+            .token_active(&fixture.tenant, &descendant_query)
+            .await
+            .expect("initial online status")
+    );
+    let revoked_at = OffsetDateTime::now_utc();
+    let withdrawal = repository
+        .revoke_with_audit(
+            &first.id,
+            asterius_domain::RevocationReason::UserRevoked,
+            &[],
+            revoked_at,
+            &fixture.audit,
+        )
+        .await
+        .expect("withdraw intermediate ancestor");
+    assert_eq!(withdrawal.revoked_at, revoked_at);
+    // No retention pass has run: ancestry, rather than asynchronous stamps,
+    // must already deny both exact JTI and opaque refresh-grant authority.
+    assert!(
+        !fixture
+            .tasks
+            .token_active(&fixture.tenant, &first_query)
+            .await
+            .expect("first status")
+    );
+    assert!(
+        !fixture
+            .tasks
+            .token_active(&fixture.tenant, &descendant_query)
+            .await
+            .expect("descendant status")
+    );
+    assert!(
+        !fixture
+            .tasks
+            .grant_active(&fixture.tenant, &descendant.id)
+            .await
+            .expect("refresh status")
+    );
+    assert!(
+        fixture
+            .tasks
+            .token_active(&fixture.tenant, &sibling_query)
+            .await
+            .expect("unrelated sibling")
+    );
+    let task_revoked: Option<OffsetDateTime> =
+        sqlx::query_scalar("select revoked_at from agent_tasks where tenant_id=$1 and task_id=$2")
+            .bind(fixture.tenant.as_str())
+            .bind(binding.task_id)
+            .fetch_one(&fixture.pool)
+            .await
+            .expect("task tombstone");
+    assert!(task_revoked.is_none());
+    assert!(
+        !fixture
+            .tasks
+            .revoke_owned(
+                &fixture.tenant,
+                binding.task_id,
+                UserId::new(Uuid::new_v4()),
+                OffsetDateTime::now_utc(),
+                &fixture.audit
+            )
+            .await
+            .expect("foreign owner")
+    );
+    assert!(
+        fixture
+            .tasks
+            .revoke_owned(
+                &fixture.tenant,
+                binding.task_id,
+                fixture.owner,
+                OffsetDateTime::now_utc(),
+                &fixture.audit
+            )
+            .await
+            .expect("owner withdrawal")
+    );
+    assert!(
+        !fixture
+            .tasks
+            .token_active(&fixture.tenant, &sibling_query)
+            .await
+            .expect("root withdrawal reaches sibling")
+    );
+    assert!(
+        fixture
+            .tasks
+            .revoke_owned(
+                &fixture.tenant,
+                binding.task_id,
+                fixture.owner,
+                OffsetDateTime::now_utc(),
+                &fixture.audit
+            )
+            .await
+            .expect("idempotent withdrawal")
+    );
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL; CI runs ignored store tests"]
+async fn agent_task_activation_backfills_existing_descendants() {
+    let fixture = Fixture::new().await;
+    let mut historical = Grant::new(
+        fixture.tenant.clone(),
+        ClientId::new("agent"),
+        OffsetDateTime::now_utc(),
+    );
+    historical.parent = Some(fixture.root.id.clone());
+    historical.scopes.insert("read".to_owned());
+    historical.resources = fixture.root.resources.clone();
+    PgGrantRepository::new(fixture.pool.clone(), fixture.tenant.clone())
+        .create(&historical)
+        .await
+        .expect("preapproval descendant");
+    let binding = fixture.approve().await;
+    let mut refreshed = historical.clone();
+    fixture
+        .tasks
+        .prepare(
+            &mut refreshed,
+            None,
+            None,
+            OffsetDateTime::now_utc(),
+            Duration::seconds(60),
+            &fixture.audit,
+        )
+        .await
+        .expect("historical child inherits approval");
+    assert_eq!(
+        refreshed.task.as_ref().expect("backfilled binding").task_id,
+        binding.task_id
+    );
+    assert!(
+        fixture
+            .tasks
+            .grant_active(&fixture.tenant, &historical.id)
+            .await
+            .expect("before root withdrawal")
+    );
+    fixture
+        .tasks
+        .revoke_owned(
+            &fixture.tenant,
+            binding.task_id,
+            fixture.owner,
+            OffsetDateTime::now_utc(),
+            &fixture.audit,
+        )
+        .await
+        .expect("withdraw root");
+    assert!(
+        !fixture
+            .tasks
+            .grant_active(&fixture.tenant, &historical.id)
+            .await
+            .expect("historical child withdrawn")
+    );
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL; CI runs ignored store tests"]
+async fn agent_task_cleanup_is_bounded_resumable_and_not_the_authority_boundary() {
+    use asterius_store_pg::{PgRetention, SweepOutcome};
+    let fixture = Fixture::new().await;
+    let binding = fixture.approve().await;
+    sqlx::query("insert into grants(tenant_id,grant_id,client_id,parent_grant_id,scopes,resources,claimed_at,expires_at) select 'task',gen_random_uuid(),'agent',$1,array['read'],array['https://api.example/'],now(),now()+interval '10 minutes' from generate_series(1,520)")
+        .bind(Uuid::parse_str(fixture.root.id.as_str()).expect("fixture root UUID"))
+        .execute(&fixture.pool).await.expect("wide controlled subtree");
+    let leaf: Uuid = sqlx::query_scalar(
+        "select grant_id from grants where tenant_id='task' and parent_grant_id=$1 limit 1",
+    )
+    .bind(Uuid::parse_str(fixture.root.id.as_str()).expect("fixture root UUID"))
+    .fetch_one(&fixture.pool)
+    .await
+    .expect("stored child");
+    fixture
+        .tasks
+        .revoke_owned(
+            &fixture.tenant,
+            binding.task_id,
+            fixture.owner,
+            OffsetDateTime::now_utc(),
+            &fixture.audit,
+        )
+        .await
+        .expect("root withdrawal");
+    assert!(
+        !fixture
+            .tasks
+            .grant_active(
+                &fixture.tenant,
+                &asterius_domain::GrantId::new(leaf.to_string())
+            )
+            .await
+            .expect("immediate authority refusal")
+    );
+    let retention = PgRetention::new(fixture.pool.clone());
+    let SweepOutcome::Swept(first) = retention
+        .sweep_tenant(&fixture.tenant, OffsetDateTime::now_utc())
+        .await
+        .expect("first bounded pass")
+    else {
+        panic!("isolated tenant was busy")
+    };
+    assert!(first.more_to_do);
+    let processed: i64 = sqlx::query_scalar(
+        "select processed_grants from agent_task_withdrawals where tenant_id='task'",
+    )
+    .fetch_one(&fixture.pool)
+    .await
+    .expect("durable progress");
+    assert_eq!(processed, 512);
+    // A newly constructed worker resumes from the durable UUID cursor rather
+    // than keeping process-local progress or rescanning an unbounded tree.
+    let restarted = PgRetention::new(fixture.pool.clone());
+    let SweepOutcome::Swept(second) = restarted
+        .sweep_tenant(&fixture.tenant, OffsetDateTime::now_utc())
+        .await
+        .expect("resumed pass")
+    else {
+        panic!("isolated tenant was busy")
+    };
+    assert!(!second.more_to_do);
+    let state: (i64,bool) = sqlx::query_as("select processed_grants,completed_at is not null from agent_task_withdrawals where tenant_id='task'")
+        .fetch_one(&fixture.pool).await.expect("complete queue");
+    assert_eq!(state, (521, true));
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL; CI runs ignored store tests"]
+async fn agent_task_ten_row_lineage_remains_usable_at_eight_delegations() {
+    let fixture = Fixture::new().await;
+    sqlx::query("update clients set agent_policy=jsonb_set(agent_policy,'{max_delegation_depth}','8'::jsonb) where tenant_id='task' and client_id='agent'")
+        .execute(&fixture.pool).await.expect("eight-hop registration ceiling");
+    let mut permissions = fixture.permissions();
+    permissions.max_delegation_depth = 8;
+    let now = OffsetDateTime::now_utc();
+    let binding = fixture
+        .tasks
+        .approve(
+            &fixture.tenant,
+            Approval {
+                owner: fixture.owner,
+                root: &fixture.root,
+                permissions: &permissions,
+                label: "maximum bounded lineage",
+                expiry: now + Duration::minutes(10),
+                now,
+            },
+            &fixture.audit,
+        )
+        .await
+        .expect("eight-hop approval");
+    let mut current = fixture.child(&binding).await;
+    fixture.issue(&current, "depth-zero").await;
+    for depth in 1..=8 {
+        let mut next = fixture.derived(&current).await;
+        next.actor_chain = current.actor_chain.clone();
+        next.actor_chain.push(json!({"sub":"agent"}));
+        fixture.issue(&next, &format!("depth-{depth}")).await;
+        current = next;
+    }
+    assert_eq!(current.actor_chain.len(), 8);
+    // Existing-grant signing traverses all ten rows (human root, run,
+    // eight delegations), unlike a new child's parent-only traversal.
+    let claims = fixture.issue(&current, "depth-eight-existing").await;
+    let query =
+        asterius_domain::agent_tasks::TokenQuery::from_claims(&claims).expect("exact depth tuple");
+    assert!(
+        fixture
+            .tasks
+            .token_active(&fixture.tenant, &query)
+            .await
+            .expect("maximum current lineage")
+    );
+    fixture
+        .tasks
+        .revoke_owned(
+            &fixture.tenant,
+            binding.task_id,
+            fixture.owner,
+            OffsetDateTime::now_utc(),
+            &fixture.audit,
+        )
+        .await
+        .expect("maximum-depth root withdrawal");
+    assert!(
+        !fixture
+            .tasks
+            .token_active(&fixture.tenant, &query)
+            .await
+            .expect("maximum-depth withdrawal")
+    );
+    fixture.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL; CI runs ignored store tests"]
+async fn agent_task_first_approval_serializes_with_legacy_descendant_insert() {
+    let fixture = Fixture::new().await;
+    let mut insertion = fixture
+        .pool
+        .begin()
+        .await
+        .expect("legacy insertion transaction");
+    // Same client-before-root order as prepared legacy issuance. The first
+    // approval must wait for this commit, then backfill the committed child.
+    sqlx::query(
+        "select client_id from clients where tenant_id='task' and client_id='agent' for share",
+    )
+    .fetch_one(&mut *insertion)
+    .await
+    .expect("client fence");
+    sqlx::query("select grant_id from grants where tenant_id='task' and grant_id=$1 for key share")
+        .bind(Uuid::parse_str(fixture.root.id.as_str()).expect("fixture root UUID"))
+        .fetch_one(&mut *insertion)
+        .await
+        .expect("root insertion fence");
+    let blocker: i32 = sqlx::query_scalar("select pg_backend_pid()")
+        .fetch_one(&mut *insertion)
+        .await
+        .expect("insertion backend");
+    let tasks = fixture.tasks.clone();
+    let tenant = fixture.tenant.clone();
+    let root = fixture.root.clone();
+    let owner = fixture.owner;
+    let permissions = fixture.permissions();
+    let audit = PgAuditSink::new(fixture.pool.clone());
+    let approval = tokio::spawn(async move {
+        let now = OffsetDateTime::now_utc();
+        tasks
+            .approve(
+                &tenant,
+                Approval {
+                    owner,
+                    root: &root,
+                    permissions: &permissions,
+                    label: "serialized activation",
+                    expiry: now + Duration::minutes(10),
+                    now,
+                },
+                &audit,
+            )
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let waiting: bool = sqlx::query_scalar(
+                "select exists(select 1 from pg_stat_activity where $1=any(pg_blocking_pids(pid)))",
+            )
+            .bind(blocker)
+            .fetch_one(&fixture.pool)
+            .await
+            .expect("observed fence wait");
+            if waiting {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("approval reaches and waits on the existing insertion fence");
+    let child = Uuid::new_v4();
+    sqlx::query("insert into grants(tenant_id,grant_id,client_id,parent_grant_id,scopes,resources,claimed_at,expires_at) values('task',$1,'agent',$2,array['read'],array['https://api.example/'],now(),now()+interval '10 minutes')")
+        .bind(child).bind(Uuid::parse_str(fixture.root.id.as_str()).expect("fixture root UUID"))
+        .execute(&mut *insertion).await.expect("legacy child before activation");
+    insertion
+        .commit()
+        .await
+        .expect("legacy commit releases activation");
+    let binding = approval
+        .await
+        .expect("approval worker")
+        .expect("serialized approval");
+    let inherited: Uuid = sqlx::query_scalar(
+        "select task_id from agent_task_grants where tenant_id='task' and grant_id=$1",
+    )
+    .bind(child)
+    .fetch_one(&fixture.pool)
+    .await
+    .expect("committed child backfilled");
+    assert_eq!(inherited, binding.task_id);
     fixture.cleanup().await;
 }

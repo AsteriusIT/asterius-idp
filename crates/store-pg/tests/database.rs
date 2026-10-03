@@ -6016,6 +6016,9 @@ mod grants {
         // gone, so a round trip that lost or reordered them would be a grant
         // that could no longer say when its person authenticated.
         grant.authentication = Some(GrantAuthentication {
+            assurance_authenticated_at: None,
+            assurance_policy_revision: None,
+            assurance_methods: Vec::new(),
             authenticated_at: epoch(),
             acr: Some("urn:asterius:acr:passkey-uv".to_owned()),
             amr: vec![
@@ -6985,6 +6988,61 @@ mod sessions {
             OffsetDateTime::now_utc(),
             Lifetimes::default(),
         )
+    }
+
+    db_test! {
+        #[ignore = "requires PostgreSQL: atomic assurance proof rotation and grant retention"]
+        async fn assurance_proof_rotates_atomically_and_grants_keep_the_original_clock(db) {
+            use asterius_domain::entities::session::VerifiedSessionRotation;
+            use asterius_domain::{Grant, GrantAuthentication, ClientId, UserId};
+            use asterius_store_pg::PgGrantRepository;
+            super::grants::seed_client(&db.pool, "assurance", "proof-client").await;
+            let user = super::seed_user(&db.pool, "assurance", "proof-user").await;
+            let id = SessionId::generate();
+            let mut original = session_for("assurance", &id, *user.as_uuid());
+            let at = original.authenticated_at;
+            original.acr = Some("phr".to_owned());
+            original.amr = vec![AuthenticationMethod::Passkey, AuthenticationMethod::UserVerified];
+            original.assurance_authenticated_at = Some(at);
+            original.assurance_policy_revision = Some("a".repeat(64));
+            original.assurance_methods.clone_from(&original.amr);
+            let sessions = repo(&db.pool, "assurance");
+            sessions.begin(&original).await.expect("verified session and proof committed together");
+            sessions.record_participant(&id.digest(), &ClientId::new("proof-client"), at).await.expect("real RP participant");
+            sqlx::query("insert into passkey_enrolments(tenant_id,session_id,csrf_digest,challenge,expires_at) values('assurance',$1,repeat('a',64),decode(repeat('ab',32),'hex'),$2)")
+                .bind(id.digest()).bind(at + time::Duration::minutes(5)).execute(&db.pool).await.expect("pending enrolment");
+            let rotated = SessionId::generate();
+            let now = at + time::Duration::seconds(30);
+            let methods = [AuthenticationMethod::Passkey, AuthenticationMethod::UserVerified, AuthenticationMethod::Password];
+            sessions.rotate_verified(&id.digest(), &rotated.digest(), VerifiedSessionRotation {
+                methods: &methods, acr: Some("phr"), assurance_authenticated_at: Some(at),
+                assurance_policy_revision: Some(&"a".repeat(64)), assurance_methods: &methods,
+            }, now).await.expect("atomic verified rotation");
+            assert!(sessions.find(&id.digest()).await.expect("lookup").is_none());
+            let stored = sessions.find(&rotated.digest()).await.expect("lookup").expect("rotated session");
+            assert_eq!(stored.authenticated_at, now);
+            assert_eq!(stored.assurance_authenticated_at, Some(at));
+            assert_eq!(sessions.participants(&rotated.digest()).await.expect("logout lineage").len(), 1);
+            let pending: i64 = sqlx::query_scalar("select count(*) from passkey_enrolments where tenant_id='assurance'").fetch_one(&db.pool).await.expect("pending count");
+            assert_eq!(pending, 0, "rotation invalidates enrolment bound to old digest");
+            let grants = PgGrantRepository::new(db.pool.clone(), TenantId::new("assurance"));
+            let mut grant = Grant::new(TenantId::new("assurance"), ClientId::new("proof-client"), now);
+            grant.user = Some(UserId::new(*user.as_uuid()));
+            grant.session = Some(asterius_domain::SessionId::new(rotated.digest()));
+            grant.authentication = Some(GrantAuthentication {
+                authenticated_at: now, acr: stored.acr, amr: stored.amr,
+                assurance_authenticated_at: stored.assurance_authenticated_at,
+                assurance_policy_revision: stored.assurance_policy_revision,
+                assurance_methods: stored.assurance_methods,
+            });
+            grants.create(&grant).await.expect("capture original proof");
+            sqlx::query("delete from sessions where tenant_id='assurance'").execute(&db.pool).await.expect("session cleanup");
+            let retained = grants.find(&grant.id).await.expect("lookup").expect("grant");
+            assert_eq!(retained.authentication.expect("original authentication").assurance_authenticated_at, Some(at));
+            sqlx::query("update grants set authenticated_at=authenticated_at + interval '1 second' where tenant_id='assurance'").execute(&db.pool).await.expect("changed original tuple");
+            let changed = grants.find(&grant.id).await.expect("lookup").expect("grant");
+            assert!(changed.authentication.expect("authentication").assurance_authenticated_at.is_none());
+        }
     }
 
     db_test! {

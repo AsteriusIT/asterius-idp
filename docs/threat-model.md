@@ -2675,6 +2675,23 @@ expiry/online-revocation limits. No instant withdrawal or device attestation
 claim is made. See [the operator guide](conditional-access.md) for exact sources,
 limits and deployment capacity.
 
+### Assurance freshness provenance
+
+Cumulative AMR is historical evidence, not a fresh proof of every listed
+factor. Session rotation keeps a server-owned assurance timestamp, exact ladder
+digest and verified factor set separate from public `auth_time`. Proving only
+a password cannot renew a class that depends on an older passkey. Combining
+known factors retains the earliest proof timestamp; only a complete fresh
+class proof starts a new interval. A changed ladder cannot promote historical
+AMR into current freshness. Legacy rows have no inferred marker.
+
+Session rotation and its proof replace atomically; proof rows cascade with
+session identity rotation and deletion. Grants capture only the exact session
+or exact parent authentication tuple in their creation transaction. Their proof
+survives session cleanup, while changed original tuples discard it. Refresh
+claims never renew its clock. Conditional trusted facts consume this frozen
+provenance; unavailable or malformed provenance cannot satisfy a scoped guard.
+
 ### Conditional access simulation and rollout
 
 Administrative examples use a closed bounded dialect separate from PEP properties
@@ -2688,3 +2705,25 @@ denial. Console publication/history restoration use the reviewed revision and ex
 confirmation; the atomic store guard protects conditional changes outside the console.
 Sensitivity updates compare the reviewed UUID. Conflicts preserve drafts and never
 retry automatically against newer state. See [operator controls](conditional-access-operations.md).
+### Task descendant withdrawal and historical lineage
+
+A task-root or intermediate-grant tombstone denies all bound descendants at the
+next authoritative uncached token/grant read, independent of cleanup or PDP
+allow-cache entries. Private JTI linkage, signed task/revision and exact issued
+client must agree; public grant claims and subject-based grant searches cannot
+replace them. Owner/client removal or disable is terminal. An intermediate
+withdrawal leaves siblings and independent tasks active.
+
+First approval backfills existing stored descendants and serializes child
+insertion plus legacy signing with its root fence. This prevents an ordinary
+recipient from racing activation to create an unbound renewable descendant.
+Historical pre-task JWTs cannot be retroactively identified when public grant
+and private JTI linkage were absent; their original legacy expiry guarantee is
+preserved explicitly. Every subsequent bound mint receives durable linkage.
+
+Physical withdrawal follows a durable bounded cursor while online validity
+continues to inspect ancestor tombstones. Task/lineage/cleanup evidence stays
+with its tenant. A stale introspection response is useful only until its five
+second cache cap or token expiry; offline JWTs retain the maximum 300 second task
+expiry plus configured leeway. Neither SSF hints nor cleanup completion claims
+instant global revocation or undo an already authorized action.

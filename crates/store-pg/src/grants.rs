@@ -112,6 +112,32 @@ impl TenantScoped for PgGrantRepository {
 }
 
 impl PgGrantRepository {
+    /// Current task authority for authenticated access-token facts.
+    pub async fn task_token_active(
+        &self,
+        query: &asterius_domain::agent_tasks::TokenQuery,
+    ) -> Result<bool, DomainError> {
+        self.agent_tasks().token_active(&self.tenant, query).await
+    }
+
+    /// Bounded exact owner relation, independent of lifecycle state.
+    pub async fn owned_by(&self, grant: &GrantId, owner: &UserId) -> Result<bool, DomainError> {
+        sqlx::query_scalar(
+            "select exists(select 1 from grants where tenant_id=$1 and grant_id=$2 and user_id=$3)",
+        )
+        .bind(self.tenant.as_str())
+        .bind(uuid(grant)?)
+        .bind(owner.as_uuid())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(to_domain_error)
+    }
+
+    /// Current task/ancestor validity for an exact stored grant.
+    pub async fn task_grant_active(&self, grant: &GrantId) -> Result<bool, DomainError> {
+        self.agent_tasks().grant_active(&self.tenant, grant).await
+    }
+
     /// Task authority is shared by all grant handlers for this tenant.
     #[must_use]
     pub fn agent_tasks(&self) -> crate::agent_tasks::PgAgentTasks {
@@ -261,6 +287,42 @@ impl PgGrantRepository {
         .map_err(to_domain_error)
     }
 
+    // Proof is server-owned and matched to the complete original authentication
+    // tuple. A legacy row or a changed tuple never acquires fresh authority.
+    async fn hydrate_assurance(&self, mut grant: Grant) -> Result<Grant, DomainError> {
+        if let Some(authentication) = grant.authentication.as_mut() {
+            let amr: Vec<String> = authentication
+                .amr
+                .iter()
+                .map(|method| method.as_str().to_owned())
+                .collect();
+            let proof = sqlx::query_as::<_, (OffsetDateTime, String, Vec<String>)>(
+                "select assurance_authenticated_at, assurance_policy_revision, assurance_methods
+                 from grant_assurance_proofs where tenant_id = $1 and grant_id = $2
+                 and authenticated_at = $3 and acr is not distinct from $4 and amr = $5",
+            )
+            .bind(self.tenant.as_str())
+            .bind(uuid(&grant.id)?)
+            .bind(authentication.authenticated_at)
+            .bind(authentication.acr.as_deref())
+            .bind(amr)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(to_domain_error)?;
+            if let Some((at, revision, methods)) = proof
+                && let Some(methods) = methods
+                    .iter()
+                    .map(|method| asterius_domain::AuthenticationMethod::parse(method))
+                    .collect::<Option<Vec<_>>>()
+            {
+                authentication.assurance_authenticated_at = Some(at);
+                authentication.assurance_policy_revision = Some(revision);
+                authentication.assurance_methods = methods;
+            }
+        }
+        Ok(grant)
+    }
+
     /// Finds one grant by id.
     ///
     /// # Errors
@@ -282,7 +344,13 @@ impl PgGrantRepository {
         .fetch_optional(&self.pool)
         .await
         .map_err(to_domain_error)?;
-        row.map(|row| row.into_entity(&self.tenant)).transpose()
+        match row {
+            Some(row) => self
+                .hydrate_assurance(row.into_entity(&self.tenant)?)
+                .await
+                .map(Some),
+            None => Ok(None),
+        }
     }
 
     /// Whether an access token's `jti` has been revoked before its own expiry.
@@ -422,7 +490,7 @@ impl PgGrantRepository {
     /// [`DomainError::Invalid`] when a stored row is not one this model
     /// accepts, or a storage error.
     pub async fn list_for_subject(&self, subject: &SubjectId) -> Result<Vec<Grant>, DomainError> {
-        sqlx::query_as!(
+        let rows = sqlx::query_as!(
             Row,
             "select grant_id, client_id, user_id, subject, scopes, claims, claims_locales,
                     authorization_details, resources, actor_chain, parent_grant_id,
@@ -436,10 +504,15 @@ impl PgGrantRepository {
         )
         .fetch_all(&self.pool)
         .await
-        .map_err(to_domain_error)?
-        .into_iter()
-        .map(|row| row.into_entity(&self.tenant))
-        .collect()
+        .map_err(to_domain_error)?;
+        let mut grants = Vec::with_capacity(rows.len());
+        for row in rows {
+            grants.push(
+                self.hydrate_assurance(row.into_entity(&self.tenant)?)
+                    .await?,
+            );
+        }
+        Ok(grants)
     }
 
     /// Every authorization this account has granted, newest first
@@ -458,7 +531,7 @@ impl PgGrantRepository {
         &self,
         user: &asterius_domain::UserId,
     ) -> Result<Vec<Grant>, DomainError> {
-        sqlx::query_as!(
+        let rows = sqlx::query_as!(
             Row,
             "select grant_id, client_id, user_id, subject, scopes, claims, claims_locales,
                     authorization_details, resources, actor_chain, parent_grant_id,
@@ -472,10 +545,15 @@ impl PgGrantRepository {
         )
         .fetch_all(&self.pool)
         .await
-        .map_err(to_domain_error)?
-        .into_iter()
-        .map(|row| row.into_entity(&self.tenant))
-        .collect()
+        .map_err(to_domain_error)?;
+        let mut grants = Vec::with_capacity(rows.len());
+        for row in rows {
+            grants.push(
+                self.hydrate_assurance(row.into_entity(&self.tenant)?)
+                    .await?,
+            );
+        }
+        Ok(grants)
     }
 
     /// Takes the authority to mint one credential from a grant, and records
@@ -554,7 +632,8 @@ impl PgGrantRepository {
         // The update's `where` clause has already established that this grant
         // is claimable, so this cannot fail — but it is the one constructor of
         // `ClaimedGrant`, and going through it is what keeps that true.
-        row.into_entity(&self.tenant)?
+        self.hydrate_assurance(row.into_entity(&self.tenant)?)
+            .await?
             .claim(now)
             .map_err(|error| DomainError::invalid("grant_id", error.to_string()))
     }
@@ -604,11 +683,42 @@ impl PgGrantRepository {
         live: &[LiveAccessToken],
         now: OffsetDateTime,
     ) -> Result<Revocation, DomainError> {
+        self.revoke_core(id, reason, live, now, None).await
+    }
+
+    /// HTTP callers retain request correlation on the transactional task event.
+    pub async fn revoke_with_audit(
+        &self,
+        id: &GrantId,
+        reason: RevocationReason,
+        live: &[LiveAccessToken],
+        now: OffsetDateTime,
+        audit: &dyn asterius_domain::AuditSink,
+    ) -> Result<Revocation, DomainError> {
+        self.revoke_core(id, reason, live, now, Some(audit)).await
+    }
+
+    async fn revoke_core(
+        &self,
+        id: &GrantId,
+        reason: RevocationReason,
+        live: &[LiveAccessToken],
+        now: OffsetDateTime,
+        audit: Option<&dyn asterius_domain::AuditSink>,
+    ) -> Result<Revocation, DomainError> {
         let id = uuid(id)?;
         let jtis: Vec<String> = live.iter().map(|token| token.jti().to_owned()).collect();
         let expiries: Vec<OffsetDateTime> = live.iter().map(LiveAccessToken::expires_at).collect();
 
         let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
+        let task_withdrawal = crate::agent_task_lifecycle::begin_withdrawal(
+            &mut transaction,
+            &self.tenant,
+            id,
+            reason.as_str(),
+            now,
+        )
+        .await?;
 
         // Step 1. The lock is what makes the rest a decision rather than a
         // race: a concurrent revocation waits here, and finds the grant already
@@ -693,6 +803,15 @@ impl PgGrantRepository {
         .await
         .map_err(to_domain_error)?;
 
+        if let Some(withdrawal) = task_withdrawal {
+            let event = withdrawal.event(&self.tenant, now);
+            let event = if let Some(sink) = audit {
+                sink.prepare(event)
+            } else {
+                event
+            };
+            crate::audit::append(&mut transaction, event).await?;
+        }
         transaction.commit().await.map_err(to_domain_error)?;
 
         Ok(Revocation {

@@ -1,0 +1,16 @@
+{
+  "fixture": "real_chromium_webauthn",
+  "status": "pass",
+  "checks": [
+    "real_password_authorization_baseline",
+    "real_resident_user_verified_passkey_enrollment",
+    "prompt_none_cannot_bypass_conditional_stepup",
+    "verified_stepup_and_signed_code_token_assurance",
+    "ordinary_cumulative_stepup_still_updates_public_auth_time",
+    "baseline_has_no_separate_assurance_provenance",
+    "baseline_reproduces_old_strong_proof_freshening",
+    "device_hard_denial_has_no_authentication_bypass"
+  ],
+  "rotation_prerequisite": "migration0167_applied_to_retained_pre_provenance_binary",
+  "controlled_age": "existing verified session/proof timestamps aged ten minutes, no generated authority"
+}
