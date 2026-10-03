@@ -406,6 +406,10 @@ impl AuthorizationCode<'_> {
         // could disagree, and the disagreement would be a role withdrawn
         // between them.
         let role_grant = issuance::role_grant(&grant, &targeting);
+        self.agent_policy.permits_bound(
+            tenant, client, &role_grant, &targeting.audience,
+            GrantType::AuthorizationCode, self.now, binding.device_binding.as_ref(),
+        ).await.map_err(|refusal| Failure::Client(refusal.code, refusal.description))?;
         let held = issuance::held_roles(self.roles, &role_grant).await?;
 
         let access_lifetime = self
