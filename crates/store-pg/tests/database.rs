@@ -6719,6 +6719,7 @@ mod codes {
 
     fn binding(grant: &GrantId, now: OffsetDateTime) -> CodeBinding {
         CodeBinding {
+            device_binding: None,
             client_id: "billing".to_owned(),
             grant_id: grant.clone(),
             code_challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM".to_owned(),

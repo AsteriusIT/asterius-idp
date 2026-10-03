@@ -2129,6 +2129,7 @@ fn code_binding(
     expires_at: OffsetDateTime,
 ) -> CodeBinding {
     CodeBinding {
+        device_binding: None,
         client_id: request.client.as_str().to_owned(),
         grant_id,
         code_challenge,

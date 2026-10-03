@@ -493,6 +493,7 @@ impl Fixture {
     async fn issue(&self, grant: &Grant, pkce: &Pkce, dpop_jkt: Option<&str>) -> String {
         let minted = asterius_oidc::code::MintedCode::generate();
         let binding = CodeBinding {
+            device_binding: None,
             client_id: CLIENT.to_owned(),
             grant_id: grant.id.clone(),
             code_challenge: pkce.challenge.to_owned(),
@@ -1367,6 +1368,7 @@ db_test! {
             .issue(
                 minted.digest(),
                 &CodeBinding {
+                    device_binding: None,
                     client_id: "someone-else".to_owned(),
                     grant_id: grant.id.clone(),
                     code_challenge: pkce.challenge.to_owned(),

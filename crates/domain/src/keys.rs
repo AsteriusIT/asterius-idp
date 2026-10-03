@@ -325,6 +325,8 @@ impl fmt::Display for CompactJws {
 /// Access-token authorization context supplied by a validated grant handler.
 #[derive(Debug, Clone, Copy)]
 pub struct AccessIssuance<'a> {
+    /// Exact proof carried by this issuance boundary; never inherited from a session.
+    pub device_binding: Option<&'a crate::managed_devices::DeviceBinding>,
     pub grant: &'a crate::Grant,
     pub kind: crate::GrantType,
     /// Server-owned audiences offered by this validated handler, never request data.
@@ -429,6 +431,21 @@ pub trait Signer: fmt::Debug + Send + Sync {
         claims: &serde_json::Value,
     ) -> Result<CompactJws, crate::DomainError> {
         self.sign(tenant, algorithm, typ, claims).await
+    }
+
+    /// Signs an identity assertion with private proof from its exact issuance boundary.
+    /// Production decorators must forward this binding, including prepared wrappers.
+    /// Adapters with no posture enforcement retain their existing signing behavior.
+    async fn sign_identity_bound(
+        &self,
+        tenant: &TenantId,
+        grant: &crate::Grant,
+        _binding: Option<&crate::managed_devices::DeviceBinding>,
+        algorithm: Option<SigningAlgorithm>,
+        typ: &'static str,
+        claims: &serde_json::Value,
+    ) -> Result<CompactJws, crate::DomainError> {
+        self.sign_identity(tenant, grant, algorithm, typ, claims).await
     }
 
     /// Signs an access token with its durable authorization lineage available

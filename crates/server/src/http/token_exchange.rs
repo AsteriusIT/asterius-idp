@@ -619,6 +619,7 @@ impl TokenExchange<'_> {
             .sign_access(
                 &tenant.id,
                 asterius_domain::keys::AccessIssuance {
+                    device_binding: None,
                     grant: &grant,
                     kind: GrantType::TokenExchange,
                     implicit_resources: &[],
@@ -636,6 +637,7 @@ impl TokenExchange<'_> {
             tenant,
             client,
             issuance::IdTokenParts {
+                device_binding: None,
                 grant: &grant,
                 require_ipsie_assurance: false,
                 rp_session_lifetime_seconds: None,
@@ -897,6 +899,7 @@ impl TokenExchange<'_> {
             .sign_access(
                 &tenant.id,
                 asterius_domain::keys::AccessIssuance {
+                    device_binding: None,
                     implicit_resources: &issuance::implicit_resources(
                         tenant,
                         issuance::ImplicitResources {
@@ -1774,6 +1777,7 @@ impl TokenExchange<'_> {
             .sign_access(
                 &tenant.id,
                 asterius_domain::keys::AccessIssuance {
+                    device_binding: None,
                     grant: &conditional_grant,
                     kind: GrantType::TokenExchange,
                     implicit_resources: &[],

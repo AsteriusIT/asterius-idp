@@ -140,6 +140,7 @@ impl PgCodeRepository {
 
         if let Some(row) = spent {
             return Ok(Redemption::Redeemed(Box::new(CodeBinding {
+                device_binding: None,
                 client_id: row.client_id,
                 grant_id: GrantId::new(row.grant_id.to_string()),
                 code_challenge: row.code_challenge,

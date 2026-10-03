@@ -484,6 +484,7 @@ impl Fixture {
             .issue(
                 minted.digest(),
                 &CodeBinding {
+                    device_binding: None,
                     client_id: client.id.as_str().to_owned(),
                     grant_id: grant.id.clone(),
                     // RFC 7636 Appendix B's published pair, as in

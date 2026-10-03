@@ -596,6 +596,7 @@ impl RefreshToken<'_> {
             .sign_access(
                 &tenant.id,
                 asterius_domain::keys::AccessIssuance {
+                    device_binding: None,
                     implicit_resources: &issuance::implicit_resources(
                         tenant,
                         issuance::ImplicitResources {
@@ -619,6 +620,7 @@ impl RefreshToken<'_> {
         // code applies, it is the only thing it can produce.
         let id_token = if effective.contains("openid") {
             let parts = issuance::IdTokenParts {
+                device_binding: None,
                 grant: &role_grant,
                 require_ipsie_assurance: self
                     .ipsie_identity_only_clients

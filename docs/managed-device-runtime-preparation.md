@@ -170,3 +170,18 @@ The composed main `4066e08f` includes exact-grant frozen temporary-role proof
 metadata and final UserInfo pruning. Device work must preserve that independent
 proof and signer admission behavior; a device credential never upgrades
 AMR/ACR or freshens those authentication-class proofs.
+
+
+The isolated candidate now exports a private `DeviceBinding` carrier. It owns
+exact tenant, user, application, interaction digest, source and enrollment
+generations, leaf and current anchor fingerprints, certificate expiry and the
+original proof deadline. `CodeBinding` owns an optional carrier; `AccessIssuance`
+and `IdTokenParts` borrow it. Only the authorization-code handler forwards its
+redeemed code carrier; refresh, exchanges and other handlers explicitly supply
+`None`. `Signer::sign_identity_bound` is a compatible extension and task/prepared
+wrappers preserve the supplied carrier. The conditional publication adapter must
+implement the bound hook before device enforcement is enabled; its inherited
+default intentionally retains old signing behavior and is not device enforcement.
+This source checkpoint is uncompiled and unvalidated while the shared Rust slot
+is occupied. No certificate verifier, interaction transfer, persistent sidecar,
+mounted endpoint, or device policy enforcement is claimed by this checkpoint.
