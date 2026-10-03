@@ -1,7 +1,7 @@
 //! Prepared worker boundary; no runtime registration until contract acceptance.
 
-use super::model::{Assignment, Connector, DeliveryFence, FailureCode, MappingReceipt};
-use crate::{DomainError, TenantId};
+use super::model::{Assignment, Connector, CredentialBinding, DeliveryFence, FailureCode, MappingReceipt};
+use crate::{DomainError, Secret, TenantId};
 use uuid::Uuid;
 
 /// Loading never holds a database transaction while a remote request is in flight.
@@ -33,4 +33,16 @@ pub trait OutboundScimJobs: std::fmt::Debug + Send + Sync {
         fence: &DeliveryFence,
         code: FailureCode,
     ) -> Result<(), DomainError>;
+}
+
+/// A scoped signing operation, not an arbitrary secret/key/path resolver.
+#[async_trait::async_trait]
+pub trait OutboundScimCredentials: std::fmt::Debug + Send + Sync {
+    /// Resolve every source/target context pin in the deployment registry, then
+    /// mint a fresh bounded assertion using the adapter's trusted clock/jti.
+    /// The tenant caller cannot provide arbitrary claims or select a raw key.
+    async fn assertion(
+        &self,
+        binding: &CredentialBinding,
+    ) -> Result<Secret<String>, DomainError>;
 }

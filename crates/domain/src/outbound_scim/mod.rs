@@ -8,4 +8,4 @@ pub use model::{
     Assignment, Connector, CredentialBinding, DeliveryFence, FailureCode, GroupProjection,
     MappingReceipt, ResourceKind, ReviewedDelete, UserProjection,
 };
-pub use ports::OutboundScimJobs;
+pub use ports::{OutboundScimCredentials, OutboundScimJobs};

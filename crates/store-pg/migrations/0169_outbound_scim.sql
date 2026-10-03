@@ -57,6 +57,9 @@ create table outbound_scim_assignments (
 create unique index outbound_scim_current_source
     on outbound_scim_assignments(tenant_id, connector_id, kind, source_id)
     where retired_at is null;
+create unique index outbound_scim_target_mapping
+    on outbound_scim_assignments(tenant_id, connector_id, kind, target_id)
+    where target_id is not null;
 create index outbound_scim_dirty_page
     on outbound_scim_assignments(tenant_id, connector_id, assignment_id)
     where dirty and retired_at is null;
@@ -80,6 +83,10 @@ create table outbound_scim_reviewed_deletes (
 
 create function outbound_scim_guard_connector() returns trigger language plpgsql as $$
 begin
+    if (new.tenant_id,new.connector_id) is distinct from (old.tenant_id,old.connector_id) then
+        raise exception 'connector identity is immutable'
+            using errcode='23514', constraint='outbound_scim_connector_identity';
+    end if;
     if (new.target_issuer, new.target_client) is distinct from
        (old.target_issuer, old.target_client) and exists (
         select 1 from outbound_scim_assignments
