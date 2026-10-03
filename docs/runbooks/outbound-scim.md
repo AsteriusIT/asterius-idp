@@ -98,3 +98,15 @@ concurrent delete/create serialization. It copies no source accounts/secrets.
 This SQL smoke does not prove OAuth/DPoP interoperability. The real acceptance
 matrix is `scripts/outbound-scim/acceptance-matrix.json`; it remains unexecuted
 until the owned first-target fixture and targeted final verification are run.
+
+## Proposed retirement email handling
+
+A successful reviewed DELETE of an exact reserved outbound User incarnation
+clears only that owned target account's email and verification flag, while
+retaining its UUID, username, externalId tombstone and security lock. Routine
+disable, archive and ordinary SCIM deletion preserve their existing metadata.
+Fresh-generation recreation after DELETE can therefore reuse the source work
+email; archive-only recreation can still conflict with the retained account's
+email uniqueness. Review deletion of the exact old target before retrying that
+case; do not weaken the target's unique email index or alter another account.
+This candidate refinement remains subject to the normative contract review.
