@@ -5701,6 +5701,232 @@
         "x-asterius-scope": "admin.flows:read"
       }
     },
+    "/admin/api/v1/governance/findings": {
+      "get": {
+        "description": "Read-only tenant evidence and review proposals. Each page uses its own repeatable-read snapshot; empty pages with next require continuation. Inactivity is retained-session evidence, not proof of upstream deletion. Source registration is not reachability. Local recovery candidates are preserved. Historical retention counts only with exact ownership, row generation and complete current context. Removal always requires a separately authorized lifecycle command.",
+        "operationId": "governance.findings",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "section",
+            "schema": {
+              "default": "accounts",
+              "enum": [
+                "accounts",
+                "ownership",
+                "assignments",
+                "temporary_entitlements",
+                "administrative_roles"
+              ]
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 25,
+              "maximum": 50,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Opaque versioned keyset cursor bound to the tenant and category; do not construct or reuse across categories.",
+            "in": "query",
+            "name": "after",
+            "schema": {
+              "maxLength": 16384,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "evidence": {
+                            "description": "Server-selected current public source identifiers/statuses, timestamps, revisions and historical-versus-current review context. Contains no credentials, raw external directory identifiers or complete activity-history claim. Evidence is not a lifecycle command.",
+                            "type": "object"
+                          },
+                          "key": {
+                            "maxLength": 8192,
+                            "type": "string"
+                          },
+                          "proposals": {
+                            "items": {
+                              "enum": [
+                                "inspect_provisioning_source",
+                                "assign_current_owner",
+                                "review_account_lifecycle",
+                                "review_membership_source",
+                                "start_independent_review",
+                                "inspect_review_application",
+                                "preserve_recovery_access"
+                              ]
+                            },
+                            "type": "array"
+                          },
+                          "reasons": {
+                            "items": {
+                              "enum": [
+                                "missing_owner",
+                                "inactive_owner",
+                                "owner_authority_unavailable",
+                                "reviewer_unavailable",
+                                "missing_ownership",
+                                "disconnected_source",
+                                "upstream_deleted",
+                                "upstream_absent",
+                                "inactive_account",
+                                "no_recent_observed_activity",
+                                "unknown_activity",
+                                "stale_membership",
+                                "unreviewed_privilege",
+                                "stale_review",
+                                "overdue_review",
+                                "unapplied_decision",
+                                "protected_recovery_account",
+                                "source_health_unknown"
+                              ]
+                            },
+                            "type": "array",
+                            "uniqueItems": true
+                          }
+                        },
+                        "required": [
+                          "key",
+                          "reasons",
+                          "evidence",
+                          "proposals"
+                        ],
+                        "type": "object"
+                      },
+                      "maxItems": 50,
+                      "type": "array"
+                    },
+                    "next": {
+                      "maxLength": 16384,
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "observed_at": {
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "read_only": {
+                      "const": true
+                    },
+                    "scanned": {
+                      "maximum": 100,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "section": {
+                      "enum": [
+                        "accounts",
+                        "ownership",
+                        "assignments",
+                        "temporary_entitlements",
+                        "administrative_roles"
+                      ]
+                    },
+                    "thresholds": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "inactivity_days": {
+                          "const": 90
+                        },
+                        "membership_review_days": {
+                          "const": 365
+                        },
+                        "privilege_review_days": {
+                          "const": 90
+                        }
+                      },
+                      "required": [
+                        "inactivity_days",
+                        "membership_review_days",
+                        "privilege_review_days"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "section",
+                    "observed_at",
+                    "thresholds",
+                    "items",
+                    "next",
+                    "scanned",
+                    "read_only"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Reports missing ownership, source disconnection, activity uncertainty and overdue privileged reviews without changing access",
+        "x-asterius-reach": "console_tenant",
+        "x-asterius-scope": "admin.governance:read",
+        "x-console-only": true
+      }
+    },
     "/admin/api/v1/governance/ownership": {
       "get": {
         "description": "Human identity must belong to the addressed tenant. Owner/reviewer configuration never grants administrative authority. Writes additionally require current active tenant-administrator authority, fresh phishing-resistant console proof and normal CSRF protection. Reasons and historical snapshots remain private. Decisions do not change access until explicit application. Stale or externally managed sources are refused; independent standing and temporary sources remain intact. Notification transport is disabled.",

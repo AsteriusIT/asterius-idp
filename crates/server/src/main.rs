@@ -33,7 +33,6 @@ use asterius_store_pg::{
     PgInitialAccessTokens, PgKekRewrap, PgReplayGuard, PgRetention, PgTenantRepository,
     PgTenantSettings, ProvisionedTenants, RewrapOutcome, Store, TenantKeyStore,
 };
-use sha2::Digest as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -108,13 +107,7 @@ fn ldap_sync(
         .map_err(|error| format!("cannot start LDAP synchronization: {error}"))?;
     runtime.block_on(async {
         let snapshot = asterius_server::ldap_sync::read(source).await?;
-        let source_key = hex::encode(sha2::Sha256::digest(format!(
-            "{}\n{}\n{}\n{}",
-            source.url,
-            source.base_dn,
-            source.bind_dn,
-            source.group_base_dn.as_deref().unwrap_or_default(),
-        )));
+        let source_key = source.source_key();
         let store = Store::connect(
             config.database.url.expose(),
             config.database.max_connections,
@@ -656,6 +649,7 @@ fn operational_routes(store: &Store, config: &Config, metrics: Metrics) -> Opera
 /// protocol endpoints', and the two would then disagree about what a valid
 /// client is.
 struct AdminContext {
+    governance_ldap_sources: std::collections::BTreeMap<String, String>,
     ipsie_https_only_clients:
         Arc<std::collections::HashMap<String, std::collections::BTreeSet<String>>>,
     ipsie_identity_only_clients:
@@ -738,6 +732,16 @@ impl AdminContext {
             ),
             id_jag_trusts: Arc::clone(id_jag_trusts),
             ssf_upstream: None,
+            governance_ldap_sources: config
+                .tenants
+                .iter()
+                .filter_map(|tenant| {
+                    tenant
+                        .ldap_source
+                        .as_ref()
+                        .map(|source| (tenant.id.as_str().to_owned(), source.source_key()))
+                })
+                .collect(),
             rate_limit_policy: (config.login, config.limits),
             issuance: issuance_guard(config),
             capabilities: config.features,
@@ -823,7 +827,8 @@ fn admin_routes(
                 argon2: Argon2Parameters::default(),
                 issuance: context.issuance,
             })
-            .with_rate_limit_policy(context.rate_limit_policy.0, context.rate_limit_policy.1),
+            .with_rate_limit_policy(context.rate_limit_policy.0, context.rate_limit_policy.1)
+            .with_governance_ldap_sources(context.governance_ldap_sources),
         ),
         tokens: Some(tokens),
         rate_limit: asterius_admin_api::throttle::DEFAULT_LIMIT,

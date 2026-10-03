@@ -2816,3 +2816,9 @@ result share a transaction with durable audit append; an audit failure must
 rollback both. Decisions and applying them are distinct commands. Retries return
 the durable result while still requiring current assigned reviewer authority.
 No scheduler silently revokes access and no notification transport is enabled.
+
+### Governance findings
+
+The console-only governance reports recheck current same-tenant administrator or security-auditor read authority in a repeatable-read, read-only transaction. Closed query fields and tenant/section-bound keyset cursors cannot select another tenant or arbitrary SQL. Each request inspects at most 100 records and returns at most 50 findings; an empty scan may still expose continuation. Evidence includes bounded public source identifiers, never credentials, session handles or vendor external identifiers.
+
+A retained session is incomplete activity history, not evidence that an upstream account was deleted. Missing SCIM registrations and LDAP source configuration are distinct from explicit SCIM tombstones and complete LDAP snapshot absence; no report asserts network reachability. Local administrative accounts remain possible recovery accounts. Managed group evidence preserves SCIM, LDAP, builder and controller provenance and proposes review through the existing owner lifecycle. Historical campaign coverage requires matching current assignment generation, ownership revision and the complete account/group/catalogue/client context, including updates that prevent status ABA. Oversized contexts remain uncertain. Temporary entitlement configuration and built-in administrative roles are reported separately from standing campaign coverage. Reports provide no mutation, notification or automatic cleanup port.

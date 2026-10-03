@@ -1,0 +1,54 @@
+{
+  "ticket": "ast-dd1y.5.5",
+  "observed_at": "2026-10-03T18:55:23.320362+00:00",
+  "base_commit": "94835e14",
+  "binary_sha256": "c79b1caedc1ce9ff655b7d2c2adbc1498f26c7a501a50a4d66b3fe3b957c5cbd",
+  "verification": {
+    "fmt": true,
+    "strict_workspace_clippy": true,
+    "targeted_nextest": {
+      "passed": 73,
+      "filter": "governance_reports governance_findings openapi rbac registry + mandatory source/secret audits",
+      "ignored_pg_tests_executed_locally": false
+    },
+    "fuzz": {
+      "registered_parsers": 113,
+      "inventory_format_compile_strict_clippy": true,
+      "instrumented_fuzz_campaign": false
+    },
+    "console_typescript_and_vite": true
+  },
+  "actual_https_browser": {
+    "passed": 18,
+    "checks": [
+      "actual_password_console_cookie_login",
+      "empty_bounded_scan_still_exposes_continuation",
+      "actual_other_tenant_disabled_account_never_selected",
+      "disconnection_upstream_deletion_ldap_absence_and_unknown_activity_distinct",
+      "local_recovery_preserved_and_recent_activity_not_flagged",
+      "opaque_pagination_no_duplicates_or_vendor_identifiers",
+      "unknown_duplicate_bounds_and_cross_tenant_section_cursors_refused",
+      "exact_current_applied_retain_covers_source",
+      "account_status_aba_invalidates_context",
+      "assignment_delete_recreate_never_inherits_old_review",
+      "old_managed_membership_keeps_provenance_and_requires_review",
+      "missing_owner_and_unavailable_reviewers_reported",
+      "temporary_owner_and_source_tombstones_separate_from_standing_review",
+      "disappeared_standing_source_reported",
+      "all_five_categories_leave_authority_and_review_rows_unchanged",
+      "actual_readonly_console_recovery_explanation_mobile_and_accessibility",
+      "security_auditor_read_only_allowed_support_denied",
+      "current_administrator_authority_required"
+    ],
+    "mobile_width": 390,
+    "axe_wcag_a_aa_21aa_violations": 0
+  },
+  "limitations": {
+    "real_password_console_cookie_login": true,
+    "controlled_provenance_and_historical_review_seeds": true,
+    "live_scim_ldap_feed": false,
+    "no_mutation_or_notification": true,
+    "owned_database_only": true,
+    "ignored_pg_regression_reserved_for_ci": true
+  }
+}
