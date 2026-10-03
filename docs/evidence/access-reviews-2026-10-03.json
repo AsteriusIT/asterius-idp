@@ -1,0 +1,46 @@
+{
+  "checks": [
+    "password_session_cannot_configure_governance",
+    "real_fresh_user_verified_webauthn_and_signed_assurance",
+    "csrf_required",
+    "posted_actor_rejected",
+    "retain_preserves_assignment",
+    "membership_existing_lifecycle_removal",
+    "membership_removal_preserves_direct_and_independent_group_sources",
+    "user_tenant_role_existing_lifecycle_removal",
+    "user_client_role_existing_lifecycle_removal",
+    "group_tenant_role_existing_lifecycle_removal",
+    "group_client_role_existing_lifecycle_removal",
+    "new_group_member_invalidates_group_role_snapshot",
+    "ownership_change_invalidates_pending_application",
+    "recreated_assignment_is_not_revoked",
+    "controller_authority_is_not_impersonated",
+    "ldap_membership_authority_is_not_impersonated",
+    "two_requests_one_durable_application",
+    "failed_audit_rolls_back_removal_and_result",
+    "actual_governance_console_desktop_mobile_and_accessibility",
+    "live_reviewer_authority_rechecked"
+  ],
+  "passed": 20,
+  "real_webauthn": true,
+  "private_cookie_file": true,
+  "owned_database_only": true,
+  "binary_sha256": "5d772a67fc2d725af2cf43c72f25b151b0ac4c8f1046ec8b765ba27442f65bae",
+  "ticket": "ast-dd1y.5.4",
+  "date": "2026-10-03",
+  "validated_source_checkpoint": "2b2a78eaf2b48e3f1bedc952f5f9b6a0731e3f75",
+  "rust_gate": {
+    "fmt": true,
+    "strict_clippy": true,
+    "targeted_tests_passed": 63,
+    "mandatory_source_secret_audits": true
+  },
+  "fuzz_targets_compiled_lint_clean": 112,
+  "ignored_postgres_tests": "compiled; execution reserved for CI",
+  "cleanup": {
+    "owned_database_dropped": true,
+    "owned_server_stopped": true,
+    "private_cookie_file_deleted": true,
+    "owned_target_cleaned": true
+  }
+}

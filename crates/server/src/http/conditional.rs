@@ -800,6 +800,17 @@ impl asterius_domain::ports::PolicyEngine for ConditionalPolicyEngine {
                 )
                 .await;
             advance_clock(&mut request, OffsetDateTime::now_utc());
+            // The base policy can consume temporary roles too. Audit/storage
+            // awaits must not preserve a permit from an expired snapshot.
+            let base = if scope.mode == EnforcementMode::Active {
+                asterius_domain::policy::explanation::evaluate(
+                    Some(&policy),
+                    &request,
+                    "access_evaluation",
+                )
+            } else {
+                base
+            };
             let final_conditional = scope.evaluate(&request);
             if base.permit()
                 && (!conditional.permit() || !final_conditional.permit())
@@ -835,6 +846,9 @@ impl asterius_domain::ports::PolicyEngine for ConditionalPolicyEngine {
 
 // Updating the clock never changes original authentication or source validity.
 fn advance_clock(request: &mut EvaluationRequest, now: OffsetDateTime) {
+    let mut roles = request.subject.roles().clone();
+    roles.retain_current_temporary_roles(now);
+    request.subject = request.subject.clone().with_roles(roles);
     if let Some(trusted) = request.context.trusted() {
         let mut trusted = trusted.clone();
         trusted.evaluated_at = now;
@@ -1085,7 +1099,8 @@ fn signed_roles_current(
             let Some(expiry) = claims.get("exp").and_then(serde_json::Value::as_i64) else {
                 return false;
             };
-            if expiry > deadline.unix_timestamp()
+            if !held.role_current_at(client, role, now)
+                || expiry > deadline.unix_timestamp()
                 || expiry <= now.unix_timestamp()
                 || *deadline <= now
             {
@@ -1114,9 +1129,9 @@ impl<'a> ConditionalSigner<'a> {
         tenant: &asterius_domain::TenantId,
         grant: &Grant,
         claims: &serde_json::Value,
-    ) -> Result<(), DomainError> {
+    ) -> Result<asterius_domain::HeldRoles, DomainError> {
         if claims.get("roles").is_none() && claims.get("resource_access").is_none() {
-            return Ok(());
+            return Ok(asterius_domain::HeldRoles::empty());
         }
         let held = self
             .access
@@ -1131,7 +1146,7 @@ impl<'a> ConditionalSigner<'a> {
                 "current role authority or exclusive expiry changed",
             ));
         }
-        Ok(())
+        Ok(held)
     }
 
     async fn fence(
@@ -1255,12 +1270,18 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
                 .await;
         }
         let transaction = self.fence(tenant).await?;
-        self.current_roles(tenant, grant, claims).await?;
+        let held = self.current_roles(tenant, grant, claims).await?;
         let signed = self
             .inner
             .get()
             .sign_identity(tenant, grant, algorithm, typ, claims)
             .await?;
+        if !signed_roles_current(claims, &held, &grant.client, OffsetDateTime::now_utc()) {
+            return Err(DomainError::invalid(
+                "temporary_entitlement",
+                "temporary authority expired during signing",
+            ));
+        }
         transaction.commit().await?;
         Ok(signed)
     }
@@ -1362,12 +1383,18 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
                 "conditional issuance refused",
             ));
         }
-        self.current_roles(tenant, &narrowed, claims).await?;
+        let held = self.current_roles(tenant, &narrowed, claims).await?;
         let signed = self
             .inner
             .get()
             .sign_access(tenant, issuance, algorithm, typ, claims)
             .await?;
+        if !signed_roles_current(claims, &held, &narrowed.client, OffsetDateTime::now_utc()) {
+            return Err(DomainError::invalid(
+                "temporary_entitlement",
+                "temporary authority expired during signing",
+            ));
+        }
         transaction.commit().await?;
         Ok(signed)
     }
@@ -1388,6 +1415,7 @@ mod tests {
             .insert(client.clone(), [role.clone()].into_iter().collect());
         held.temporary_deadlines
             .insert(client.clone(), [(role, deadline)].into_iter().collect());
+        held.temporary_proof_expires_at = Some(now + Duration::seconds(120));
         let claims = json!({"exp":30,"resource_access":{"app":{"roles":["privileged"]}}});
         assert!(signed_roles_current(&claims, &held, &client, now));
         assert!(!signed_roles_current(
@@ -1418,6 +1446,117 @@ mod tests {
                 now
             ),
             "independent standing authority keeps its lifetime"
+        );
+    }
+
+    #[test]
+    fn temporary_signing_freshness_is_rechecked_without_shortening_activation_ttl() {
+        let now = OffsetDateTime::UNIX_EPOCH;
+        let client = asterius_domain::ClientId::new("app");
+        let role = asterius_domain::RoleName::parse("privileged").expect("role");
+        let deadline = now + Duration::seconds(600);
+        let mut held = asterius_domain::HeldRoles::default();
+        held.clients.insert(client.clone(), [role.clone()].into());
+        held.temporary_deadlines
+            .insert(client.clone(), [(role, deadline)].into());
+        held.temporary_proof_expires_at = Some(now + Duration::seconds(120));
+        let claims = json!({"exp":500,"resource_access":{"app":{"roles":["privileged"]}}});
+        assert!(signed_roles_current(&claims, &held, &client, now));
+        assert_eq!(held.temporary_expiry_for(&client), Some(deadline));
+        assert!(signed_roles_current(
+            &claims,
+            &held,
+            &client,
+            now + Duration::seconds(120)
+        ));
+        assert!(!signed_roles_current(
+            &claims,
+            &held,
+            &client,
+            now + Duration::seconds(121)
+        ));
+        held.temporary_proof_expires_at = None;
+        assert!(!signed_roles_current(&claims, &held, &client, now));
+        held.temporary_deadlines.clear();
+        assert!(signed_roles_current(
+            &claims,
+            &held,
+            &client,
+            now + Duration::seconds(121)
+        ));
+    }
+
+    #[test]
+    fn final_clock_recheck_removes_stale_proof_roles_without_removing_standing() {
+        let now = OffsetDateTime::UNIX_EPOCH;
+        let client = asterius_domain::ClientId::new("app");
+        let temporary = asterius_domain::RoleName::parse("temporary").expect("role");
+        let standing = asterius_domain::RoleName::parse("standing").expect("role");
+        let mut held = asterius_domain::HeldRoles::default();
+        held.clients
+            .insert(client.clone(), [temporary.clone(), standing.clone()].into());
+        held.temporary_deadlines.insert(
+            client.clone(),
+            [(temporary.clone(), now + Duration::seconds(600))].into(),
+        );
+        held.temporary_proof_expires_at = Some(now + Duration::seconds(120));
+        held.retain_current_temporary_roles(now + Duration::seconds(120));
+        assert!(held.clients[&client].contains(&temporary));
+        held.retain_current_temporary_roles(now + Duration::seconds(121));
+        assert!(!held.clients[&client].contains(&temporary));
+        assert!(held.clients[&client].contains(&standing));
+    }
+
+    #[test]
+    fn final_clock_recheck_removes_expired_temporary_roles_but_preserves_standing() {
+        let now = OffsetDateTime::UNIX_EPOCH;
+        let client = asterius_domain::ClientId::new("app");
+        let temporary = asterius_domain::RoleName::parse("temporary").expect("role");
+        let standing = asterius_domain::RoleName::parse("standing").expect("role");
+        let mut held = asterius_domain::HeldRoles::default();
+        held.clients
+            .insert(client.clone(), [temporary.clone(), standing.clone()].into());
+        held.temporary_deadlines.insert(
+            client.clone(),
+            [(temporary.clone(), now + Duration::seconds(1))].into(),
+        );
+        held.temporary_proof_expires_at = Some(now + Duration::seconds(120));
+        let mut request = EvaluationRequest::new(
+            Subject::new("user", "alice", Properties::empty())
+                .expect("subject")
+                .with_roles(held),
+            Action::new("access_evaluation", Properties::empty()).expect("action"),
+            Resource::new("application", "app", Properties::empty()).expect("resource"),
+            Context::default(),
+        );
+        let policy = StoredPolicy {
+            rules: asterius_domain::policy::RuleSet::from_json(&json!({
+                "version":1,"rules":[{"id":"elevation","effect":"permit",
+                    "when":{"role":{"name":"temporary","owner":"app"}}}]
+            }))
+            .expect("policy"),
+            updated_at: now,
+        };
+        let owner = asterius_domain::RoleOwner::Client(client);
+        assert!(
+            asterius_domain::policy::explanation::evaluate(
+                Some(&policy),
+                &request,
+                "access_evaluation",
+            )
+            .permit()
+        );
+        assert!(request.subject.holds_role(Some(&owner), &temporary));
+        advance_clock(&mut request, now + Duration::seconds(2));
+        assert!(!request.subject.holds_role(Some(&owner), &temporary));
+        assert!(request.subject.holds_role(Some(&owner), &standing));
+        assert!(
+            !asterius_domain::policy::explanation::evaluate(
+                Some(&policy),
+                &request,
+                "access_evaluation",
+            )
+            .permit()
         );
     }
 

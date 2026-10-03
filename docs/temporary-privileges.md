@@ -46,7 +46,12 @@ An ID token is capped when the client is configured to release that role in its
 ID token; personal identity claims alone do not acquire temporary authority.
 
 The signing boundary rechecks current roles and their deadlines under the
-same tenant publication fence used by authority changes. Code redemption,
+same tenant publication fence used by authority changes, before and after any
+asynchronous signing decorator. Temporary proof freshness is a separate private
+evaluation bound and does not shorten the activation or issued JWT lifetime.
+Policy evaluation and UserInfo remove temporary-only roles if an asynchronous
+audit or directory read crosses an activation or proof deadline; independent
+standing roles survive that clock update. Code redemption,
 refresh and the supported policy boundary read current exact-grant authority.
 UserInfo resolves current roles using the verified access token’s actual
 audience and scopes, rather than the wider original grant.
