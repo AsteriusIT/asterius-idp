@@ -512,6 +512,32 @@ mod tests {
     }
 
     #[test]
+    fn managed_device_request_binding_pins_exact_grant_and_parent() {
+        let now = OffsetDateTime::UNIX_EPOCH + Duration::days(20000);
+        let tenant = TenantId::parse("tenant-a").expect("fixture tenant");
+        let user = UserId::new(Uuid::new_v4());
+        let mut grant = crate::Grant::new(tenant.clone(),ClientId::new("application-a"),now);
+        grant.user=Some(user);
+        grant.parent=Some(crate::GrantId::new(Uuid::new_v4().to_string()));
+        let evidence = || VerifiedDeviceEvidence {
+            tenant: tenant.clone(),user,client:grant.client.clone(),interaction_digest:"a".repeat(64),
+            source:Uuid::new_v4(),source_generation:1,device:Uuid::new_v4(),enrollment_generation:1,
+            leaf_sha256:"b".repeat(64),anchor_sha256:"c".repeat(64),
+            certificate_expires_at:now+Duration::hours(1),proof_expires_at:now+Duration::seconds(300),
+        };
+        let proof=DeviceBinding::from_verified_request(evidence(),&grant,now).expect("verified request evidence");
+        assert_eq!(proof.bound_grant_id(),Some(&grant.id));
+        assert_eq!(proof.request_parent(),grant.parent.as_ref());
+        let original=DeviceBinding::from_verified(evidence(),now).expect("original interaction evidence");
+        assert!(original.bound_grant_id().is_none());
+        assert!(original.request_parent().is_none());
+        let mut wrong=grant.clone();
+        wrong.user=Some(UserId::new(Uuid::new_v4()));
+        assert!(DeviceBinding::from_verified_request(evidence(),&wrong,now).is_err());
+        assert!(proof.validate(now+Duration::seconds(301)).is_err());
+    }
+
+    #[test]
     fn managed_device_unknown_posture_is_not_compliance_authority() {
         let posture = Posture { managed: None, compliant: Some(true), disk_encrypted: None, risk: None };
         assert_eq!(posture.compliance(), Compliance::Unknown);
