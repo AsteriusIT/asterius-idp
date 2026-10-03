@@ -1,6 +1,6 @@
 //! Prepared TokenReview v1 candidate. Not exported or mounted before delivery review.
 //! Request parsing never authenticates a caller, token or user.
-use crate::{DomainError, Secret};
+use crate::{Actor, ClientId, DomainError, Secret, Tenant, TenantId};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeSet;
 
@@ -11,6 +11,42 @@ pub const MAX_TOKEN_BYTES: usize = 16_384;
 pub const MAX_AUDIENCES: usize = 16;
 pub const MAX_AUDIENCE_BYTES: usize = 2048;
 pub const MAX_RELEASED_GROUPS: usize = 100;
+pub const REVIEW_SCOPE: &str = "admin.kubernetes_reviews:read";
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OnlineProfile {
+    pub reviewer_client_id: String,
+    pub revision: uuid::Uuid,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileChange {
+    pub reviewer_client_id: String,
+    pub expected_revision: Option<uuid::Uuid>,
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+impl ProfileChange {
+    pub fn validate(&self) -> Result<(), DomainError> {
+        if !bounded(&self.reviewer_client_id, 2048) { return Err(invalid()); }
+        Ok(())
+    }
+}
+
+/// The composition root performs signature validation and primary-state review.
+/// Administrative configuration is distinct from service-only authentication.
+#[async_trait::async_trait]
+pub trait KubernetesOnline: std::fmt::Debug + Send + Sync {
+    async fn profile(&self, tenant: &TenantId, client: &ClientId)
+        -> Result<Option<OnlineProfile>, DomainError>;
+    async fn replace_profile(&self, tenant: &TenantId, client: &ClientId,
+        actor: &Actor, change: &ProfileChange) -> Result<OnlineProfile, DomainError>;
+    async fn review(&self, tenant: &Tenant, reviewer: &ClientId, client: &ClientId,
+        request: &TokenReviewRequest) -> Result<TokenReviewResponse, DomainError>;
+}
 
 /// A field that is absent stays None; a present null must satisfy T itself.
 /// This avoids treating caller status:null as an absent status.

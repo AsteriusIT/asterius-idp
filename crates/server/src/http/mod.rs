@@ -78,6 +78,7 @@ pub mod account_password;
 pub mod account_sessions;
 pub mod account_totp;
 pub mod agent_issuance;
+pub mod kubernetes_online;
 pub mod approvals;
 pub mod assets;
 pub mod authorization_code;

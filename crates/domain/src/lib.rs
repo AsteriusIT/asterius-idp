@@ -13,6 +13,7 @@ pub mod agent_tasks;
 pub mod audit;
 pub mod capabilities;
 pub mod credentials;
+pub mod kubernetes_online;
 pub mod entities;
 pub mod error;
 pub mod governance_reports;
