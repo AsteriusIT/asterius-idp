@@ -99,6 +99,7 @@ async fn current_acr(
         .map_err(|e| DomainError::invalid("tenant.options", e.to_string()))?;
     Ok(settings.acr_policy().clone())
 }
+type SessionProofRow = (Option<OffsetDateTime>, Option<String>, Option<Vec<String>>);
 async fn session(
     tx: &mut PgConnection,
     tenant: &TenantId,
@@ -106,7 +107,7 @@ async fn session(
     required: Option<&str>,
     now: OffsetDateTime,
 ) -> Result<(), DomainError> {
-    let row: Option<(Option<OffsetDateTime>, Option<String>, Option<Vec<String>>)> = sqlx::query_as("select proof.assurance_authenticated_at,proof.assurance_policy_revision,proof.assurance_methods from sessions s left join session_assurance_proofs proof on proof.tenant_id=s.tenant_id and proof.session_id=s.session_id and proof.acr is not distinct from s.acr join users u on u.tenant_id=s.tenant_id and u.user_id=s.user_id where s.tenant_id=$1 and s.session_id=$2 and s.user_id=$3 and s.revoked_at is null and s.expires_at>$4 and s.idle_expires_at>$4 and u.status='active' for share of s,u")
+    let row: Option<SessionProofRow> = sqlx::query_as("select proof.assurance_authenticated_at,proof.assurance_policy_revision,proof.assurance_methods from sessions s left join session_assurance_proofs proof on proof.tenant_id=s.tenant_id and proof.session_id=s.session_id and proof.acr is not distinct from s.acr and proof.assurance_authenticated_at<=s.authenticated_at join users u on u.tenant_id=s.tenant_id and u.user_id=s.user_id where s.tenant_id=$1 and s.session_id=$2 and s.user_id=$3 and s.revoked_at is null and s.expires_at>$4 and s.idle_expires_at>$4 and u.status='active' for share of s,u")
         .bind(tenant.as_str()).bind(&actor.session_digest).bind(actor.user.as_uuid()).bind(now).fetch_optional(&mut *tx).await.map_err(to_domain_error)?;
     let (authenticated_at, revision, methods) = row.ok_or(DomainError::NotFound)?;
     if let Some(required) = required {

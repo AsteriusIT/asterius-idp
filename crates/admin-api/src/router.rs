@@ -15900,6 +15900,30 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
+    #[tokio::test]
+    async fn temporary_entitlement_owner_refuses_cross_realm_even_with_equal_user_uuid() {
+        let world = World::new().routed_at("acme");
+        let deployment =
+            world.sign_in_as("asterius-admin", seeded_user_id(), &[Role::DeploymentAdmin]);
+        assert_eq!(
+            world
+                .get(&crate::TEMPORARY_ENTITLEMENT_LIST, &deployment)
+                .await
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+        // The same UUID in the correct realm reaches the missing fixture port,
+        // proving the refusal above came before any owner persistence lookup.
+        let local = world.sign_in_as("acme", seeded_user_id(), &[Role::TenantAdmin]);
+        assert_eq!(
+            world
+                .get(&crate::TEMPORARY_ENTITLEMENT_LIST, &local)
+                .await
+                .status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
     /// The two tenant identities a cross-tenant console needs stay distinct:
     /// the account and session live in the reserved tenant, while relative API
     /// calls and the workspace selector act on the routed tenant.
@@ -19528,9 +19552,19 @@ impl Handling<'_> {
         use asterius_domain::temporary_entitlements::{
             EligibilityChange, EntitlementConfiguration, RevokeActivation,
         };
-        let Principal::Console { user, .. } = &self.principal else {
+        let Principal::Console {
+            tenant: realm,
+            user,
+            ..
+        } = &self.principal
+        else {
             return Err(AdminError::Forbidden);
         };
+        // Deployment administration does not make a reserved-realm account
+        // the target tenant's human resource owner, even for equal UUIDs.
+        if realm != &self.tenant.id {
+            return Err(AdminError::Forbidden);
+        }
         let port = self
             .state
             .backend

@@ -7,7 +7,7 @@ create table temporary_entitlements (
     client_id text not null,
     resource text not null,
     role_name text not null,
-    permissions text[] not null check (cardinality(permissions) between 1 and 64),
+    permissions text[] not null check (cardinality(permissions) between 1 and 64) check (not permissions && array['openid','profile','email','address','phone','offline_access','grant_management_query','grant_management_revoke']::text[]),
     owner_user_id uuid not null,
     owner_reference uuid,
     client_reference text,

@@ -46,7 +46,7 @@ impl EntitlementConfiguration {
             || self
                 .permissions
                 .iter()
-                .any(|s| !crate::entities::grant::is_scope_token(s))
+                .any(|s| !crate::entities::grant::is_scope_token(s) || !is_resource_permission(s))
             || self
                 .permissions
                 .iter()
@@ -246,10 +246,12 @@ pub struct TemporaryEntitlementProvenance {
     pub permissions: Vec<String>,
     pub policy_revision: Uuid,
     pub eligibility_revision: Uuid,
+    #[serde(with = "time::serde::rfc3339")]
     pub expires_at: OffsetDateTime,
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct TemporaryEntitlementProvenanceSnapshot {
+    #[serde(with = "time::serde::rfc3339")]
     pub observed_at: OffsetDateTime,
     pub entries: Vec<TemporaryEntitlementProvenance>,
 }
@@ -283,6 +285,37 @@ pub fn assurance_current(
         && policy
             .level(required)
             .is_some_and(|level| level.is_met_by(proof.methods))
+}
+
+/// Protocol/privacy scopes cannot stand in for approved API permissions.
+#[must_use]
+pub fn is_resource_permission(scope: &str) -> bool {
+    !matches!(
+        scope,
+        "openid"
+            | "profile"
+            | "email"
+            | "address"
+            | "phone"
+            | "offline_access"
+            | "grant_management_query"
+            | "grant_management_revoke"
+    )
+}
+/// A role must not compose with an additional resource permission that was
+/// never included in the independent approval's immutable scope tuple.
+#[must_use]
+pub fn resource_permissions_exact(
+    approved: &[String],
+    actual: &std::collections::BTreeSet<String>,
+) -> bool {
+    !approved.is_empty()
+        && approved.iter().all(|scope| is_resource_permission(scope))
+        && approved.iter().collect::<std::collections::BTreeSet<_>>()
+            == actual
+                .iter()
+                .filter(|scope| is_resource_permission(scope))
+                .collect::<std::collections::BTreeSet<_>>()
 }
 
 pub fn validate_reason(reason: &str) -> Result<(), DomainError> {
@@ -409,6 +442,27 @@ mod tests {
             max_duration_seconds: 900,
             max_eligibility_seconds: 86400,
             enabled: true,
+        }
+    }
+    #[test]
+    fn temporary_permissions_require_exact_resource_scope_without_protocol_authority() {
+        let approved = vec!["read".to_owned()];
+        let actual = |values: &[&str]| values.iter().map(|value| (*value).to_owned()).collect();
+        assert!(resource_permissions_exact(
+            &approved,
+            &actual(&["openid", "read", "offline_access", "grant_management_query"])
+        ));
+        for scopes in [
+            &["openid"][..],
+            &["read", "write"][..],
+            &["read", "unregistered-extra"][..],
+        ] {
+            assert!(!resource_permissions_exact(&approved, &actual(scopes)));
+        }
+        for scope in ["openid", "profile", "grant_management_revoke"] {
+            let mut c = configuration();
+            c.permissions = vec![scope.to_owned()];
+            assert!(c.validate().is_err());
         }
     }
     #[test]

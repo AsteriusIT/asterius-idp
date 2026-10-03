@@ -83,8 +83,9 @@ pub async fn page(
         .await
     {
         Ok(data) => data,
-        Err(error) => {
-            tracing::error!(%error,"cannot read temporary entitlements");
+        Err(_) => {
+            // Storage errors may contain user-controlled lifecycle values.
+            tracing::error!("cannot read temporary entitlements");
             return account::error_page(&context.account, StatusCode::SERVICE_UNAVAILABLE);
         }
     };
@@ -156,7 +157,7 @@ pub async fn command(
         Err(DomainError::Invalid{field:"authentication",..})=>page(context,headers,if context.account.text.lang()=="fr"{"Authentifiez-vous à nouveau avec le niveau de preuve configuré, puis réessayez. Aucun accès n’a été accordé."}else{"Sign in again with the configured assurance, then retry. No access was granted."},now).await,
         Err(DomainError::NotFound|DomainError::Conflict(_))=>account::error_page(&context.account,StatusCode::NOT_FOUND),
         Err(DomainError::Invalid{..})=>account::error_page(&context.account,StatusCode::BAD_REQUEST),
-        Err(error)=>{tracing::error!(%error,"temporary entitlement command refused");account::error_page(&context.account,StatusCode::SERVICE_UNAVAILABLE)},
+        Err(_)=>{tracing::error!("temporary entitlement command refused");account::error_page(&context.account,StatusCode::SERVICE_UNAVAILABLE)},
     }
 }
 fn render(

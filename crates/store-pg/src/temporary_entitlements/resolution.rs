@@ -1,5 +1,28 @@
 use super::*;
 use asterius_domain::{ClientId, Grant, RoleName};
+type ResolvedRoleRow = (
+    Uuid,
+    Uuid,
+    String,
+    String,
+    OffsetDateTime,
+    String,
+    Uuid,
+    Uuid,
+    Vec<String>,
+);
+type ProvenanceRow = (
+    Uuid,
+    Uuid,
+    Uuid,
+    String,
+    String,
+    String,
+    Vec<String>,
+    Uuid,
+    Uuid,
+    OffsetDateTime,
+);
 impl PgTemporaryEntitlements {
     pub(super) async fn resolve(
         &self,
@@ -51,7 +74,7 @@ impl PgTemporaryEntitlements {
                 DomainError::invalid("resources", "exactly one resource required")
             })?;
         let permissions: Vec<_> = grant.scopes.iter().cloned().collect();
-        let rows:Vec<(Uuid,Uuid,String,String,OffsetDateTime,String,Uuid,Uuid,Vec<String>)> = sqlx::query_as("select a.activation_id,e.entitlement_id,e.client_id,e.role_name,a.expires_at,e.requester_acr,e.revision,el.revision,e.permissions from temporary_entitlement_activations a join temporary_entitlement_requests r on r.tenant_id=a.tenant_id and r.request_id=a.request_id join temporary_entitlements e on e.tenant_id=r.tenant_id and e.entitlement_id=r.entitlement_id join temporary_entitlement_eligibility el on el.tenant_id=r.tenant_id and el.eligibility_id=r.eligibility_id join users u on u.tenant_id=a.tenant_id and u.user_id=a.user_id join users o on o.tenant_id=e.tenant_id and o.user_id=e.owner_reference join clients c on c.tenant_id=e.tenant_id and c.client_id=e.client_reference join client_roles role on role.tenant_id=e.tenant_id and role.client_id=e.client_reference and role.name=e.role_reference join resource_servers rs on rs.tenant_id=e.tenant_id and rs.identifier=e.resource_reference where a.tenant_id=$1 and a.user_id=$2 and e.client_id=$3 and e.resource=$4 and e.permissions<@$5 and e.enabled and e.revision=r.policy_revision and el.revision=r.eligibility_revision and el.user_id=a.user_id and el.revoked_at is null and el.not_before<=$6 and el.expires_at>$6 and a.revoked_at is null and a.activated_at<=$6 and a.expires_at>$6 and r.status='approved' and u.status='active' and o.status='active' and c.status='active' and not c.is_agent and (rs.scopes is null or e.permissions<@rs.scopes) order by a.expires_at,a.activation_id limit 100")
+        let rows:Vec<ResolvedRoleRow> = sqlx::query_as("select a.activation_id,e.entitlement_id,e.client_id,e.role_name,a.expires_at,e.requester_acr,e.revision,el.revision,e.permissions from temporary_entitlement_activations a join temporary_entitlement_requests r on r.tenant_id=a.tenant_id and r.request_id=a.request_id join temporary_entitlements e on e.tenant_id=r.tenant_id and e.entitlement_id=r.entitlement_id join temporary_entitlement_eligibility el on el.tenant_id=r.tenant_id and el.eligibility_id=r.eligibility_id join users u on u.tenant_id=a.tenant_id and u.user_id=a.user_id join users o on o.tenant_id=e.tenant_id and o.user_id=e.owner_reference join clients c on c.tenant_id=e.tenant_id and c.client_id=e.client_reference join client_roles role on role.tenant_id=e.tenant_id and role.client_id=e.client_reference and role.name=e.role_reference join resource_servers rs on rs.tenant_id=e.tenant_id and rs.identifier=e.resource_reference where a.tenant_id=$1 and a.user_id=$2 and e.client_id=$3 and e.resource=$4 and e.permissions<@$5 and e.enabled and e.revision=r.policy_revision and el.revision=r.eligibility_revision and el.user_id=a.user_id and el.revoked_at is null and el.not_before<=$6 and el.expires_at>$6 and a.revoked_at is null and a.activated_at<=$6 and a.expires_at>$6 and r.status='approved' and u.status='active' and o.status='active' and c.status='active' and not c.is_agent and (rs.scopes is null or e.permissions<@rs.scopes) order by a.expires_at,a.activation_id limit 100")
             .bind(tenant.as_str()).bind(user.as_uuid()).bind(grant.client.as_str()).bind(resource).bind(&permissions).bind(now).fetch_all(&mut *tx).await.map_err(to_domain_error)?;
         let acr = current_acr(&mut tx, tenant).await?;
         if auth.assurance_policy_revision.as_deref()
@@ -79,16 +102,18 @@ impl PgTemporaryEntitlements {
             permissions,
         ) in rows
         {
-            if assurance_current(
-                &acr,
-                &required,
-                AssuranceProof {
-                    at: auth.assurance_authenticated_at,
-                    revision: auth.assurance_policy_revision.as_deref(),
-                    methods: &auth.assurance_methods,
-                },
-                now,
-            ) {
+            if resource_permissions_exact(&permissions, &grant.scopes)
+                && assurance_current(
+                    &acr,
+                    &required,
+                    AssuranceProof {
+                        at: auth.assurance_authenticated_at,
+                        revision: auth.assurance_policy_revision.as_deref(),
+                        methods: &auth.assurance_methods,
+                    },
+                    now,
+                )
+            {
                 snapshot.roles.push(ActiveTemporaryRole {
                     activation_id,
                     entitlement_id,
@@ -151,7 +176,7 @@ impl PgTemporaryEntitlements {
         if anchor.is_none() {
             return Err(DomainError::NotFound);
         }
-        let rows:Vec<(Uuid,Uuid,Uuid,String,String,String,Vec<String>,Uuid,Uuid,OffsetDateTime)>=sqlx::query_as("select a.activation_id,e.entitlement_id,r.request_id,e.client_id,e.resource,e.role_name,e.permissions,e.revision,el.revision,a.expires_at from temporary_entitlement_activations a join temporary_entitlement_requests r on r.tenant_id=a.tenant_id and r.request_id=a.request_id join temporary_entitlements e on e.tenant_id=r.tenant_id and e.entitlement_id=r.entitlement_id join temporary_entitlement_eligibility el on el.tenant_id=r.tenant_id and el.eligibility_id=r.eligibility_id join users u on u.tenant_id=a.tenant_id and u.user_id=a.user_id join users o on o.tenant_id=e.tenant_id and o.user_id=e.owner_reference join clients c on c.tenant_id=e.tenant_id and c.client_id=e.client_reference join client_roles role on role.tenant_id=e.tenant_id and role.client_id=e.client_reference and role.name=e.role_reference join resource_servers rs on rs.tenant_id=e.tenant_id and rs.identifier=e.resource_reference where a.tenant_id=$1 and a.user_id=$2 and e.enabled and e.revision=r.policy_revision and el.revision=r.eligibility_revision and el.user_id=a.user_id and el.revoked_at is null and el.not_before<=$3 and el.expires_at>$3 and a.revoked_at is null and a.activated_at<=$3 and a.expires_at>$3 and r.status='approved' and u.status='active' and o.status='active' and c.status='active' and not c.is_agent and (rs.scopes is null or e.permissions<@rs.scopes) order by a.expires_at,a.activation_id limit 101")
+        let rows:Vec<ProvenanceRow>=sqlx::query_as("select a.activation_id,e.entitlement_id,r.request_id,e.client_id,e.resource,e.role_name,e.permissions,e.revision,el.revision,a.expires_at from temporary_entitlement_activations a join temporary_entitlement_requests r on r.tenant_id=a.tenant_id and r.request_id=a.request_id join temporary_entitlements e on e.tenant_id=r.tenant_id and e.entitlement_id=r.entitlement_id join temporary_entitlement_eligibility el on el.tenant_id=r.tenant_id and el.eligibility_id=r.eligibility_id join users u on u.tenant_id=a.tenant_id and u.user_id=a.user_id join users o on o.tenant_id=e.tenant_id and o.user_id=e.owner_reference join clients c on c.tenant_id=e.tenant_id and c.client_id=e.client_reference join client_roles role on role.tenant_id=e.tenant_id and role.client_id=e.client_reference and role.name=e.role_reference join resource_servers rs on rs.tenant_id=e.tenant_id and rs.identifier=e.resource_reference where a.tenant_id=$1 and a.user_id=$2 and e.enabled and e.revision=r.policy_revision and el.revision=r.eligibility_revision and el.user_id=a.user_id and el.revoked_at is null and el.not_before<=$3 and el.expires_at>$3 and a.revoked_at is null and a.activated_at<=$3 and a.expires_at>$3 and r.status='approved' and u.status='active' and o.status='active' and c.status='active' and not c.is_agent and (rs.scopes is null or e.permissions<@rs.scopes) order by a.expires_at,a.activation_id limit 101")
             .bind(tenant.as_str()).bind(user.as_uuid()).bind(observed_at).fetch_all(connection).await.map_err(to_domain_error)?;
         if rows.len() > 100 {
             return Err(DomainError::Conflict(

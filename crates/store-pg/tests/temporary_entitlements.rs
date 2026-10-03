@@ -6,7 +6,7 @@ use asterius_domain::{
 use asterius_store_pg::{MIGRATOR, PgTemporaryEntitlements};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use std::str::FromStr as _;
-use time::{Duration, OffsetDateTime};
+use time::OffsetDateTime;
 use uuid::Uuid;
 struct Fixture {
     admin: sqlx::PgPool,
@@ -73,7 +73,7 @@ impl Fixture {
                 .expect("user");
             sqlx::query("insert into sessions(tenant_id,session_id,public_sid,user_id,authenticated_at,expires_at,idle_expires_at,acr,amr) values('one',$1,$1,$2,clock_timestamp(),clock_timestamp()+interval '1 hour',clock_timestamp()+interval '1 hour',$3,array['pop'])")
                 .bind(digest).bind(user.as_uuid()).bind(asterius_domain::acr::PASSKEY).execute(&pool).await.expect("session");
-            sqlx::query("insert into session_assurance_proofs(tenant_id,session_id,acr,assurance_authenticated_at,assurance_policy_revision,assurance_methods) values('one',$1,$2,clock_timestamp(),$3,array['pop'])")
+            sqlx::query("insert into session_assurance_proofs(tenant_id,session_id,acr,assurance_authenticated_at,assurance_policy_revision,assurance_methods) select 'one',$1,$2,authenticated_at,$3,array['pop'] from sessions where tenant_id='one' and session_id=$1")
                 .bind(digest).bind(asterius_domain::acr::PASSKEY).bind(revision()).execute(&pool).await.expect("proof");
         }
         let port = PgTemporaryEntitlements::new(pool.clone());
@@ -262,6 +262,16 @@ async fn temporary_entitlement_independence_replay_concurrency_and_revocation() 
         .await
         .expect("resolution");
     assert_eq!(live.roles.len(), 1);
+    let mut wider = f.grant();
+    wider.scopes.insert("write".into());
+    assert!(
+        f.port
+            .resolve_for_grant(&f.tenant, &wider)
+            .await
+            .expect("wider permissions")
+            .roles
+            .is_empty()
+    );
     let mut delegated = f.grant();
     delegated
         .actor_chain
