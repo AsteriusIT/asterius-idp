@@ -9714,6 +9714,8 @@ mod tests {
         }
     }
 
+    include!("router/registry_optional.rs");
+
     #[async_trait::async_trait]
     impl asterius_domain::GroupDirectory for Handle {
         async fn create(
@@ -11976,6 +11978,26 @@ mod tests {
 
     #[async_trait::async_trait]
     impl AdminBackend for Handle {
+        fn kubernetes_online(
+            &self,
+        ) -> Option<Arc<dyn asterius_domain::kubernetes_online::KubernetesOnline>> {
+            Some(Arc::new(self.clone()))
+        }
+        fn temporary_kubernetes(
+            &self,
+        ) -> Option<Arc<dyn asterius_domain::temporary_kubernetes::TemporaryKubernetes>> {
+            Some(Arc::new(self.clone()))
+        }
+        fn temporary_entitlements(
+            &self,
+        ) -> Option<Arc<dyn asterius_domain::temporary_entitlements::TemporaryEntitlements>>
+        {
+            Some(Arc::new(self.clone()))
+        }
+        fn device_registry(&self) -> Option<Arc<dyn asterius_domain::managed_devices::Registry>> {
+            Some(Arc::new(self.clone()))
+        }
+
         fn governance_reports(
             &self,
         ) -> Option<Arc<dyn asterius_domain::governance_reports::GovernanceReports>> {
@@ -13199,8 +13221,18 @@ mod tests {
             .replace("{tenant_id}", "acme")
             .replace("{review_id}", "10000000-0000-4000-8000-000000000001")
             .replace("{item_id}", "10000000-0000-4000-8000-000000000002")
+            .replace("{source_id}", "10000000-0000-4000-8000-000000000004")
+            .replace("{device_id}", "10000000-0000-4000-8000-000000000005")
+            .replace("{eligibility_id}", "10000000-0000-4000-8000-000000000006")
             .replace("{import_id}", "WyJhY21lIiwicG9saWN5IiwicG9saWN5Il0")
-            .replace("{id}", "1")
+            .replace(
+                "{id}",
+                if operation.id().starts_with("temporary_") {
+                    "10000000-0000-4000-8000-000000000007"
+                } else {
+                    "1"
+                },
+            )
             .replace("{kid}", SEEDED_KID)
             .replace("{client_id}", SEEDED_CLIENT_ID)
             .replace("{flow_id}", SEEDED_INVITATION_ID)
@@ -13283,6 +13315,10 @@ mod tests {
     /// the authority it declares — so a route reached with a body it rejects
     /// would fail those tests for the wrong reason and hide a real refusal.
     fn body_for(operation: &Operation) -> Body {
+        if let Some(body) = registry_optional::body(operation) {
+            return Body::from(body.to_string());
+        }
+
         if operation.id() == crate::THEME_LOGO_UPLOAD_ID {
             return test_logo_body();
         }
@@ -15471,6 +15507,8 @@ mod tests {
         ) {
             // The deterministic configured service has no persisted targets.
             assert_eq!(status, StatusCode::NOT_FOUND);
+        } else if let Some(expected) = registry_optional::missing_state_status(operation) {
+            assert_eq!(status, expected);
         } else if operation.id() == crate::KUBERNETES_PROFILE_READ_ID {
             // This fixture has no cluster profile persisted.
             assert_eq!(status, StatusCode::NOT_FOUND);
@@ -15620,8 +15658,17 @@ mod tests {
             .lock()
             .expect("an uncontended lock");
         assert!(calls.iter().all(|(realm, _)| realm == &tenant));
-        let reached: std::collections::BTreeSet<_> =
-            calls.iter().map(|(_, operation)| *operation).collect();
+        registry_optional::assert_calls(&calls);
+        let reached: std::collections::BTreeSet<_> = calls
+            .iter()
+            .map(|(_, operation)| *operation)
+            .filter(|operation| {
+                !operation.contains("online.")
+                    && !operation.contains("devices.")
+                    && !operation.contains("temporary.")
+                    && !operation.contains("jit.")
+            })
+            .collect();
         assert_eq!(
             reached,
             std::collections::BTreeSet::from([
