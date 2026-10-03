@@ -96,6 +96,7 @@ pub(super) async fn load(
         selected: row.try_get("selected").map_err(to_domain_error)?,
         target: row.try_get("target_id").map_err(to_domain_error)?,
         observed_etag: row.try_get("observed_etag").map_err(to_domain_error)?,
+        creation_admitted: row.try_get("creation_admitted").map_err(to_domain_error)?,
         retired_at: row.try_get("retired_at").map_err(to_domain_error)?,
     };
     Ok((connector, assignment))
@@ -287,6 +288,7 @@ impl OutboundScimJobs for PgOutboundScimJobs {
         tenant: &TenantId,
         assignment_id: Uuid,
         fence: &DeliveryFence,
+        creating: bool,
     ) -> Result<(), DomainError> {
         let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
         let (connector, assignment) = load(&mut transaction, tenant, assignment_id).await?;
@@ -301,6 +303,10 @@ impl OutboundScimJobs for PgOutboundScimJobs {
         check_fence(&connector, &assignment, fence, now)?;
         if assignment.desired_revision != fence.desired_revision {
             return Err(DomainError::Conflict("lease_superseded".into()));
+        }
+        if creating {
+            sqlx::query("update outbound_scim_assignments set creation_admitted=true where tenant_id=$1 and assignment_id=$2")
+                .bind(tenant.as_str()).bind(assignment_id).execute(&mut *transaction).await.map_err(to_domain_error)?;
         }
         // Revalidate protected provenance as well as the producer revision.
         projection_on(&mut transaction, tenant, &assignment).await?;
@@ -346,6 +352,9 @@ impl OutboundScimJobs for PgOutboundScimJobs {
             asterius_domain::outbound_scim::target_etag(etag)?;
         }
         if receipt.target.is_none() {
+            if assignment.creation_admitted {
+                return Err(DomainError::Conflict("lease_superseded".into()));
+            }
             let current = projection_on(&mut transaction, tenant, &assignment).await?;
             let source_exists = match current {
                 Projection::User(user) => user.source_exists,
@@ -403,7 +412,7 @@ impl OutboundScimJobs for PgOutboundScimJobs {
         )
         .await?;
         check_fence(&connector, &assignment, fence, now)?;
-        sqlx::query("update outbound_scim_assignments set failure_code=$3,state='conflict',dirty=true where tenant_id=$1 and assignment_id=$2")
+        sqlx::query("update outbound_scim_assignments set failure_code=$3,state=case when $3='paused' then 'paused' when $3='user_dependencies_pending' then 'waiting_dependencies' when $3 in ('target_unavailable','lease_superseded') then 'pending' else 'conflict' end,dirty=true where tenant_id=$1 and assignment_id=$2")
             .bind(tenant.as_str()).bind(assignment_id).bind(code.as_str())
             .execute(&mut *transaction).await.map_err(to_domain_error)?;
         audit_delivery(

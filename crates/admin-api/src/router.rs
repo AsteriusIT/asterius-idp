@@ -21,6 +21,7 @@
 
 mod governance;
 mod governance_reports;
+mod outbound_scim;
 
 use asterius_domain::entities::session::{SessionId, SessionRevocation};
 use asterius_domain::{
@@ -326,6 +327,9 @@ async fn route(
     context: &Handling<'_>,
     body: axum::body::Body,
 ) -> Result<Response, AdminError> {
+    if id.starts_with("outbound_scim.") {
+        return context.outbound_scim(id, body).await;
+    }
     if id == "governance.findings" {
         return context.governance_findings().await;
     }

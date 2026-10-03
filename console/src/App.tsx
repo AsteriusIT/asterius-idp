@@ -10,6 +10,7 @@ import { AuthorizationDetailsTypes } from './authorizationDetailsTypes';
 import { Roles } from './appRoles';
 import { AccessReviews } from './access-reviews';
 import { GovernanceFindings } from './governance-findings';
+import { OutboundScim } from './outbound-scim';
 import { Clients } from './clients';
 import { AppSidebar } from './components/app-sidebar';
 import { AppTopbar } from './components/app-topbar';
@@ -186,6 +187,7 @@ function RouteScreen({
   if (route === 'health') return <WorkspaceHealth session={session} />;
   if (route === 'access-reviews') return <AccessReviews session={session} />;
   if (route === 'governance-findings') return <GovernanceFindings session={session} />;
+  if (route === 'outbound-scim') return <OutboundScim session={session} />;
   if (route === 'roles') return <Roles session={session} client={paramsOf(fragment).get('client')} />;
   if (route === 'users') {
     return <Users session={session} />;

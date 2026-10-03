@@ -2,7 +2,7 @@
 //! immutable alias/externalId and the response version have been verified.
 
 use super::OutboundScimClient;
-use super::client::{DeliveryAdmission, ScimRequest};
+use super::client::{DeliveryAdmission, RequestAdmission, ScimRequest};
 use crate::outbound::PostResponse;
 use crate::outbox::{Delivered, Deliverer, Undelivered};
 use asterius_domain::outbound_scim::{
@@ -143,10 +143,10 @@ impl OutboundScimDeliverer {
                     query: None,
                     etag: None,
                     body: &[],
-                    admission: DeliveryAdmission {
+                    admission: RequestAdmission::Delivery(DeliveryAdmission {
                         jobs: self.jobs.as_ref(),
                         prepared,
-                    },
+                    }),
                 },
             )
             .await?;
@@ -180,10 +180,10 @@ impl OutboundScimDeliverer {
                     query: Some(("filter", &filter)),
                     etag: None,
                     body: &[],
-                    admission: DeliveryAdmission {
+                    admission: RequestAdmission::Delivery(DeliveryAdmission {
                         jobs: self.jobs.as_ref(),
                         prepared,
-                    },
+                    }),
                 },
             )
             .await?;
@@ -243,10 +243,10 @@ impl OutboundScimDeliverer {
                     query: None,
                     etag: Some(&remote.etag),
                     body: &body,
-                    admission: DeliveryAdmission {
+                    admission: RequestAdmission::Delivery(DeliveryAdmission {
                         jobs: self.jobs.as_ref(),
                         prepared,
-                    },
+                    }),
                 },
             )
             .await?;
@@ -270,12 +270,16 @@ impl OutboundScimDeliverer {
             return self.apply_existing(prepared, remote).await.map(Some);
         }
         // Deprovisioning an assignment never creates a previously absent remote
-        // object merely to disable/empty it. Selection commands own creation.
+        // object merely to disable/empty it. An already-admitted uncertain POST
+        // must instead establish this SAME incarnation disabled/empty, so a late
+        // duplicate create cannot orphan an active object after retirement.
         let source_exists = match &prepared.projection {
             Projection::User(user) => user.source_exists,
             Projection::Group(group) => group.source_exists,
         };
-        if !prepared.assignment.selected || !source_exists {
+        if (!prepared.assignment.selected || !source_exists)
+            && !prepared.assignment.creation_admitted
+        {
             return Ok(None);
         }
         let body = serde_json::to_vec(&desired(&prepared.projection, None))
@@ -290,10 +294,10 @@ impl OutboundScimDeliverer {
                     query: None,
                     etag: None,
                     body: &body,
-                    admission: DeliveryAdmission {
+                    admission: RequestAdmission::Delivery(DeliveryAdmission {
                         jobs: self.jobs.as_ref(),
                         prepared,
-                    },
+                    }),
                 },
             )
             .await?;

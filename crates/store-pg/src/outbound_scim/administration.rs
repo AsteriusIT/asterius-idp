@@ -1,6 +1,6 @@
 //! Current human authority, connector revision CAS, durable selections and previews.
 
-use crate::error::to_domain_error;
+use crate::error::to_domain_error as storage_error;
 use asterius_domain::audit::{Actor, AuditEvent, Detail, EventType, Outcome};
 use asterius_domain::outbound_scim::{
     AssignmentView, ConfigureConnector, Connector, ConnectorView, CredentialBinding,
@@ -111,6 +111,32 @@ async fn connector_on(
         },
     })
 }
+fn to_domain_error(error: sqlx::Error) -> DomainError {
+    let code = error
+        .as_database_error()
+        .and_then(|error| error.constraint())
+        .and_then(|constraint| match constraint {
+            "outbound_scim_connector_bound"
+            | "outbound_scim_current_bound"
+            | "outbound_scim_selection_bound" => Some("snapshot_bound_exceeded"),
+            "outbound_scim_local_source" => Some("source_protected"),
+            "outbound_scim_principal_pin" => Some("credential_binding_mismatch"),
+            "outbound_scim_connector_identity"
+            | "outbound_scim_assignment_incarnation"
+            | "outbound_scim_target_pin"
+            | "outbound_scim_retirement_pin"
+            | "outbound_scim_creation_pin"
+            | "outbound_scim_current_source"
+            | "outbound_scim_target_mapping" => Some("ownership_mismatch"),
+            _ => None,
+        });
+    if let Some(code) = code {
+        DomainError::Conflict(code.into())
+    } else {
+        storage_error(error)
+    }
+}
+
 fn assignment_view(row: &sqlx::postgres::PgRow) -> Result<AssignmentView, DomainError> {
     Ok(AssignmentView {
         id: row.try_get("assignment_id").map_err(to_domain_error)?,
@@ -119,11 +145,32 @@ fn assignment_view(row: &sqlx::postgres::PgRow) -> Result<AssignmentView, Domain
         generation: row.try_get("generation").map_err(to_domain_error)?,
         selected: row.try_get("selected").map_err(to_domain_error)?,
         target: row.try_get("target_id").map_err(to_domain_error)?,
-        state: row.try_get("state").map_err(to_domain_error)?,
-        failure_code: row.try_get("failure_code").map_err(to_domain_error)?,
+        state: row.try_get("delivery_state").map_err(to_domain_error)?,
+        failure_code: row
+            .try_get("delivery_failure_code")
+            .map_err(to_domain_error)?,
         dirty: row.try_get("dirty").map_err(to_domain_error)?,
     })
 }
+async fn queue_user_groups(
+    connection: &mut PgConnection,
+    tenant: &TenantId,
+    connector: Uuid,
+    users: &[Uuid],
+) -> Result<(), DomainError> {
+    // The caller already owns this connector, so this touches no other parent
+    // and cannot invert the multi-connector source producer's lock ordering.
+    let groups = sqlx::query_scalar::<_,Uuid>("select a.assignment_id from outbound_scim_assignments a where a.tenant_id=$1 and a.connector_id=$2 and a.kind='group' and a.selected and a.retired_at is null and a.state<>'deleted' and exists(select 1 from group_memberships m where m.tenant_id=a.tenant_id and m.group_id=a.source_id and m.user_id=any($3)) order by a.assignment_id limit 101")
+        .bind(tenant.as_str()).bind(connector).bind(users).fetch_all(&mut *connection).await.map_err(to_domain_error)?;
+    if groups.len() > 100 {
+        return Err(DomainError::Conflict("snapshot_bound_exceeded".into()));
+    }
+    for group in groups {
+        queue(connection, tenant, group).await?;
+    }
+    Ok(())
+}
+
 async fn expected(
     connection: &mut PgConnection,
     tenant: &TenantId,
@@ -161,6 +208,18 @@ async fn queue(
 
 #[async_trait::async_trait]
 impl OutboundScimAdministration for PgOutboundScimAdministration {
+    async fn read(&self, tenant: &TenantId, connector: Uuid) -> Result<ConnectorView, DomainError> {
+        let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
+        sqlx::query("select tenant_id from tenants where tenant_id=$1 for share")
+            .bind(tenant.as_str())
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(to_domain_error)?;
+        let connector = connector_on(&mut transaction, tenant, connector).await?;
+        transaction.commit().await.map_err(to_domain_error)?;
+        Ok(connector.into())
+    }
+
     async fn list(
         &self,
         tenant: &TenantId,
@@ -267,7 +326,7 @@ impl OutboundScimAdministration for PgOutboundScimAdministration {
         after: Option<Uuid>,
         limit: u16,
     ) -> Result<Vec<AssignmentView>, DomainError> {
-        let rows=sqlx::query("select * from outbound_scim_assignments where tenant_id=$1 and connector_id=$2 and ($3::uuid is null or assignment_id>$3) order by assignment_id limit $4")
+        let rows=sqlx::query("select a.*,case when not c.enabled and a.dirty then 'paused' when o.status='abandoned' and a.dirty then 'dead_letter' else a.state end as delivery_state,case when not c.enabled and a.dirty then 'paused' else a.failure_code end as delivery_failure_code from outbound_scim_assignments a join outbound_scim_connectors c using(tenant_id,connector_id) left join lateral (select status from outbox where tenant_id=a.tenant_id and ordering_key='outbound_scim:' || a.assignment_id::text order by outbox_id desc limit 1) o on true where a.tenant_id=$1 and a.connector_id=$2 and ($3::uuid is null or a.assignment_id>$3) order by a.assignment_id limit $4")
             .bind(tenant.as_str()).bind(connector).bind(after).bind(page(limit)?).fetch_all(&self.pool).await.map_err(to_domain_error)?;
         rows.iter().map(assignment_view).collect()
     }
@@ -295,7 +354,7 @@ impl OutboundScimAdministration for PgOutboundScimAdministration {
         let mut sources = command.sources;
         sources.sort_unstable();
         let mut result = Vec::with_capacity(sources.len());
-        for source in sources {
+        for source in sources.iter().copied() {
             let local:bool=if kind=="user" { sqlx::query_scalar("select exists(select 1 from users where tenant_id=$1 and user_id=$2) and not exists(select 1 from scim_user_external_ids where tenant_id=$1 and user_id=$2)") }
                 else { sqlx::query_scalar("select exists(select 1 from managed_groups where tenant_id=$1 and group_id=$2) and not exists(select 1 from scim_group_owners where tenant_id=$1 and group_id=$2)") }
                 .bind(tenant.as_str()).bind(source).fetch_one(&mut *transaction).await.map_err(to_domain_error)?;
@@ -317,14 +376,24 @@ impl OutboundScimAdministration for PgOutboundScimAdministration {
                 }
                 let id = Uuid::new_v4();
                 let generation = Uuid::new_v4();
-                let (alias, external) = resource_identity(tenant, connector, source, generation);
+                let (alias, external) = resource_identity(
+                    tenant,
+                    connector,
+                    if kind == "user" {
+                        ResourceKind::User
+                    } else {
+                        ResourceKind::Group
+                    },
+                    source,
+                    generation,
+                );
                 sqlx::query("insert into outbound_scim_assignments(tenant_id,connector_id,assignment_id,kind,source_id,generation,immutable_alias,external_id) values($1,$2,$3,$4,$5,$6,$7,$8)")
                     .bind(tenant.as_str()).bind(connector).bind(id).bind(kind).bind(source).bind(generation).bind(alias).bind(external).execute(&mut *transaction).await.map_err(to_domain_error)?;
                 id
             };
             queue(&mut transaction, tenant, id).await?;
             let row = sqlx::query(
-                "select * from outbound_scim_assignments where tenant_id=$1 and assignment_id=$2",
+                "select *,state as delivery_state,failure_code as delivery_failure_code from outbound_scim_assignments where tenant_id=$1 and assignment_id=$2",
             )
             .bind(tenant.as_str())
             .bind(id)
@@ -332,6 +401,9 @@ impl OutboundScimAdministration for PgOutboundScimAdministration {
             .await
             .map_err(to_domain_error)?;
             result.push(assignment_view(&row)?);
+        }
+        if kind == "user" {
+            queue_user_groups(&mut transaction, tenant, connector, &sources).await?;
         }
         advance(&mut transaction, tenant, connector).await?;
         evidence(
@@ -362,6 +434,11 @@ impl OutboundScimAdministration for PgOutboundScimAdministration {
             return Err(DomainError::NotFound);
         }
         queue(&mut transaction, tenant, assignment).await?;
+        let user = sqlx::query_scalar::<_,Uuid>("select source_id from outbound_scim_assignments where tenant_id=$1 and assignment_id=$2 and kind='user'")
+            .bind(tenant.as_str()).bind(assignment).fetch_optional(&mut *transaction).await.map_err(to_domain_error)?;
+        if let Some(user) = user {
+            queue_user_groups(&mut transaction, tenant, connector, &[user]).await?;
+        }
         advance(&mut transaction, tenant, connector).await?;
         evidence(
             &mut transaction,

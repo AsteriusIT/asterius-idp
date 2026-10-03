@@ -69,6 +69,8 @@ pub struct Assignment {
     pub selected: bool,
     pub target: Option<Uuid>,
     pub observed_etag: Option<String>,
+    /// A collection POST was durably admitted; absence alone cannot retire it.
+    pub creation_admitted: bool,
     pub retired_at: Option<OffsetDateTime>,
 }
 

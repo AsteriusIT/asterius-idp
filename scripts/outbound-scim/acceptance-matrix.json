@@ -99,6 +99,25 @@
     {
       "id": "credential_reference_full_scope",
       "invariant": "Another source tenant, target issuer/client/admin resource/SCIM origin or arbitrary SecretRef path cannot resolve a signing credential even when reference name exists"
+    },
+    {
+      "id": "uncertain_create_then_unselect",
+      "invariant": "Durably admitted uncertain POST resolves the SAME incarnation disabled/empty before archival; late duplicate create cannot orphan an active account",
+      "decision_status": "proposed_refinement_pending_review"
+    },
+    {
+      "id": "source_tenant_delete_guard",
+      "invariant": "Current outbound assignments refuse generic source tenant deletion; only verified bounded retirement permits cleanup",
+      "decision_status": "proposed_refinement_pending_review"
+    },
+    {
+      "id": "current_catalogue_bound",
+      "invariant": "100current Users/100current Groups including quiescing mappings,100live connectors,100operator credential contexts; retired history retains ownership",
+      "decision_status": "proposed_refinement_pending_review"
+    },
+    {
+      "id": "selected_user_group_refresh",
+      "invariant": "User selection/unselection queues affected selected Groups atomically in the same connector transaction"
     }
   ]
 }

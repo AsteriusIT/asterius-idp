@@ -377,8 +377,24 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
         // and the admin API's dead-letter screen reads through it, so the
         // screen reports the schedule the worker is enforcing (`ast-0ju.9`).
         let outbox = outbox_handle(&store, config.outbox);
+        let outbound_scim_credentials = Arc::new(
+            asterius_server::outbound_scim::ScopedCredentialRegistry::load(
+                config
+                    .tenants
+                    .iter()
+                    .flat_map(|tenant| tenant.outbound_scim_credentials.iter().cloned())
+                    .collect(),
+            )
+            .map_err(|_| "invalid outbound SCIM operator credential registry")?,
+        );
+        let outbound_scim = Arc::new(asterius_server::outbound_scim::OutboundScimRuntime::new(
+            &store,
+            ssf_upstream_poster.clone(),
+            outbound_scim_credentials,
+        ));
         let mut admin_context = AdminContext::of(&config, &outbound, &outbox, &kek, &id_jag_trusts);
         admin_context.capabilities = runtime_features;
+        admin_context.outbound_scim = Some(Arc::clone(&outbound_scim));
         let client_keys = client_key_cache(&outbound, &store);
         let replay = Arc::new(PgReplayGuard::new(store.pool().clone()));
         let authenticator = client_authenticator(client_keys, &replay, &store, trust_anchors)?;
@@ -583,9 +599,12 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
             PgRetention::new(store.pool().clone()),
             &store,
             &kek,
-            outbox,
-            config.outbox,
-            config.mail.clone(),
+            BackgroundDelivery {
+                outbox,
+                schedule: config.outbox,
+                mail: config.mail.clone(),
+                outbound_scim,
+            },
         )?;
 
         let served = serve(&config.server, app, shutdown_signal())
@@ -649,6 +668,7 @@ fn operational_routes(store: &Store, config: &Config, metrics: Metrics) -> Opera
 /// protocol endpoints', and the two would then disagree about what a valid
 /// client is.
 struct AdminContext {
+    outbound_scim: Option<Arc<asterius_server::outbound_scim::OutboundScimRuntime>>,
     governance_ldap_sources: std::collections::BTreeMap<String, String>,
     ipsie_https_only_clients:
         Arc<std::collections::HashMap<String, std::collections::BTreeSet<String>>>,
@@ -706,6 +726,7 @@ impl AdminContext {
         id_jag_trusts: &Arc<asterius_server::id_jag_trust::IdJagTrusts>,
     ) -> Self {
         Self {
+            outbound_scim: None,
             ipsie_https_only_clients: Arc::new(
                 config
                     .tenants
@@ -828,7 +849,8 @@ fn admin_routes(
                 issuance: context.issuance,
             })
             .with_rate_limit_policy(context.rate_limit_policy.0, context.rate_limit_policy.1)
-            .with_governance_ldap_sources(context.governance_ldap_sources),
+            .with_governance_ldap_sources(context.governance_ldap_sources)
+            .with_outbound_scim(context.outbound_scim),
         ),
         tokens: Some(tokens),
         rate_limit: asterius_admin_api::throttle::DEFAULT_LIMIT,
@@ -996,15 +1018,26 @@ impl Workers {
 /// gone afterwards (RFC 9700 §4.2-4.3, FAPI 2.0 SP §7). Safe on every replica
 /// at once: it takes a per-tenant advisory lock and skips a tenant somebody
 /// else is already sweeping.
+struct BackgroundDelivery {
+    outbox: asterius_store_pg::PgOutbox,
+    schedule: asterius_server::config::OutboxConfig,
+    mail: Option<asterius_server::config::MailConfig>,
+    outbound_scim: Arc<asterius_server::outbound_scim::OutboundScimRuntime>,
+}
+
 fn spawn_workers(
     keys: TenantKeyStore,
     retention: PgRetention,
     store: &Store,
     kek: &Arc<dyn Kek>,
-    outbox: asterius_store_pg::PgOutbox,
-    schedule: asterius_server::config::OutboxConfig,
-    mail: Option<asterius_server::config::MailConfig>,
+    delivery: BackgroundDelivery,
 ) -> Result<Workers, String> {
+    let BackgroundDelivery {
+        outbox,
+        schedule,
+        mail,
+        outbound_scim,
+    } = delivery;
     let clock: Arc<dyn asterius_domain::ports::Clock> =
         Arc::new(asterius_domain::ports::SystemClock);
     let tenants_for_rotation = Arc::new(PgTenantRepository::new(
@@ -1049,6 +1082,7 @@ fn spawn_workers(
             tenants: tenants_for_streams,
         },
         mail,
+        outbound_scim,
     )?;
 
     let (stop, stopping) = tokio::sync::watch::channel(false);
@@ -1107,10 +1141,12 @@ fn outbox_worker(
     audit: Arc<dyn asterius_domain::audit::AuditSink>,
     ssf: SsfSigning,
     mail: Option<asterius_server::config::MailConfig>,
+    outbound_scim: Arc<asterius_server::outbound_scim::OutboundScimRuntime>,
 ) -> Result<OutboxWorker, String> {
     let name = format!("worker-{}", uuid::Uuid::new_v4());
     let mut worker = OutboxWorker::new(outbox, Arc::clone(&clock), name)
         .with_pace(schedule.poll, schedule.batch);
+    worker = worker.with(outbound_scim.deliverer());
     worker = if let Some(config) = mail {
         let poster = asterius_server::outbound::HttpsPoster::new()
             .map_err(|error| format!("cannot initialize mail transport: {error}"))?;

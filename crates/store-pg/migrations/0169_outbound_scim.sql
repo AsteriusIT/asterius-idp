@@ -1,4 +1,4 @@
--- Prepared catalogue storage for ast-dd1y.6.3. Runtime wiring/enablement awaits
+-- Candidate catalogue storage for ast-dd1y.6.3. Delivery/shared enablement awaits
 -- acceptance of docs/adr/outbound-scim-contract.md; no credential enters SQL.
 create table outbound_scim_connectors (
     tenant_id text not null references tenants(tenant_id) on delete cascade,
@@ -47,6 +47,7 @@ create table outbound_scim_assignments (
     delivered_revision uuid,
     dirty boolean not null default true,
     target_id uuid,
+    creation_admitted boolean not null default false,
     observed_etag text check (observed_etag is null or length(observed_etag) between 1 and 128),
     state text not null default 'pending'
         check (state in ('pending', 'waiting_dependencies', 'applied', 'paused', 'conflict', 'dead_letter', 'deleted')),
@@ -96,6 +97,21 @@ create table outbound_scim_reviewed_deletes (
     unique (tenant_id, assignment_id, assignment_generation, target_id)
 );
 
+-- Serialize catalogue creation without upgrading the actor's tenant share lock.
+create function outbound_scim_connector_bound() returns trigger language plpgsql as $$
+begin
+    perform pg_advisory_xact_lock(hashtextextended('outbound-scim-connectors:' || new.tenant_id,0));
+    if (select count(*) from outbound_scim_connectors
+      where tenant_id=new.tenant_id and removed_at is null) >= 100 then
+      raise exception 'connector catalogue exceeds its bounded profile'
+        using errcode='23514', constraint='outbound_scim_connector_bound';
+    end if;
+    return new;
+end;
+$$;
+create trigger outbound_scim_connector_bound before insert on outbound_scim_connectors
+  for each row execute function outbound_scim_connector_bound();
+
 create function outbound_scim_guard_connector() returns trigger language plpgsql as $$
 begin
     if (new.tenant_id,new.connector_id) is distinct from (old.tenant_id,old.connector_id) then
@@ -135,6 +151,10 @@ begin
             raise exception 'mapping cannot adopt another target'
                 using errcode='23514', constraint='outbound_scim_target_pin';
         end if;
+        if old.creation_admitted and not new.creation_admitted then
+            raise exception 'uncertain creation evidence cannot be cleared'
+                using errcode='23514', constraint='outbound_scim_creation_pin';
+        end if;
         if old.retired_at is not null and new.retired_at is distinct from old.retired_at then
             raise exception 'retired assignment cannot be revived'
                 using errcode='23514', constraint='outbound_scim_retirement_pin';
@@ -154,6 +174,17 @@ begin
                     using errcode='23514', constraint='outbound_scim_local_source';
             end if;
         end if;
+    end if;
+    -- Quiescing mappings remain current until verified archival. Bounding all
+    -- current incarnations also bounds complete resume/rotation reconciliation.
+    if new.retired_at is null and (
+        select count(*) from outbound_scim_assignments
+          where tenant_id=new.tenant_id and connector_id=new.connector_id
+            and kind=new.kind and retired_at is null
+            and assignment_id<>new.assignment_id
+    ) >= 100 then
+        raise exception 'current assignment catalogue exceeds its bounded profile'
+            using errcode='23514', constraint='outbound_scim_current_bound';
     end if;
     if new.selected and new.retired_at is null and (
         select count(*) from outbound_scim_assignments

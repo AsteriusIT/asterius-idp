@@ -386,6 +386,7 @@ impl SsfUpstreamRuntime {
 /// This deployment, as the admin API sees it.
 #[derive(Clone)]
 pub struct Deployment {
+    outbound_scim: Option<Arc<crate::outbound_scim::OutboundScimRuntime>>,
     governance_ldap_sources: std::collections::BTreeMap<String, String>,
     rate_limit_policy: Option<(
         asterius_domain::LoginLimits,
@@ -418,6 +419,15 @@ impl std::fmt::Debug for Deployment {
 }
 
 impl Deployment {
+    #[must_use]
+    pub fn with_outbound_scim(
+        mut self,
+        runtime: Option<Arc<crate::outbound_scim::OutboundScimRuntime>>,
+    ) -> Self {
+        self.outbound_scim = runtime;
+        self
+    }
+
     /// Exact operator source identities, without bind credentials or network probes.
     #[must_use]
     pub fn with_governance_ldap_sources(
@@ -463,6 +473,7 @@ impl Deployment {
     #[must_use]
     pub fn new(parts: DeploymentParts) -> Self {
         Self {
+            outbound_scim: None,
             governance_ldap_sources: std::collections::BTreeMap::new(),
             rate_limit_policy: None,
             store: parts.store,
@@ -3651,6 +3662,30 @@ impl AdminBackend for Deployment {
         Some(Arc::new(asterius_store_pg::PgAccessReviews::new(
             self.store.pool().clone(),
         )))
+    }
+
+    fn outbound_scim(
+        &self,
+    ) -> Option<Arc<dyn asterius_domain::outbound_scim::OutboundScimAdministration>> {
+        self.outbound_scim
+            .as_ref()
+            .map(|runtime| runtime.administration())
+    }
+
+    fn outbound_scim_inspection(
+        &self,
+    ) -> Option<Arc<dyn asterius_domain::outbound_scim::OutboundScimInspection>> {
+        self.outbound_scim.as_ref().map(|runtime| {
+            Arc::clone(runtime) as Arc<dyn asterius_domain::outbound_scim::OutboundScimInspection>
+        })
+    }
+
+    fn outbound_scim_credentials(
+        &self,
+    ) -> Option<Arc<dyn asterius_domain::outbound_scim::OutboundScimCredentialCatalogue>> {
+        self.outbound_scim
+            .as_ref()
+            .map(|runtime| runtime.credential_catalogue())
     }
 
     fn governance_reports(

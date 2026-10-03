@@ -21,6 +21,26 @@ impl std::fmt::Debug for CredentialDescriptor {
     }
 }
 
+#[derive(Debug, Serialize)]
+pub struct ConnectorPreview {
+    pub connector: Uuid,
+    pub revision: Uuid,
+    pub filter_supported: bool,
+    pub etag_supported: bool,
+}
+
+#[async_trait::async_trait]
+pub trait OutboundScimInspection: std::fmt::Debug + Send + Sync {
+    /// Token authentication and SCIM GET only; no target mapping is accepted.
+    async fn preview(
+        &self,
+        tenant: &TenantId,
+        actor: UserId,
+        connector: Uuid,
+        expected_revision: Uuid,
+    ) -> Result<ConnectorPreview, DomainError>;
+}
+
 /// Immutable deployment catalogue; no path/key material crosses this boundary.
 pub trait OutboundScimCredentialCatalogue: std::fmt::Debug + Send + Sync {
     fn available(&self, binding: &CredentialBinding) -> bool;
@@ -223,6 +243,7 @@ pub trait OutboundScimAdministration: std::fmt::Debug + Send + Sync {
         connector: Uuid,
         expected_revision: Uuid,
     ) -> Result<(), DomainError>;
+    async fn read(&self, tenant: &TenantId, connector: Uuid) -> Result<ConnectorView, DomainError>;
     async fn list(
         &self,
         tenant: &TenantId,

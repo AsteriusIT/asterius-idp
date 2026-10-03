@@ -1,4 +1,4 @@
-//! Prepared worker boundary; no runtime registration until contract acceptance.
+//! Candidate worker boundary; contract review gates delivery and deployment.
 
 use super::model::{
     CredentialBinding, DeliveryFence, FailureCode, MappingReceipt, PreparedDelivery,
@@ -24,6 +24,7 @@ pub trait OutboundScimJobs: std::fmt::Debug + Send + Sync {
         tenant: &TenantId,
         assignment: Uuid,
         fence: &DeliveryFence,
+        creating: bool,
     ) -> Result<(), DomainError>;
 
     /// Compare every context pin and current lease before advancing a receipt.

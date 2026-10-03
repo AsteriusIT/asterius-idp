@@ -1,5 +1,6 @@
 //! Canonical identity pins before any deployment-registry or network lookup.
 
+use super::ResourceKind;
 use crate::{DomainError, TenantId};
 use uuid::Uuid;
 
@@ -9,20 +10,27 @@ use uuid::Uuid;
 pub fn resource_identity(
     tenant: &TenantId,
     connector: Uuid,
+    kind: ResourceKind,
     source: Uuid,
     generation: Uuid,
 ) -> (String, String) {
+    let kind = match kind {
+        ResourceKind::User => "user",
+        ResourceKind::Group => "group",
+    };
     (
         format!(
-            "ast-{}-{}-{}",
+            "ast-{}-{}-{}-{}",
+            kind,
             connector.simple(),
             source.simple(),
             generation.simple()
         ),
         format!(
-            "urn:asterius:outbound:{}:{}:{}:{}",
+            "urn:asterius:outbound:{}:{}:{}:{}:{}",
             tenant.as_str(),
             connector,
+            kind,
             source,
             generation
         ),
@@ -74,18 +82,41 @@ mod tests {
         let original = resource_identity(
             &tenant,
             Uuid::from_u128(1),
+            ResourceKind::User,
             Uuid::from_u128(2),
             Uuid::from_u128(3),
         );
         let recreated = resource_identity(
             &tenant,
             Uuid::from_u128(1),
+            ResourceKind::User,
             Uuid::from_u128(2),
             Uuid::from_u128(4),
         );
         assert_ne!(original, recreated);
         assert!(original.0.len() <= 200);
         assert!(original.1.len() <= 256);
+    }
+
+    #[test]
+    fn resource_kind_is_part_of_the_external_ownership_namespace() {
+        let tenant = TenantId::new("source");
+        let user = resource_identity(
+            &tenant,
+            Uuid::from_u128(1),
+            ResourceKind::User,
+            Uuid::from_u128(2),
+            Uuid::from_u128(3),
+        );
+        let group = resource_identity(
+            &tenant,
+            Uuid::from_u128(1),
+            ResourceKind::Group,
+            Uuid::from_u128(2),
+            Uuid::from_u128(3),
+        );
+        assert_ne!(user.0, group.0);
+        assert_ne!(user.1, group.1);
     }
 
     #[test]

@@ -2,6 +2,7 @@
 
 mod administration;
 mod model;
+mod peer;
 mod ports;
 mod protocol;
 mod validation;
@@ -19,7 +20,9 @@ pub use protocol::{
 };
 
 pub use administration::{
-    AssignmentView, ConfigureConnector, ConnectorView, CredentialDescriptor,
-    OutboundScimAdministration, OutboundScimCredentialCatalogue, PreviewSelection, SelectSources,
-    parse_configure, parse_selection,
+    AssignmentView, ConfigureConnector, ConnectorPreview, ConnectorView, CredentialDescriptor,
+    OutboundScimAdministration, OutboundScimCredentialCatalogue, OutboundScimInspection,
+    PreviewSelection, SelectSources, parse_configure, parse_selection,
 };
+
+pub use peer::{PeerToken, parse_peer_capabilities, parse_peer_token};

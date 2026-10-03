@@ -90,6 +90,48 @@ do $$ begin
     raise exception 'source deletion must preserve coalesced deprovision jobs';
   end if;
 end $$;
+-- Durable uncertainty cannot be erased to authorize absence-based retirement.
+update outbound_scim_assignments set creation_admitted=true
+where tenant_id='outbound-smoke' and kind='user';
+do $$ declare constraint_name text;
+begin
+  begin
+    update outbound_scim_assignments set creation_admitted=false
+      where tenant_id='outbound-smoke' and kind='user';
+    raise exception 'creation evidence unexpectedly cleared';
+  exception when check_violation then
+    get stacked diagnostics constraint_name = CONSTRAINT_NAME;
+    if constraint_name <> 'outbound_scim_creation_pin' then raise; end if;
+  end;
+end $$;
+-- An unselected incarnation still consumes a bounded current slot until archive.
+update outbound_scim_assignments set selected=false
+where tenant_id='outbound-smoke' and kind='user';
+do $$ declare source uuid; constraint_name text;
+begin
+  for i in 1..99 loop
+    source := gen_random_uuid();
+    insert into users (tenant_id,user_id,username)
+      values ('outbound-smoke',source,'bounded-' || source::text);
+    insert into outbound_scim_assignments
+      (tenant_id,connector_id,kind,source_id,immutable_alias,external_id)
+      values ('outbound-smoke','00000000-0000-0000-0000-000000000010',
+        'user',source,'owned-' || source::text,'urn:smoke:' || source::text);
+  end loop;
+  source := gen_random_uuid();
+  insert into users (tenant_id,user_id,username)
+    values ('outbound-smoke',source,'overflow-' || source::text);
+  begin
+    insert into outbound_scim_assignments
+      (tenant_id,connector_id,kind,source_id,immutable_alias,external_id)
+      values ('outbound-smoke','00000000-0000-0000-0000-000000000010',
+        'user',source,'overflow-' || source::text,'urn:smoke:' || source::text);
+    raise exception 'quiescing incarnation failed to consume its current slot';
+  exception when check_violation then
+    get stacked diagnostics constraint_name = CONSTRAINT_NAME;
+    if constraint_name <> 'outbound_scim_current_bound' then raise; end if;
+  end;
+end $$;
 -- Direct retirement is only a fixture for the cleanup guard, not an API command
 -- or evidence of remote deprovisioning. The full acceptance must verify a peer.
 update outbound_scim_assignments set selected=false,retired_at=clock_timestamp()
@@ -101,7 +143,7 @@ do $$ begin
   end if;
 end $$;
 ''')
-    print('PASS: migration, source/ownership producers, locator coalescing, retained authority, tenant guard and quiesced cleanup')
+    print('PASS: migration, source/ownership producers, locator coalescing, retained authority, current catalogue bound, tenant guard and quiesced cleanup')
 finally:
     command(['docker', 'exec', args.container, 'dropdb', '-U',
              args.database_user, owned_database])

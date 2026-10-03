@@ -3,13 +3,12 @@
 use super::proof::proof;
 use crate::outbound::{HttpsPoster, PostRequest, PostResponse};
 use asterius_domain::outbound_scim::{
-    CredentialBinding, FailureCode, OutboundScimCredentials, OutboundScimJobs, PreparedDelivery,
-    canonical_issuer,
+    Connector, CredentialBinding, FailureCode, OutboundScimAdministration, OutboundScimCredentials,
+    OutboundScimJobs, PreparedDelivery, canonical_issuer, parse_peer_token,
 };
 use asterius_domain::{Secret, SigningAlgorithm};
 use asterius_jose::SigningKey;
 use hyper::Method;
-use serde::Deserialize;
 use std::sync::Arc;
 use time::{Duration, OffsetDateTime};
 use tokio::sync::Mutex;
@@ -20,15 +19,55 @@ pub(super) struct DeliveryAdmission<'a> {
     pub prepared: &'a PreparedDelivery,
 }
 impl DeliveryAdmission<'_> {
-    async fn check(&self) -> Result<(), FailureCode> {
+    async fn check(&self, creating: bool) -> Result<(), FailureCode> {
         self.jobs
             .admit(
                 &self.prepared.connector.tenant,
                 self.prepared.assignment.id,
                 &self.prepared.fence,
+                creating,
             )
             .await
             .map_err(|_| FailureCode::LeaseSuperseded)
+    }
+}
+
+pub(super) enum RequestAdmission<'a> {
+    Delivery(DeliveryAdmission<'a>),
+    Preview {
+        catalogue: &'a dyn OutboundScimAdministration,
+        connector: &'a Connector,
+    },
+}
+impl RequestAdmission<'_> {
+    async fn check(&self, creating: bool) -> Result<(), FailureCode> {
+        match self {
+            Self::Delivery(delivery) => delivery.check(creating).await,
+            Self::Preview {
+                catalogue,
+                connector,
+            } => {
+                let current = catalogue
+                    .preview_connector(&connector.tenant, connector.id, connector.revision)
+                    .await
+                    .map_err(|_| FailureCode::LeaseSuperseded)?;
+                if current.credential != connector.credential {
+                    return Err(FailureCode::CredentialBindingMismatch);
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn credential(&self) -> &CredentialBinding {
+        match self {
+            Self::Delivery(delivery) => &delivery.prepared.connector.credential,
+            Self::Preview { connector, .. } => &connector.credential,
+        }
+    }
+
+    fn permits(&self, method: &Method) -> bool {
+        !matches!(self, Self::Preview { .. }) || *method == Method::GET
     }
 }
 
@@ -38,7 +77,7 @@ pub(super) struct ScimRequest<'a> {
     pub query: Option<(&'a str, &'a str)>,
     pub etag: Option<&'a str>,
     pub body: &'a [u8],
-    pub admission: DeliveryAdmission<'a>,
+    pub admission: RequestAdmission<'a>,
 }
 
 const SCOPES: &str = "admin.scim:read admin.scim:write";
@@ -69,20 +108,6 @@ impl std::fmt::Debug for OutboundScimClient {
             .debug_struct("OutboundScimClient")
             .finish_non_exhaustive()
     }
-}
-
-#[derive(Deserialize)]
-struct TokenResponse {
-    #[serde(deserialize_with = "secret_string")]
-    access_token: Secret<String>,
-    token_type: String,
-    expires_in: u32,
-    scope: Option<String>,
-}
-fn secret_string<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Secret<String>, D::Error> {
-    String::deserialize(deserializer).map(Secret::new)
 }
 
 impl OutboundScimClient {
@@ -128,7 +153,7 @@ impl OutboundScimClient {
         &self,
         bound: &BoundSession,
         session: &mut Session,
-        admission: &DeliveryAdmission<'_>,
+        admission: &RequestAdmission<'_>,
     ) -> Result<(), FailureCode> {
         if session
             .token
@@ -166,7 +191,7 @@ impl OutboundScimClient {
                     .append_pair("resource", &bound.binding.target_admin_resource);
                 Zeroizing::new(form.finish())
             };
-            admission.check().await?;
+            admission.check(false).await?;
             let response = self
                 .poster
                 .authenticated_response(
@@ -200,25 +225,7 @@ impl OutboundScimClient {
             if response.status != 200 || response.truncated {
                 return Err(FailureCode::AuthenticationRefused);
             }
-            let token: TokenResponse =
-                serde_json::from_slice(&bytes).map_err(|_| FailureCode::AuthenticationRefused)?;
-            if !token.token_type.eq_ignore_ascii_case("DPoP")
-                || token.expires_in == 0
-                || token.expires_in > 3600
-                || token.access_token.expose().is_empty()
-                || token.access_token.expose().len() > 16 * 1024
-                || token.scope.as_deref().is_some_and(|scopes| {
-                    !["admin.scim:read", "admin.scim:write"]
-                        .iter()
-                        .all(|required| {
-                            scopes
-                                .split_ascii_whitespace()
-                                .any(|granted| granted == *required)
-                        })
-                })
-            {
-                return Err(FailureCode::AuthenticationRefused);
-            }
+            let token = parse_peer_token(&bytes)?;
             let margin = (token.expires_in / 2).min(5);
             session.token = Some(Token {
                 value: token.access_token,
@@ -245,6 +252,9 @@ impl OutboundScimClient {
             body,
             admission,
         } = request;
+        if admission.credential() != binding || !admission.permits(&method) {
+            return Err(FailureCode::CredentialBindingMismatch);
+        }
         if !valid_path(path) {
             return Err(FailureCode::SourceProjectionInvalid);
         }
@@ -275,7 +285,9 @@ impl OutboundScimClient {
                 Some(token),
                 session.resource_nonce.as_deref(),
             )?;
-            admission.check().await?;
+            admission
+                .check(method == Method::POST && matches!(path, "Users" | "Groups"))
+                .await?;
             let response = self
                 .poster
                 .authenticated_response(
