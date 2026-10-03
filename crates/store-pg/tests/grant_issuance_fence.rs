@@ -12,6 +12,7 @@ struct Fixture {
     pool: sqlx::PgPool,
     schema: String,
     tenant: TenantId,
+    issuer: asterius_domain::Issuer,
     grant: Grant,
 }
 impl Fixture {
@@ -53,6 +54,7 @@ impl Fixture {
             pool,
             schema,
             tenant,
+            issuer: asterius_domain::Issuer::parse("https://as.example/issuance").expect("fixture issuer"),
             grant,
         }
     }
@@ -82,7 +84,7 @@ async fn wait_for_lock(pool: &sqlx::PgPool, pid: i32) {
 async fn grant_issuance_fence_signer_wins_blocks_real_withdrawal() {
     let f = Fixture::new().await;
     let mut signing = PgPolicies::new(f.pool.clone())
-        .signing_fence(&f.tenant)
+        .signing_fence(&f.tenant, &f.issuer)
         .await
         .expect("publication");
     let authority =
@@ -115,12 +117,12 @@ async fn grant_issuance_fence_signer_wins_blocks_real_withdrawal() {
         .commit()
         .await
         .expect("signature transaction commits before withdrawal");
-    waiter
+    let _withdrawal = waiter
         .await
         .expect("withdrawal task")
         .expect("real repository withdrawal resumes");
     let mut late = PgPolicies::new(f.pool.clone())
-        .signing_fence(&f.tenant)
+        .signing_fence(&f.tenant, &f.issuer)
         .await
         .expect("late publication");
     assert!(
@@ -155,7 +157,7 @@ async fn grant_issuance_fence_waiter_rechecks_database_clock_and_ancestry() {
     .await
     .expect("writer wins");
     let mut signing = PgPolicies::new(f.pool.clone())
-        .signing_fence(&f.tenant)
+        .signing_fence(&f.tenant, &f.issuer)
         .await
         .expect("publication");
     let pid: i32 = sqlx::query_scalar("select pg_backend_pid()")
@@ -182,7 +184,7 @@ async fn grant_issuance_fence_waiter_rechecks_database_clock_and_ancestry() {
     assert!(waiter.await.expect("waiter").is_err());
     sqlx::query("update grants set expires_at=clock_timestamp()+interval '1 hour',parent_grant_id=grant_id where tenant_id='issuance' and grant_id=$1").bind(id).execute(&f.pool).await.expect("cycle fixture");
     let mut signing = PgPolicies::new(f.pool.clone())
-        .signing_fence(&f.tenant)
+        .signing_fence(&f.tenant, &f.issuer)
         .await
         .expect("publication");
     assert!(
