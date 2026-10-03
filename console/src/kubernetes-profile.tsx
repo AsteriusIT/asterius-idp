@@ -57,7 +57,7 @@ export function KubernetesProfileSetup({ clientId, session, canWrite }: {
   }
 
   return <Panel title="Kubernetes access">
-    <p>Use one confidential OIDC broker application per cluster, with private_key_jwt, ES256, DPoP and managed group claims enabled. The saved client ID is the cluster audience.</p>
+    <p>Use one broker application per cluster. People sign in with a stable identity, and only the groups selected below are included in their cluster credentials.</p>
     {error !== null && <Message tone="error">{error}</Message>}
     {profile?.registration_compatible === false && <Message tone="error">The application registration no longer matches this cluster profile. Restore the broker security settings before issuing cluster credentials.</Message>}
     <Field label="Cluster identifier" hint="A unique lowercase DNS label in this workspace, fixed after creation. Use a separate application for another cluster.">{(props) => <input {...props} value={cluster} disabled={busy || !canWrite || profile !== null} onChange={(event) => setCluster(event.target.value)} />}</Field>
