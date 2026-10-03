@@ -54,7 +54,8 @@ impl Fixture {
             pool,
             schema,
             tenant,
-            issuer: asterius_domain::Issuer::parse("https://as.example/issuance").expect("fixture issuer"),
+            issuer: asterius_domain::Issuer::parse("https://as.example/issuance")
+                .expect("fixture issuer"),
             grant,
         }
     }

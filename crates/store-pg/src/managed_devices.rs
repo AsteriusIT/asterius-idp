@@ -212,10 +212,6 @@ impl PgManagedDevices {
         .await
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "Keep strict issued authority and explicit provisional-parent phase checks on the same publication connection"
-    )]
     async fn resolve_on(
         connection: &mut PgConnection,
         tenant: &TenantId,

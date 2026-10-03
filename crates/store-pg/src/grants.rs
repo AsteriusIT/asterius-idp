@@ -196,10 +196,6 @@ impl PgGrantRepository {
         Self::lock_authority_on(connection, tenant, grant, false).await
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "Keep lineage discovery, ordered locks and fresh authoritative validation in one transition"
-    )]
     async fn lock_authority_on(
         connection: &mut PgConnection,
         tenant: &TenantId,
