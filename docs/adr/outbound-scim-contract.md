@@ -65,6 +65,13 @@ assignment generation. Remote client ID is immutable while mappings exist;
 changing the provisioning principal requires a separate connector and an explicit
 handoff, not adoption or changing owners behind an existing mapping.
 
+The operator registry key file uses DER-encoded PKCS#8, never PEM, with a
+16 KiB bound and owner-only mode (`0600`). The configured signing algorithm
+must match that key; its `kid` identifies the public JWK registered on the
+exact target client. Invalid encoding or permissions refuse startup; no command
+body can resolve or convert key material. See the candidate runbook for private
+operator generation/conversion commands.
+
 ### Authoritative projection
 
 | Resource | Source-authoritative target fields | Excluded authority |
@@ -282,7 +289,20 @@ namespace. Deleting a User/Group ownership row, changing that externalId, or
 marking its User deletion identity creates an atomic tenant/client/kind/externalId
 tombstone. Concurrent and late collection POSTs cannot reuse that incarnation;
 ordinary SCIM externalIds retain their existing delete/recreate semantics. An
-explicit new generation uses a distinct externalId. The target retains at most
+explicit new generation uses a distinct externalId. Successful User DELETE for
+this exact reserved namespace also atomically clears the owned target account's
+email and email_verified flag. Authenticated preview requires the extension's
+mandatory `reservedUserDeleteReleasesEmail: true` capability; a peer with a
+missing/false guarantee cannot enable this profile. Its UUID, username, externalId tombstone and
+administrator security lock remain. The current tenant/client ownership row,
+canonical namespace and exact externalId must match; ordinary SCIM deletion,
+disable and archive retain their email. This limited retirement permits a fresh
+reviewed generation to project the same source work email without weakening
+active-account email uniqueness. Archive alone does not release the retained
+account's email: same-email recreation may conflict until an administrator
+reviews DELETE of that exact archived target. No automatic cleanup or email
+index relaxation resolves that conflict. This privacy refinement is Proposed.
+The target retains at most
 10,000 such keys per target tenant/client/kind and refuses further reserved
 retirement at capacity. These keys never expire automatically: elapsed time
 alone cannot prove an already-admitted request cannot still arrive. Whole target
