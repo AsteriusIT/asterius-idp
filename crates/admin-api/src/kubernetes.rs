@@ -100,6 +100,8 @@ pub fn temporary_authentication_document(
         "binding_revision", "entitlement_id", "client_id", "resource", "permissions", "role",
         "cluster", "namespace", "profile_revision", "expires_at",
     ];
+    // Kubernetes v1.35 newClaimsValue decodes JSON numbers as float64/CEL double.
+    // Require exact integral bounded values, rather than an unreachable CEL int type.
     let mut shape = vec!["type(claims.asterius_jit) == map".to_owned(), "claims.asterius_jit.size() == 10".to_owned()];
     for field in fields {
         shape.push(format!("has(claims.asterius_jit.{field})"));
@@ -109,8 +111,8 @@ pub fn temporary_authentication_document(
     }
     shape.extend([
         "type(claims.asterius_jit.permissions) == list && claims.asterius_jit.permissions.all(p, type(p) == string)".to_owned(),
-        "type(claims.asterius_jit.profile_revision) == int && claims.asterius_jit.profile_revision > 0".to_owned(),
-        "type(claims.asterius_jit.expires_at) == int && claims.asterius_jit.expires_at > 0 && claims.exp <= claims.asterius_jit.expires_at".to_owned(),
+        "type(claims.asterius_jit.profile_revision) == double && claims.asterius_jit.profile_revision > 0.0 && claims.asterius_jit.profile_revision <= 9007199254740991.0 && claims.asterius_jit.profile_revision == double(int(claims.asterius_jit.profile_revision))".to_owned(),
+        "type(claims.asterius_jit.expires_at) == double && claims.asterius_jit.expires_at > 0.0 && claims.asterius_jit.expires_at <= 9007199254740991.0 && claims.asterius_jit.expires_at == double(int(claims.asterius_jit.expires_at)) && claims.exp <= claims.asterius_jit.expires_at".to_owned(),
     ]);
     let validation = format!("!has(claims.asterius_jit) || ({})", shape.join(" && "));
     let pins = json!({
@@ -125,7 +127,11 @@ pub fn temporary_authentication_document(
         "profile_revision": expected.profile_revision,
     });
     let matches: Vec<_> = pins.as_object().into_iter().flatten().map(|(key, value)| {
-        format!("claims.asterius_jit.{key} == {value}")
+        if key == "profile_revision" {
+            format!("claims.asterius_jit.{key} == double({value})")
+        } else {
+            format!("claims.asterius_jit.{key} == {value}")
+        }
     }).collect();
     let jit_prefix = json!(format!("asterius-jit:{}:", expected.binding_revision));
     let baseline_prefix = json!(profile.prefix(tenant.id.as_str()));
