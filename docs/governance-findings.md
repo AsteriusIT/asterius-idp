@@ -4,8 +4,9 @@ The console's **Governance findings** view reads current evidence and proposes
 human review. The only report endpoint is
 `GET /admin/api/v1/governance/findings`. It requires a first-party console
 identity in the addressed tenant, `admin.governance:read`, and a currently active
-local tenant/deployment administrator. A reserved-realm administrator cannot
-become an actor in another tenant through this endpoint. Responses use
+local tenant/deployment administrator or `SecurityAuditor`. All actors must
+belong to the exact addressed console realm. A reserved-realm administrator
+cannot become an actor in another tenant through this endpoint. Responses use
 `Cache-Control: no-store`; the store transaction is repeatable-read and read-only.
 The report holds no cleanup command and performs no notification or mutation.
 
