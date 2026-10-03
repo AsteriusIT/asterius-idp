@@ -1101,7 +1101,7 @@ fn spawn_workers(
             tenants: tenants_for_streams,
         },
         mail,
-        outbound_scim,
+        &outbound_scim,
     )?;
 
     let (stop, stopping) = tokio::sync::watch::channel(false);
@@ -1160,7 +1160,7 @@ fn outbox_worker(
     audit: Arc<dyn asterius_domain::audit::AuditSink>,
     ssf: SsfSigning,
     mail: Option<asterius_server::config::MailConfig>,
-    outbound_scim: Arc<asterius_server::outbound_scim::OutboundScimRuntime>,
+    outbound_scim: &asterius_server::outbound_scim::OutboundScimRuntime,
 ) -> Result<OutboxWorker, String> {
     let name = format!("worker-{}", uuid::Uuid::new_v4());
     let mut worker = OutboxWorker::new(outbox, Arc::clone(&clock), name)
