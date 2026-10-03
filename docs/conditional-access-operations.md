@@ -59,3 +59,15 @@ Simulation audits and checks tenant/RBAC before lookups; validation refusals do 
 echo submitted values. Publication and classification changes are separate audited
 writes. Production enforcement obtains its own evidence and never consumes examples.
 A hypothetical success proves policy behavior, not availability of a production source.
+
+## Controlled acceptance
+
+`ASTERIUS_BIN=/path/to/verified/asterius bash scripts/conditional-simulation-acceptance.sh`
+creates a fresh database in the dedicated local fixture PostgreSQL, a TLS listener
+on port 9461 and two isolated tenants. Real confidential FAPI/DPoP clients exercise
+publication and inspection; the runner drops its database, stops its server and
+removes private fixture files on exit. It rejects a non-loopback database base.
+Do not point this acceptance at an existing deployment. The committed
+[acceptance evidence](testing/conditional-access-simulation-evidence.json) distinguishes
+these actual API checks from deterministic browser fixtures and targeted parser
+compilation. It makes no claim of runtime instrumented fuzzing or a full local suite.
