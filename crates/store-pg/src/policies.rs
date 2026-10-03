@@ -31,12 +31,31 @@ pub struct PgPolicies {
     pool: PgPool,
 }
 
+/// A publication lock held until a prepared signature has been produced.
+#[derive(Debug)]
+pub struct PolicyPublicationFence {
+    transaction: sqlx::Transaction<'static, sqlx::Postgres>,
+}
+impl PolicyPublicationFence {
+    /// Release only after the downstream signing decorator committed its work.
+    pub async fn commit(self) -> Result<(), DomainError> { self.transaction.commit().await.map_err(to_domain_error) }
+}
+
 impl PgPolicies {
     /// Wraps a pool.
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
         Self { pool }
     }
+    /// Fence every SQL publication path, including first publication/deletion.
+    /// The key must already be prepared before this method acquires a lock.
+    pub async fn signing_fence(&self, tenant: &TenantId, issuer: &asterius_domain::Issuer) -> Result<PolicyPublicationFence, DomainError> {
+        let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
+        let current: Option<String> = sqlx::query_scalar("select issuer from tenants where tenant_id=$1 and status='active' for share").bind(tenant.as_str()).fetch_optional(&mut *transaction).await.map_err(to_domain_error)?;
+        if current.as_deref() != Some(issuer.as_str()) { return Err(DomainError::NotFound); }
+        Ok(PolicyPublicationFence { transaction })
+    }
+
     async fn publish(&self, tenant: &TenantId, rules: &RuleSet, expected: Option<Option<&str>>, now: OffsetDateTime) -> Result<(), DomainError> {
         let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
         // Also serializes the first publication, for which no policy row exists.

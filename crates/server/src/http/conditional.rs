@@ -25,6 +25,13 @@ pub(crate) struct PdpAuthority {
     pub client: asterius_domain::ClientId,
     pub grant: Option<asterius_domain::GrantId>,
     pub subject: Option<String>,
+    pub task: Option<PdpTaskAuthority>,
+}
+#[derive(Debug, Clone)]
+pub(crate) struct PdpTaskAuthority {
+    pub jti: String,
+    pub id: uuid::Uuid,
+    pub revision: i64,
 }
 pub(crate) fn bind_pdp(authority: PdpAuthority) {
     // Unit adapters without tenancy middleware never receive trusted authority.
@@ -77,13 +84,22 @@ impl ConditionalAccess {
         for _ in 0..2 {
             let Some(policy) = policies.load(&tenant.id).await? else { return Ok(true); };
             let Some(scope) = policy.rules.conditional_scopes().iter().find(|scope| scope.applies(&client.id, action)) else { return Ok(true); };
-            let request = self.resolve(tenant, client, action, &policy, scope, input, now).await?;
+            let mut request = self.resolve(tenant, client, action, &policy, scope, input, now).await?;
             let revision = asterius_domain::policy::explanation::revision(&policy.rules);
             let current = policies.load(&tenant.id).await?;
             if current.as_ref().map(|policy| asterius_domain::policy::explanation::revision(&policy.rules)).as_ref() != Some(&revision) { continue; }
             let decision = scope.evaluate(&request);
             self.record(tenant, client, &policy, scope, &request, &decision, input.grant, now).await;
-            return Ok(decision.permit() || scope.mode == EnforcementMode::ReportOnly);
+            // Audit persistence may wait. Recheck source validity and original
+            // authentication age using a fresh clock immediately before the
+            // caller invokes the already-prepared local signer.
+            let finished = OffsetDateTime::now_utc();
+            advance_clock(&mut request, finished);
+            let final_decision = scope.evaluate(&request);
+            if decision.permit() && !final_decision.permit() {
+                self.record(tenant, client, &policy, scope, &request, &final_decision, input.grant, finished).await;
+            }
+            return Ok((decision.permit() && final_decision.permit()) || scope.mode == EnforcementMode::ReportOnly);
         }
         Err(DomainError::invalid("conditional_access", "policy changed repeatedly during resolution"))
     }
@@ -109,7 +125,8 @@ impl ConditionalAccess {
         let subject = self.subject(tenant, client, input, now).await?;
         let mut trusted = trusted;
         if input.user.is_some() {
-            for name in [FactName::Groups, FactName::Roles, FactName::Grants] { trusted.facts.insert(name, known(FactValue::Resolved, "current_tenant_directory", now)); }
+            for name in [FactName::Groups, FactName::Roles] { trusted.facts.insert(name, known(FactValue::Resolved, "current_tenant_directory", now)); }
+            if input.subject.is_some() { trusted.facts.insert(FactName::Grants, known(FactValue::Resolved, "current_tenant_directory", now)); }
         }
         let props = input.grant.map_or(Ok(Properties::empty()), |grant| Properties::new([("scopes", serde_json::json!(grant.scopes)), ("audience", serde_json::json!(grant.resources))])).map_err(invalid_request)?;
         Ok(EvaluationRequest::new(subject, Action::new(action, Properties::empty()).map_err(invalid_request)?, Resource::new("application", client.id.as_str(), props).map_err(invalid_request)?, Context::default().with_acr(verified_acr.cloned(), acr.levels().iter().map(|level| level.value().to_owned())).with_trusted(trusted)))
@@ -144,11 +161,21 @@ impl ConditionalAccess {
         let mut explanation = asterius_domain::policy::explanation::explain(Some(&nested), request, "conditional_access");
         explanation.policy_revision = Some(asterius_domain::policy::explanation::revision(&policy.rules));
         add_guard_trace(&mut explanation, scope, request);
-        let states: BTreeMap<_, _> = scope.required_for(request).into_iter().map(|name| (name, request.context.trusted().map_or(Availability::Absent, |context| context.availability(name)))).collect();
-        let mut detail = Detail::new().label("enforcement", if scope.mode == EnforcementMode::Active { "active" } else { "report_only" }).text("action", request.context.trusted().map_or("unknown", |context| context.action.as_str())).text("scope", &scope.id).text("required_fact_states", serde_json::json!(states).to_string());
+        let mut detail = Detail::new().label("enforcement", if scope.mode == EnforcementMode::Active { "active" } else { "report_only" }).text("action", request.context.trusted().map_or("unknown", |context| context.action.as_str())).text("scope", &scope.id);
         if let Some(trusted) = request.context.trusted() {
-            let sources: BTreeMap<_, _> = trusted.facts.iter().map(|(name, fact)| (name, serde_json::json!({"source":fact.source,"observed_at":fact.observed_at.map(OffsetDateTime::unix_timestamp),"expires_at":fact.expires_at.map(OffsetDateTime::unix_timestamp)}))).collect();
-            detail = detail.text("acr_revision", &trusted.acr_revision).text("client_revision", &trusted.client_revision).text("evaluated_at", trusted.evaluated_at.unix_timestamp().to_string()).text("fact_sources", serde_json::json!(sources).to_string());
+            detail = detail.credential("acr_revision", &trusted.acr_revision).credential("client_revision", &trusted.client_revision).number("evaluated_at", trusted.evaluated_at.unix_timestamp());
+            for name in scope.required_for(request) {
+                let state = match trusted.availability(name) { Availability::Known => "known", Availability::Absent => "absent", Availability::Stale => "stale", Availability::Unavailable => "unavailable", Availability::Invalid => "invalid" };
+                detail = detail.label(&format!("fact.{name:?}.state"), state);
+                if let Some(fact) = trusted.facts.get(&name) {
+                    let source = match fact.source.as_str() {
+                        "administrative_client_settings" => "administrative_client_settings", "exact_grant_authentication" => "exact_grant_authentication", "current_verified_connection" => "current_verified_connection", "device_registry_adapter" => "device_registry_adapter", "current_tenant_directory" => "current_tenant_directory", _ => "unrecognized_source",
+                    };
+                    detail = detail.label(&format!("fact.{name:?}.source"), source);
+                    if let Some(observed) = fact.observed_at { detail = detail.number(&format!("fact.{name:?}.observed_at"), observed.unix_timestamp()); }
+                    if let Some(expires) = fact.expires_at { detail = detail.number(&format!("fact.{name:?}.expires_at"), expires.unix_timestamp()); }
+                }
+            }
         }
         let mut event = AuditEvent::new(tenant.id.clone(), EventType::ACCESS_EVALUATED, if decision.permit() { Outcome::Success } else { Outcome::Failure }, Actor::Client(client.id.clone()), now).client(client.id.clone()).detail(detail);
         if let Some(grant) = grant {
@@ -209,7 +236,12 @@ impl asterius_domain::ports::PolicyEngine for ConditionalPolicyEngine {
             let repositories = self.access.store.scope(tenant.clone());
             let client = repositories.clients(self.access.capabilities).find(&authority.client).await?.ok_or(DomainError::NotFound)?;
             let user = repositories.users(Arc::clone(&self.access.kek)).find_by_subject(&asterius_domain::SubjectId::new(question.subject.id())).await?;
-            let grant = match &authority.grant { Some(id) => repositories.grants().find(id).await?, None => None };
+            let private = match authority.task.as_ref() {
+                Some(task) => repositories.grants().agent_tasks().token_grant(tenant, &task.jti, task.id, task.revision).await?,
+                None => None,
+            };
+            let reference = if authority.task.is_some() { private.as_ref() } else { authority.grant.as_ref() };
+            let grant = match reference { Some(id) => repositories.grants().find(id).await?, None => None };
             let exact = grant.as_ref().filter(|grant| grant.tenant == *tenant && grant.client == authority.client && grant.subject.as_ref().is_some_and(|subject| subject.as_str() == question.subject.id()) && authority.subject.as_deref() == Some(question.subject.id()) && ActiveGrant::of(grant, self.now).is_some());
             let authentication = exact.filter(|grant| grant.actor_chain.is_empty() && client.registration.agent.is_none()).and_then(|grant| grant.authentication.as_ref());
             let input = Principal { user: user.as_ref().map(|user| user.id), subject: Some(question.subject.id()), authentication, grant: exact };
@@ -227,7 +259,10 @@ impl asterius_domain::ports::PolicyEngine for ConditionalPolicyEngine {
             if current.as_ref().map(|value| asterius_domain::policy::explanation::revision(&value.rules)) != Some(asterius_domain::policy::explanation::revision(&policy.rules)) { continue; }
             let conditional = scope.evaluate(&request);
             self.access.record(&self.tenant, &client, &policy, scope, &request, &conditional, exact, self.now).await;
-            if base.permit() && !conditional.permit() && scope.mode == EnforcementMode::Active {
+            advance_clock(&mut request, OffsetDateTime::now_utc());
+            let final_conditional = scope.evaluate(&request);
+            if base.permit() && (!conditional.permit() || !final_conditional.permit()) && scope.mode == EnforcementMode::Active {
+                let conditional = if conditional.permit() { final_conditional } else { conditional };
                 let nested = StoredPolicy { rules: scope.rules.clone(), updated_at: policy.updated_at };
                 let mut explanation = asterius_domain::policy::explanation::explain(Some(&nested), &request, "conditional_access");
                 explanation.policy_revision = Some(asterius_domain::policy::explanation::revision(&policy.rules));
@@ -237,6 +272,15 @@ impl asterius_domain::ports::PolicyEngine for ConditionalPolicyEngine {
             return Ok(base);
         }
         Ok(Decision::default_deny("conditional policy changed during evaluation"))
+    }
+}
+
+// Updating the clock never changes original authentication or source validity.
+fn advance_clock(request: &mut EvaluationRequest, now: OffsetDateTime) {
+    if let Some(trusted) = request.context.trusted() {
+        let mut trusted = trusted.clone();
+        trusted.evaluated_at = now;
+        request.context = request.context.clone().with_trusted(trusted);
     }
 }
 
@@ -294,5 +338,121 @@ impl super::authorize::ConditionalAuthorization for ConditionalAccess {
     async fn permits(&self, tenant: &Tenant, client: &Client, grant: &Grant, now: OffsetDateTime) -> Result<bool, DomainError> {
         let input = Principal { user: grant.user, subject: grant.subject.as_ref().map(|value| value.as_str()), authentication: grant.authentication.as_ref(), grant: Some(grant) };
         self.check(tenant, client, "authorize", input, now).await
+    }
+}
+
+/// Composes policy publication with the prepared task/lineage signing fence.
+#[derive(Debug)]
+pub(crate) struct ConditionalSigner<'a> {
+    inner: ConditionalSignerInner<'a>,
+    access: ConditionalAccess,
+    tenant: Tenant,
+}
+#[derive(Debug)]
+enum ConditionalSignerInner<'a> {
+    Borrowed(&'a dyn asterius_domain::Signer),
+    Prepared(Box<dyn asterius_domain::Signer + 'a>),
+}
+impl ConditionalSignerInner<'_> {
+    fn get(&self) -> &dyn asterius_domain::Signer {
+        match self { Self::Borrowed(inner) => *inner, Self::Prepared(inner) => inner.as_ref() }
+    }
+}
+impl<'a> ConditionalSigner<'a> {
+    pub(crate) fn new(inner: &'a dyn asterius_domain::Signer, access: ConditionalAccess, tenant: Tenant) -> Self {
+        Self { inner: ConditionalSignerInner::Borrowed(inner), access, tenant }
+    }
+    async fn fence(&self, tenant: &asterius_domain::TenantId) -> Result<asterius_store_pg::PolicyPublicationFence, DomainError> {
+        if tenant != &self.tenant.id { return Err(DomainError::NotFound); }
+        PgPolicies::new(self.access.store.pool().clone()).signing_fence(tenant, &self.tenant.issuer).await
+    }
+}
+#[async_trait::async_trait]
+impl asterius_domain::Signer for ConditionalSigner<'_> {
+    async fn prepare(&self, tenant: &asterius_domain::TenantId, algorithm: Option<asterius_domain::SigningAlgorithm>) -> Result<Option<Box<dyn asterius_domain::Signer + '_>>, DomainError> {
+        let Some(inner) = self.inner.get().prepare(tenant, algorithm).await? else { return Ok(None); };
+        Ok(Some(Box::new(ConditionalSigner { inner: ConditionalSignerInner::Prepared(inner), access: self.access.clone(), tenant: self.tenant.clone() })))
+    }
+    async fn sign(&self, tenant: &asterius_domain::TenantId, algorithm: Option<asterius_domain::SigningAlgorithm>, typ: &'static str, claims: &serde_json::Value) -> Result<asterius_domain::CompactJws, DomainError> {
+        if !matches!(typ, "at+jwt" | "oauth-id-jag+jwt") { return self.inner.get().sign(tenant, algorithm, typ, claims).await; }
+        // Resolve keys before holding even a publication lock. Prepared task
+        // decorators retain all their checks when called through this port.
+        if let Some(prepared) = self.prepare(tenant, algorithm).await? { return prepared.sign(tenant, algorithm, typ, claims).await; }
+        let transaction = self.fence(tenant).await?;
+        let client = if typ == "oauth-id-jag+jwt" { claims.get("act").and_then(|actor| actor.get("client_id")) } else { claims.get("client_id") };
+        let client = client.and_then(serde_json::Value::as_str).ok_or_else(|| DomainError::invalid("conditional_access", "signing application context absent"))?;
+        let policy = PgPolicies::new(self.access.store.pool().clone()).load(tenant).await?;
+        if policy.as_ref().is_some_and(|policy| policy.rules.conditional_scopes().iter().any(|scope| scope.mode == EnforcementMode::Active && scope.clients.contains(&asterius_domain::ClientId::new(client)))) {
+            return Err(DomainError::invalid("conditional_access", "scoped issuance requires exact grant context"));
+        }
+        let signed = self.inner.get().sign(tenant, algorithm, typ, claims).await?;
+        transaction.commit().await?;
+        Ok(signed)
+    }
+    async fn sign_access(&self, tenant: &asterius_domain::TenantId, issuance: asterius_domain::keys::AccessIssuance<'_>, algorithm: Option<asterius_domain::SigningAlgorithm>, typ: &'static str, claims: &serde_json::Value) -> Result<asterius_domain::CompactJws, DomainError> {
+        if let Some(prepared) = self.prepare(tenant, algorithm).await? { return prepared.sign_access(tenant, issuance, algorithm, typ, claims).await; }
+        let transaction = self.fence(tenant).await?;
+        let client = self.access.store.scope(tenant.clone()).clients(self.access.capabilities).find(&issuance.grant.client).await?.ok_or(DomainError::NotFound)?;
+        let claimed_client = if typ == "oauth-id-jag+jwt" { claims.get("act").and_then(|actor| actor.get("client_id")) } else { claims.get("client_id") };
+        if claimed_client.and_then(serde_json::Value::as_str) != Some(issuance.grant.client.as_str()) || claims.get("iss").and_then(serde_json::Value::as_str) != Some(self.tenant.issuer.as_str()) || issuance.grant.subject.as_ref().is_some_and(|subject| claims.get("sub").and_then(serde_json::Value::as_str) != Some(subject.as_str())) {
+            return Err(DomainError::invalid("conditional_access", "signed claim transaction mismatch"));
+        }
+        // Evaluate the actual narrowed token, while passing the complete durable
+        // grant/implicit-resource lineage unchanged to the task signing fence.
+        let mut narrowed = issuance.grant.clone();
+        narrowed.scopes = claims.get("scope").and_then(serde_json::Value::as_str).ok_or_else(|| DomainError::invalid("conditional_access", "signed scope absent"))?.split_whitespace().map(str::to_owned).collect();
+        narrowed.resources = if typ == "oauth-id-jag+jwt" {
+            std::collections::BTreeSet::from([claims.get("resource").and_then(serde_json::Value::as_str).ok_or_else(|| DomainError::invalid("conditional_access", "signed resource absent"))?.to_owned()])
+        } else { match claims.get("aud") {
+            Some(serde_json::Value::String(value)) => std::collections::BTreeSet::from([value.clone()]),
+            Some(serde_json::Value::Array(values)) => values.iter().map(|value| value.as_str().map(str::to_owned).ok_or_else(|| DomainError::invalid("conditional_access", "signed audience invalid"))).collect::<Result<_,_>>()?,
+            _ => return Err(DomainError::invalid("conditional_access", "signed audience absent")),
+        }};
+        // This fresh clock follows any key/lock wait. Auth age is always from
+        // the original transaction, never from an unrelated elevated session.
+        if !self.access.check_grant(&self.tenant, &client, &narrowed, issuance.kind, OffsetDateTime::now_utc()).await? {
+            return Err(DomainError::invalid("conditional_access", "conditional issuance refused"));
+        }
+        let signed = self.inner.get().sign_access(tenant, issuance, algorithm, typ, claims).await?;
+        transaction.commit().await?;
+        Ok(signed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn final_clock_recheck_preserves_authentication_age_and_fact_expiry() {
+        let observed = OffsetDateTime::UNIX_EPOCH;
+        let policy = asterius_domain::policy::RuleSet::from_json(&json!({
+            "version":1,"rules":[],"conditional_scopes":[{
+                "id":"fresh-human","mode":"active","clients":["app"],"actions":["refresh_token"],
+                "rules":[{"id":"fresh","effect":"permit","when":{"authentication_age_at_most":60}}]
+            }]
+        })).expect("bounded policy");
+        let original = observed - Duration::seconds(59);
+        let context = TrustedAccessContext {
+            tenant: asterius_domain::TenantId::new("tenant"), subject: Some("alice".into()),
+            client: asterius_domain::ClientId::new("app"), action:"refresh_token".into(),
+            evaluated_at:observed, policy_revision:"revision".into(), acr_revision:"acr".into(), client_revision:"client".into(),
+            facts: BTreeMap::from([(FactName::AuthenticationAge,
+                Fact::known(FactValue::AuthenticationTime(original), "original_grant_authentication", observed, observed+Duration::seconds(30)))])
+        };
+        let mut request = EvaluationRequest::new(
+            Subject::new("user","alice",Properties::empty()).expect("subject"),
+            Action::new("refresh_token",Properties::empty()).expect("action"),
+            Resource::new("application","app",Properties::empty()).expect("resource"),
+            Context::default().with_trusted(context)
+        );
+        let scope = &policy.conditional_scopes()[0];
+        assert!(scope.evaluate(&request).permit());
+        advance_clock(&mut request, observed+Duration::seconds(2));
+        assert!(!scope.evaluate(&request).permit());
+        assert_eq!(request.context.trusted().expect("snapshot").value(FactName::AuthenticationAge), Some(&FactValue::AuthenticationTime(original)));
+        advance_clock(&mut request, observed+Duration::seconds(30));
+        assert_eq!(request.context.trusted().expect("snapshot").availability(FactName::AuthenticationAge), Availability::Stale);
+        assert!(!scope.evaluate(&request).permit());
     }
 }

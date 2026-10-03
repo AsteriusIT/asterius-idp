@@ -131,7 +131,7 @@ pub use outbox::{
 pub use overview::{Metric as OverviewMetric, PgOverview};
 pub use passkeys::{PgPasskeyRepository, RemovedPasskey, RenamedPasskey};
 pub use passwords::PgPasswordVerifier;
-pub use policies::PgPolicies;
+pub use policies::{PgPolicies, PolicyPublicationFence};
 pub use provisioning::ProvisionedTenants;
 pub use rate_limits::PgRateLimitStore;
 pub use recovery::PgRecoveryTokens;

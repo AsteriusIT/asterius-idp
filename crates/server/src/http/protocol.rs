@@ -4039,9 +4039,16 @@ async fn dispatch_grants(
     let codes = scope.codes();
     let grants = scope.grants();
     let agent_tasks = grants.agent_tasks();
+    // Resolve the key before any fence, then hold task/lineage locks before
+    // evaluating the final conditional context and invoking local crypto.
+    let conditional_signer = super::conditional::ConditionalSigner::new(
+        endpoints.signer.as_ref(),
+        super::conditional::ConditionalAccess::new(endpoints.store.clone(), endpoints.capabilities, Arc::clone(&endpoints.kek), Arc::clone(&endpoints.audit)),
+        tenant.as_ref().clone(),
+    );
     let task_signer = asterius_store_pg::agent_tasks::TaskSigner {
         tasks: &agent_tasks,
-        inner: endpoints.signer.as_ref(),
+        inner: &conditional_signer,
         audit: endpoints.audit.as_ref(),
     };
     let refresh_tokens = scope.refresh_tokens();

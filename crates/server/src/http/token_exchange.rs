@@ -609,8 +609,9 @@ impl TokenExchange<'_> {
         }
         let access_token = self
             .signer
-            .sign(
+            .sign_access(
                 &tenant.id,
+                asterius_domain::keys::AccessIssuance { grant: &grant, kind: GrantType::TokenExchange, implicit_resources: &[] },
                 access.required_algorithm(),
                 access.typ(),
                 access.claims(),
@@ -1758,7 +1759,7 @@ impl TokenExchange<'_> {
         }
         let signed = self
             .signer
-            .sign(&tenant.id, None, "oauth-id-jag+jwt", &claims)
+            .sign_access(&tenant.id, asterius_domain::keys::AccessIssuance { grant: &conditional_grant, kind: GrantType::TokenExchange, implicit_resources: &[] }, None, "oauth-id-jag+jwt", &claims)
             .await?;
         let response = (
             axum::http::StatusCode::OK,
