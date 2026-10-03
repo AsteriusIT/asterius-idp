@@ -2727,3 +2727,22 @@ with its tenant. A stale introspection response is useful only until its five
 second cache cap or token expiry; offline JWTs retain the maximum 300 second task
 expiry plus configured leeway. Neither SSF hints nor cleanup completion claims
 instant global revocation or undo an already authorized action.
+
+## Native application recipe boundaries
+
+The [application catalogue](integrations/applications.md) uses explicit per-client
+standard OIDC permission and confidential Basic authentication with S256; the
+FAPI default and SCIM/management DPoP requirements retain their authority.
+Bearer UserInfo is part of the explicitly selected unbound OIDC profile.
+Native product signing/token/session storage remains sensitive and must not be
+exported through debug logging or reusable generated configuration.
+
+The bounded mappings authorize an exact verified issuer subject as Grafana
+Viewer, Argo CD observer of one project, or a manually assigned Harbor
+private-project Guest. Email/local UUIDs/caller headers are not authority for
+those assignments. No group scope or administrator-group mapping is configured.
+Product session authority is separate from source login authority; source logout
+alone is not immediate native product revocation. Versioned native allow/deny,
+role, spoofing and logout evidence must accompany each advertised recipe.
+Acceptance creates only disposable owned databases, products and clusters; Argo
+CD reconciliation is disabled and Harbor publishes no registry artifacts.

@@ -1,0 +1,90 @@
+{
+  "date": "2026-10-03",
+  "product": {
+    "image": "grafana/grafana:13.2.3@sha256:b28bae15e219c998fb0e0424ed724930cc61b1f61fb404d47c862f9a23f9e572",
+    "digests": [
+      "grafana/grafana@sha256:b28bae15e219c998fb0e0424ed724930cc61b1f61fb404d47c862f9a23f9e572"
+    ],
+    "version": "grafana version 13.2.3"
+  },
+  "asterius_binary_sha256": "6249d979998cec12d8eb8f5b58941404ec7b32de1ed677063ef31b7b50c76cbc",
+  "configuration_sha256": "66df4d60ede0243940bba0a1c8d8ab69dc24e1225001763492a4f47f4dd7b7ac",
+  "source": "main585733ed",
+  "native": {
+    "cases": [
+      {
+        "case": "anonymous user API denied",
+        "status": 401
+      },
+      {
+        "case": "forged identity headers do not authenticate",
+        "status": 401
+      },
+      {
+        "case": "native approved callback",
+        "status": 302
+      },
+      {
+        "case": "native authenticated user",
+        "status": 200
+      },
+      {
+        "case": "viewer reads folders",
+        "status": 200
+      },
+      {
+        "case": "viewer cannot create folder",
+        "status": 403
+      },
+      {
+        "case": "authenticated forged headers retain viewer",
+        "status": 200
+      },
+      {
+        "case": "source logout retains separate native session",
+        "status": 200
+      },
+      {
+        "case": "native thirty second session bound",
+        "status": 401
+      },
+      {
+        "case": "native reauthentication callback",
+        "status": 302
+      },
+      {
+        "case": "native logout",
+        "status": 302
+      },
+      {
+        "case": "native logout denies next user API",
+        "status": 401
+      },
+      {
+        "case": "logged out server session cannot be replayed",
+        "status": 401
+      },
+      {
+        "case": "unassigned subject has no native session",
+        "status": 401
+      }
+    ],
+    "nativeNonce": false,
+    "cookie": {
+      "secure": true,
+      "httpOnly": true,
+      "sameSite": "Lax"
+    },
+    "role": "Viewer bound to exact issuer subject; no admin/group mapping",
+    "sessionLimitSeconds": 30,
+    "displayLogin": "native lower-case normalization; role matches original verified subject"
+  },
+  "profile": "explicit confidential standard OIDC; S256 PKCE; CA and ID-token verification; exact subject Viewer",
+  "limits": [
+    "no groups/PAR/FAPI/downstream DPoP claim",
+    "Bearer UserInfo is permitted only for this explicitly unbound standard OIDC client; no SCIM or management token reuse",
+    "source logout does not immediately revoke Grafana session; thirty second native session bound",
+    "fixture stable opaque subjects seeded only in its owned disposable DB; production obtains subjects from verified ID tokens"
+  ],
+  "cleanup": "owned Grafana container/database/source process/private temporary files removed"
+}

@@ -1,0 +1,166 @@
+{
+  "date": "2026-10-03",
+  "product": {
+    "harbor_version": "v2.15.2-a97e7b83",
+    "images": [
+      {
+        "service": "registry",
+        "image": "goharbor/registry-photon:v2.15.2@sha256:c4ebef61ceb50a3d8bc21d149bc280422db20a1e69df317b64b74098c3615855",
+        "imageID": "sha256:b702cdd9489d574d8cbbb6b6f5523e375b529677197799696e376e8cae04c240",
+        "digests": [
+          "goharbor/registry-photon@sha256:c4ebef61ceb50a3d8bc21d149bc280422db20a1e69df317b64b74098c3615855"
+        ]
+      },
+      {
+        "service": "registryctl",
+        "image": "goharbor/harbor-registryctl:v2.15.2@sha256:223d5cb49d5dbf0ba4ae022e7dd9775fa459904112dc12084d3aaa36c1408362",
+        "imageID": "sha256:8b1493c7a7d9da504ca2f89273823e107110967d6b6d1f5982cc6444d59ae2ae",
+        "digests": [
+          "goharbor/harbor-registryctl@sha256:223d5cb49d5dbf0ba4ae022e7dd9775fa459904112dc12084d3aaa36c1408362"
+        ]
+      },
+      {
+        "service": "postgresql",
+        "image": "goharbor/harbor-db:v2.15.2@sha256:5ebfb345b33d673fa8483ffc997013113b7d14ea56abfa65cfcb621b4acf3039",
+        "imageID": "sha256:8af219aa23d91e1d9778532981b1a4ff5b022ce01e06e42207782d84341552d3",
+        "digests": [
+          "goharbor/harbor-db@sha256:5ebfb345b33d673fa8483ffc997013113b7d14ea56abfa65cfcb621b4acf3039"
+        ]
+      },
+      {
+        "service": "core",
+        "image": "goharbor/harbor-core:v2.15.2@sha256:d7b780d23721a000f0fb8e181add6675eafa336de5d033b77fd7da0c171ff7f7",
+        "imageID": "sha256:06396e2c823b582ae3da9b8d471bd250e4934d10b864f6c627546707af32cefc",
+        "digests": [
+          "goharbor/harbor-core@sha256:d7b780d23721a000f0fb8e181add6675eafa336de5d033b77fd7da0c171ff7f7"
+        ]
+      },
+      {
+        "service": "portal",
+        "image": "goharbor/harbor-portal:v2.15.2@sha256:b811b67f7a7f6f1614e4bdf7478b207d13e8aa3f815ff6ad84f216a5098d213d",
+        "imageID": "sha256:b04a2d729c562424c5a6501c24cb96c5e822e7751384ffae0bc20caabb26ca03",
+        "digests": [
+          "goharbor/harbor-portal@sha256:b811b67f7a7f6f1614e4bdf7478b207d13e8aa3f815ff6ad84f216a5098d213d"
+        ]
+      },
+      {
+        "service": "jobservice",
+        "image": "goharbor/harbor-jobservice:v2.15.2@sha256:f71a4452a095bcd2a8f0683648a3ae28415432df87ccfb00ec7625f3e340a598",
+        "imageID": "sha256:460b146d96ede9450247c4238ce515ce7558c6f5e7ae5b76cf0cb166c2e155bb",
+        "digests": [
+          "goharbor/harbor-jobservice@sha256:f71a4452a095bcd2a8f0683648a3ae28415432df87ccfb00ec7625f3e340a598"
+        ]
+      },
+      {
+        "service": "redis",
+        "image": "goharbor/valkey-photon:v2.15.2@sha256:7337783e8148f01a25b113f5c7b1d640f78b1860fcaf80a33d0dbb294f7b99d0",
+        "imageID": "sha256:e7847c15d1eb52fb405849eba57cdcba73c1cb3b96a3d014d1a7cf6011f1faf1",
+        "digests": [
+          "goharbor/valkey-photon@sha256:7337783e8148f01a25b113f5c7b1d640f78b1860fcaf80a33d0dbb294f7b99d0"
+        ]
+      },
+      {
+        "service": "proxy",
+        "image": "goharbor/nginx-photon:v2.15.2@sha256:0ccc1eca228ecea120d7ad9e4386b8e86ced200212f00060a9abc753dbe7f17f",
+        "imageID": "sha256:8376dcaf5c2f99606da6da6cec4cb611b692e8cea67d86b19c01ef8352e44115",
+        "digests": [
+          "goharbor/nginx-photon@sha256:0ccc1eca228ecea120d7ad9e4386b8e86ced200212f00060a9abc753dbe7f17f"
+        ]
+      }
+    ],
+    "installer_url": "https://github.com/goharbor/harbor/releases/download/v2.15.2/harbor-online-installer-v2.15.2.tgz",
+    "installer_sha256": "88f6a7436b31890e8e472972a7433d36b7d6a36de9adeb86337fdc9fe7fb5fa3"
+  },
+  "asterius_binary_sha256": "4a1f8a71a6d99c32e4af8c12d939486895e55e09ca43aa7a451ead8d43c6f6c9",
+  "source": "main19b9f290",
+  "configuration_sha256": "f18c6921f0e734a696322712b041c79b4b7663f72eb0217ba96d2539d6e6633f",
+  "native": {
+    "cases": [
+      {
+        "case": "anonymous private project denied",
+        "status": 401
+      },
+      {
+        "case": "forged identity and groups cannot authenticate",
+        "status": 401
+      },
+      {
+        "case": "native approved callback",
+        "status": 302
+      },
+      {
+        "case": "native stable user",
+        "status": 200
+      },
+      {
+        "case": "authenticated native runtime version",
+        "status": 200
+      },
+      {
+        "case": "authenticated subject without project assignment denied",
+        "status": 403
+      },
+      {
+        "case": "fixture assigns only this native user Guest",
+        "status": 201
+      },
+      {
+        "case": "assigned Guest reads private project",
+        "status": 200
+      },
+      {
+        "case": "Guest cannot delete project",
+        "status": 403
+      },
+      {
+        "case": "Guest cannot create another project",
+        "status": 403
+      },
+      {
+        "case": "forged administrator header cannot delete",
+        "status": 403
+      },
+      {
+        "case": "source logout retains separate native session",
+        "status": 200
+      },
+      {
+        "case": "native local logout",
+        "status": 302
+      },
+      {
+        "case": "native logout denies next private read",
+        "status": 401
+      },
+      {
+        "case": "logged out session replay denied",
+        "status": 401
+      },
+      {
+        "case": "unassigned subject authenticates without project role",
+        "status": 302
+      },
+      {
+        "case": "unassigned subject cannot read private project",
+        "status": 403
+      }
+    ],
+    "runtimeVersion": "v2.15.2-a97e7b83",
+    "nativeNonce": false,
+    "cookie": {
+      "secure": true,
+      "httpOnly": true,
+      "sameSite": "Lax"
+    },
+    "role": "Explicit local private-project Guest assignment to stable issuer subject; no OIDC admin/group mapping",
+    "sourceLogoutImmediatelyRevokes": false
+  },
+  "profile": "explicit confidential standard OIDC; native S256 PKCE; local Guest membership; no admin/group mapping",
+  "limits": [
+    "no PAR/FAPI/CLI-secret/registry-push/downstream DPoP claim",
+    "source logout alone does not immediately revoke Harbor session",
+    "native Bearer UserInfo permitted only for this explicit unbound standard OIDC client; no SCIM or management token reuse",
+    "OIDC local logout chosen; no source-wide logout/revocation claim"
+  ],
+  "cleanup": "only own Harbor compose containers/network/data, isolated DB/source process/private keyfiles removed"
+}
