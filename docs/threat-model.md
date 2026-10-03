@@ -2538,3 +2538,35 @@ can orphan live authority. Status/events/logs contain bounded categories and
 opaque public identity/revision only, never secrets, credentials or raw policy
 literals. [The CRD ADR](adr/kubernetes-identity-resources.md) specifies this trust
 boundary; operator runtime verification is separate.
+
+### Immutable agent task approvals
+
+An agent client retains independent FAPI authentication and sender proof. A
+fresh owner session and a separate CSRF challenge are required to approve an
+existing owner-scoped human grant. Reading a preview, presenting `task_id`, or
+copying an opaque revision never grants authority. Expansion requires a new
+root and explicit approval; task fields and grant parentage cannot be updated
+under existing credentials. The recognized RFC9396 comparator preserves exact
+action/location association rather than merging unrelated approved details.
+
+Production key selection and any KEK network operation finish before an
+authority transaction begins. A detached key handle remains tenant/algorithm
+bound and expires with the original cache lease; prepared decorators preserve
+task enforcement rather than returning a raw crypto signer.
+
+A transaction fence locks current principals, root, task and ancestors through
+signing, private JTI insertion and audit append, then commits before a token can
+leave the handler. Cached PDP decisions cannot bypass lifecycle validity.
+Revocation that commits first causes issuance to fail; signing that commits
+first produces a bounded credential linked to the subsequent withdrawal.
+Signature or persistence failure rolls back both new grant and JTI. Owner/client
+removal leaves an irreversible terminal approval tombstone; deferred nullable
+FK checks permit all cascade actions to complete in either order.
+
+Task tokens carry opaque task/revision correlators and omit automatically
+inherited owner roles. Private lineage remains mandatory even when an operator
+hides the public grant ID. External-workload, Native SSO and ID-JAG raw signing
+cannot bypass the explicit task obligation. Online descendant withdrawal is a
+separate ast-dd1y.8.3 enforcement boundary; offline use is bounded by a 300-second
+maximum and task/ancestor deadlines. See `docs/agent-task-approvals.md` for the
+activation, supported paths and retained history contract.

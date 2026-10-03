@@ -112,6 +112,56 @@ impl TenantScoped for PgGrantRepository {
 }
 
 impl PgGrantRepository {
+    /// Task authority is shared by all grant handlers for this tenant.
+    #[must_use]
+    pub fn agent_tasks(&self) -> crate::agent_tasks::PgAgentTasks {
+        crate::agent_tasks::PgAgentTasks::new(self.pool.clone())
+    }
+
+    /// Task children are inserted by the signing fence, so grant creation,
+    /// lineage, first claim and JTI registration commit as one transaction.
+    pub async fn create_for_issuance(&self, grant: &Grant) -> Result<(), DomainError> {
+        let lookup = grant.parent.as_ref().unwrap_or(&grant.id);
+        let bound: bool = sqlx::query_scalar(
+            "select exists(select 1 from agent_task_grants where tenant_id=$1 and grant_id=$2)",
+        )
+        .bind(self.tenant.as_str())
+        .bind(uuid(lookup)?)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+        if bound {
+            Ok(())
+        } else {
+            self.create(grant).await
+        }
+    }
+
+    /// For a task, claim validity is checked now and the durable first-claim
+    /// stamp is written only by the fenced signing transaction.
+    pub async fn claim_for_issuance(
+        &self,
+        id: &GrantId,
+        now: OffsetDateTime,
+    ) -> Result<ClaimedGrant, DomainError> {
+        let bound: bool = sqlx::query_scalar(
+            "select exists(select 1 from agent_task_grants where tenant_id=$1 and grant_id=$2)",
+        )
+        .bind(self.tenant.as_str())
+        .bind(uuid(id)?)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+        if bound {
+            self.find(id)
+                .await?
+                .ok_or(DomainError::NotFound)?
+                .claim(now)
+                .map_err(|_| asterius_domain::agent_tasks::invalid())
+        } else {
+            self.claim(id, now).await
+        }
+    }
     /// Binds a pool to one tenant.
     #[must_use]
     pub const fn new(pool: PgPool, tenant: TenantId) -> Self {
@@ -809,15 +859,14 @@ impl PgGrantRepository {
     ///
     /// Returns a storage error.
     pub async fn purge_unclaimed(&self, older_than: OffsetDateTime) -> Result<u64, DomainError> {
-        let result = sqlx::query!(
+        let result = sqlx::query(
             "delete from grants
              where tenant_id = $1
                and created_at < $2
                and claimed_at is null
-               and revoked_at is null",
-            self.tenant.as_str(),
-            older_than
-        )
+               and revoked_at is null
+               and not exists(select 1 from agent_task_grants t where t.tenant_id=grants.tenant_id and t.grant_id=grants.grant_id)"
+        ).bind(self.tenant.as_str()).bind(older_than)
         .execute(&self.pool)
         .await
         .map_err(to_domain_error)?;
