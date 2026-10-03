@@ -139,7 +139,7 @@ mod tests {
 
     #[test]
     fn uuid_spelling_cannot_create_a_second_authority_key() {
-        let id = Uuid::from_u128(0xabcdef);
+        let id = Uuid::from_u128(0x00ab_cdef);
         assert_eq!(canonical_uuid(&id.to_string()).expect("canonical"), id);
         assert!(canonical_uuid(&id.simple().to_string()).is_err());
         assert!(canonical_uuid(&id.to_string().to_uppercase()).is_err());
