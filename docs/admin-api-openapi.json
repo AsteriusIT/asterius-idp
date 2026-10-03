@@ -348,7 +348,7 @@
     },
     "securitySchemes": {
       "adminToken": {
-        "description": "A DPoP-bound access token (RFC 9449 §7.1), presented with a DPoP proof header. Token calls are not subject to the CSRF check and are subject to the proof instead.",
+        "description": "A DPoP-bound access token (RFC 9449 \u00a77.1), presented with a DPoP proof header. Token calls are not subject to the CSRF check and are subject to the proof instead.",
         "scheme": "DPoP",
         "type": "http"
       },
@@ -531,7 +531,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -1183,7 +1183,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -1253,7 +1253,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -1334,7 +1334,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -1425,7 +1425,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -1613,7 +1613,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -1786,7 +1786,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -2021,7 +2021,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "404": {
             "content": {
@@ -2101,7 +2101,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -2171,7 +2171,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -2251,7 +2251,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -2339,7 +2339,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -2451,7 +2451,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -2532,7 +2532,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -2623,7 +2623,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -2701,7 +2701,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -2791,7 +2791,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -2880,7 +2880,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -2979,7 +2979,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -3091,7 +3091,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -3224,7 +3224,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -3314,7 +3314,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -3394,7 +3394,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -3516,7 +3516,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -3630,7 +3630,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -3739,7 +3739,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -3902,7 +3902,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -4044,7 +4044,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -4175,7 +4175,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -4339,7 +4339,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -4481,7 +4481,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -4643,7 +4643,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -4785,7 +4785,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -4907,7 +4907,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -4990,7 +4990,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -5071,7 +5071,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -5141,7 +5141,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -5222,7 +5222,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -5313,7 +5313,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -5391,7 +5391,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -5492,7 +5492,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -5583,7 +5583,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -5663,7 +5663,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -5893,7 +5893,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -5984,7 +5984,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -6244,7 +6244,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -6346,7 +6346,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -6438,7 +6438,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -6560,7 +6560,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -6649,7 +6649,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -6750,7 +6750,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -6861,7 +6861,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -6970,7 +6970,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -7096,7 +7096,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -7201,7 +7201,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "404": {
             "content": {
@@ -7329,7 +7329,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "404": {
             "content": {
@@ -7460,7 +7460,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "404": {
             "content": {
@@ -7568,7 +7568,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "404": {
             "content": {
@@ -7698,7 +7698,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "404": {
             "content": {
@@ -7798,7 +7798,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -7887,7 +7887,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -7986,7 +7986,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -8092,7 +8092,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -8198,7 +8198,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "404": {
             "content": {
@@ -8306,7 +8306,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "404": {
             "content": {
@@ -8422,7 +8422,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "404": {
             "content": {
@@ -8512,7 +8512,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -8590,7 +8590,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -8670,7 +8670,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -8751,7 +8751,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -8832,7 +8832,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -8970,7 +8970,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -9061,7 +9061,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -9182,7 +9182,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -9263,7 +9263,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -9333,7 +9333,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -9416,7 +9416,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -9497,7 +9497,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -9590,7 +9590,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -9692,7 +9692,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -9794,7 +9794,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -9843,6 +9843,92 @@
         "x-asterius-scope": "admin.keys:write"
       }
     },
+    "/admin/api/v1/kubernetes/temporary-access/{id}": {
+      "get": {
+        "description": "Current complete projection is limited to one immutable owner-approved controller/entitlement/current public-subject Kubernetes profile. No actor, username, role or namespace is accepted from the controller. Subjects use the exact stable public subject and distinct asterius-jit mapping-revision prefix; pending, revoked, stale, disabled and expired approvals contribute no authority. A snapshot is limited to 100 subjects and refuses overflow; its RFC3339 database observed_at and exclusive deadlines bound freshness. Healthy reconciliation bounds revocation latency. During controller failure, signed temporary-only ID provenance and activation-capped exp bound residual access; ordinary tokens retain their separate baseline username and cannot reuse stale JIT bindings. Owner GET additionally returns a structured AuthenticationConfiguration example for the exact reviewed tuple; legacy OIDC flags cannot implement this mapping.",
+        "operationId": "temporary_kubernetes.project",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Binding revision conflict or complete projection exceeds bound."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          }
+        ],
+        "summary": "Exact mapped same-tenant DPoP controller reads complete bounded current public subjects and expiry",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.app_roles:read"
+      }
+    },
     "/admin/api/v1/notifications/status": {
       "get": {
         "operationId": "notifications.status",
@@ -9875,7 +9961,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -9945,7 +10031,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -10023,7 +10109,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -10091,7 +10177,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -10171,7 +10257,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -10241,7 +10327,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -10311,7 +10397,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -10391,7 +10477,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -10492,7 +10578,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -10573,7 +10659,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -10643,7 +10729,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -10713,7 +10799,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -10783,7 +10869,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -10853,7 +10939,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -10923,7 +11009,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -10993,7 +11079,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -11071,7 +11157,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -11291,7 +11377,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -11371,7 +11457,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -12002,7 +12088,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "404": {
             "content": {
@@ -12202,7 +12288,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -12272,7 +12358,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -12342,7 +12428,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -12422,7 +12508,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -12510,7 +12596,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -12588,7 +12674,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -12668,7 +12754,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -12736,7 +12822,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -12829,7 +12915,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -12923,7 +13009,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -13004,7 +13090,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -13082,7 +13168,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -13150,7 +13236,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -13322,7 +13408,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -13387,7 +13473,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -13474,7 +13560,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -13559,7 +13645,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -13634,7 +13720,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -13719,7 +13805,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -13796,7 +13882,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -13863,7 +13949,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -13930,7 +14016,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -14032,7 +14118,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -14097,7 +14183,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -14184,7 +14270,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -14269,7 +14355,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -14344,7 +14430,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -14429,7 +14515,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -14506,7 +14592,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -14584,7 +14670,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -14654,7 +14740,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -14732,7 +14818,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -14812,7 +14898,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -14892,7 +14978,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -14993,7 +15079,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -15087,7 +15173,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -15168,7 +15254,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -15251,7 +15337,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -15345,7 +15431,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -15439,7 +15525,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -15533,7 +15619,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -15615,7 +15701,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -15791,7 +15877,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -15878,7 +15964,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -16056,7 +16142,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -16142,7 +16228,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -16281,7 +16367,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -16368,7 +16454,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -16499,7 +16585,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -16614,7 +16700,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -16653,6 +16739,209 @@
           }
         ],
         "summary": "Console-only owner-scoped temporary entitlement eligibility_remove",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.app_roles:write"
+      }
+    },
+    "/admin/api/v1/temporary-entitlements/{id}/kubernetes-binding": {
+      "get": {
+        "description": "Current complete projection is limited to one immutable owner-approved controller/entitlement/current public-subject Kubernetes profile. No actor, username, role or namespace is accepted from the controller. Subjects use the exact stable public subject and distinct asterius-jit mapping-revision prefix; pending, revoked, stale, disabled and expired approvals contribute no authority. A snapshot is limited to 100 subjects and refuses overflow; its RFC3339 database observed_at and exclusive deadlines bound freshness. Healthy reconciliation bounds revocation latency. During controller failure, signed temporary-only ID provenance and activation-capped exp bound residual access; ordinary tokens retain their separate baseline username and cannot reuse stale JIT bindings. Owner GET additionally returns a structured AuthenticationConfiguration example for the exact reviewed tuple; legacy OIDC flags cannot implement this mapping.",
+        "operationId": "temporary_kubernetes.binding_read",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Binding revision conflict or complete projection exceeds bound."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Console-only entitlement owner reads the exact Kubernetes controller binding",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.app_roles:read"
+      },
+      "put": {
+        "description": "Current complete projection is limited to one immutable owner-approved controller/entitlement/current public-subject Kubernetes profile. No actor, username, role or namespace is accepted from the controller. Subjects use the exact stable public subject and distinct asterius-jit mapping-revision prefix; pending, revoked, stale, disabled and expired approvals contribute no authority. A snapshot is limited to 100 subjects and refuses overflow; its RFC3339 database observed_at and exclusive deadlines bound freshness. Healthy reconciliation bounds revocation latency. During controller failure, signed temporary-only ID provenance and activation-capped exp bound residual access; ordinary tokens retain their separate baseline username and cannot reuse stale JIT bindings. Owner GET additionally returns a structured AuthenticationConfiguration example for the exact reviewed tuple; legacy OIDC flags cannot implement this mapping.",
+        "operationId": "temporary_kubernetes.binding_write",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "controller_client_id": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "expected_revision": {
+                    "format": "uuid",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "controller_client_id",
+                  "expected_revision",
+                  "enabled"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Binding revision conflict or complete projection exceeds bound."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Console-only entitlement owner configures one immutable controller with explicit revision CAS",
         "x-asterius-reach": "tenant",
         "x-asterius-scope": "admin.app_roles:write"
       }
@@ -16700,7 +16989,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -16783,7 +17072,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -16864,7 +17153,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -16955,7 +17244,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -17055,7 +17344,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -17181,7 +17470,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -17271,7 +17560,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -17351,7 +17640,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -17612,7 +17901,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -17861,7 +18150,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -17981,7 +18270,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -18062,7 +18351,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -18162,7 +18451,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -18243,7 +18532,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -18334,7 +18623,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -18414,7 +18703,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -18503,7 +18792,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -18602,7 +18891,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -18692,7 +18981,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -18798,7 +19087,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -18888,7 +19177,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -18976,7 +19265,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -19077,7 +19366,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -19179,7 +19468,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -19270,7 +19559,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -19358,7 +19647,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -19464,7 +19753,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "404": {
             "content": {
@@ -19554,7 +19843,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -19642,7 +19931,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -19720,7 +20009,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -19810,7 +20099,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -19888,7 +20177,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -19978,7 +20267,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -20066,7 +20355,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -20156,7 +20445,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -20246,7 +20535,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -20335,7 +20624,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -20434,7 +20723,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -20514,7 +20803,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -20594,7 +20883,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {
@@ -20682,7 +20971,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "429": {
             "content": {
@@ -20760,7 +21049,7 @@
                 }
               }
             },
-            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+            "description": "Authenticated, without the declared authority \u2014 or, for the console, without this session's X-CSRF-Token."
           },
           "409": {
             "content": {

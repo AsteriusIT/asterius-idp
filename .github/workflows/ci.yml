@@ -118,6 +118,15 @@ jobs:
           ASTERIUS_BIN: ${{ github.workspace }}/target/debug/asterius
           ASTERIUS_TEMPORARY_BROWSER_SCRIPT: ${{ github.workspace }}/scripts/temporary-entitlements/browser_acceptance.mjs
         run: bash scripts/temporary-entitlements-acceptance.sh
+      - name: native temporary RBAC, outage expiry and controller ceiling
+        env:
+          ASTERIUS_BIN: ${{ github.workspace }}/target/debug/asterius
+        run: |
+          cd providers/terraform
+          go test ./internal/jitrbac -count=1
+          go vet ./internal/jitrbac ./cmd/asterius-jit-rbac
+          cd ../..
+          bash scripts/kubernetes-temporary-rbac-acceptance.sh
       - name: real structural schemas and namespace admission
         run: bash scripts/kubernetes-crd-tests.sh
       - name: real operator reconciliation and tenant isolation

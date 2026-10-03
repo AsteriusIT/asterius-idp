@@ -1111,6 +1111,23 @@ fn signed_roles_current(
     true
 }
 
+// Registration opt-in alone cannot release a role omitted from this actual ID token.
+fn identity_role_released(
+    claims: &serde_json::Value,
+    identity: &asterius_domain::temporary_kubernetes::KubernetesJitIdentity,
+) -> bool {
+    claims
+        .get("resource_access")
+        .and_then(|access| access.get(&identity.client_id))
+        .and_then(|access| access.get("roles"))
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|roles| {
+            roles
+                .iter()
+                .any(|role| role.as_str() == Some(identity.role.as_str()))
+        })
+}
+
 impl<'a> ConditionalSigner<'a> {
     pub(crate) fn new(
         inner: &'a dyn asterius_domain::Signer,
@@ -1250,7 +1267,8 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
         typ: &'static str,
         claims: &serde_json::Value,
     ) -> Result<asterius_domain::CompactJws, DomainError> {
-        if grant.tenant != *tenant
+        if claims.get("asterius_jit").is_some()
+            || grant.tenant != *tenant
             || claims.get("iss").and_then(serde_json::Value::as_str)
                 != Some(self.tenant.issuer.as_str())
             || !matches!(typ, "JWT" | "dpop+id_token")
@@ -1269,14 +1287,63 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
                 .sign_identity(tenant, grant, algorithm, typ, claims)
                 .await;
         }
-        let transaction = self.fence(tenant).await?;
+        let mut transaction = self.fence(tenant).await?;
         let held = self.current_roles(tenant, grant, claims).await?;
+        let mut identity_claims = claims.clone();
+        let identity =
+            asterius_store_pg::PgTemporaryEntitlements::kubernetes_identity_for_grant_on(
+                transaction.connection(),
+                tenant,
+                grant,
+                &held,
+            )
+            .await?
+            .filter(|identity| identity_role_released(claims, identity));
+        if let Some(identity) = &identity {
+            if algorithm != Some(asterius_domain::SigningAlgorithm::Es256) {
+                return Err(DomainError::invalid(
+                    "id_token",
+                    "temporary cluster identity requires ES256",
+                ));
+            }
+            let expiry = identity_claims
+                .get("exp")
+                .and_then(serde_json::Value::as_i64)
+                .ok_or_else(|| DomainError::invalid("id_token", "integer expiry required"))?;
+            let issued_at = identity_claims
+                .get("iat")
+                .and_then(serde_json::Value::as_i64)
+                .ok_or_else(|| DomainError::invalid("id_token", "integer issue time required"))?;
+            let capped = expiry
+                .min(identity.expires_at)
+                .min(issued_at.saturating_add(300));
+            if capped <= OffsetDateTime::now_utc().unix_timestamp() {
+                return Err(DomainError::invalid(
+                    "id_token",
+                    "temporary identity expired",
+                ));
+            }
+            identity_claims["exp"] = serde_json::json!(capped);
+            identity_claims["asterius_jit"] = serde_json::to_value(identity)
+                .map_err(|error| DomainError::Storage(Box::new(error)))?;
+        }
         let signed = self
             .inner
             .get()
-            .sign_identity(tenant, grant, algorithm, typ, claims)
+            .sign_identity(tenant, grant, algorithm, typ, &identity_claims)
             .await?;
-        if !signed_roles_current(claims, &held, &grant.client, OffsetDateTime::now_utc()) {
+        if !signed_roles_current(
+            &identity_claims,
+            &held,
+            &grant.client,
+            OffsetDateTime::now_utc(),
+        ) || identity.as_ref().is_some_and(|identity| {
+            let now = OffsetDateTime::now_utc();
+            identity.expires_at <= now.unix_timestamp()
+                || asterius_domain::RoleName::parse(&identity.role).map_or(true, |role| {
+                    !held.role_current_at(&grant.client, &role, now)
+                })
+        }) {
             return Err(DomainError::invalid(
                 "temporary_entitlement",
                 "temporary authority expired during signing",
@@ -1404,6 +1471,34 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn temporary_identity_requires_role_release_in_actual_id_token() {
+        let identity = asterius_domain::temporary_kubernetes::KubernetesJitIdentity {
+            binding_revision: uuid::Uuid::from_u128(1),
+            entitlement_id: uuid::Uuid::from_u128(2),
+            client_id: "app".into(),
+            resource: "https://api.example".into(),
+            permissions: vec!["read".into()],
+            role: "incident-reader".into(),
+            cluster: "incident".into(),
+            namespace: "incident".into(),
+            profile_revision: 1,
+            expires_at: 30,
+        };
+        assert!(identity_role_released(
+            &json!({"resource_access":{"app":{"roles":["incident-reader"]}}}),
+            &identity
+        ));
+        for claims in [
+            json!({}),
+            json!({"roles":["incident-reader"]}),
+            json!({"resource_access":{"other":{"roles":["incident-reader"]}}}),
+            json!({"resource_access":{"app":{"roles":["reader"]}}}),
+        ] {
+            assert!(!identity_role_released(&claims, &identity));
+        }
+    }
+
     #[test]
     fn temporary_signed_roles_require_current_authority_and_exclusive_expiry() {
         let client = asterius_domain::ClientId::new("app");

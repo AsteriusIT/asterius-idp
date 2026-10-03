@@ -205,6 +205,7 @@ fn operation_object(operation: &Operation) -> Value {
     kubernetes_documentation(operation, &mut object);
     conditional_documentation(operation, &mut object);
     temporary_entitlement_documentation(operation, &mut object);
+    temporary_kubernetes_documentation(operation, &mut object);
     invitation_documentation(operation, &mut object);
     agent_task_documentation(operation, &mut object);
     theme_documentation(operation, &mut object);
@@ -1151,6 +1152,28 @@ fn temporary_entitlement_documentation(operation: &Operation, object: &mut Value
     }
     object["requestBody"] =
         json!({"required":true,"content":{"application/json":{"schema":schema}}});
+}
+
+fn temporary_kubernetes_documentation(operation: &Operation, object: &mut Value) {
+    if !operation.id().starts_with("temporary_kubernetes.") {
+        return;
+    }
+    object["description"] = json!(
+        "Current complete projection is limited to one immutable owner-approved controller/entitlement/current public-subject Kubernetes profile. No actor, username, role or namespace is accepted from the controller. Subjects use the exact stable public subject and distinct asterius-jit mapping-revision prefix; pending, revoked, stale, disabled and expired approvals contribute no authority. A snapshot is limited to 100 subjects and refuses overflow; its RFC3339 database observed_at and exclusive deadlines bound freshness. Healthy reconciliation bounds revocation latency. During controller failure, signed temporary-only ID provenance and activation-capped exp bound residual access; ordinary tokens retain their separate baseline username and cannot reuse stale JIT bindings. Owner GET additionally returns a structured AuthenticationConfiguration example for the exact reviewed tuple; legacy OIDC flags cannot implement this mapping."
+    );
+    object["responses"]["409"] =
+        error_response("Binding revision conflict or complete projection exceeds bound.");
+    if operation.id() == crate::TEMPORARY_KUBERNETES_PROJECT_ID {
+        object["security"] = json!([{"adminToken":[]}]);
+    } else {
+        object["security"] = json!([{"consoleSession":[]}]);
+    }
+    if operation.id() == crate::TEMPORARY_KUBERNETES_BINDING_WRITE_ID {
+        object["requestBody"] = json!({"required":true,"content":{"application/json":{"schema":{
+            "type":"object","additionalProperties":false,"required":["controller_client_id","expected_revision","enabled"],
+            "properties":{"controller_client_id":{"type":"string","minLength":1,"maxLength":200},"expected_revision":{"type":["string","null"],"format":"uuid"},"enabled":{"type":"boolean"}}
+        }}}});
+    }
 }
 
 #[cfg(test)]

@@ -155,7 +155,7 @@ with f as (select $1::text as tenant, $2::uuid as owner, $3::uuid as grant_id, $
 insert into oid4vp_transactions (tenant_id,state_digest,nonce,client_id,initiator_client_id,credential_id,verifier_id,expires_at)
 select tenant,sha256(convert_to(label,'UTF8')),label,'billing','billing','credential','verifier',expires from v on conflict do nothing;
 
--- Provenance fixtures exercise retention only; no authority is inferred at runtime.
+-- Provenance fixtures exercise retention only. no authority is inferred at runtime.
 with f as (select $1::text as tenant, $2::uuid as owner, $3::uuid as grant_id, $4::text as label, $5::timestamptz as expires)
 insert into session_assurance_proofs (tenant_id,session_id,acr,assurance_authenticated_at,assurance_policy_revision,assurance_methods)
 select s.tenant_id,s.session_id,s.acr,s.authenticated_at,repeat('a',64),array['pwd'] from sessions s,f

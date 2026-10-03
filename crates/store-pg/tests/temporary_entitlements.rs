@@ -457,3 +457,33 @@ async fn temporary_entitlement_expiry_denies_before_reconciliation_and_is_idempo
     assert_eq!(events, 1);
     f.close().await;
 }
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL; CI checks closed Kubernetes binding projection"]
+async fn temporary_kubernetes_binding_round_trip_excludes_internal_storage_fields() {
+    use asterius_domain::temporary_kubernetes::TemporaryKubernetes as _;
+    let f = Fixture::new().await;
+    let entitlement = f.entitlement().await;
+    sqlx::query("insert into temporary_kubernetes_bindings(tenant_id,entitlement_id,controller_client_id,controller_reference,cluster_client_id,cluster_client_reference,cluster_id,namespace,profile_revision,enabled) values('one',$1,'app','app','app','app','incident','incident',1,false)")
+        .bind(entitlement.entitlement_id).execute(&f.pool).await.expect("disabled binding fixture");
+    let binding = f
+        .port
+        .binding(&f.tenant, &f.owner, entitlement.entitlement_id)
+        .await
+        .expect("closed binding decoding")
+        .expect("stored binding");
+    assert_eq!(binding.cluster, "incident");
+    assert_eq!(binding.namespace, "incident");
+    assert!(!binding.enabled);
+    let json = serde_json::to_value(binding).expect("public DTO");
+    assert_eq!(json.as_object().expect("object").len(), 8);
+    for field in [
+        "tenant_id",
+        "cluster_id",
+        "controller_reference",
+        "cluster_client_reference",
+    ] {
+        assert!(json.get(field).is_none());
+    }
+    f.close().await;
+}
