@@ -167,7 +167,9 @@ impl DeviceBinding {
         }
         if let Some(parent) = &self.request_parent {
             let id = Uuid::parse_str(parent.as_str()).map_err(|_| invalid())?;
-            if id.is_nil() { return Err(invalid()); }
+            if id.is_nil() {
+                return Err(invalid());
+            }
         }
         LeafFingerprint::parse(&self.interaction_digest)?;
         LeafFingerprint::parse(&self.leaf_sha256)?;

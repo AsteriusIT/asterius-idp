@@ -7816,6 +7816,13 @@ async fn account_devices_remove(
     body: axum::body::Bytes,
 ) -> Response {
     use asterius_domain::managed_devices::{Registry, RemovalAuthority};
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Input {
+        id: uuid::Uuid,
+        expected_revision: uuid::Uuid,
+        csrf: String,
+    }
     let Ok(parts) = account_parts(&endpoints, &tenant).await else {
         return unavailable();
     };
@@ -7826,13 +7833,6 @@ async fn account_devices_remove(
     let Some(session) = crate::http::account::admitted(&context, &headers, now).await else {
         return axum::http::StatusCode::UNAUTHORIZED.into_response();
     };
-    #[derive(serde::Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Input {
-        id: uuid::Uuid,
-        expected_revision: uuid::Uuid,
-        csrf: String,
-    }
     if body.len() > crate::http::account::MAX_BODY {
         return axum::http::StatusCode::PAYLOAD_TOO_LARGE.into_response();
     }

@@ -928,6 +928,10 @@ async fn failed(
 ///
 /// Returns the PEP's `client_id`, which is what the limiter charges and what
 /// the trail names as the actor.
+#[expect(
+    clippy::too_many_lines,
+    reason = "Keep ordered credential validation and trusted PDP authority publication in one boundary"
+)]
 pub(crate) async fn authorize(
     api: Api,
     context: &AccessEvaluationContext<'_>,
