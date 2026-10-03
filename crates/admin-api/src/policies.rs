@@ -117,6 +117,15 @@ pub fn parse_simulation(body: &[u8]) -> Result<Simulation, AdminError> {
     {
         return Err(invalid());
     }
+    if raw
+        .get("enforcement_action")
+        .is_some_and(|value| !value.is_string())
+        || raw
+            .get("hypothetical_trusted_context")
+            .is_some_and(|value| !value.is_object())
+    {
+        return Err(invalid());
+    }
     let parsed: Body = serde_json::from_value(raw).map_err(|_| invalid())?;
     if parsed.client_id.is_empty()
         || parsed.client_id.len() > 256
@@ -372,9 +381,17 @@ mod tests {
             body["enforcement_action"] = json!(boundary);
             assert!(parse_simulation(&serde_json::to_vec(&body).expect("body")).is_ok());
         }
+        for invalid_boundary in [Value::Null, json!(1), json!([])] {
+            body["enforcement_action"] = invalid_boundary;
+            assert!(parse_simulation(&serde_json::to_vec(&body).expect("body")).is_err());
+        }
         body["enforcement_action"] = json!("read");
         assert!(parse_simulation(&serde_json::to_vec(&body).expect("body")).is_err());
         body["enforcement_action"] = json!("refresh_token");
+        for invalid_examples in [Value::Null, json!([]), json!("unsupported")] {
+            body["hypothetical_trusted_context"] = invalid_examples;
+            assert!(parse_simulation(&serde_json::to_vec(&body).expect("body")).is_err());
+        }
         body["hypothetical_trusted_context"] =
             json!({"groups":{"availability":"known","value":["secret"]}});
         assert!(parse_simulation(&serde_json::to_vec(&body).expect("body")).is_err());
