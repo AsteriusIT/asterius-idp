@@ -1540,6 +1540,8 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
             .await?;
         asterius_store_pg::kubernetes_online::record_reviewer_token_on(
             transaction.connection(),tenant,issuance,claims).await?;
+        asterius_store_pg::PgManagedDevices::record_relay_token_on(
+            transaction.connection(),tenant,issuance,claims).await?;
         if !signed_roles_current(claims, &held, &narrowed.client, OffsetDateTime::now_utc()) {
             return Err(DomainError::invalid(
                 "temporary_entitlement",
