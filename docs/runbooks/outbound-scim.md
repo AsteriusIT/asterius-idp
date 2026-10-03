@@ -10,8 +10,24 @@ current FAPI private_key_jwt client credentials, DPoP, versioned SCIM writes and
 the exact reserved-incarnation protection capability. Source and target issuers
 must differ. The source operator configures an `outbound_scim_credential` entry
 under its own tenant: `reference`, `generation`, `target_issuer`, `target_client`,
-`key_file`, `kid`, `algorithm`. The key file is an absolute private regular file,
-at most 16 KiB and readable only by its owner. Register the corresponding public
+`key_file`, `kid`, `algorithm`. The key file is an absolute private regular file containing **DER-encoded
+PKCS#8**, at most 16 KiB and readable only by its owner (mode `0600`). PEM input
+is refused at startup. For an ES256 operator key, create it in a private operator
+location, or convert an existing private PEM without printing key material:
+
+```sh
+umask 077
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
+  -outform DER -out <operator-private-key.der>
+# Existing PKCS#8 PEM input:
+openssl pkcs8 -topk8 -nocrypt -inform PEM -outform DER \
+  -in <existing-private-key.pem> -out <operator-private-key.der>
+chmod 600 <operator-private-key.der>
+```
+
+The configured `algorithm` must match the key (`ES256` here), and `kid` must
+match the public JWK registered on the target. Keep both input and output
+private; never place them in source control or upload the private key. Register the corresponding public
 key on the target client, with `admin.scim:read admin.scim:write` and the exact
 `<target-issuer>/admin/api/v1` resource. Private bytes are never supplied through
 the administration API, database or console. The registry admits 100 complete

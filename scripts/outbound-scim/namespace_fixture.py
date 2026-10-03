@@ -27,6 +27,8 @@ def command(arguments, body=None, timeout=90):
     if result.returncode:
         # Never print Docker config, runtime logs or child stderr with credentials.
         stage = next((line for line in result.stderr.splitlines() if line.startswith('OUTBOUND_SCIM_STAGE=')), '')
+        if not stage:
+            stage = ','.join(marker for marker in ('ERR_MODULE_NOT_FOUND', 'SyntaxError', 'ENOENT', 'ENOSPC') if marker in result.stderr)
         raise RuntimeError('owned outbound fixture command refused: ' + Path(arguments[0]).name + (' ' + stage if stage else ''))
     return result.stdout.strip()
 
@@ -103,7 +105,7 @@ def namespace(binary, certificate_directory):
                 return name
 
             def start_relay():
-                command(['docker', 'exec', '-d', helper, 'python', '/fixture/peer_proxy.py', '/fixture/relay.json'])
+                command(['docker', 'exec', '-d', '--user', str(os.getuid()) + ':' + str(os.getgid()), helper, 'python', '/fixture/peer_proxy.py', '/fixture/relay.json'])
 
             yield {'root': root, 'gateway': gateway, 'database_host': database_host, 'helper': helper,
                    'target_issuer': 'https://' + HOSTNAME + ':9446/t/target',

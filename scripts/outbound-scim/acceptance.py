@@ -108,11 +108,11 @@ def main():
                 databases.append(database)
             source_db, target_db = databases
             key = ec.generate_private_key(ec.SECP256R1())
-            (owned['root'] / 'operator.pem').write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+            (owned['root'] / 'operator.der').write_bytes(key.private_bytes(serialization.Encoding.DER, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
             generation = str(uuid.uuid4())
             next_generation = str(uuid.uuid4())
             next_key = ec.generate_private_key(ec.SECP256R1())
-            (owned['root'] / 'operator-next.pem').write_bytes(next_key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+            (owned['root'] / 'operator-next.der').write_bytes(next_key.private_bytes(serialization.Encoding.DER, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
             next_jwk = public_jwk(next_key)
             next_jwk['kid'] = 'outbound-peer-2'
             credential = f'''[[tenant.outbound_scim_credential]]
@@ -120,11 +120,11 @@ reference = "owned-peer"
 generation = "{generation}"
 target_issuer = "{owned['target_issuer']}"
 target_client = "outbound-peer"
-key_file = "/fixture/operator.pem"
+key_file = "/fixture/operator.der"
 kid = "outbound-peer-1"
 algorithm = "ES256"
 '''
-            credential += credential.replace(generation, next_generation).replace('operator.pem', 'operator-next.pem').replace('outbound-peer-1', 'outbound-peer-2')
+            credential += credential.replace(generation, next_generation).replace('operator.der', 'operator-next.der').replace('outbound-peer-1', 'outbound-peer-2')
             environment = {'ASTERIUS_KEK': 'YXN0ZXJpdXMtZGV2LWtlay1ub3QtYS1zZWNyZXQhISE=',
                            'ASTERIUS_ADMIN_PASSWORD': secrets.token_urlsafe(32)}
             target = owned['start_runtime']('target', configuration(owned, target_db, target=True), environment)
