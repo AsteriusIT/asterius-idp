@@ -773,6 +773,37 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn missing_historical_evidence_has_explicit_status() {
+        let query = trail(0, false);
+        let tenant = TenantId::new("acme");
+        let now = OffsetDateTime::UNIX_EPOCH;
+        let plain = render_detail(query.as_ref(), &tenant, &entry(exchange()), now)
+            .await
+            .expect("plain event");
+        assert_eq!(plain["diagnostic"]["status"], "not_recorded");
+        let reference = uuid::Uuid::new_v4().to_string();
+        let with_reference = exchange().detail(
+            Detail::new()
+                .text("diagnostic_id", &reference)
+                .number("diagnostic_expires_at", 100),
+        );
+        let active = render_detail(query.as_ref(), &tenant, &entry(with_reference.clone()), now)
+            .await
+            .expect("missing snapshot");
+        assert_eq!(active["diagnostic"]["status"], "unavailable");
+        let expired = render_detail(
+            query.as_ref(),
+            &tenant,
+            &entry(with_reference),
+            now + time::Duration::seconds(100),
+        )
+        .await
+        .expect("expired snapshot");
+        assert_eq!(expired["diagnostic"]["status"], "expired");
+        assert!(expired["diagnostic"].get("snapshot").is_none());
+    }
+
     fn trail(n: usize, fail: bool) -> Arc<Trail> {
         Arc::new(Trail {
             events: (0..n).map(|_| exchange()).collect(),

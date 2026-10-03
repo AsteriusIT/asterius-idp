@@ -625,7 +625,7 @@ impl AgentPolicy<'_> {
         let Some(diagnostics) = decision.diagnostics() else {
             return;
         };
-        let event = AuditEvent::new(
+        let mut event = AuditEvent::new(
             tenant.id.clone(),
             EventType::ACCESS_EVALUATED,
             if decision.permitted() {
@@ -643,6 +643,9 @@ impl AgentPolicy<'_> {
                 .label("enforcement_point", "token_issuance")
                 .flag("decision", decision.permitted()),
         );
+        if let Some(session) = &grant.session {
+            event = event.session(session.clone());
+        }
         if let Err(error) = self.audit.record_with_diagnostics(event, diagnostics).await {
             tracing::error!(%error, tenant = %tenant.id, "issuance diagnostics were not recorded");
         }

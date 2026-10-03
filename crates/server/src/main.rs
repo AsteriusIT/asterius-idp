@@ -401,7 +401,7 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
                     store.pool().clone(),
                 )),
                 Arc::clone(&outbound),
-                Arc::new(PgAuditSink::new(store.pool().clone())),
+                asterius_server::http::request_id::audit(PgAuditSink::new(store.pool().clone())),
             ))),
             upstream_identity_resolver: Some(Arc::new(
                 asterius_server::http::upstream_oidc::StoreUpstreamIdentityResolver::new(

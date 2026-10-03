@@ -160,7 +160,7 @@ jobs:
       # These database/race regressions stay ignored in local worker runs;
       # explicitly select them here so the persistence contracts are exercised.
       - name: Managed groups and session policy PostgreSQL regressions
-        run: cargo nextest run --workspace --all-features --run-ignored only -E 'binary(groups) or test(session_policy)' --no-fail-fast
+        run: cargo nextest run --workspace --all-features --run-ignored only -E 'binary(groups) or test(session_policy) or binary(authorization_diagnostics)' --no-fail-fast
 
       # Same reason: `cargo test` aborts after the first failing doctest
       # binary otherwise.

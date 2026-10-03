@@ -448,6 +448,7 @@ function DetailList({ row }: Readonly<{ row: AuditRow }>): JSX.Element {
   if (row.client_id !== undefined) {
     entries.push(['client', row.client_id]);
   }
+  if (row.request_id !== undefined) { entries.push(['support reference', row.request_id]); }
   if (row.grant_id !== undefined) {
     entries.push(['grant', row.grant_id]);
   }
@@ -523,6 +524,7 @@ function AuditEventDrawer() {
             {record.request_id && <a href={hrefOf('audit', { request_id: record.request_id })}>Follow request</a>}
             {record.session_id && <a href={hrefOf('audit', { session: record.session_id })}>Follow session</a>}
             {record.grant_id && <a href={hrefOf('audit', { grant: record.grant_id })}>Follow grant</a>}
+            {typeof record.detail?.parent_grant_id === 'string' && <a href={hrefOf('audit', { grant: record.detail.parent_grant_id })}>Follow parent grant</a>}
           </Actions>
           <CopyValue value={new URL(hrefOf('audit', { id: String(record.id) }), window.location.href).href} label="Copy event link" />
         </>}

@@ -556,6 +556,21 @@ async fn decide_many(
         semantic => short_circuit(context, &prepared, semantic).await,
     };
 
+    for (prepared, decision) in prepared.iter().zip(&decisions) {
+        if let (Some(prepared), Some(decision)) = (prepared, decision)
+            && decision.explanation().is_some()
+        {
+            record(
+                context,
+                pep,
+                prepared,
+                started,
+                Some(decision),
+                Detail::new().label("evaluation_kind", "boxcar_item"),
+            )
+            .await;
+        }
+    }
     record_many(context, pep, &request, started, &decisions).await;
 
     let body = if request.boxcar {

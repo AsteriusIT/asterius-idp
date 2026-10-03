@@ -66,7 +66,7 @@ impl TokenExchange<'_> {
         })?;
         context
             .store
-            .issue(&verified, &grant, self.now)
+            .issue_with_audit(&verified, &grant, self.now, self.audit)
             .await
             .map_err(|error| match error {
                 DomainError::Invalid { .. } => subject_refused(),

@@ -72,9 +72,12 @@ export interface Session {
 /** A refusal from the API, carrying the status the console has to act on. */
 export class ApiError extends Error {
   readonly status: number;
+  readonly supportReference: string | undefined;
 
-  constructor(status: number, message: string) {
-    super(message);
+  constructor(status: number, message: string, supportReference?: string) {
+    const validReference = supportReference !== undefined && /^[0-9a-f]{32}$/.test(supportReference) ? supportReference : undefined;
+    super(validReference === undefined ? message : `${message} Support reference: ${validReference}.`);
+    this.supportReference = validReference;
     this.name = 'ApiError';
     this.status = status;
   }
@@ -144,7 +147,7 @@ async function request(target: string, init: RequestInit, label = target): Promi
 
   if (!response.ok) {
     if (response.status === 401) window.dispatchEvent(new Event(SESSION_EXPIRED));
-    throw new ApiError(response.status, await refusalMessage(response, init.method ?? 'GET', label));
+    throw new ApiError(response.status, await refusalMessage(response, init.method ?? 'GET', label), response.headers.get('X-Asterius-Request-ID') ?? undefined);
   }
   // A 204 is an answer, not a body. `Response.json()` on an empty one throws
   // "Unexpected end of JSON input", and a caller that succeeded would then

@@ -1245,6 +1245,12 @@ impl TokenExchange<'_> {
         .detail(detail);
         if let Some(grant) = grant {
             event = event.grant(grant.id.clone());
+            if let Some(session) = &grant.session {
+                event = event.session(session.clone());
+            }
+            if let Some(parent) = &grant.parent {
+                event.detail = event.detail.text("parent_grant_id", parent.as_str());
+            }
         }
         if let Some(subject) = subject {
             event = event.subject(subject.as_str().to_owned());

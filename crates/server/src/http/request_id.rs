@@ -134,6 +134,44 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
+    #[derive(Debug)]
+    struct UnusedSink;
+    #[async_trait::async_trait]
+    impl asterius_domain::AuditSink for UnusedSink {
+        async fn record(
+            &self,
+            _event: asterius_domain::AuditEvent,
+        ) -> Result<(), asterius_domain::DomainError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn trusted_scope_overwrites_event_metadata_before_atomic_writes() {
+        let sink = RequestAuditSink::new(std::sync::Arc::new(UnusedSink));
+        let mut event = asterius_domain::AuditEvent::new(
+            asterius_domain::TenantId::new("tenant"),
+            asterius_domain::audit::EventType::AUTH_LOGIN,
+            asterius_domain::audit::Outcome::Success,
+            asterius_domain::audit::Actor::System,
+            time::OffsetDateTime::UNIX_EPOCH,
+        );
+        event.request_id = Some("untrusted-existing-reference".to_owned());
+        let expected = RequestId::generate();
+        let prepared = AUDIT_REQUEST
+            .scope(expected.clone(), async {
+                asterius_domain::AuditSink::prepare(&sink, event.clone())
+            })
+            .await;
+        assert_eq!(prepared.request_id.as_deref(), Some(expected.as_str()));
+        assert_eq!(
+            asterius_domain::AuditSink::prepare(&sink, event)
+                .request_id
+                .as_deref(),
+            Some("untrusted-existing-reference")
+        );
+    }
+
     #[tokio::test]
     async fn audit_scope_isolated_across_requests_and_spawned_tasks() {
         let first = RequestId::generate();

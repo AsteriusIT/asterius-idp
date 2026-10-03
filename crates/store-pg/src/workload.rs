@@ -26,6 +26,23 @@ impl PgWorkloadTrusts {
         grant: &asterius_domain::Grant,
         now: OffsetDateTime,
     ) -> Result<(), DomainError> {
+        self.issue_with_audit(
+            verified,
+            grant,
+            now,
+            &crate::PgAuditSink::new(self.pool.clone()),
+        )
+        .await
+    }
+
+    /// Preserve the request's trusted audit metadata inside the issuance transaction.
+    pub async fn issue_with_audit(
+        &self,
+        verified: &Verified,
+        grant: &asterius_domain::Grant,
+        now: OffsetDateTime,
+        audit: &dyn asterius_domain::AuditSink,
+    ) -> Result<(), DomainError> {
         let expires = grant.expires_at.ok_or_else(invalid)?;
         if grant.client != verified.client
             || grant.tenant != verified.tenant
@@ -75,7 +92,7 @@ impl PgWorkloadTrusts {
                 .text("trust_id", &verified.trust_id)
                 .number("trust_version", verified.trust_version),
         );
-        crate::audit::append(&mut tx, event).await?;
+        crate::audit::append(&mut tx, audit.prepare(event)).await?;
         tx.commit().await.map_err(to_domain_error)
     }
 }

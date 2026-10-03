@@ -2451,3 +2451,24 @@ returned cloud object IDs and random local database; an external public-ID manif
 supports recovery if cleanup fails. A process/host crash can leave owned cloud
 objects, so the operator must inspect that manifest. Linked decisions ast-9mjp and
 ast-p3p3 must precede any compatible authentication or mapping expansion.
+
+## Historical authorization evidence and support correlation
+
+Only server-generated HTTP references enter audit correlation; AuthZEN's caller
+header echo is a separate response field. Tokio task scope prevents concurrent
+requests, detached jobs and cancellation from inheriting another request's
+reference. Transactional workload issuance decorates its event before the same
+atomic grant/provenance/audit commit. Session links carry lookup digests rather
+than browser credentials. Tenant/event authorization precedes evidence lookup;
+references confer no access permission. Existing bounded keyset pagination
+applies to request/session/grant filters and exports.
+
+Boolean diagnostic snapshots identify the actual evaluated policy, including a
+cached issuance decision's original revision. They omit context inputs and
+policy literals, redact credential-shaped rule IDs, and remain bounded to
+64 KiB. They expire separately after seven days and are unreadable at the expiry
+boundary even before physical sweep. Their UUID and expiry remain in the
+immutable event, whose hash-chain behavior is unchanged. Missing/expired evidence
+is explicit; current policies are never presented as historical decisions.
+Unintegrated downstream decisions and non-policy issuance paths are outside this
+visibility boundary. An audit outage cannot alter a completed PDP verdict.

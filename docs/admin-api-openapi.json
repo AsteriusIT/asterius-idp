@@ -670,6 +670,26 @@
             }
           },
           {
+            "description": "A server-generated HTTP support reference (32 lowercase hexadecimal characters).",
+            "in": "query",
+            "name": "request_id",
+            "required": false,
+            "schema": {
+              "maxLength": 256,
+              "type": "string"
+            }
+          },
+          {
+            "description": "A session lookup digest (64 lowercase hexadecimal characters), never the browser cookie.",
+            "in": "query",
+            "name": "session",
+            "required": false,
+            "schema": {
+              "maxLength": 256,
+              "type": "string"
+            }
+          },
+          {
             "description": "An event type such as token.exchanged. Repeatable, or comma separated; the result is the union.",
             "in": "query",
             "name": "type",
@@ -812,6 +832,26 @@
             }
           },
           {
+            "description": "A server-generated HTTP support reference (32 lowercase hexadecimal characters).",
+            "in": "query",
+            "name": "request_id",
+            "required": false,
+            "schema": {
+              "maxLength": 256,
+              "type": "string"
+            }
+          },
+          {
+            "description": "A session lookup digest (64 lowercase hexadecimal characters), never the browser cookie.",
+            "in": "query",
+            "name": "session",
+            "required": false,
+            "schema": {
+              "maxLength": 256,
+              "type": "string"
+            }
+          },
+          {
             "description": "An event type such as token.exchanged. Repeatable, or comma separated; the result is the union.",
             "in": "query",
             "name": "type",
@@ -928,11 +968,160 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "properties": {
+                    "diagnostic": {
+                      "description": "Snapshot and expires_at are present only for recorded evidence. Other statuses explain missing evidence; no current-policy reconstruction.",
+                      "properties": {
+                        "expires_at": {
+                          "format": "date-time",
+                          "type": "string"
+                        },
+                        "snapshot": {
+                          "description": "Redacted bounded boolean evidence of the actual evaluated policy; cached issuance retains its original revision. Expires independently after seven days. No tokens, context input values or policy literals.",
+                          "properties": {
+                            "enforcement_point": {
+                              "type": "string"
+                            },
+                            "policy_revision": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "policy_updated_at": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "rules": {
+                              "items": {
+                                "properties": {
+                                  "applicable": {
+                                    "type": "boolean"
+                                  },
+                                  "conditions": {
+                                    "items": {
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string"
+                                        },
+                                        "matched": {
+                                          "type": "boolean"
+                                        },
+                                        "missing": {
+                                          "type": "boolean"
+                                        },
+                                        "path": {
+                                          "type": "string"
+                                        }
+                                      },
+                                      "required": [
+                                        "path",
+                                        "kind",
+                                        "matched",
+                                        "missing"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    "maxItems": 256,
+                                    "type": "array"
+                                  },
+                                  "effect": {
+                                    "enum": [
+                                      "permit",
+                                      "deny"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  "id": {
+                                    "maxLength": 256,
+                                    "type": "string"
+                                  },
+                                  "matched": {
+                                    "type": "boolean"
+                                  }
+                                },
+                                "required": [
+                                  "id",
+                                  "effect",
+                                  "applicable",
+                                  "matched",
+                                  "conditions"
+                                ],
+                                "type": "object"
+                              },
+                              "maxItems": 128,
+                              "type": "array"
+                            },
+                            "truncated": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "policy_revision",
+                            "policy_updated_at",
+                            "enforcement_point",
+                            "rules",
+                            "truncated"
+                          ],
+                          "type": "object"
+                        },
+                        "status": {
+                          "enum": [
+                            "recorded",
+                            "expired",
+                            "unavailable",
+                            "not_recorded",
+                            "opaque"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "status"
+                      ],
+                      "type": "object"
+                    },
+                    "grant_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "hash": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "request_id": {
+                      "pattern": "^[0-9a-f]{32}$",
+                      "type": "string"
+                    },
+                    "session_id": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "hash",
+                    "diagnostic"
+                  ],
                   "type": "object"
                 }
               }
             },
-            "description": "The operation succeeded."
+            "description": "The operation succeeded.",
+            "headers": {
+              "X-Asterius-Request-ID": {
+                "description": "Fresh server-generated support reference, independent of any caller AuthZEN echo.",
+                "schema": {
+                  "pattern": "^[0-9a-f]{32}$",
+                  "type": "string"
+                }
+              }
+            }
           },
           "401": {
             "content": {
@@ -953,6 +1142,16 @@
               }
             },
             "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The event does not exist in the routed tenant; evidence is looked up only after this check."
           },
           "429": {
             "content": {
