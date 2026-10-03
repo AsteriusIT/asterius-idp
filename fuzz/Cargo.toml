@@ -561,6 +561,34 @@ doc = false
 bench = false
 
 [[bin]]
+name = "outbound_scim_commands"
+path = "fuzz_targets/outbound_scim_commands.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "outbound_scim_document"
+path = "fuzz_targets/outbound_scim_document.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "outbound_scim_identity"
+path = "fuzz_targets/outbound_scim_identity.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "outbound_scim_peer"
+path = "fuzz_targets/outbound_scim_peer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "pairwise_subject"
 path = "fuzz_targets/pairwise_subject.rs"
 test = false

@@ -2257,7 +2257,117 @@ pub const GOVERNANCE_FINDINGS: Operation = Operation::read(
     "Reports missing ownership, source disconnection, activity uncertainty and overdue privileged reviews without changing access",
 );
 
+pub const OUTBOUND_SCIM_LIST: Operation = Operation::read(
+    "outbound_scim.list",
+    "/outbound-scim/connectors",
+    S::Get,
+    A::new(R::ConsoleTenant, "admin.outbound_scim:read"),
+    "Lists bounded outbound SCIM connectors",
+);
+pub const OUTBOUND_SCIM_CREDENTIALS: Operation = Operation::read(
+    "outbound_scim.credentials",
+    "/outbound-scim/credentials",
+    S::Get,
+    A::new(R::ConsoleTenant, "admin.outbound_scim:read"),
+    "Lists only operator credential references bound to this source tenant",
+);
+pub const OUTBOUND_SCIM_ASSIGNMENTS: Operation = Operation::read(
+    "outbound_scim.assignments",
+    "/outbound-scim/connectors/{connector_id}/assignments",
+    S::Get,
+    A::new(R::ConsoleTenant, "admin.outbound_scim:read"),
+    "Lists current outbound assignments and retained mapping evidence",
+);
+pub const OUTBOUND_SCIM_CREATE: Operation = Operation::mutation(
+    "outbound_scim.create",
+    "/outbound-scim/connectors",
+    M::Post,
+    A::new(R::ConsoleTenant, "admin.outbound_scim:write"),
+    "Creates a disabled outbound connector without credential bytes",
+);
+pub const OUTBOUND_SCIM_CONFIGURE: Operation = Operation::mutation(
+    "outbound_scim.configure",
+    "/outbound-scim/connectors/{connector_id}",
+    M::Put,
+    A::new(R::ConsoleTenant, "admin.outbound_scim:write"),
+    "Changes an outbound connector using its exact configuration revision",
+);
+pub const OUTBOUND_SCIM_SELECT: Operation = Operation::mutation(
+    "outbound_scim.select",
+    "/outbound-scim/connectors/{connector_id}/assignments",
+    M::Post,
+    A::new(R::ConsoleTenant, "admin.outbound_scim:write"),
+    "Explicitly selects bounded local Users or Groups for provisioning",
+);
+pub const OUTBOUND_SCIM_UNSELECT: Operation = Operation::mutation(
+    "outbound_scim.unselect",
+    "/outbound-scim/connectors/{connector_id}/assignments/{assignment_id}/unselect",
+    M::Post,
+    A::new(R::ConsoleTenant, "admin.outbound_scim:write"),
+    "Queues disable or group-empty work while retaining mapping authority",
+);
+pub const OUTBOUND_SCIM_RECONCILE: Operation = Operation::mutation(
+    "outbound_scim.reconcile",
+    "/outbound-scim/connectors/{connector_id}/reconcile",
+    M::Post,
+    A::new(R::ConsoleTenant, "admin.outbound_scim:write"),
+    "Queues one bounded page of ownership-checked drift reconciliation",
+);
+
+pub const OUTBOUND_SCIM_PREVIEW: Operation = Operation::mutation(
+    "outbound_scim.preview",
+    "/outbound-scim/connectors/{connector_id}/preview",
+    M::Post,
+    A::new(R::ConsoleTenant, "admin.outbound_scim:write"),
+    "Authenticates the exact pinned peer and reads SCIM configuration before bounded enablement; no target mappings are written",
+);
+
+pub const OUTBOUND_SCIM_READ: Operation = Operation::read(
+    "outbound_scim.read",
+    "/outbound-scim/connectors/{connector_id}",
+    S::Get,
+    A::new(R::ConsoleTenant, "admin.outbound_scim:read"),
+    "Reads the current configuration revision of one source-tenant connector",
+);
+
+pub const OUTBOUND_SCIM_DRY_RUN: Operation = Operation::mutation(
+    "outbound_scim.dry_run",
+    "/outbound-scim/connectors/{connector_id}/assignments/{assignment_id}/dry-run",
+    M::Post,
+    A::new(R::ConsoleTenant, "admin.outbound_scim:write"),
+    "Reads current source and owned target drift with authentication but no SCIM mutation or mapping write",
+);
+
+pub const OUTBOUND_SCIM_LIFECYCLE_READ: Operation = Operation::read(
+    "outbound_scim.lifecycle_read",
+    "/outbound-scim/connectors/{connector_id}/assignments/{assignment_id}/lifecycle",
+    S::Get,
+    A::new(R::ConsoleTenant, "admin.outbound_scim:read"),
+    "Reads the latest 25 explicit lifecycle approvals and retained completion receipts",
+);
+
+pub const OUTBOUND_SCIM_LIFECYCLE: Operation = Operation::mutation(
+    "outbound_scim.lifecycle",
+    "/outbound-scim/connectors/{connector_id}/assignments/{assignment_id}/lifecycle",
+    M::Post,
+    A::new(R::ConsoleTenant, "admin.outbound_scim:write"),
+    "Queues an explicitly confirmed archive, recreate or separately enabled reviewed DELETE for the exact saved target incarnation and version",
+);
+
 static REGISTRY: &[Operation] = &[
+    OUTBOUND_SCIM_LIFECYCLE_READ,
+    OUTBOUND_SCIM_LIFECYCLE,
+    OUTBOUND_SCIM_DRY_RUN,
+    OUTBOUND_SCIM_READ,
+    OUTBOUND_SCIM_PREVIEW,
+    OUTBOUND_SCIM_LIST,
+    OUTBOUND_SCIM_CREDENTIALS,
+    OUTBOUND_SCIM_ASSIGNMENTS,
+    OUTBOUND_SCIM_CREATE,
+    OUTBOUND_SCIM_CONFIGURE,
+    OUTBOUND_SCIM_SELECT,
+    OUTBOUND_SCIM_UNSELECT,
+    OUTBOUND_SCIM_RECONCILE,
     GOVERNANCE_FINDINGS,
     GOVERNANCE_REVIEW_READ,
     GOVERNANCE_REVIEWERS,

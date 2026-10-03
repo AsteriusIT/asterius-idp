@@ -459,6 +459,26 @@ impl PgOutbox {
     pub async fn ack(&self, event: &OutboxEvent, outcome: &Outcome) -> Result<(), DomainError> {
         let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
 
+        // The lease may have been reclaimed while this worker was outside the
+        // database. Lock before writing either receipt: an older attempt must
+        // never terminate a newer claim or manufacture a successful delivery.
+        // Lease expiry alone does not supersede the attempt; a current claimant
+        // can finish until another worker advances the counter under this lock.
+        let current = sqlx::query_scalar::<_, bool>(
+            "select status = 'claimed' and attempts::bigint = $3
+               from outbox where tenant_id = $1 and outbox_id = $2 for update",
+        )
+        .bind(event.tenant.as_str())
+        .bind(event.id)
+        .bind(i64::from(event.attempt))
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(to_domain_error)?;
+        if current != Some(true) {
+            transaction.rollback().await.map_err(to_domain_error)?;
+            return Ok(());
+        }
+
         sqlx::query!(
             "insert into outbox_attempts
                  (tenant_id, outbox_id, attempt, attempted_at, outcome, detail)

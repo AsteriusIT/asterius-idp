@@ -29,6 +29,7 @@ pub mod locale;
 pub mod managed_devices;
 pub mod messages;
 pub mod notification;
+pub mod outbound_scim;
 pub mod outbox;
 pub mod policy;
 pub mod ports;

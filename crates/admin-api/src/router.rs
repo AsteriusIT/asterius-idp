@@ -21,6 +21,7 @@
 
 mod governance;
 mod governance_reports;
+mod outbound_scim;
 
 use asterius_domain::entities::session::{SessionId, SessionRevocation};
 use asterius_domain::{
@@ -347,6 +348,9 @@ async fn route(
 ) -> Result<Response, AdminError> {
     if id.starts_with("temporary_kubernetes.") {
         return context.temporary_kubernetes(id, body).await;
+    }
+    if id.starts_with("outbound_scim.") {
+        return context.outbound_scim(id, body).await;
     }
     if id == "governance.findings" {
         return context.governance_findings().await;

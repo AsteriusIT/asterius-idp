@@ -52,7 +52,11 @@ mod oid4vp_transactions;
 mod oidc_bindings;
 mod oidc_providers;
 mod oidc_upstream_pending;
+mod outbound_scim;
 mod outbox;
+pub use outbound_scim::{
+    PgOutboundScimAdministration, PgOutboundScimJobs, PgOutboundScimLifecycle,
+};
 mod overview;
 mod passkeys;
 mod passwords;

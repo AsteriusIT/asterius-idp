@@ -134,6 +134,30 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
     }
 
     /// Read-only evidence; absent adapters do not synthesize healthy reports.
+    fn outbound_scim(
+        &self,
+    ) -> Option<Arc<dyn asterius_domain::outbound_scim::OutboundScimAdministration>> {
+        None
+    }
+
+    fn outbound_scim_lifecycle(
+        &self,
+    ) -> Option<Arc<dyn asterius_domain::outbound_scim::OutboundScimLifecycle>> {
+        None
+    }
+
+    fn outbound_scim_inspection(
+        &self,
+    ) -> Option<Arc<dyn asterius_domain::outbound_scim::OutboundScimInspection>> {
+        None
+    }
+
+    fn outbound_scim_credentials(
+        &self,
+    ) -> Option<Arc<dyn asterius_domain::outbound_scim::OutboundScimCredentialCatalogue>> {
+        None
+    }
+
     fn governance_reports(
         &self,
     ) -> Option<Arc<dyn asterius_domain::governance_reports::GovernanceReports>> {

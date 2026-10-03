@@ -68,7 +68,7 @@ cargo +nightly fuzz run --target x86_64-unknown-linux-gnu <target> path/to/crash
 
 ## Coverage
 
-The 115 targets below cover 153 declared entry points. Generated from the
+The 119 targets below cover 160 declared entry points. Generated from the
 `// fuzz-target:` markers in `crates/`.
 
 | Fuzz target | Entry point | Source |
@@ -172,6 +172,13 @@ The 115 targets below cover 153 declared entry points. Generated from the
 | `login_bucket` | `account_bucket` | `crates/domain/src/rate_limit.rs` |
 | `logout_request` | `LogoutRequest::parse` | `crates/oidc/src/logout.rs` |
 | `managed_device_input` | `Update::parse` | `crates/domain/src/managed_devices.rs` |
+| `outbound_scim_commands` | `parse_configure` | `crates/domain/src/outbound_scim/administration.rs` |
+| `outbound_scim_commands` | `parse_lifecycle` | `crates/domain/src/outbound_scim/lifecycle.rs` |
+| `outbound_scim_commands` | `parse_selection` | `crates/domain/src/outbound_scim/administration.rs` |
+| `outbound_scim_document` | `parse_document` | `crates/domain/src/outbound_scim/protocol.rs` |
+| `outbound_scim_identity` | `canonical_issuer` | `crates/domain/src/outbound_scim/validation.rs` |
+| `outbound_scim_peer` | `parse_peer_capabilities` | `crates/domain/src/outbound_scim/peer.rs` |
+| `outbound_scim_peer` | `parse_peer_token` | `crates/domain/src/outbound_scim/peer.rs` |
 | `pairwise_subject` | `PairwiseSalt::derive_subject` | `crates/domain/src/entities/user.rs` |
 | `par_form` | `validate` | `crates/oidc/src/authorize.rs` |
 | `password_policy` | `normalise` | `crates/domain/src/entities/password.rs` |

@@ -329,6 +329,8 @@ pub struct TenantConfig {
     /// Optional operator-pinned LDAPS source. No synchronization runs merely
     /// because this configuration exists.
     pub ldap_source: Option<LdapSourceConfig>,
+    /// Fixed deployment credentials; no synchronization is enabled by this catalogue.
+    pub outbound_scim_credentials: Vec<crate::outbound_scim::OperatorCredential>,
     /// Client IDs for which PAR requires signed JAR and `response_mode=jwt`.
     pub fapi_message_signing_clients: Vec<String>,
     /// Client IDs whose authorization callback must use HTTPS for IPSIE SL1.
@@ -913,6 +915,7 @@ struct RawTenant {
     http_signature_peer: Option<Vec<RawHttpSignaturePeer>>,
     ssf_upstream_peer: Option<Vec<RawSsfUpstreamPeer>>,
     ldap_source: Option<RawLdapSource>,
+    outbound_scim_credential: Option<Vec<RawOutboundScimCredential>>,
     fapi_message_signing_client: Option<Vec<String>>,
     ipsie_https_only_client: Option<Vec<String>>,
     ipsie_identity_only_client: Option<Vec<String>>,
@@ -924,6 +927,26 @@ struct RawTenant {
 struct RawIpsieRpSession {
     client_id: String,
     lifetime_seconds: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawOutboundScimCredential {
+    reference: String,
+    generation: uuid::Uuid,
+    target_issuer: String,
+    target_client: String,
+    key_file: PathBuf,
+    kid: String,
+    algorithm: String,
+}
+impl std::fmt::Debug for RawOutboundScimCredential {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RawOutboundScimCredential")
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -2378,6 +2401,13 @@ fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantCo
         let ldap_source = tenant
             .ldap_source
             .and_then(|source| validate_ldap_source(index, source, errors));
+        let outbound_scim_credentials = validate_outbound_scim_credentials(
+            index,
+            id.as_ref(),
+            issuer.as_ref(),
+            tenant.outbound_scim_credential,
+            errors,
+        );
         let fapi_message_signing_clients = validate_fapi_message_signing_clients(
             index,
             tenant.fapi_message_signing_client,
@@ -2413,6 +2443,7 @@ fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantCo
                 http_signature_peers,
                 ssf_upstream_peers,
                 ldap_source,
+                outbound_scim_credentials,
                 fapi_message_signing_clients,
                 ipsie_https_only_clients,
                 ipsie_identity_only_clients,
@@ -2421,6 +2452,65 @@ fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantCo
         }
     }
     tenants
+}
+
+fn validate_outbound_scim_credentials(
+    tenant_index: usize,
+    tenant: Option<&TenantId>,
+    issuer: Option<&Issuer>,
+    raw: Option<Vec<RawOutboundScimCredential>>,
+    errors: &mut Collector,
+) -> Vec<crate::outbound_scim::OperatorCredential> {
+    use asterius_domain::outbound_scim::ConfigureConnector;
+    let path = format!("tenant[{tenant_index}].outbound_scim_credential");
+    let raw = raw.unwrap_or_default();
+    if raw.len() > 100 {
+        errors.problem(path, "credential catalogue exceeds 100 entries");
+        return Vec::new();
+    }
+    let Some(tenant) = tenant else {
+        return Vec::new();
+    };
+    let mut entries: Vec<crate::outbound_scim::OperatorCredential> = Vec::new();
+    for entry in raw {
+        let command = ConfigureConnector {
+            id: entry.generation,
+            expected_revision: None,
+            target_issuer: entry.target_issuer,
+            target_client: entry.target_client,
+            credential_ref: entry.reference,
+            credential_generation: entry.generation,
+            enabled: false,
+            allow_reviewed_delete: false,
+        };
+        let binding = command.binding(tenant);
+        let algorithm = SigningAlgorithm::parse(&entry.algorithm);
+        let valid = entry.key_file.is_absolute()
+            && !entry.kid.is_empty()
+            && entry.kid.len() <= 128
+            && entry
+                .kid
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+            && issuer.is_some_and(|issuer| issuer.as_str() != command.target_issuer);
+        match (binding, algorithm) {
+            (Ok(binding), Some(algorithm))
+                if valid && !entries.iter().any(|existing| existing.binding == binding) =>
+            {
+                entries.push(crate::outbound_scim::OperatorCredential {
+                    binding,
+                    algorithm,
+                    key_file: entry.key_file,
+                    kid: asterius_domain::Kid::new(entry.kid),
+                });
+            }
+            _ => errors.problem(
+                path.clone(),
+                "invalid or duplicate scoped credential configuration",
+            ),
+        }
+    }
+    entries
 }
 
 fn validate_ssf_upstream_peers(
@@ -5054,5 +5144,89 @@ mod tests {
             problems.paths().any(|p| p == "admin.issuer"),
             "{problems:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod outbound_scim_credential_tests {
+    use super::*;
+
+    fn entry() -> RawOutboundScimCredential {
+        RawOutboundScimCredential {
+            reference: "peer-key".into(),
+            generation: uuid::Uuid::from_u128(1),
+            target_issuer: "https://target.example/t/remote".into(),
+            target_client: "provisioner".into(),
+            key_file: PathBuf::from("/run/private/peer.der"),
+            kid: "peer-key-1".into(),
+            algorithm: "ES256".into(),
+        }
+    }
+
+    #[test]
+    fn operator_credentials_bind_source_tenant_without_exposing_key_path() {
+        let tenant = TenantId::new("source");
+        let issuer = Issuer::parse("https://source.example/t/source").unwrap();
+        let mut errors = Collector::default();
+        let entries = validate_outbound_scim_credentials(
+            0,
+            Some(&tenant),
+            Some(&issuer),
+            Some(vec![entry()]),
+            &mut errors,
+        );
+        assert!(errors.0.is_empty());
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].binding.source_tenant, tenant);
+        assert_eq!(
+            entries[0].binding.target_admin_resource,
+            "https://target.example/t/remote/admin/api/v1"
+        );
+        let debug = format!("{:?}", entries[0]);
+        assert!(!debug.contains("peer.der"));
+        assert!(!debug.contains("target.example"));
+    }
+
+    #[test]
+    fn same_source_issuer_relative_path_and_duplicate_context_are_refused() {
+        let tenant = TenantId::new("source");
+        let issuer = Issuer::parse("https://target.example/t/remote").unwrap();
+        let mut errors = Collector::default();
+        assert!(
+            validate_outbound_scim_credentials(
+                0,
+                Some(&tenant),
+                Some(&issuer),
+                Some(vec![entry()]),
+                &mut errors,
+            )
+            .is_empty()
+        );
+        assert!(!errors.0.is_empty());
+        let issuer = Issuer::parse("https://source.example/t/source").unwrap();
+        let mut invalid = entry();
+        invalid.key_file = PathBuf::from("peer.der");
+        let mut errors = Collector::default();
+        assert!(
+            validate_outbound_scim_credentials(
+                0,
+                Some(&tenant),
+                Some(&issuer),
+                Some(vec![invalid]),
+                &mut errors,
+            )
+            .is_empty()
+        );
+        assert!(!errors.0.is_empty());
+        let mut errors = Collector::default();
+        let entries = validate_outbound_scim_credentials(
+            0,
+            Some(&tenant),
+            Some(&issuer),
+            Some(vec![entry(), entry()]),
+            &mut errors,
+        );
+        assert_eq!(entries.len(), 1);
+        assert!(!errors.0.is_empty());
     }
 }

@@ -14689,6 +14689,37 @@ mod outbox {
     }
 
     db_test! {
+        /// A late response from the previous claimant cannot complete the new
+        /// attempt or write an attempt trail claiming it delivered the event.
+        #[ignore = "slow PostgreSQL lease fencing; run in CI"]
+        async fn superseded_outbox_ack_preserves_current_claim(db) {
+            seed_tenant(&db.pool, "ob-fenced").await;
+            let now = OffsetDateTime::now_utc();
+            let id = queue(&db.pool, "ob-fenced", "logout.backchannel", None, now).await;
+            let outbox = outbox(&db.pool);
+            let previous = outbox.claim("previous", 1, now).await.expect("first claim");
+            let current = outbox.claim("current", 1, now + Duration::seconds(31))
+                .await.expect("replacement claim");
+            assert_eq!(current[0].attempt, 2);
+
+            outbox.ack(&previous[0], &Outcome::delivered(now + Duration::seconds(32)))
+                .await.expect("superseded ack is harmless");
+            assert_eq!(row_status(&db.pool, id).await, "claimed");
+            let attempts: i64 = sqlx::query_scalar(
+                "select count(*) from outbox_attempts where tenant_id = $1 and outbox_id = $2",
+            ).bind("ob-fenced").bind(id).fetch_one(&db.pool).await.expect("attempt count");
+            assert_eq!(attempts, 0);
+
+            outbox.ack(&current[0], &Outcome::delivered(now + Duration::seconds(33)))
+                .await.expect("current ack");
+            assert_eq!(row_status(&db.pool, id).await, "delivered");
+            outbox.ack(&previous[0], &Outcome::failed(&previous[0], now, "target_unavailable".to_owned()))
+                .await.expect("terminal state cannot be reversed");
+            assert_eq!(row_status(&db.pool, id).await, "delivered");
+        }
+    }
+
+    db_test! {
         /// A worker that dies after claiming and before acking must not lose
         /// the event. The lease lapses, the next worker takes the row again,
         /// and it comes back under the *same* id — which is what lets a
