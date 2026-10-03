@@ -40,6 +40,8 @@ test('Kubernetes 1.35 enforces schema, RBAC and admission boundaries', {skip:!pr
   const policy=JSON.parse(pass('admission typechecking completed',kubectl(['get','validatingadmissionpolicy','asterius-identity-acme','-o','json'])).output);
   assert.deepEqual(policy.status?.typeChecking?.expressionWarnings ?? [],[]);
   for(const object of examples.slice(2)) pass(`positive ${object.kind} example`,kubectl(['create','-f','-'],object,true));
+  pass('administrator installs controller finalizer',kubectl(['patch','application','billing','-n','identity-acme','--type=merge','-p',JSON.stringify({metadata:{finalizers:['identity.asterius.io/remote-resource']}})]));
+  deny('GitOps cannot strip controller finalizer',kubectl(['patch','application','billing','-n','identity-acme','--type=merge','-p',JSON.stringify({metadata:{finalizers:[]}})],null,true),/finalizer|denied/i);
   const app=structuredClone(examples[2]);
   app.metadata.name='cross-tenant';app.spec.tenantRef='other';
   deny('foreign tenantRef denied',kubectl(['create','-f','-'],app,true),/Unsupported value|tenantRef/);

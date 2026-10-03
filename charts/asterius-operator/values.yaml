@@ -1,0 +1,18 @@
+# Provision the tenant, confidential FAPI client, binding and Secrets separately.
+replicas: 2
+image:
+  repository: ""
+  digest: ""
+tenant: ""
+issuer: ""
+clientID: ""
+keyID: ""
+bindingUID: ""
+clusterID: ""
+secretNames:
+  - asterius-auth-key
+  - asterius-dpop-key
+  - asterius-ca
+  - application-public-jwks
+# Public GitOps group only; this Role grants no Secret or binding write authority.
+gitopsGroup: ""

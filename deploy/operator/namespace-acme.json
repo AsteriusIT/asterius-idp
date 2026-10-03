@@ -236,6 +236,10 @@
           {
             "expression": "request.namespace == 'identity-acme' && object.spec.tenantRef == params.metadata.name",
             "message": "identity must reference the administrator-owned binding in its own namespace"
+          },
+          {
+            "expression": "oldObject == null || !has(oldObject.metadata.finalizers) || !oldObject.metadata.finalizers.exists(f, f == 'identity.asterius.io/remote-resource') || (has(object.metadata.finalizers) && object.metadata.finalizers.exists(f, f == 'identity.asterius.io/remote-resource')) || request.userInfo.username == 'system:serviceaccount:identity-acme:asterius-controller' || authorizer.group('identity.asterius.io').resource('asteriustenantbindings').namespace(request.namespace).name('default').check('update').allowed()",
+            "message": "only the controller or binding administrator may remove the identity finalizer"
           }
         ]
       }

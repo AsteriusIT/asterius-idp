@@ -1,8 +1,8 @@
 # Kubernetes identity resources v1alpha1
 
 These manifests implement the schema, namespace admission and RBAC decision in
-[the ADR](../../docs/adr/kubernetes-identity-resources.md). They do not install a
-running controller; reconciliation is implemented by ast-dd1y.3.5.
+[the ADR](../../docs/adr/kubernetes-identity-resources.md). Install the controller
+through [its Helm chart and operations guide](../../docs/kubernetes-identity-operator.md).
 
 Generate reproducible manifests with:
 

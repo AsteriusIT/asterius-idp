@@ -1,0 +1,25 @@
+{
+  "checks": [
+    "three-kind canonical create",
+    "committed response loss and exact lookup recovery",
+    "ordinary writer drift reported without overwrite",
+    "new desired generation conditional convergence",
+    "restart preserves remote identities",
+    "different FAPI controller owner refused",
+    "real DPoP Secret rotation",
+    "invalid rotation failclosed without stale credential",
+    "status private-canary redaction",
+    "binding UID isolation",
+    "standby Lease",
+    "real HTTP timeout after owned server pause",
+    "real HTTP recovery",
+    "Retain preserves identity and releases owner",
+    "explicit adoption of released application",
+    "explicit dependent application deprovision",
+    "protection false confirmed before DELETE generation bump",
+    "conditional protected deletion"
+  ],
+  "recorded_at": "2026-10-03T12:11:27Z",
+  "server_binary_sha256": "f285716d9b514d2fc1e9052d44fbbe89eafc474f99eef3b76295661bd0d224b1",
+  "target": "Kubernetes v1.35.0"
+}
