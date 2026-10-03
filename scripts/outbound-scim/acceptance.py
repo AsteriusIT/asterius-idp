@@ -111,6 +111,10 @@ def main():
             (owned['root'] / 'operator.pem').write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
             generation = str(uuid.uuid4())
             next_generation = str(uuid.uuid4())
+            next_key = ec.generate_private_key(ec.SECP256R1())
+            (owned['root'] / 'operator-next.pem').write_bytes(next_key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+            next_jwk = public_jwk(next_key)
+            next_jwk['kid'] = 'outbound-peer-2'
             credential = f'''[[tenant.outbound_scim_credential]]
 reference = "owned-peer"
 generation = "{generation}"
@@ -120,7 +124,7 @@ key_file = "/fixture/operator.pem"
 kid = "outbound-peer-1"
 algorithm = "ES256"
 '''
-            credential += credential.replace(generation, next_generation)
+            credential += credential.replace(generation, next_generation).replace('operator.pem', 'operator-next.pem').replace('outbound-peer-1', 'outbound-peer-2')
             environment = {'ASTERIUS_KEK': 'YXN0ZXJpdXMtZGV2LWtlay1ub3QtYS1zZWNyZXQhISE=',
                            'ASTERIUS_ADMIN_PASSWORD': secrets.token_urlsafe(32)}
             target = owned['start_runtime']('target', configuration(owned, target_db, target=True), environment)
@@ -139,7 +143,7 @@ algorithm = "ES256"
             payload = owned['root'] / 'browser.json'
             payload.write_text(json.dumps({'issuer': owned['source_issuer'], 'target_issuer': owned['target_issuer'],
                 'database': source_db, 'target_database': target_db, 'db_container': DB_CONTAINER,
-                'client_id': client, 'secret': secret, 'credential_generation': generation, 'next_credential_generation': next_generation,
+                'client_id': client, 'secret': secret, 'credential_generation': generation, 'next_credential_generation': next_generation, 'next_public_jwk': next_jwk,
                 'tls_key': str(owned['root'] / 'key.pem'), 'tls_certificate': str(owned['root'] / 'cert.pem'),
                 'fault_file': str(owned['root'] / 'fault.json'), 'relay_evidence': str(owned['root'] / 'relay.jsonl'),
                 'cookie_file': str(owned['root'] / 'verified-session.json')}))
