@@ -595,9 +595,12 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
             config.mail.clone(),
         )?;
 
-        let served = serve(&config.server, app, shutdown_signal())
-            .await
-            .map_err(|e| format!("server stopped: {e}"));
+        let served = if let Some(hop) = &config.managed_devices.proxy_hop {
+            asterius_server::http::server::serve_authenticated_proxy(&config.server, hop, app, shutdown_signal())
+                .await.map_err(|error| format!("server stopped: {error}"))
+        } else {
+            serve(&config.server, app, shutdown_signal()).await.map_err(|error| format!("server stopped: {error}"))
+        };
 
         // Stopped after the listener, not before: a request already in flight
         // may still sign something, and a sweep that is mid-transaction should

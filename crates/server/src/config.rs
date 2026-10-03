@@ -675,7 +675,7 @@ struct RawConfig {
     #[serde(default)]
     mtls: RawMtls,
     #[serde(default)]
-    managed_devices: RawMtls,
+    managed_devices: RawManagedDevices,
     #[serde(default)]
     authzen: RawAuthzen,
 }
@@ -702,6 +702,23 @@ struct RawMtls {
     /// Tenant id to PEM file. `[mtls.trust_anchors]` in the file.
     #[serde(default)]
     trust_anchors: std::collections::BTreeMap<String, PathBuf>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawManagedDevices {
+    certificate_header: Option<String>,
+    #[serde(default)]
+    trust_anchors: std::collections::BTreeMap<String, PathBuf>,
+    proxy_hop: Option<RawDeviceProxyHop>,
+}
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawDeviceProxyHop {
+    certificate: PathBuf,
+    private_key: PathBuf,
+    trust_anchors: PathBuf,
+    client_fingerprints: Vec<String>,
 }
 
 /// The `[login]` table.
@@ -1449,7 +1466,10 @@ impl RawConfig {
         let dpop = validate_dpop(self.dpop, env, &mut errors);
         let mtls = validate_mtls(self.mtls, &tenants, &mut errors);
         let managed_devices = validate_managed_devices(self.managed_devices, &tenants, &mut errors);
-        if !managed_devices.trust_anchors.is_empty() {
+        if !managed_devices.trust_anchors.is_empty() || managed_devices.proxy_hop.is_some() {
+            if managed_devices.proxy_hop.is_none() || server.trusted_proxies.is_empty() {
+                errors.problem("managed_devices.proxy_hop", "requires authenticated proxy TLS material and trusted immediate proxy CIDRs");
+            }
             if server.mode != TransportMode::BehindProxy {
                 errors.problem("managed_devices", "device possession requires the trusted TLS proxy profile");
             }
@@ -1545,7 +1565,7 @@ fn validate_mtls(
 
 /// Validate the independently configured device trust boundary.
 fn validate_managed_devices(
-    raw: RawMtls,
+    raw: RawManagedDevices,
     tenants: &[TenantConfig],
     errors: &mut Collector,
 ) -> crate::managed_devices::DeviceConfig {
@@ -1578,10 +1598,25 @@ fn validate_managed_devices(
         trust_anchors.insert(TenantId::new(tenant), path);
     }
 
-    crate::managed_devices::DeviceConfig {
-        certificate_header,
-        trust_anchors,
-    }
+    let proxy_hop = raw.proxy_hop.map(|hop| {
+        let mut client_fingerprints = Vec::new();
+        if hop.client_fingerprints.is_empty() || hop.client_fingerprints.len() > 32 {
+            errors.problem("managed_devices.proxy_hop.client_fingerprints", "requires between one and32 exact SHA256 proxy client leaf pins");
+        }
+        for pin in hop.client_fingerprints {
+            match asterius_domain::managed_devices::LeafFingerprint::parse(&pin) {
+                Ok(pin) if !client_fingerprints.contains(&pin) => client_fingerprints.push(pin),
+                _ => errors.problem("managed_devices.proxy_hop.client_fingerprints", "pins must be distinct lower-case SHA256 hex digests"),
+            }
+        }
+        crate::managed_devices::ProxyHopConfig {
+            certificate: hop.certificate,
+            private_key: hop.private_key,
+            trust_anchors: hop.trust_anchors,
+            client_fingerprints,
+        }
+    });
+    crate::managed_devices::DeviceConfig { certificate_header, trust_anchors, proxy_hop }
 }
 
 /// Turns the `[login]` table into the two limits the sign-in paths apply.
@@ -3583,6 +3618,8 @@ pub fn declared_keys() -> BTreeMap<&'static str, Vec<String>> {
         ("mail", accepted_keys::<RawMail>()),
         ("dpop", accepted_keys::<RawDpop>()),
         ("mtls", accepted_keys::<RawMtls>()),
+        ("managed_devices", accepted_keys::<RawManagedDevices>()),
+        ("managed_devices.proxy_hop", accepted_keys::<RawDeviceProxyHop>()),
         ("authzen", accepted_keys::<RawAuthzen>()),
     ]
     .into_iter()
