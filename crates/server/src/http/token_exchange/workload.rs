@@ -43,6 +43,7 @@ impl TokenExchange<'_> {
         let (grant, targeting, lifetime) = self
             .workload_grant(tenant, client, params, request, &verified, &limits)
             .await?;
+        self.permitted(tenant, client, &grant).await?;
         let claimed = grant
             .claim(self.now)
             .map_err(|error| Failure::Server(DomainError::invalid("grant", error.to_string())))?;
@@ -63,7 +64,7 @@ impl TokenExchange<'_> {
         })?;
         context
             .store
-            .issue(&verified, &grant, self.now)
+            .issue_with_audit(&verified, &grant, self.now, self.audit)
             .await
             .map_err(|error| match error {
                 DomainError::Invalid { .. } => subject_refused(),
@@ -71,8 +72,13 @@ impl TokenExchange<'_> {
             })?;
         let signed = self
             .signer
-            .sign(
+            .sign_access(
                 &tenant.id,
+                asterius_domain::keys::AccessIssuance {
+                    grant: &grant,
+                    kind: asterius_domain::GrantType::TokenExchange,
+                    implicit_resources: &[],
+                },
                 access.required_algorithm(),
                 access.typ(),
                 access.claims(),

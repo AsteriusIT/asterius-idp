@@ -61,7 +61,9 @@ impl Decision {
         self.explanation.as_ref()
     }
 
-    pub(super) fn with_explanation(
+    /// Attaches diagnostics from the same trusted evaluation snapshot.
+    #[must_use]
+    pub fn with_explanation(
         mut self,
         explanation: super::explanation::DecisionExplanation,
     ) -> Self {
@@ -272,6 +274,10 @@ pub(super) fn holds(condition: &Condition, request: &EvaluationRequest) -> bool 
             .iter()
             .any(|grant| grant_matches(matcher, grant, request)),
         Condition::AcrAtLeast(required) => request.context.acr_at_least(required),
+        Condition::Trusted(predicate) => request
+            .context
+            .trusted()
+            .is_some_and(|trusted| predicate.holds(trusted)),
     }
 }
 

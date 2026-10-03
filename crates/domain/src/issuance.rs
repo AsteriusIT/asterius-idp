@@ -138,6 +138,8 @@ impl std::fmt::Display for IssuanceAction {
 /// be signed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IssuanceQuery {
+    /// Task/run and immutable approval identity for cache separation.
+    pub task: Option<crate::agent_tasks::Binding>,
     /// The agent, by the `client_id` it authenticated as.
     pub agent: ClientId,
     /// The principal it acts for.
@@ -179,6 +181,11 @@ impl IssuanceQuery {
             key.push_str(part);
             key.push('|');
         };
+        if let Some(task) = &self.task {
+            push(&task.task_id.to_string());
+            push(&task.approval_revision.to_string());
+        }
+        push("");
         push(self.agent.as_str());
         push(&self.owner.to_string());
         push(self.action.name());
@@ -212,15 +219,32 @@ impl IssuanceQuery {
 pub struct IssuanceDecision {
     permit: bool,
     reason_admin: Option<String>,
+    diagnostics: Option<crate::policy::explanation::DecisionExplanation>,
 }
 
 impl IssuanceDecision {
+    /// Evidence from the actual evaluated snapshot, including cached decisions.
+    #[must_use]
+    pub fn with_diagnostics(
+        mut self,
+        diagnostics: Option<crate::policy::explanation::DecisionExplanation>,
+    ) -> Self {
+        self.diagnostics = diagnostics;
+        self
+    }
+
+    #[must_use]
+    pub const fn diagnostics(&self) -> Option<&crate::policy::explanation::DecisionExplanation> {
+        self.diagnostics.as_ref()
+    }
+
     /// A permit, with the reason the decision point gave.
     #[must_use]
     pub const fn permit(reason_admin: Option<String>) -> Self {
         Self {
             permit: true,
             reason_admin,
+            diagnostics: None,
         }
     }
 
@@ -230,6 +254,7 @@ impl IssuanceDecision {
         Self {
             permit: false,
             reason_admin,
+            diagnostics: None,
         }
     }
 
@@ -281,6 +306,7 @@ mod tests {
 
     fn query() -> IssuanceQuery {
         IssuanceQuery {
+            task: None,
             agent: ClientId::new("c.agent".to_owned()),
             owner: AgentOwner::User(UserId::new(uuid::Uuid::nil())),
             action: IssuanceAction::ObtainToken,

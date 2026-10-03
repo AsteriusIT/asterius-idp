@@ -2478,6 +2478,29 @@ returned cloud object IDs and random local database; an external public-ID manif
 supports recovery if cleanup fails. A process/host crash can leave owned cloud
 objects, so the operator must inspect that manifest. Linked decisions ast-9mjp and
 ast-p3p3 must precede any compatible authentication or mapping expansion.
+
+## Historical authorization evidence and support correlation
+
+Only server-generated HTTP references enter audit correlation; AuthZEN's caller
+header echo is a separate response field. Tokio task scope prevents concurrent
+requests, detached jobs and cancellation from inheriting another request's
+reference. Transactional workload issuance decorates its event before the same
+atomic grant/provenance/audit commit. Session links carry lookup digests rather
+than browser credentials. Tenant/event authorization precedes evidence lookup;
+references confer no access permission. Existing bounded keyset pagination
+applies to request/session/grant filters and exports.
+
+Boolean diagnostic snapshots identify the actual evaluated policy, including a
+cached issuance decision's original revision. They omit context inputs and
+policy literals, redact credential-shaped rule IDs, and remain bounded to
+64 KiB. They expire separately after seven days and are unreadable at the expiry
+boundary even before physical sweep. Their UUID, expiry and canonical SHA-256 fingerprint remain in the
+immutable event, whose hash-chain behavior is unchanged. Readers verify that
+fingerprint and the original expiry before displaying evidence; changed JSON or
+expiry metadata cannot be presented as a historical decision. Missing/expired evidence
+is explicit; current policies are never presented as historical decisions.
+Unintegrated downstream decisions and non-policy issuance paths are outside this
+visibility boundary. An audit outage cannot alter a completed PDP verdict.
 ### GitHub workflow federation
 
 GitHub workflow tokens remain external bearer subject credentials, distinct from
@@ -2492,3 +2515,310 @@ operator provisioned runner credentials require dedicated ephemeral runners and
 trusted workflow/environment controls. No JWT or raw claims are emitted by the
 sample. Controlled CI fixtures establish local protocol interoperability only,
 not a live GitHub issuer/job or an unimplemented trusted broker.
+# Kubernetes identity CRDs
+
+Namespaced Application/Resource/Policy objects are untrusted desired input. A
+controller instance pins its namespace, canonical tenant issuer, tenant service
+client and administrator-owned binding identity. Admission and namespace labels
+do not replace this runtime check. Separate tenant instances use separate service
+credentials; cross-namespace Secret references and deployment-wide identity
+credentials are excluded. The GitOps writer can read its public binding parameter
+but cannot read Secrets, alter bindings/admission/RBAC or forge status. The
+controller gets only explicitly named Secrets and never expands that list from a
+manifest. Referenced application JWKS must contain public keys only.
+
+Structural schemas and parameterized fail-closed CEL enforce bounded input and
+same-namespace references. RuleSet JSON retains complete policy conditions and
+requires authoritative remote planning before mutation; schema acceptance is not
+policy acceptance. Remote ownership is the authenticated service principal,
+not CRD labels. UID-based external keys, exact conditional revisions and remote
+tombstone receipts prevent name reuse from changing another incarnation.
+Finalizers retain protection/ownership/dependency errors; manually removing them
+can orphan live authority. Status/events/logs contain bounded categories and
+opaque public identity/revision only, never secrets, credentials or raw policy
+literals. [The CRD ADR](adr/kubernetes-identity-resources.md) specifies this trust
+boundary; operator runtime verification is separate.
+
+The operator pins namespace, tenant/issuer/client, binding UID and cluster ID on
+every cycle. Status and import IDs are parsed and tenant/kind checked before any
+remote read. FAPI private keys and issuer CA remain selected Secret material in
+memory; a malformed rotation discards prior usable credentials. A 30-second
+conditional Lease and ten-second operation deadline bound overlapping replicas,
+and exact remote ETags protect concurrent state writes. Same-generation console
+drift is reported without overwrite. GitOps finalizer stripping is refused by
+admission; only the exact controller service account or an administrator permitted
+to update the local binding can remove it. Delete requires the confirmed prior
+protection-disabled generation, accounting for the API server's deletion bump,
+and the same live revision. Errors/conditions use bounded fixed categories,
+including invalid Secret canaries; no raw error body or private key enters status.
+The controlled real-server/Kubernetes evidence is described in
+[the operator guide](kubernetes-identity-operator.md).
+
+### Vault/OpenBao recipe trust boundary (ast-dd1y.6.6)
+
+The tested human recipe uses an explicitly selected standard OIDC confidential
+client, exact HTTPS callback, S256 PKCE and ES256 ID token. The downstream role
+binds the verified stable subject, client audience and verified-email claim to
+one read policy. Its client secret is external to committed templates and is
+rendered only to a new private file. The workload recipe establishes separate
+explicit Kubernetes JWT trust with pinned public keys, issuer, audience,
+namespace and ServiceAccount name/UID. It does not translate DPoP access tokens
+into Bearer authority or verify their proof in Vault/OpenBao. Offline JWT
+validation retains validity after ServiceAccount deletion until expiry. Product
+token authority has its own TTL/revocation; upstream logout cannot withdraw a
+fetched secret or silently revoke that token. Versioned native positive/refusal,
+logout and expiry evidence and the exact limits are in
+[the integration recipe](integrations/vault-openbao.md). Its test cluster,
+databases, TLS services and credential files are disposable and independently
+owned; no current Kubernetes context or shared schema is modified.
+
+### Immutable agent task approvals
+
+An agent client retains independent FAPI authentication and sender proof. A
+fresh owner session and a separate CSRF challenge are required to approve an
+existing owner-scoped human grant. Reading a preview, presenting `task_id`, or
+copying an opaque revision never grants authority. Expansion requires a new
+root and explicit approval; task fields and grant parentage cannot be updated
+under existing credentials. The recognized RFC9396 comparator preserves exact
+action/location association rather than merging unrelated approved details.
+
+Production key selection and any KEK network operation finish before an
+authority transaction begins. A detached key handle remains tenant/algorithm
+bound and expires with the original cache lease; prepared decorators preserve
+task enforcement rather than returning a raw crypto signer.
+
+A transaction fence locks current principals, root, task and ancestors through
+signing, private JTI insertion and audit append, then commits before a token can
+leave the handler. Cached PDP decisions cannot bypass lifecycle validity.
+Revocation that commits first causes issuance to fail; signing that commits
+first produces a bounded credential linked to the subsequent withdrawal.
+Signature or persistence failure rolls back both new grant and JTI. Owner/client
+removal leaves an irreversible terminal approval tombstone; deferred nullable
+FK checks permit all cascade actions to complete in either order.
+
+Task tokens carry opaque task/revision correlators and omit automatically
+inherited owner roles. Private lineage remains mandatory even when an operator
+hides the public grant ID. External-workload, Native SSO and ID-JAG raw signing
+cannot bypass the explicit task obligation. Online descendant withdrawal is a
+separate ast-dd1y.8.3 enforcement boundary; offline use is bounded by a 300-second
+maximum and task/ancestor deadlines. See `docs/agent-task-approvals.md` for the
+activation, supported paths and retained history contract.
+
+The GitOps acceptance delegates public CRD application to a separate Flux
+ServiceAccount without Secret read, binding write, status write or controller
+finalizer removal authority.
+Flux bootstrap remains trusted platform infrastructure. Production source
+transport trust is configured independently from the local public HTTP fixture.
+A different Terraform client can import/read an identity but cannot take its
+owner; controlled restart, compatible packaging rollback and reviewed
+Retain/import recovery must preserve the remote identity references.
+
+## Completing authorization form CSP
+
+[Browser form-action navigation checks](https://www.w3.org/TR/CSP3/#directive-form-action)
+apply to redirects after form submissions. OAuth login,
+step-up and final-factor pages can complete remembered consent immediately, so
+their policy permits self plus the exact origin of this stored, validated
+registered callback through the same FormActionOrigin parser as consent.
+Unrelated first-party pages remain self-only; native/private callback schemes
+add no browser origin. This explicitly trusts one registered client origin in
+the completing form policy, never wildcard destinations or raw browser URLs.
+The source templates still escape all field content and nonce-protect scripts;
+authentication, CSRF tokens and redirect validation are unchanged.
+
+## Private application gateway
+
+The OAuth2 Proxy/Envoy profile establishes a separate cached browser-session
+authority after explicit confidential standard OIDC login. Public Envoy strips
+caller credentials, identity and forwarding headers; OAuth2 Proxy trusts only
+the exact Envoy peer and supplies verified user/email to a private backend.
+No group authorization is configured; adding an issuer group mapping requires a
+separate review. Bearer/JWT bypass is disabled. Backend/proxy ports must
+never be publicly published. Source logout cannot immediately revoke this
+gateway cookie; a 30-second non-refreshed TTL bounds retained authority. Login
+CSRF and browser cross-site POST refusal do not replace application mutation
+CSRF protection. Host/network owners and the authenticated backend remain
+trusted. The native proxy forwards its sensitive gateway session cookie to that
+backend, which must exclude it from logs and disclosure; OAuth access/ID tokens
+and caller Authorization are not delegated. The [gateway recipe](integrations/gateway.md) describes the tested
+topology and native product evidence without claiming downstream DPoP binding.
+
+## Conditional transaction authority
+
+Conditional scopes bind exact registered client identities and closed issuance
+boundaries, independently of the optional agent PDP/cache. Their source metadata
+is separate from PEP properties; reserved trusted namespaces are rejected. A
+required-fact availability guard precedes NOT, ANY and permit evaluation, so
+unknown device or authentication evidence cannot become authority through
+boolean syntax. Current directory/classification/proxy data and exact original
+human authentication are revalidated; refresh, unrelated elevated sessions and
+delegated human parents cannot synthesize fresh assurance. Agent task JTI lookup
+requires the signed immutable task/revision tuple after token authentication.
+
+Prepared signing preserves each decorator: shared bounded admission and key
+resolution precede task/principal/lineage locks, then a policy publication fence
+protects current conditional resolution and local signature. All SQL policy
+writers acquire the same tenant fence, including first publication and deletion.
+Final clock evaluation follows audit waits without changing original source
+timestamps. Complete AccessIssuance context and implicit-resource policy remain
+intact through non-task and task paths. Missing ancestry, newly approved task
+bindings and insufficient database capacity fail closed. Admission limits signer
+self-starvation; outages and unrelated blocked database work remain bounded
+operational failures rather than a permissive fallback.
+
+Persisted interactive requirements bind the original pushed client, action and
+revision and intersect existing essential requirements. Authentication remedies
+are hypothetical denied outcomes, never device/network bypasses. Scope mode and
+classification/policy CAS are explicit administrative controls. Report-only
+cannot promote another denial; offline JWT consumers retain their existing
+expiry/online-revocation limits. No instant withdrawal or device attestation
+claim is made. See [the operator guide](conditional-access.md) for exact sources,
+limits and deployment capacity.
+
+### Assurance freshness provenance
+
+Cumulative AMR is historical evidence, not a fresh proof of every listed
+factor. Session rotation keeps a server-owned assurance timestamp, exact ladder
+digest and verified factor set separate from public `auth_time`. Proving only
+a password cannot renew a class that depends on an older passkey. Combining
+known factors retains the earliest proof timestamp; only a complete fresh
+class proof starts a new interval. A changed ladder cannot promote historical
+AMR into current freshness. Legacy rows have no inferred marker.
+
+Session rotation and its proof replace atomically; proof rows cascade with
+session identity rotation and deletion. Grants capture only the exact session
+or exact parent authentication tuple in their creation transaction. Their proof
+survives session cleanup, while changed original tuples discard it. Refresh
+claims never renew its clock. Conditional trusted facts consume this frozen
+provenance; unavailable or malformed provenance cannot satisfy a scoped guard.
+
+### Conditional access simulation and rollout
+
+Administrative examples use a closed bounded dialect separate from PEP properties
+and production adapters. Only assurance, relative authentication age, sensitivity,
+network zones and device state can be hypothetical; directory facts, sources and
+expiry cannot be supplied. No selected transaction means trusted assurance/age/network
+are absent. Tenant records and four read authorities resolve before inspection.
+Responses expose availability/source and condition paths, without directory values
+or predicate literals. Active scopes only restrict; report-only cannot grant a base
+denial. Console publication/history restoration use the reviewed revision and explicit
+confirmation; the atomic store guard protects conditional changes outside the console.
+Sensitivity updates compare the reviewed UUID. Conflicts preserve drafts and never
+retry automatically against newer state. See [operator controls](conditional-access-operations.md).
+### Task descendant withdrawal and historical lineage
+
+A task-root or intermediate-grant tombstone denies all bound descendants at the
+next authoritative uncached token/grant read, independent of cleanup or PDP
+allow-cache entries. Private JTI linkage, signed task/revision and exact issued
+client must agree; public grant claims and subject-based grant searches cannot
+replace them. Owner/client removal or disable is terminal. An intermediate
+withdrawal leaves siblings and independent tasks active.
+
+First approval backfills existing stored descendants and serializes child
+insertion plus legacy signing with its root fence. This prevents an ordinary
+recipient from racing activation to create an unbound renewable descendant.
+Historical pre-task JWTs cannot be retroactively identified when public grant
+and private JTI linkage were absent; their original legacy expiry guarantee is
+preserved explicitly. Every subsequent bound mint receives durable linkage.
+
+Physical withdrawal follows a durable bounded cursor while online validity
+continues to inspect ancestor tombstones. Task/lineage/cleanup evidence stays
+with its tenant. A stale introspection response is useful only until its five
+second cache cap or token expiry; offline JWTs retain the maximum 300 second task
+expiry plus configured leeway. Neither SSF hints nor cleanup completion claims
+instant global revocation or undo an already authorized action.
+
+### Task permission viewer
+
+The administrative task viewer reads tenant-local public provenance under the existing `admin.audit:read` scope. It exposes immutable owner UUIDs, client/task/grant identifiers and the task's operator-provided label, and omits user names, email fields, credentials, private token JTIs and session data. Labels and identifiers remain escaped text in the console. Guessing another tenant's task UUID must return no metadata, even when the caller can read its own audit trail.
+
+A recorded audit chain or historical grant constraint cannot authorize a current request. Current ceilings are independently computed in one read-only repeatable-read snapshot, bounded to fifty rows and ten ancestry nodes per path, intersecting approval, ancestor/principal state and current tenant/client/resource policy. Per-resource scope and lifetime ceilings remain explicit; a union of scope names conveys no permission across all audiences. The snapshot's observation time and a stale indication prevent presenting an old display as an active grant. Conditional/PDP decisions are explicitly not evaluated in this administrative read.
+
+Withdrawal remains an authenticated, CSRF-protected mutation under `admin.grants:write`, using the exact immutable owner and root grant. The console requires explicit confirmation and describes the offline JWT expiry limit. Neither a task UUID nor the viewer's read scope supplies mutation authority. Approval expiry is immutable; reducing authority means withdrawal and a fresh approval rather than rewriting signed history.
+
+## Temporary privilege boundaries
+
+Eligibility permits a request and never grants a role. Each immutable approval
+names one human, client role, registered resource and exact resource permissions.
+Independent configured approvers cannot approve an elevation enabled by their
+own policy or eligibility edit. First-party owner commands require the exact
+tenant console session, CSRF and administrative role; administrative OAuth
+scopes alone cannot exercise those commands. Ordinary account commands reload
+the server-owned actor and frozen local authentication proof. Freshness is 120
+seconds, measured from the oldest proof required by the configured ACR class;
+cumulative step-up cannot refresh an earlier proof or extend an activation.
+
+Tenant publication fences serialize authority mutation with final access and
+role-bearing ID-token signing. Current exact-grant roles and deadlines are
+rechecked before and after asynchronous signing work, and temporary-only roles
+cap the issued expiry. The original local proof has a separate private freshness
+deadline: it is rechecked for issuance and policy evaluation without changing
+JWT TTL. A final clock update removes expired temporary roles and recomputes
+both active base and conditional PDP decisions after asynchronous audit work.
+Catalogue tombstones, UUID revisions and eligibility generations prevent
+disable/re-enable and delete/recreate from restoring an old activation. Live
+checks use database time even before the bounded expiration worker runs.
+Extra resource permissions, delegated agents and unrelated grants supply no
+temporary role. Independent standing role authority retains its own semantics.
+
+UserInfo narrows role resolution to verified token audiences and scopes. An
+active conditional PDP boundary can resolve current temporary authority only
+from the exact verified human grant; caller-provided role attributes cannot
+supply it. An unguarded PDP continues to resolve standing roles. A revoked
+self-contained JWT can remain usable offline until its capped expiry, so an
+immediate-withdrawal resource must enforce the supported online decision on
+each privileged operation. See [operator guidance](temporary-privileges.md)
+and [versioned acceptance evidence](testing/temporary-entitlements-evidence.json).
+
+## Native application recipe boundaries
+
+The [application catalogue](integrations/applications.md) uses explicit per-client
+standard OIDC permission and confidential Basic authentication with S256; the
+FAPI default and SCIM/management DPoP requirements retain their authority.
+Bearer UserInfo is part of the explicitly selected unbound OIDC profile.
+Native product signing/token/session storage remains sensitive and must not be
+exported through debug logging or reusable generated configuration.
+
+The bounded mappings authorize an exact verified issuer subject as Grafana
+Viewer, Argo CD observer of one project, or a manually assigned Harbor
+private-project Guest. Email/local UUIDs/caller headers are not authority for
+those assignments. No group scope or administrator-group mapping is configured.
+Product session authority is separate from source login authority; source logout
+alone is not immediate native product revocation. Versioned native allow/deny,
+role, spoofing and logout evidence must accompany each advertised recipe.
+Acceptance creates only disposable owned databases, products and clusters; Argo
+CD reconciliation is disabled and Harbor publishes no registry artifacts.
+
+## Standing-access review authority
+
+Governance snapshots explain direct and managed-group application-role sources,
+with bounded read-only temporary activation lifecycle provenance. They do not
+constitute the held roles of an arbitrary token or establish delegation, scope
+or proof authority. Snapshot creation rejects incomplete bounded inventories.
+The recorded database observation time and historical snapshot remain evidence;
+independent authorities can subsequently change through their own lifecycle.
+
+The five supported removal targets are exact membership, user tenant/client role
+and group tenant/client role assignments. A reviewer cannot submit an actor or
+access snapshot. Only a verified same-realm console principal reaches governance
+routes; service scopes and a deployment administrator's foreign reserved-realm
+session do not create a human reviewer. Initial owners and assigned reviewers
+must remain active tenant administrators. Writes additionally require the normal
+console CSRF gate and a fresh phishing-resistant session proof.
+
+Removal checks live assignment generation, ownership revision, source account,
+role catalogue and group context. Deletion/recreation cannot reuse a generation;
+new group members invalidate a group-role snapshot. Deadline checks follow lock
+acquisition. SCIM, LDAP, builder and declarative controller ownership is protected even
+when the controller's own deletion protection is disabled. Governance does not
+impersonate the controller. The chosen lifecycle withdrawal and application
+result share a transaction with durable audit append; an audit failure must
+rollback both. Decisions and applying them are distinct commands. Retries return
+the durable result while still requiring current assigned reviewer authority.
+No scheduler silently revokes access and no notification transport is enabled.
+
+### Governance findings
+
+The console-only governance reports recheck current same-tenant administrator or security-auditor read authority in a repeatable-read, read-only transaction. Closed query fields and tenant/section-bound keyset cursors cannot select another tenant or arbitrary SQL. Each request inspects at most 100 records and returns at most 50 findings; an empty scan may still expose continuation. Evidence includes bounded public source identifiers, never credentials, session handles or vendor external identifiers.
+
+A retained session is incomplete activity history, not evidence that an upstream account was deleted. Missing SCIM registrations and LDAP source configuration are distinct from explicit SCIM tombstones and complete LDAP snapshot absence; no report asserts network reachability. Local administrative accounts remain possible recovery accounts. Managed group evidence preserves SCIM, LDAP, builder and controller provenance and proposes review through the existing owner lifecycle. Historical campaign coverage requires matching current assignment generation, ownership revision and the complete account/group/catalogue/client context, including updates that prevent status ABA. Oversized contexts remain uncertain. Temporary entitlement configuration and built-in administrative roles are reported separately from standing campaign coverage. Reports provide no mutation, notification or automatic cleanup port.

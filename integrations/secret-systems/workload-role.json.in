@@ -1,0 +1,19 @@
+{
+  "role_type": "jwt",
+  "user_claim": "sub",
+  "bound_audiences": ["urn:asterius:secret-system:workload"],
+  "bound_subject": "system:serviceaccount:${NAMESPACE}:${SERVICE_ACCOUNT}",
+  "bound_claims": {
+    "/kubernetes.io/namespace": "${NAMESPACE}",
+    "/kubernetes.io/serviceaccount/name": "${SERVICE_ACCOUNT}",
+    "/kubernetes.io/serviceaccount/uid": "${SERVICE_ACCOUNT_UID}"
+  },
+  "token_policies": ["asterius-workload-read"],
+  "token_no_default_policy": true,
+  "token_type": "batch",
+  "token_ttl": 60,
+  "token_explicit_max_ttl": 60,
+  "expiration_leeway": -1,
+  "clock_skew_leeway": -1,
+  "not_before_leeway": -1
+}

@@ -96,6 +96,7 @@ export const DESTINATIONS: readonly Destination[] = [
   // this session lacks that resource's read scope (`ast-6uqw.8`).
   { route: 'overview', label: 'Overview', reach: 'tenant', scope: 'admin.session:read', bead: 'ast-6uqw.8', group: 'Overview' },
   { route: 'users', label: 'Users', reach: 'tenant', scope: 'admin.users:read', bead: 'ast-f7m.6', group: 'People' },
+  { route: 'temporary-privileges', label: 'Temporary privileges', reach: 'tenant', scope: 'admin.app_roles:read', bead: 'ast-dd1y.5.2', group: 'People' },
   { route: 'groups', label: 'Groups', reach: 'tenant', scope: 'admin.groups:read', bead: 'ast-6uqw.13', group: 'People' },
   { route: 'scim', label: 'SCIM provisioning', reach: 'tenant', scope: 'admin.clients:read', bead: 'ast-s36.13.5', group: 'Applications' },
   { route: 'clients', label: 'Applications', reach: 'tenant', scope: 'admin.clients:read', bead: 'ast-f7m.5', group: 'Applications' },
@@ -103,6 +104,8 @@ export const DESTINATIONS: readonly Destination[] = [
   { route: 'resources', label: 'Resource servers', reach: 'tenant', scope: 'admin.resource_servers:read', bead: 'ast-f7m.12', group: 'Applications' },
   { route: 'architecture', label: 'Architecture builder', reach: 'tenant', scope: 'admin.flows:read', bead: 'ast-q0af.1', group: 'Applications' },
   { route: 'authorization-details', label: 'Authorization details', reach: 'tenant', scope: 'admin.authorization_details_types:read', bead: 'ast-f7m.14', group: 'Sign-in & trust' },
+  { route: 'access-reviews', label: 'Access reviews', reach: 'tenant', scope: 'admin.governance:read', bead: 'ast-dd1y.5.4', group: 'People' },
+  { route: 'governance-findings', label: 'Governance findings', reach: 'tenant', scope: 'admin.governance:read', bead: 'ast-dd1y.5.5', group: 'People' },
   { route: 'roles', label: 'Roles', reach: 'tenant', scope: 'admin.app_roles:read', bead: 'ast-7fvb', group: 'People' },
   // Built by `ast-l5bl`, so the tag is historical like the four around it.
   // The line kept the *epic* while it was a placeholder, because no child

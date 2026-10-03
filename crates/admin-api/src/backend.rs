@@ -125,6 +125,28 @@ pub trait PolicyTrial: std::fmt::Debug + Send + Sync {
 /// What an admin API request needs from below the API.
 #[async_trait::async_trait]
 pub trait AdminBackend: std::fmt::Debug + Send + Sync {
+    /// Read-only evidence; absent adapters do not synthesize healthy reports.
+    fn governance_reports(
+        &self,
+    ) -> Option<Arc<dyn asterius_domain::governance_reports::GovernanceReports>> {
+        None
+    }
+    /// Human standing-access review commands; missing backends fail closed.
+    fn access_reviews(&self) -> Option<Arc<dyn asterius_domain::access_reviews::AccessReviews>> {
+        None
+    }
+
+    /// Bounded current task provenance; absent adapters expose no snapshots.
+    fn agent_tasks(&self) -> Option<Arc<dyn asterius_domain::agent_task_views::Administration>> {
+        None
+    }
+
+    fn conditional_settings(
+        &self,
+    ) -> Option<Arc<dyn asterius_domain::policy::conditional::ConditionalSettings>> {
+        None
+    }
+
     /// Atomic live management adapter; unavailable backends fail closed.
     fn management(&self) -> Option<Arc<dyn asterius_domain::declarative::Management>> {
         None
@@ -567,6 +589,12 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
     /// is what stops this API from being a way to grant
     /// [`asterius_domain::Role`]: there is no method on it that takes one.
     fn application_roles(&self) -> Arc<dyn asterius_domain::ApplicationRoleDirectory>;
+
+    fn temporary_entitlements(
+        &self,
+    ) -> Option<Arc<dyn asterius_domain::temporary_entitlements::TemporaryEntitlements>> {
+        None
+    }
 
     /// The deployment's clients, for the console's client screen.
     ///

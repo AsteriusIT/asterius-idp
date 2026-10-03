@@ -1,0 +1,41 @@
+/** Real console/browser controls; input credentials are private fixture files. */
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { pathToFileURL } from 'node:url';
+import { resolve } from 'node:path';
+const input=JSON.parse(await readFile(process.argv[2],'utf8'));
+const modulePath=process.env.ASTERIUS_PLAYWRIGHT_MODULE ?? resolve(import.meta.dirname,'../../e2e/node_modules/playwright-core/index.mjs');
+const {chromium}=await import(pathToFileURL(modulePath).href);
+const browser=await chromium.launch({headless:true,args:['--no-sandbox','--host-resolver-rules=MAP localhost 127.0.0.1']});
+let stage='console load';
+try {
+ const context=await browser.newContext({ignoreHTTPSErrors:true});
+ await context.addCookies([{name:'__Host-asterius_session',value:input.cookie,url:new URL(input.issuer).origin+'/',secure:true,httpOnly:true,sameSite:'Lax'}]);
+ const page=await context.newPage();page.setDefaultTimeout(15000);
+ await page.goto(input.issuer+'/admin/#/audit');
+ const viewer=page.getByRole('region',{name:'Task authorizations'});
+ await viewer.getByRole('button',{name:'independent run',exact:true}).click();
+ stage='active details and ceilings';
+ await viewer.getByRole('heading',{name:'Current issuance ceiling',exact:true}).waitFor();
+ assert(await viewer.getByText('Conditional decision: not evaluated for this view.',{exact:false}).isVisible());
+ assert(await viewer.getByRole('button',{name:'Withdraw task',exact:true}).isVisible());
+ assert(await viewer.getByText(input.task,{exact:true}).isVisible());
+ stage='withdrawal confirmation cancellation';
+ await viewer.getByRole('button',{name:'Withdraw task',exact:true}).click();
+ const dialog=page.getByRole('alertdialog');
+ await dialog.waitFor();
+ assert(await dialog.getByText('Offline JWT validation can continue until the signed expiry.',{exact:false}).isVisible());
+ await dialog.getByRole('button',{name:'Cancel',exact:true}).click();
+ assert(await viewer.getByRole('button',{name:'Withdraw task',exact:true}).isVisible());
+ stage='confirmed owner-bound withdrawal';
+ await viewer.getByRole('button',{name:'Withdraw task',exact:true}).click();
+ await page.getByRole('alertdialog').getByRole('button',{name:'Withdraw task',exact:true}).click();
+ await page.getByRole('alertdialog').waitFor({state:'hidden'});
+ await viewer.getByText('Maximum new token lifetime: 0 seconds.',{exact:false}).waitFor();
+ assert.equal(await viewer.getByRole('button',{name:'Withdraw task',exact:true}).count(),0);
+ stage='recorded timeline distinct from current view';
+ await viewer.getByRole('button',{name:'Recorded timeline',exact:true}).click();
+ await page.locator('input[name="task"]').waitFor();
+ assert.equal(await page.locator('input[name="task"]').inputValue(),input.task);
+ console.log(JSON.stringify({status:'pass',fixture:'real_chromium_console',checks:['tenant-local current snapshot and clipped ceiling','active immutable task provenance','offline-expiry confirmation and harmless cancellation','real owner-bound administrative task withdrawal','terminal authority refresh and control removal','exact recorded timeline filter']}));
+} catch(error) {console.error('TASK_VIEWER_BROWSER_STAGE='+stage+' error='+error.constructor.name);process.exitCode=1;} finally {await browser.close();}

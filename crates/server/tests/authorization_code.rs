@@ -465,11 +465,15 @@ impl Fixture {
             resources: std::collections::BTreeSet::new(),
             actor_chain: Vec::new(),
             parent: None,
+            task: None,
             // The store keeps the digest, which is what the token endpoint
             // looks the session up by.
             session: Some(asterius_domain::SessionId::new(session.id_digest.clone())),
             // What the authorization copied off the session (`ast-dlk`).
             authentication: Some(asterius_domain::GrantAuthentication {
+                assurance_authenticated_at: None,
+                assurance_policy_revision: None,
+                assurance_methods: Vec::new(),
                 authenticated_at: session.authenticated_at,
                 acr: session.acr.clone(),
                 amr: session.amr.clone(),
@@ -545,7 +549,11 @@ impl Fixture {
             .aggregated_claims(Arc::clone(&self.kek));
         let claims_providers = asterius_server::claims_provider::ClaimsProviders::default();
         let ida_frameworks = std::collections::BTreeSet::new();
+        let task_audit = PgAuditSink::new(self.store.pool().clone());
         let handler = AuthorizationCode {
+            agent_policy: asterius_server::http::agent_issuance::AgentPolicy::unenforced(
+                &task_audit,
+            ),
             ipsie_identity_only_clients: None,
             ipsie_rp_session_lifetimes: None,
             native_sso: &asterius_store_pg::PgNativeSso::new(

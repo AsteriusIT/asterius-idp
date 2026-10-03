@@ -317,6 +317,7 @@ impl IssuancePolicy for PdpIssuance {
         } else {
             IssuanceDecision::deny(decision.context().reason_admin().map(str::to_owned))
         };
+        let answer = answer.with_diagnostics(decision.explanation().cloned());
         self.guard.remember(tenant, key, &answer, self.now);
         Ok(answer)
     }
@@ -465,6 +466,20 @@ impl asterius_domain::ports::PolicyStore for InvalidatingPolicies {
         Ok(())
     }
 
+    async fn replace_if_revision(
+        &self,
+        tenant: &TenantId,
+        rules: &asterius_domain::policy::RuleSet,
+        expected: Option<&str>,
+        now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        self.inner
+            .replace_if_revision(tenant, rules, expected, now)
+            .await?;
+        self.guard.invalidate(tenant);
+        Ok(())
+    }
+
     async fn clear(&self, tenant: &TenantId) -> Result<bool, DomainError> {
         let removed = self.inner.clear(tenant).await?;
         if removed {
@@ -478,8 +493,22 @@ impl asterius_domain::ports::PolicyStore for InvalidatingPolicies {
 ///
 /// A copy-able bundle of borrows rather than three fields on each handler, so
 /// that adding a grant is adding one field and calling one method.
+/// Conditional checks are independent from the optional agent PDP/cache.
+#[async_trait::async_trait]
+pub trait ConditionalGuard: std::fmt::Debug + Send + Sync {
+    async fn permits(
+        &self,
+        tenant: &Tenant,
+        client: &Client,
+        grant: &Grant,
+        kind: GrantType,
+        now: OffsetDateTime,
+    ) -> Result<bool, DomainError>;
+}
+
 #[derive(Clone)]
 pub struct AgentPolicy<'a> {
+    pub conditional: Option<std::sync::Arc<dyn ConditionalGuard>>,
     /// The decision point, or `None` where this deployment has none.
     ///
     /// `None` is `[features] authzen` off: a deployment with no PDP at all, in
@@ -513,6 +542,7 @@ impl<'a> AgentPolicy<'a> {
     #[must_use]
     pub fn unenforced(audit: &'a dyn AuditSink) -> Self {
         Self {
+            conditional: None,
             policy: None,
             fail_open: false,
             audit,
@@ -549,6 +579,27 @@ impl AgentPolicy<'_> {
         grant_type: GrantType,
         now: OffsetDateTime,
     ) -> Result<(), Refusal> {
+        if let Some(conditional) = &self.conditional {
+            match conditional
+                .permits(tenant, client, grant, grant_type, now)
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Err(Refusal {
+                        code: ACCESS_DENIED,
+                        description: REFUSED,
+                    });
+                }
+                Err(error) => {
+                    tracing::error!(%error, tenant = %tenant.id, "conditional access unavailable");
+                    return Err(Refusal {
+                        code: ACCESS_DENIED,
+                        description: UNDECIDED,
+                    });
+                }
+            }
+        }
         let Some(profile) = client.registration.agent.as_ref() else {
             return Ok(());
         };
@@ -557,8 +608,14 @@ impl AgentPolicy<'_> {
         };
         let query = query(client, profile.owner(), grant, audience, grant_type);
         match policy.permits(&tenant.id, &query).await {
-            Ok(decision) if decision.permitted() => Ok(()),
+            Ok(decision) if decision.permitted() => {
+                self.record_diagnostics(tenant, client, grant, &decision, now)
+                    .await;
+                Ok(())
+            }
             Ok(decision) => {
+                self.record_diagnostics(tenant, client, grant, &decision, now)
+                    .await;
                 self.record(tenant, client, &query, decision.reason_admin(), false, now)
                     .await;
                 Err(Refusal {
@@ -604,6 +661,43 @@ impl AgentPolicy<'_> {
                     description: UNDECIDED,
                 })
             }
+        }
+    }
+
+    async fn record_diagnostics(
+        &self,
+        tenant: &Tenant,
+        client: &Client,
+        grant: &Grant,
+        decision: &IssuanceDecision,
+        now: OffsetDateTime,
+    ) {
+        let Some(diagnostics) = decision.diagnostics() else {
+            return;
+        };
+        let mut event = AuditEvent::new(
+            tenant.id.clone(),
+            EventType::ACCESS_EVALUATED,
+            if decision.permitted() {
+                Outcome::Success
+            } else {
+                Outcome::Failure
+            },
+            Actor::Client(client.id.clone()),
+            now,
+        )
+        .client(client.id.clone())
+        .grant(grant.id.clone())
+        .detail(
+            Detail::new()
+                .label("enforcement_point", "token_issuance")
+                .flag("decision", decision.permitted()),
+        );
+        if let Some(session) = &grant.session {
+            event = event.session(session.clone());
+        }
+        if let Err(error) = self.audit.record_with_diagnostics(event, diagnostics).await {
+            tracing::error!(%error, tenant = %tenant.id, "issuance diagnostics were not recorded");
         }
     }
 
@@ -682,6 +776,7 @@ fn query(
     grant_type: GrantType,
 ) -> IssuanceQuery {
     IssuanceQuery {
+        task: grant.task.clone(),
         agent: client.id.clone(),
         owner: *owner,
         action: IssuanceAction::of(grant_type),
@@ -763,6 +858,7 @@ mod tests {
 
     fn sample() -> IssuanceQuery {
         IssuanceQuery {
+            task: None,
             agent: ClientId::new("c.agent".to_owned()),
             owner: AgentOwner::User(asterius_domain::entities::user::UserId::new(
                 uuid::Uuid::nil(),

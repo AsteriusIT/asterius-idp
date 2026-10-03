@@ -1,0 +1,103 @@
+{
+  "apiVersion": "v1",
+  "kind": "List",
+  "items": [
+    {
+      "apiVersion": "v1",
+      "kind": "Namespace",
+      "metadata": {
+        "name": "identity-acme"
+      }
+    },
+    {
+      "apiVersion": "identity.asterius.io/v1alpha1",
+      "kind": "AsteriusTenantBinding",
+      "metadata": {
+        "name": "default",
+        "namespace": "identity-acme"
+      },
+      "spec": {
+        "tenantId": "acme",
+        "issuer": "https://idp.example/t/acme",
+        "clientId": "c.controller-acme",
+        "clusterId": "production",
+        "authenticationKeySecretRef": {
+          "name": "asterius-auth-key",
+          "key": "key.pem"
+        },
+        "dpopKeySecretRef": {
+          "name": "asterius-dpop-key",
+          "key": "key.pem"
+        },
+        "issuerCaSecretRef": {
+          "name": "asterius-ca",
+          "key": "ca.pem"
+        }
+      }
+    },
+    {
+      "apiVersion": "identity.asterius.io/v1alpha1",
+      "kind": "Application",
+      "metadata": {
+        "name": "billing",
+        "namespace": "identity-acme"
+      },
+      "spec": {
+        "tenantRef": "default",
+        "clientName": "Billing",
+        "redirectUris": [
+          "https://billing.example/callback"
+        ],
+        "grantTypes": [
+          "authorization_code",
+          "refresh_token"
+        ],
+        "scopes": [
+          "openid",
+          "offline_access"
+        ],
+        "resources": [
+          "https://billing-api.example/"
+        ],
+        "jwksUri": "https://billing.example/jwks",
+        "deletionProtection": true,
+        "deletionPolicy": "Retain",
+        "adoptionPolicy": "Never"
+      }
+    },
+    {
+      "apiVersion": "identity.asterius.io/v1alpha1",
+      "kind": "Resource",
+      "metadata": {
+        "name": "billing",
+        "namespace": "identity-acme"
+      },
+      "spec": {
+        "tenantRef": "default",
+        "identifier": "https://billing-api.example/",
+        "scopes": [
+          "read",
+          "write"
+        ],
+        "defaultTokenLifetimeSeconds": 300,
+        "introspectionClients": [],
+        "deletionProtection": true,
+        "deletionPolicy": "Retain"
+      }
+    },
+    {
+      "apiVersion": "identity.asterius.io/v1alpha1",
+      "kind": "Policy",
+      "metadata": {
+        "name": "tenant",
+        "namespace": "identity-acme"
+      },
+      "spec": {
+        "tenantRef": "default",
+        "rulesJson": "{\"version\":1,\"rules\":[]}",
+        "deletionProtection": true,
+        "deletionPolicy": "Retain"
+      }
+    }
+  ]
+}

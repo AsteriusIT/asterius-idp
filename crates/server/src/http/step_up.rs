@@ -60,6 +60,8 @@ pub(crate) struct Authentication<'a> {
     pub acr: &'a AcrPolicy,
     /// How long a new session lives.
     pub lifetimes: Lifetimes,
+    /// Conditional reauthentication may count only methods proved now.
+    pub fresh_assurance: bool,
 }
 
 /// A session the browser may now carry.
@@ -118,17 +120,37 @@ pub(crate) async fn establish(
         // browser's step-up or silently switch the account in its interaction.
         // Local credentials retain the established fresh-login fallback.
         if session.user == user {
-            let methods = merged(&session.amr, &proved);
+            let methods = if context.fresh_assurance {
+                proved.clone()
+            } else {
+                merged(&session.amr, &proved)
+            };
             let acr = context
                 .acr
                 .assign(&methods, &requested.essential_acr, &requested.acr_values);
             if !essential_satisfied(acr.as_deref(), requested) {
                 return Ok(Establishment::Insufficient);
             }
+            let proof = class_proof(context.acr, &session, &proved, acr.as_deref(), now);
             let id = SessionId::generate();
             context
                 .sessions
-                .rotate(digest, &id.digest(), &methods, acr.as_deref(), now)
+                .rotate_verified(
+                    digest,
+                    &id.digest(),
+                    asterius_domain::entities::session::VerifiedSessionRotation {
+                        methods: &methods,
+                        acr: acr.as_deref(),
+                        assurance_authenticated_at: proof.as_ref().map(|proof| proof.at),
+                        assurance_policy_revision: proof
+                            .as_ref()
+                            .map(|proof| proof.revision.as_str()),
+                        assurance_methods: proof
+                            .as_ref()
+                            .map_or(&[], |proof| proof.methods.as_slice()),
+                    },
+                    now,
+                )
                 .await?;
             let digest = id.digest();
             return Ok(Establishment::Established(Established {
@@ -158,12 +180,86 @@ pub(crate) async fn establish(
         context.lifetimes,
     );
     session.acr = acr;
+    if locally_proved(&session.amr) {
+        session.assurance_authenticated_at = Some(now);
+        session.assurance_policy_revision = Some(asterius_domain::sha256_hex(
+            context.acr.to_json().to_string().as_bytes(),
+        ));
+        session.assurance_methods.clone_from(&session.amr);
+    }
     context.sessions.begin(&session).await?;
     Ok(Establishment::Established(Established {
         id,
         digest: session.id_digest,
         essential_satisfied,
     }))
+}
+
+#[derive(Debug)]
+struct ClassProof {
+    at: OffsetDateTime,
+    revision: String,
+    methods: Vec<AuthenticationMethod>,
+}
+
+// A verified upstream assertion does not establish when the upstream human
+// authenticated. Scoped human freshness requires locally verified factors.
+fn locally_proved(methods: &[AuthenticationMethod]) -> bool {
+    !methods.is_empty()
+        && !methods.iter().any(|method| {
+            matches!(
+                method,
+                AuthenticationMethod::FederatedOidc | AuthenticationMethod::ExistingSession
+            )
+        })
+}
+
+/// Preserve legacy cumulative classes while dating only known verified factors.
+fn class_proof(
+    policy: &AcrPolicy,
+    session: &Session,
+    proved: &[AuthenticationMethod],
+    assigned: Option<&str>,
+    now: OffsetDateTime,
+) -> Option<ClassProof> {
+    let revision = asterius_domain::sha256_hex(policy.to_json().to_string().as_bytes());
+    let meets = |methods: &[AuthenticationMethod]| {
+        assigned.is_none_or(|class| {
+            policy
+                .level(class)
+                .is_some_and(|level| level.is_met_by(methods))
+        })
+    };
+    if locally_proved(proved) && meets(proved) {
+        return Some(ClassProof {
+            at: now,
+            revision,
+            methods: proved.to_vec(),
+        });
+    }
+    if session.assurance_policy_revision.as_deref() != Some(revision.as_str()) {
+        return None;
+    }
+    let at = session.assurance_authenticated_at?;
+    if at > session.authenticated_at || at > now || !locally_proved(&session.assurance_methods) {
+        return None;
+    }
+    let local: Vec<_> = proved
+        .iter()
+        .copied()
+        .filter(|method| {
+            !matches!(
+                method,
+                AuthenticationMethod::FederatedOidc | AuthenticationMethod::ExistingSession
+            )
+        })
+        .collect();
+    let methods = merged(&session.assurance_methods, &local);
+    meets(&methods).then_some(ClassProof {
+        at,
+        revision,
+        methods,
+    })
 }
 
 /// OIDC Core §5.5.1.1: an essential ACR is complete only when the value that
@@ -202,6 +298,148 @@ mod tests {
     use super::*;
     use asterius_domain::{ClientId, Participant, SessionRevocation};
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn proven_session(policy: &AcrPolicy, at: OffsetDateTime) -> Session {
+        let mut session = Session::begin(
+            TenantId::new("demo"),
+            &SessionId::generate(),
+            uuid::Uuid::from_u128(1),
+            vec![
+                AuthenticationMethod::Passkey,
+                AuthenticationMethod::UserVerified,
+            ],
+            at,
+            Lifetimes::default(),
+        );
+        session.acr = Some("phr".to_owned());
+        session.assurance_authenticated_at = Some(at);
+        session.assurance_policy_revision = Some(asterius_domain::sha256_hex(
+            policy.to_json().to_string().as_bytes(),
+        ));
+        session.assurance_methods.clone_from(&session.amr);
+        session
+    }
+
+    #[test]
+    fn a_federated_callback_cannot_date_upstream_human_authentication() {
+        let policy = AcrPolicy::new(vec![
+            asterius_domain::AcrLevel::new("external", [AuthenticationMethod::FederatedOidc])
+                .expect("legacy class"),
+        ])
+        .expect("ladder");
+        let now = OffsetDateTime::UNIX_EPOCH;
+        let session = proven_session(&policy, now);
+        assert!(
+            class_proof(
+                &policy,
+                &session,
+                &[AuthenticationMethod::FederatedOidc],
+                Some("external"),
+                now
+            )
+            .is_none()
+        );
+        assert!(!locally_proved(&[AuthenticationMethod::ExistingSession]));
+        assert!(locally_proved(&[AuthenticationMethod::Password]));
+    }
+
+    #[test]
+    fn password_rotation_preserves_the_age_of_an_old_strong_proof() {
+        let policy = AcrPolicy::default();
+        let at = OffsetDateTime::UNIX_EPOCH;
+        let session = proven_session(&policy, at);
+        let proof = class_proof(
+            &policy,
+            &session,
+            &[AuthenticationMethod::Password],
+            Some("phr"),
+            at + time::Duration::minutes(10),
+        )
+        .expect("original proof remains known");
+        assert_eq!(proof.at, at);
+        assert!(proof.methods.contains(&AuthenticationMethod::Passkey));
+    }
+
+    #[test]
+    fn a_fresh_passkey_replaces_the_old_strong_proof_clock() {
+        let policy = AcrPolicy::default();
+        let at = OffsetDateTime::UNIX_EPOCH;
+        let session = proven_session(&policy, at);
+        let now = at + time::Duration::minutes(10);
+        let proof = class_proof(
+            &policy,
+            &session,
+            &[
+                AuthenticationMethod::Passkey,
+                AuthenticationMethod::UserVerified,
+            ],
+            Some("phr"),
+            now,
+        )
+        .expect("fresh complete proof");
+        assert_eq!(proof.at, now);
+        assert!(!proof.methods.contains(&AuthenticationMethod::Password));
+    }
+
+    #[test]
+    fn legacy_or_changed_ladder_evidence_cannot_be_freshened_by_password() {
+        let policy = AcrPolicy::default();
+        let at = OffsetDateTime::UNIX_EPOCH;
+        for variant in 0..4 {
+            let mut session = proven_session(&policy, at);
+            match variant {
+                0 => session.assurance_policy_revision = None,
+                1 => session.assurance_policy_revision = Some("0".repeat(64)),
+                2 => session.assurance_methods = vec![AuthenticationMethod::Password],
+                _ => session.assurance_authenticated_at = Some(at + time::Duration::seconds(1)),
+            }
+            assert!(
+                class_proof(
+                    &policy,
+                    &session,
+                    &[AuthenticationMethod::Password],
+                    Some("phr"),
+                    at + time::Duration::minutes(10)
+                )
+                .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn combining_verified_factors_keeps_the_earliest_factor_clock() {
+        let policy = AcrPolicy::new(vec![
+            asterius_domain::AcrLevel::new(
+                "combined",
+                [
+                    AuthenticationMethod::Password,
+                    AuthenticationMethod::OneTimeCode,
+                ],
+            )
+            .expect("valid combination"),
+        ])
+        .expect("valid ladder");
+        let at = OffsetDateTime::UNIX_EPOCH;
+        let mut session = proven_session(&policy, at);
+        session.amr = vec![AuthenticationMethod::Password];
+        session.assurance_methods.clone_from(&session.amr);
+        let proof = class_proof(
+            &policy,
+            &session,
+            &[AuthenticationMethod::OneTimeCode],
+            Some("combined"),
+            at + time::Duration::seconds(30),
+        )
+        .expect("both factors have provenance");
+        assert_eq!(proof.at, at);
+        assert_eq!(
+            proof.methods,
+            vec![
+                AuthenticationMethod::Password,
+                AuthenticationMethod::OneTimeCode
+            ]
+        );
+    }
 
     #[derive(Debug)]
     struct Sessions {
@@ -298,6 +536,7 @@ mod tests {
                 tenant: &tenant,
                 acr: &AcrPolicy::default(),
                 lifetimes: Lifetimes::default(),
+                fresh_assurance: false,
             },
             Stage::StepUp,
             Some(&digest),
@@ -328,6 +567,7 @@ mod tests {
                 tenant: &tenant,
                 acr: &AcrPolicy::default(),
                 lifetimes: Lifetimes::default(),
+                fresh_assurance: false,
             },
             Stage::StepUp,
             None,
@@ -341,6 +581,71 @@ mod tests {
         assert!(matches!(result, Establishment::Established(_)));
         assert_eq!(sessions.begins.load(Ordering::SeqCst), 1);
         assert_eq!(sessions.rotations.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn fresh_assurance_cannot_borrow_an_old_passkey_from_a_password_submission() {
+        let now = OffsetDateTime::UNIX_EPOCH;
+        let tenant = TenantId::new("demo");
+        let user = uuid::Uuid::from_u128(1);
+        let original = Session::begin(
+            tenant.clone(),
+            &SessionId::generate(),
+            user,
+            vec![
+                AuthenticationMethod::Passkey,
+                AuthenticationMethod::UserVerified,
+            ],
+            now,
+            Lifetimes::default(),
+        );
+        let digest = original.id_digest.clone();
+        let sessions = Sessions {
+            existing: Some(original),
+            begins: AtomicUsize::new(0),
+            rotations: AtomicUsize::new(0),
+        };
+        let requested = Requirements {
+            essential_acr: vec!["phr".to_owned()],
+            ..Requirements::default()
+        };
+        for (proved, fresh, succeeds) in [
+            (vec![AuthenticationMethod::Password], true, false),
+            (
+                vec![
+                    AuthenticationMethod::Passkey,
+                    AuthenticationMethod::UserVerified,
+                ],
+                true,
+                true,
+            ),
+            (vec![AuthenticationMethod::Password], false, true),
+        ] {
+            let rotations = sessions.rotations.load(Ordering::SeqCst);
+            let outcome = establish(
+                Authentication {
+                    sessions: &sessions,
+                    tenant: &tenant,
+                    acr: &AcrPolicy::default(),
+                    lifetimes: Lifetimes::default(),
+                    fresh_assurance: fresh,
+                },
+                Stage::StepUp,
+                Some(&digest),
+                user,
+                proved,
+                &requested,
+                now,
+            )
+            .await
+            .expect("controlled available store");
+            assert_eq!(matches!(outcome, Establishment::Established(_)), succeeds);
+            assert_eq!(
+                sessions.rotations.load(Ordering::SeqCst),
+                rotations + usize::from(succeeds)
+            );
+            assert_eq!(sessions.begins.load(Ordering::SeqCst), 0);
+        }
     }
 
     /// OIDC Core §2: `amr` is the methods used. A step-up adds to them, so a

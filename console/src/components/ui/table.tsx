@@ -7,6 +7,9 @@ function Table({ className, ...props }: React.ComponentProps<"table">) {
   return (
     <div
       data-slot="table-container"
+      tabIndex={0}
+      role="region"
+      aria-label={props["aria-label"] ?? "Table — scroll horizontally for more columns"}
       // The scroll stays here, and it is what lets a column keep the width it
       // asks for: a table that had to fit squeezed its cells to their minimum,
       // which on the audit trail broke `auth.login` across two lines. What a

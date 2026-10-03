@@ -201,6 +201,15 @@ pub struct ResolvedSubject {
 /// port named for what it does here. The implementations are the same rows.
 #[async_trait::async_trait]
 pub trait PdpTokenStatus: std::fmt::Debug + Send + Sync {
+    /// Uncached task/ancestor state after JWT and sender verification.
+    /// Compatibility implementations refuse every task-linked credential.
+    async fn task_token_active(
+        &self,
+        query: &asterius_domain::agent_tasks::TokenQuery,
+    ) -> Result<bool, DomainError> {
+        Ok(query.approval.is_none())
+    }
+
     /// Whether this `jti` was revoked individually (RFC 7009).
     ///
     /// # Errors
@@ -556,6 +565,21 @@ async fn decide_many(
         semantic => short_circuit(context, &prepared, semantic).await,
     };
 
+    for (prepared, decision) in prepared.iter().zip(&decisions) {
+        if let (Some(prepared), Some(decision)) = (prepared, decision)
+            && decision.explanation().is_some()
+        {
+            record(
+                context,
+                pep,
+                prepared,
+                started,
+                Some(decision),
+                Detail::new().label("evaluation_kind", "boxcar_item"),
+            )
+            .await;
+        }
+    }
     record_many(context, pep, &request, started, &decisions).await;
 
     let body = if request.boxcar {
@@ -952,6 +976,11 @@ pub(crate) async fn authorize(
     let jti = verified
         .claim_str("jti")
         .ok_or(UserInfoError::InvalidToken)?;
+    let task_query = asterius_domain::agent_tasks::TokenQuery::from_claims(&verified.claims)
+        .map_err(|_| UserInfoError::InvalidToken)?;
+    if !context.tokens.task_token_active(&task_query).await? {
+        return Err(UserInfoError::InvalidToken.into());
+    }
     if context.tokens.is_denylisted(jti).await? {
         return Err(UserInfoError::InvalidToken.into());
     }
@@ -977,6 +1006,45 @@ pub(crate) async fn authorize(
         return Err(Refused::MissingScope);
     }
 
+    let task = match (
+        verified
+            .claim_str("task_id")
+            .and_then(|id| uuid::Uuid::parse_str(id).ok()),
+        verified
+            .claims
+            .get("task_approval_revision")
+            .and_then(serde_json::Value::as_i64)
+            .filter(|revision| *revision > 0),
+    ) {
+        (Some(id), Some(revision)) => Some(super::conditional::PdpTaskAuthority {
+            jti: jti.to_owned(),
+            id,
+            revision,
+        }),
+        _ => None,
+    };
+    super::conditional::bind_pdp(super::conditional::PdpAuthority {
+        tenant: context.tenant.id.clone(),
+        client: client.clone(),
+        grant: own_grant,
+        subject: verified.claim_str("sub").map(str::to_owned),
+        scopes: verified
+            .claim_str("scope")
+            .unwrap_or_default()
+            .split_ascii_whitespace()
+            .map(str::to_owned)
+            .collect(),
+        resources: match verified.claims.get("aud") {
+            Some(Value::String(resource)) => std::iter::once(resource.clone()).collect(),
+            Some(Value::Array(resources)) => resources
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect(),
+            _ => std::collections::BTreeSet::default(),
+        },
+        task,
+    });
     Ok(client)
 }
 
@@ -1121,7 +1189,16 @@ async fn record(
     .client(pep.clone())
     .detail(detail);
 
-    if let Err(error) = context.audit.record(event).await {
+    let recorded = match decision.and_then(asterius_domain::policy::Decision::explanation) {
+        Some(explanation) => {
+            context
+                .audit
+                .record_with_diagnostics(event, explanation)
+                .await
+        }
+        None => context.audit.record(event).await,
+    };
+    if let Err(error) = recorded {
         tracing::error!(
             %error,
             tenant = %context.tenant.id,
@@ -1427,6 +1504,9 @@ mod tests {
         let mut grant = Grant::new(tenant().id, ClientId::new("client"), now);
         grant.claimed_at = Some(now);
         grant.authentication = Some(asterius_domain::GrantAuthentication {
+            assurance_authenticated_at: None,
+            assurance_policy_revision: None,
+            assurance_methods: Vec::new(),
             authenticated_at: now,
             acr: Some("custom".to_owned()),
             amr: vec![AuthenticationMethod::Password],

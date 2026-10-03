@@ -367,6 +367,860 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/admin/api/v1/agents/tasks": {
+      "get": {
+        "description": "Tenant-local public identifiers only, no user names, emails, raw credentials or private JTIs. No-store current read-only snapshot independent of recorded audit. Withdrawal uses the existing owner-bound grant endpoint and admin.grants:write, with offline signed-expiry limits.",
+        "operationId": "agents.tasks.list",
+        "parameters": [
+          {
+            "description": "Canonical UUID keyset cursor from the previous bounded page",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Out-of-range values, duplicates and unknown query names fail",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 50,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "owner",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "agent",
+            "required": false,
+            "schema": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "approval_revision": {
+                            "minimum": 1,
+                            "type": "integer"
+                          },
+                          "approved_at": {
+                            "format": "date-time",
+                            "type": "string"
+                          },
+                          "expires_at": {
+                            "format": "date-time",
+                            "type": "string"
+                          },
+                          "initiating_client_id": {
+                            "type": "string"
+                          },
+                          "label": {
+                            "type": "string"
+                          },
+                          "owner_user_id": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "revoked_at": {
+                            "format": "date-time",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "root_grant_id": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "state": {
+                            "enum": [
+                              "active",
+                              "expired",
+                              "withdrawn",
+                              "principal_unavailable",
+                              "ancestor_unavailable"
+                            ],
+                            "type": "string"
+                          },
+                          "task_id": {
+                            "format": "uuid",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "task_id",
+                          "root_grant_id",
+                          "owner_user_id",
+                          "initiating_client_id",
+                          "approval_revision",
+                          "label",
+                          "approved_at",
+                          "expires_at",
+                          "revoked_at",
+                          "state"
+                        ],
+                        "type": "object"
+                      },
+                      "maxItems": 50,
+                      "type": "array"
+                    },
+                    "next_cursor": {
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "observed_at": {
+                      "format": "date-time",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "next_cursor",
+                    "observed_at"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.audit:read"
+            ]
+          }
+        ],
+        "summary": "Lists bounded task approval provenance and current lifecycle state",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.audit:read"
+      }
+    },
+    "/admin/api/v1/agents/tasks/{task_id}": {
+      "get": {
+        "description": "Tenant-local public identifiers only, no user names, emails, raw credentials or private JTIs. No-store current read-only snapshot independent of recorded audit. Withdrawal uses the existing owner-bound grant endpoint and admin.grants:write, with offline signed-expiry limits.",
+        "operationId": "agents.tasks.read",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Canonical UUID keyset cursor from the previous bounded page",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Out-of-range values, duplicates and unknown query names fail",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 50,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "approved_ceiling": {
+                      "additionalProperties": false,
+                      "description": "A ceiling, never a request-specific authorization. Resource-specific scope/TTL bounds apply separately; unknown, expired or withdrawn authority yields empty permissions.",
+                      "properties": {
+                        "actions": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "actions": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array",
+                                "uniqueItems": true
+                              },
+                              "resource": {
+                                "format": "uri",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "resource",
+                              "actions"
+                            ],
+                            "type": "object"
+                          },
+                          "maxItems": 32,
+                          "type": "array"
+                        },
+                        "max_delegation_depth": {
+                          "maximum": 8,
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "resource_ceilings": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "maximum_token_ttl_seconds": {
+                                "maximum": 300,
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "resource": {
+                                "format": "uri",
+                                "type": "string"
+                              },
+                              "scopes": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "maxItems": 64,
+                                "type": "array",
+                                "uniqueItems": true
+                              }
+                            },
+                            "required": [
+                              "resource",
+                              "scopes",
+                              "maximum_token_ttl_seconds"
+                            ],
+                            "type": "object"
+                          },
+                          "maxItems": 64,
+                          "type": "array"
+                        },
+                        "resources": {
+                          "items": {
+                            "format": "uri",
+                            "type": "string"
+                          },
+                          "maxItems": 64,
+                          "type": "array",
+                          "uniqueItems": true
+                        },
+                        "scopes": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "maxItems": 64,
+                          "type": "array",
+                          "uniqueItems": true
+                        }
+                      },
+                      "required": [
+                        "scopes",
+                        "resources",
+                        "actions",
+                        "resource_ceilings",
+                        "max_delegation_depth"
+                      ],
+                      "type": "object"
+                    },
+                    "conditional_decision": {
+                      "const": "not_evaluated"
+                    },
+                    "current_grant_types": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "current_issuance_ceiling": {
+                      "additionalProperties": false,
+                      "description": "A ceiling, never a request-specific authorization. Resource-specific scope/TTL bounds apply separately; unknown, expired or withdrawn authority yields empty permissions.",
+                      "properties": {
+                        "actions": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "actions": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array",
+                                "uniqueItems": true
+                              },
+                              "resource": {
+                                "format": "uri",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "resource",
+                              "actions"
+                            ],
+                            "type": "object"
+                          },
+                          "maxItems": 32,
+                          "type": "array"
+                        },
+                        "max_delegation_depth": {
+                          "maximum": 8,
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "resource_ceilings": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "maximum_token_ttl_seconds": {
+                                "maximum": 300,
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "resource": {
+                                "format": "uri",
+                                "type": "string"
+                              },
+                              "scopes": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "maxItems": 64,
+                                "type": "array",
+                                "uniqueItems": true
+                              }
+                            },
+                            "required": [
+                              "resource",
+                              "scopes",
+                              "maximum_token_ttl_seconds"
+                            ],
+                            "type": "object"
+                          },
+                          "maxItems": 64,
+                          "type": "array"
+                        },
+                        "resources": {
+                          "items": {
+                            "format": "uri",
+                            "type": "string"
+                          },
+                          "maxItems": 64,
+                          "type": "array",
+                          "uniqueItems": true
+                        },
+                        "scopes": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "maxItems": 64,
+                          "type": "array",
+                          "uniqueItems": true
+                        }
+                      },
+                      "required": [
+                        "scopes",
+                        "resources",
+                        "actions",
+                        "resource_ceilings",
+                        "max_delegation_depth"
+                      ],
+                      "type": "object"
+                    },
+                    "lineage": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "ancestry": {
+                            "items": {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            "maxItems": 10,
+                            "type": "array"
+                          },
+                          "client_id": {
+                            "type": "string"
+                          },
+                          "current_issuance_ceiling": {
+                            "additionalProperties": false,
+                            "description": "A ceiling, never a request-specific authorization. Resource-specific scope/TTL bounds apply separately; unknown, expired or withdrawn authority yields empty permissions.",
+                            "properties": {
+                              "actions": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "actions": {
+                                      "items": {
+                                        "type": "string"
+                                      },
+                                      "type": "array",
+                                      "uniqueItems": true
+                                    },
+                                    "resource": {
+                                      "format": "uri",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "resource",
+                                    "actions"
+                                  ],
+                                  "type": "object"
+                                },
+                                "maxItems": 32,
+                                "type": "array"
+                              },
+                              "max_delegation_depth": {
+                                "maximum": 8,
+                                "minimum": 1,
+                                "type": "integer"
+                              },
+                              "resource_ceilings": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "maximum_token_ttl_seconds": {
+                                      "maximum": 300,
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    },
+                                    "resource": {
+                                      "format": "uri",
+                                      "type": "string"
+                                    },
+                                    "scopes": {
+                                      "items": {
+                                        "type": "string"
+                                      },
+                                      "maxItems": 64,
+                                      "type": "array",
+                                      "uniqueItems": true
+                                    }
+                                  },
+                                  "required": [
+                                    "resource",
+                                    "scopes",
+                                    "maximum_token_ttl_seconds"
+                                  ],
+                                  "type": "object"
+                                },
+                                "maxItems": 64,
+                                "type": "array"
+                              },
+                              "resources": {
+                                "items": {
+                                  "format": "uri",
+                                  "type": "string"
+                                },
+                                "maxItems": 64,
+                                "type": "array",
+                                "uniqueItems": true
+                              },
+                              "scopes": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "maxItems": 64,
+                                "type": "array",
+                                "uniqueItems": true
+                              }
+                            },
+                            "required": [
+                              "scopes",
+                              "resources",
+                              "actions",
+                              "resource_ceilings",
+                              "max_delegation_depth"
+                            ],
+                            "type": "object"
+                          },
+                          "depth": {
+                            "maximum": 9,
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "expires_at": {
+                            "format": "date-time",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "grant_id": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "parent_grant_id": {
+                            "format": "uuid",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "recorded_ceiling": {
+                            "additionalProperties": false,
+                            "description": "A ceiling, never a request-specific authorization. Resource-specific scope/TTL bounds apply separately; unknown, expired or withdrawn authority yields empty permissions.",
+                            "properties": {
+                              "actions": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "actions": {
+                                      "items": {
+                                        "type": "string"
+                                      },
+                                      "type": "array",
+                                      "uniqueItems": true
+                                    },
+                                    "resource": {
+                                      "format": "uri",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "resource",
+                                    "actions"
+                                  ],
+                                  "type": "object"
+                                },
+                                "maxItems": 32,
+                                "type": "array"
+                              },
+                              "max_delegation_depth": {
+                                "maximum": 8,
+                                "minimum": 1,
+                                "type": "integer"
+                              },
+                              "resource_ceilings": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "maximum_token_ttl_seconds": {
+                                      "maximum": 300,
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    },
+                                    "resource": {
+                                      "format": "uri",
+                                      "type": "string"
+                                    },
+                                    "scopes": {
+                                      "items": {
+                                        "type": "string"
+                                      },
+                                      "maxItems": 64,
+                                      "type": "array",
+                                      "uniqueItems": true
+                                    }
+                                  },
+                                  "required": [
+                                    "resource",
+                                    "scopes",
+                                    "maximum_token_ttl_seconds"
+                                  ],
+                                  "type": "object"
+                                },
+                                "maxItems": 64,
+                                "type": "array"
+                              },
+                              "resources": {
+                                "items": {
+                                  "format": "uri",
+                                  "type": "string"
+                                },
+                                "maxItems": 64,
+                                "type": "array",
+                                "uniqueItems": true
+                              },
+                              "scopes": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "maxItems": 64,
+                                "type": "array",
+                                "uniqueItems": true
+                              }
+                            },
+                            "required": [
+                              "scopes",
+                              "resources",
+                              "actions",
+                              "resource_ceilings",
+                              "max_delegation_depth"
+                            ],
+                            "type": "object"
+                          },
+                          "revoked_at": {
+                            "format": "date-time",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "state": {
+                            "enum": [
+                              "active",
+                              "expired",
+                              "withdrawn",
+                              "principal_unavailable",
+                              "ancestor_unavailable"
+                            ],
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "grant_id",
+                          "parent_grant_id",
+                          "client_id",
+                          "depth",
+                          "ancestry",
+                          "expires_at",
+                          "revoked_at",
+                          "state",
+                          "recorded_ceiling",
+                          "current_issuance_ceiling"
+                        ],
+                        "type": "object"
+                      },
+                      "maxItems": 50,
+                      "type": "array"
+                    },
+                    "maximum_new_token_ttl_seconds": {
+                      "maximum": 300,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "next_cursor": {
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "observed_at": {
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "task": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "approval_revision": {
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "approved_at": {
+                          "format": "date-time",
+                          "type": "string"
+                        },
+                        "expires_at": {
+                          "format": "date-time",
+                          "type": "string"
+                        },
+                        "initiating_client_id": {
+                          "type": "string"
+                        },
+                        "label": {
+                          "type": "string"
+                        },
+                        "owner_user_id": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "revoked_at": {
+                          "format": "date-time",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "root_grant_id": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "state": {
+                          "enum": [
+                            "active",
+                            "expired",
+                            "withdrawn",
+                            "principal_unavailable",
+                            "ancestor_unavailable"
+                          ],
+                          "type": "string"
+                        },
+                        "task_id": {
+                          "format": "uuid",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "task_id",
+                        "root_grant_id",
+                        "owner_user_id",
+                        "initiating_client_id",
+                        "approval_revision",
+                        "label",
+                        "approved_at",
+                        "expires_at",
+                        "revoked_at",
+                        "state"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "task",
+                    "approved_ceiling",
+                    "current_issuance_ceiling",
+                    "current_grant_types",
+                    "maximum_new_token_ttl_seconds",
+                    "observed_at",
+                    "lineage",
+                    "next_cursor",
+                    "conditional_decision"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.audit:read"
+            ]
+          }
+        ],
+        "summary": "Reads current task ceilings and bounded stored descendant lineage",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.audit:read"
+      }
+    },
     "/admin/api/v1/app-roles": {
       "get": {
         "operationId": "app_roles.tenant.list",
@@ -630,6 +1484,16 @@
             "$ref": "#/components/parameters/limit"
           },
           {
+            "description": "A canonical Task UUID. Recorded correlated evidence, not currently active permission.",
+            "in": "query",
+            "name": "task",
+            "required": false,
+            "schema": {
+              "maxLength": 256,
+              "type": "string"
+            }
+          },
+          {
             "description": "A client_id. Records the agent caused, or took part in as a link of the RFC 8693 act chain.",
             "in": "query",
             "name": "agent",
@@ -663,6 +1527,26 @@
             "description": "A grant id (UUID). Records naming this authorization.",
             "in": "query",
             "name": "grant",
+            "required": false,
+            "schema": {
+              "maxLength": 256,
+              "type": "string"
+            }
+          },
+          {
+            "description": "A server-generated HTTP support reference (32 lowercase hexadecimal characters).",
+            "in": "query",
+            "name": "request_id",
+            "required": false,
+            "schema": {
+              "maxLength": 256,
+              "type": "string"
+            }
+          },
+          {
+            "description": "A session lookup digest (64 lowercase hexadecimal characters), never the browser cookie.",
+            "in": "query",
+            "name": "session",
             "required": false,
             "schema": {
               "maxLength": 256,
@@ -772,6 +1656,16 @@
         "operationId": "audit.events.export",
         "parameters": [
           {
+            "description": "A canonical Task UUID. Recorded correlated evidence, not currently active permission.",
+            "in": "query",
+            "name": "task",
+            "required": false,
+            "schema": {
+              "maxLength": 256,
+              "type": "string"
+            }
+          },
+          {
             "description": "A client_id. Records the agent caused, or took part in as a link of the RFC 8693 act chain.",
             "in": "query",
             "name": "agent",
@@ -805,6 +1699,26 @@
             "description": "A grant id (UUID). Records naming this authorization.",
             "in": "query",
             "name": "grant",
+            "required": false,
+            "schema": {
+              "maxLength": 256,
+              "type": "string"
+            }
+          },
+          {
+            "description": "A server-generated HTTP support reference (32 lowercase hexadecimal characters).",
+            "in": "query",
+            "name": "request_id",
+            "required": false,
+            "schema": {
+              "maxLength": 256,
+              "type": "string"
+            }
+          },
+          {
+            "description": "A session lookup digest (64 lowercase hexadecimal characters), never the browser cookie.",
+            "in": "query",
+            "name": "session",
             "required": false,
             "schema": {
               "maxLength": 256,
@@ -928,11 +1842,166 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "properties": {
+                    "diagnostic": {
+                      "description": "Snapshot and expires_at are present only for recorded evidence. Other statuses explain missing evidence; no current-policy reconstruction.",
+                      "properties": {
+                        "expires_at": {
+                          "format": "date-time",
+                          "type": "string"
+                        },
+                        "reason": {
+                          "enum": [
+                            "integrity_mismatch"
+                          ],
+                          "type": "string"
+                        },
+                        "snapshot": {
+                          "description": "Redacted bounded boolean evidence of the actual evaluated policy; cached issuance retains its original revision. Expires independently after seven days. No tokens, context input values or policy literals.",
+                          "properties": {
+                            "enforcement_point": {
+                              "type": "string"
+                            },
+                            "policy_revision": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "policy_updated_at": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "rules": {
+                              "items": {
+                                "properties": {
+                                  "applicable": {
+                                    "type": "boolean"
+                                  },
+                                  "conditions": {
+                                    "items": {
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string"
+                                        },
+                                        "matched": {
+                                          "type": "boolean"
+                                        },
+                                        "missing": {
+                                          "type": "boolean"
+                                        },
+                                        "path": {
+                                          "type": "string"
+                                        }
+                                      },
+                                      "required": [
+                                        "path",
+                                        "kind",
+                                        "matched",
+                                        "missing"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    "maxItems": 256,
+                                    "type": "array"
+                                  },
+                                  "effect": {
+                                    "enum": [
+                                      "permit",
+                                      "deny"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  "id": {
+                                    "maxLength": 256,
+                                    "type": "string"
+                                  },
+                                  "matched": {
+                                    "type": "boolean"
+                                  }
+                                },
+                                "required": [
+                                  "id",
+                                  "effect",
+                                  "applicable",
+                                  "matched",
+                                  "conditions"
+                                ],
+                                "type": "object"
+                              },
+                              "maxItems": 128,
+                              "type": "array"
+                            },
+                            "truncated": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "policy_revision",
+                            "policy_updated_at",
+                            "enforcement_point",
+                            "rules",
+                            "truncated"
+                          ],
+                          "type": "object"
+                        },
+                        "status": {
+                          "enum": [
+                            "recorded",
+                            "expired",
+                            "unavailable",
+                            "not_recorded",
+                            "opaque"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "status"
+                      ],
+                      "type": "object"
+                    },
+                    "grant_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "hash": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "request_id": {
+                      "pattern": "^[0-9a-f]{32}$",
+                      "type": "string"
+                    },
+                    "session_id": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "hash",
+                    "diagnostic"
+                  ],
                   "type": "object"
                 }
               }
             },
-            "description": "The operation succeeded."
+            "description": "The operation succeeded.",
+            "headers": {
+              "X-Asterius-Request-ID": {
+                "description": "Fresh server-generated support reference, independent of any caller AuthZEN echo.",
+                "schema": {
+                  "pattern": "^[0-9a-f]{32}$",
+                  "type": "string"
+                }
+              }
+            }
           },
           "401": {
             "content": {
@@ -953,6 +2022,16 @@
               }
             },
             "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The event does not exist in the routed tenant; evidence is looked up only after this check."
           },
           "429": {
             "content": {
@@ -1946,6 +3025,251 @@
         "summary": "Deletes one client's application role; 409 while any account still holds it",
         "x-asterius-reach": "tenant",
         "x-asterius-scope": "admin.app_roles:write"
+      }
+    },
+    "/admin/api/v1/clients/{client_id}/conditional-access": {
+      "get": {
+        "operationId": "clients.conditional.read",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "client_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "revision": {
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "sensitivity": {
+                      "enum": [
+                        null,
+                        "standard",
+                        "sensitive",
+                        "critical"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "sensitivity",
+                    "revision"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.clients:read"
+            ]
+          }
+        ],
+        "summary": "Reads server-owned application sensitivity and classification revision",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.clients:read"
+      },
+      "put": {
+        "operationId": "clients.conditional.update",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "client_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "description": "Administrative application classification. Both keys required; null revision expects no saved settings. Exact UUID CAS; stale updates are 409. This source is independent of dynamic client registration and PEP attributes.",
+                "properties": {
+                  "expected_revision": {
+                    "format": "uuid",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "sensitivity": {
+                    "enum": [
+                      null,
+                      "standard",
+                      "sensitive",
+                      "critical"
+                    ]
+                  }
+                },
+                "required": [
+                  "sensitivity",
+                  "expected_revision"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "revision": {
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "sensitivity": {
+                      "enum": [
+                        null,
+                        "standard",
+                        "sensitive",
+                        "critical"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "sensitivity",
+                    "revision"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The saved classification revision changed."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.clients:write"
+            ]
+          }
+        ],
+        "summary": "Classifies an application with an exact saved revision",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.clients:write"
       }
     },
     "/admin/api/v1/clients/{client_id}/health": {
@@ -4375,6 +5699,1446 @@
         "summary": "Previews a saved architecture revision and its required permissions",
         "x-asterius-reach": "tenant",
         "x-asterius-scope": "admin.flows:read"
+      }
+    },
+    "/admin/api/v1/governance/findings": {
+      "get": {
+        "description": "Read-only tenant evidence and review proposals. Each page uses its own repeatable-read snapshot; empty pages with next require continuation. Inactivity is retained-session evidence, not proof of upstream deletion. Source registration is not reachability. Local recovery candidates are preserved. Historical retention counts only with exact ownership, row generation and complete current context. Removal always requires a separately authorized lifecycle command.",
+        "operationId": "governance.findings",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "section",
+            "schema": {
+              "default": "accounts",
+              "enum": [
+                "accounts",
+                "ownership",
+                "assignments",
+                "temporary_entitlements",
+                "administrative_roles"
+              ]
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 25,
+              "maximum": 50,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Opaque versioned keyset cursor bound to the tenant and category; do not construct or reuse across categories.",
+            "in": "query",
+            "name": "after",
+            "schema": {
+              "maxLength": 16384,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "evidence": {
+                            "description": "Server-selected current public source identifiers/statuses, timestamps, revisions and historical-versus-current review context. Contains no credentials, raw external directory identifiers or complete activity-history claim. Evidence is not a lifecycle command.",
+                            "type": "object"
+                          },
+                          "key": {
+                            "maxLength": 8192,
+                            "type": "string"
+                          },
+                          "proposals": {
+                            "items": {
+                              "enum": [
+                                "inspect_provisioning_source",
+                                "assign_current_owner",
+                                "review_account_lifecycle",
+                                "review_membership_source",
+                                "start_independent_review",
+                                "inspect_review_application",
+                                "preserve_recovery_access"
+                              ]
+                            },
+                            "type": "array"
+                          },
+                          "reasons": {
+                            "items": {
+                              "enum": [
+                                "missing_owner",
+                                "inactive_owner",
+                                "owner_authority_unavailable",
+                                "reviewer_unavailable",
+                                "missing_ownership",
+                                "disconnected_source",
+                                "upstream_deleted",
+                                "upstream_absent",
+                                "inactive_account",
+                                "no_recent_observed_activity",
+                                "unknown_activity",
+                                "stale_membership",
+                                "unreviewed_privilege",
+                                "stale_review",
+                                "overdue_review",
+                                "unapplied_decision",
+                                "protected_recovery_account",
+                                "source_health_unknown"
+                              ]
+                            },
+                            "type": "array",
+                            "uniqueItems": true
+                          }
+                        },
+                        "required": [
+                          "key",
+                          "reasons",
+                          "evidence",
+                          "proposals"
+                        ],
+                        "type": "object"
+                      },
+                      "maxItems": 50,
+                      "type": "array"
+                    },
+                    "next": {
+                      "maxLength": 16384,
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "observed_at": {
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "read_only": {
+                      "const": true
+                    },
+                    "scanned": {
+                      "maximum": 100,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "section": {
+                      "enum": [
+                        "accounts",
+                        "ownership",
+                        "assignments",
+                        "temporary_entitlements",
+                        "administrative_roles"
+                      ]
+                    },
+                    "thresholds": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "inactivity_days": {
+                          "const": 90
+                        },
+                        "membership_review_days": {
+                          "const": 365
+                        },
+                        "privilege_review_days": {
+                          "const": 90
+                        }
+                      },
+                      "required": [
+                        "inactivity_days",
+                        "membership_review_days",
+                        "privilege_review_days"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "section",
+                    "observed_at",
+                    "thresholds",
+                    "items",
+                    "next",
+                    "scanned",
+                    "read_only"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Reports missing ownership, source disconnection, activity uncertainty and overdue privileged reviews without changing access",
+        "x-asterius-reach": "console_tenant",
+        "x-asterius-scope": "admin.governance:read",
+        "x-console-only": true
+      }
+    },
+    "/admin/api/v1/governance/ownership": {
+      "get": {
+        "description": "Human identity must belong to the addressed tenant. Owner/reviewer configuration never grants administrative authority. Writes additionally require current active tenant-administrator authority, fresh phishing-resistant console proof and normal CSRF protection. Reasons and historical snapshots remain private. Decisions do not change access until explicit application. Stale or externally managed sources are refused; independent standing and temporary sources remain intact. Notification transport is disabled.",
+        "operationId": "governance.ownership.list",
+        "parameters": [
+          {
+            "description": "Exact last row UUID from the previous page; rows are ordered by UUID within this tenant.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Rows per page; values outside one to one hundred are refused.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Lists current explicit standing-assignment owners and reviewers; requires a same-realm console session, and mutations require fresh phishing-resistant authentication",
+        "x-asterius-reach": "console_tenant",
+        "x-asterius-scope": "admin.governance:read",
+        "x-console-only": true,
+        "x-fresh-phishing-resistant-write": false
+      },
+      "put": {
+        "description": "Human identity must belong to the addressed tenant. Owner/reviewer configuration never grants administrative authority. Writes additionally require current active tenant-administrator authority, fresh phishing-resistant console proof and normal CSRF protection. Reasons and historical snapshots remain private. Decisions do not change access until explicit application. Stale or externally managed sources are refused; independent standing and temporary sources remain intact. Notification transport is disabled.",
+        "operationId": "governance.ownership.configure",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "description": "Omitted/null revision expects no saved ownership. Existing ownership requires its exact current revision; stale writes return 409.",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "expected_revision": {
+                    "format": "uuid",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "owner_user_id": {
+                    "format": "uuid",
+                    "not": {
+                      "const": "00000000-0000-0000-0000-000000000000"
+                    },
+                    "type": "string"
+                  },
+                  "reviewers": {
+                    "items": {
+                      "format": "uuid",
+                      "not": {
+                        "const": "00000000-0000-0000-0000-000000000000"
+                      },
+                      "type": "string"
+                    },
+                    "maxItems": 20,
+                    "minItems": 1,
+                    "type": "array",
+                    "uniqueItems": true
+                  },
+                  "target": {
+                    "oneOf": [
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "group_id": {
+                            "format": "uuid",
+                            "not": {
+                              "const": "00000000-0000-0000-0000-000000000000"
+                            },
+                            "type": "string"
+                          },
+                          "kind": {
+                            "const": "membership"
+                          },
+                          "user_id": {
+                            "format": "uuid",
+                            "not": {
+                              "const": "00000000-0000-0000-0000-000000000000"
+                            },
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "group_id",
+                          "user_id"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "kind": {
+                            "const": "user_tenant_role"
+                          },
+                          "name": {
+                            "pattern": "^[a-z0-9][a-z0-9._:-]{0,63}$",
+                            "type": "string"
+                          },
+                          "user_id": {
+                            "format": "uuid",
+                            "not": {
+                              "const": "00000000-0000-0000-0000-000000000000"
+                            },
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "user_id",
+                          "name"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "client_id": {
+                            "maxLength": 2048,
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "kind": {
+                            "const": "user_client_role"
+                          },
+                          "name": {
+                            "pattern": "^[a-z0-9][a-z0-9._:-]{0,63}$",
+                            "type": "string"
+                          },
+                          "user_id": {
+                            "format": "uuid",
+                            "not": {
+                              "const": "00000000-0000-0000-0000-000000000000"
+                            },
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "user_id",
+                          "client_id",
+                          "name"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "group_id": {
+                            "format": "uuid",
+                            "not": {
+                              "const": "00000000-0000-0000-0000-000000000000"
+                            },
+                            "type": "string"
+                          },
+                          "kind": {
+                            "const": "group_tenant_role"
+                          },
+                          "name": {
+                            "pattern": "^[a-z0-9][a-z0-9._:-]{0,63}$",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "group_id",
+                          "name"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "client_id": {
+                            "maxLength": 2048,
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "group_id": {
+                            "format": "uuid",
+                            "not": {
+                              "const": "00000000-0000-0000-0000-000000000000"
+                            },
+                            "type": "string"
+                          },
+                          "kind": {
+                            "const": "group_client_role"
+                          },
+                          "name": {
+                            "pattern": "^[a-z0-9][a-z0-9._:-]{0,63}$",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "group_id",
+                          "client_id",
+                          "name"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "target",
+                  "owner_user_id",
+                  "reviewers",
+                  "enabled"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request conflicts with the current state, or its Idempotency-Key has already been used."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Configures ownership with optimistic revision and current same-tenant human authority; requires a same-realm console session, and mutations require fresh phishing-resistant authentication",
+        "x-asterius-reach": "console_tenant",
+        "x-asterius-scope": "admin.governance:write",
+        "x-console-only": true,
+        "x-fresh-phishing-resistant-write": true
+      }
+    },
+    "/admin/api/v1/governance/reviewers": {
+      "get": {
+        "description": "Human identity must belong to the addressed tenant. Owner/reviewer configuration never grants administrative authority. Writes additionally require current active tenant-administrator authority, fresh phishing-resistant console proof and normal CSRF protection. Reasons and historical snapshots remain private. Decisions do not change access until explicit application. Stale or externally managed sources are refused; independent standing and temporary sources remain intact. Notification transport is disabled.",
+        "operationId": "governance.reviewers",
+        "parameters": [
+          {
+            "description": "Exact last row UUID from the previous page; rows are ordered by UUID within this tenant.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Rows per page; values outside one to one hundred are refused.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Lists current active tenant administrators eligible for explicit human owner/reviewer assignment; requires a same-realm console session",
+        "x-asterius-reach": "console_tenant",
+        "x-asterius-scope": "admin.governance:read",
+        "x-console-only": true,
+        "x-fresh-phishing-resistant-write": false
+      }
+    },
+    "/admin/api/v1/governance/reviews": {
+      "get": {
+        "description": "Human identity must belong to the addressed tenant. Owner/reviewer configuration never grants administrative authority. Writes additionally require current active tenant-administrator authority, fresh phishing-resistant console proof and normal CSRF protection. Reasons and historical snapshots remain private. Decisions do not change access until explicit application. Stale or externally managed sources are refused; independent standing and temporary sources remain intact. Notification transport is disabled.",
+        "operationId": "governance.review.list",
+        "parameters": [
+          {
+            "description": "Exact last row UUID from the previous page; rows are ordered by UUID within this tenant.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Rows per page; values outside one to one hundred are refused.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Lists tenant review history; requires a same-realm console session, and mutations require fresh phishing-resistant authentication",
+        "x-asterius-reach": "console_tenant",
+        "x-asterius-scope": "admin.governance:read",
+        "x-console-only": true,
+        "x-fresh-phishing-resistant-write": false
+      },
+      "post": {
+        "description": "Human identity must belong to the addressed tenant. Owner/reviewer configuration never grants administrative authority. Writes additionally require current active tenant-administrator authority, fresh phishing-resistant console proof and normal CSRF protection. Reasons and historical snapshots remain private. Decisions do not change access until explicit application. Stale or externally managed sources are refused; independent standing and temporary sources remain intact. Notification transport is disabled.",
+        "operationId": "governance.review.start",
+        "parameters": [
+          {
+            "description": "A caller-chosen key, unique per creation. A repeat is refused with 409 rather than executed a second time.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "description": "Deadline must be future and within ninety days of database time. Every selected source must exist and its configured reviewer must remain eligible. Group snapshots refuse more than one hundred affected users or incomplete provenance.",
+                "properties": {
+                  "due_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "ownership_ids": {
+                    "items": {
+                      "format": "uuid",
+                      "not": {
+                        "const": "00000000-0000-0000-0000-000000000000"
+                      },
+                      "type": "string"
+                    },
+                    "maxItems": 200,
+                    "minItems": 1,
+                    "type": "array",
+                    "uniqueItems": true
+                  },
+                  "reviewer_id": {
+                    "format": "uuid",
+                    "not": {
+                      "const": "00000000-0000-0000-0000-000000000000"
+                    },
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "ownership_ids",
+                  "reviewer_id",
+                  "due_at"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request conflicts with the current state, or its Idempotency-Key has already been used."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Snapshots selected current assignments with effective provenance and an explicit reviewer; requires a same-realm console session, and mutations require fresh phishing-resistant authentication",
+        "x-asterius-idempotent": true,
+        "x-asterius-reach": "console_tenant",
+        "x-asterius-scope": "admin.governance:write",
+        "x-console-only": true,
+        "x-fresh-phishing-resistant-write": true
+      }
+    },
+    "/admin/api/v1/governance/reviews/{review_id}": {
+      "get": {
+        "description": "Human identity must belong to the addressed tenant. Owner/reviewer configuration never grants administrative authority. Writes additionally require current active tenant-administrator authority, fresh phishing-resistant console proof and normal CSRF protection. Reasons and historical snapshots remain private. Decisions do not change access until explicit application. Stale or externally managed sources are refused; independent standing and temporary sources remain intact. Notification transport is disabled.",
+        "operationId": "governance.review.read",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "review_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Reads one current or historical review; requires a same-realm console session",
+        "x-asterius-reach": "console_tenant",
+        "x-asterius-scope": "admin.governance:read",
+        "x-console-only": true,
+        "x-fresh-phishing-resistant-write": false
+      }
+    },
+    "/admin/api/v1/governance/reviews/{review_id}/cancel": {
+      "post": {
+        "description": "Human identity must belong to the addressed tenant. Owner/reviewer configuration never grants administrative authority. Writes additionally require current active tenant-administrator authority, fresh phishing-resistant console proof and normal CSRF protection. Reasons and historical snapshots remain private. Decisions do not change access until explicit application. Stale or externally managed sources are refused; independent standing and temporary sources remain intact. Notification transport is disabled.",
+        "operationId": "governance.review.cancel",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "review_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A caller-chosen key, unique per creation. A repeat is refused with 409 rather than executed a second time.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "maxProperties": 0,
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request conflicts with the current state, or its Idempotency-Key has already been used."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Cancels the creators open review without changing access; requires a same-realm console session, and mutations require fresh phishing-resistant authentication",
+        "x-asterius-idempotent": true,
+        "x-asterius-reach": "console_tenant",
+        "x-asterius-scope": "admin.governance:write",
+        "x-console-only": true,
+        "x-fresh-phishing-resistant-write": true
+      }
+    },
+    "/admin/api/v1/governance/reviews/{review_id}/items": {
+      "get": {
+        "description": "Human identity must belong to the addressed tenant. Owner/reviewer configuration never grants administrative authority. Writes additionally require current active tenant-administrator authority, fresh phishing-resistant console proof and normal CSRF protection. Reasons and historical snapshots remain private. Decisions do not change access until explicit application. Stale or externally managed sources are refused; independent standing and temporary sources remain intact. Notification transport is disabled.",
+        "operationId": "governance.review.items",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "review_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Exact last row UUID from the previous page; rows are ordered by UUID within this tenant.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Rows per page; values outside one to one hundred are refused.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Reads immutable review evidence and application results; requires a same-realm console session, and mutations require fresh phishing-resistant authentication",
+        "x-asterius-reach": "console_tenant",
+        "x-asterius-scope": "admin.governance:read",
+        "x-console-only": true,
+        "x-fresh-phishing-resistant-write": false
+      }
+    },
+    "/admin/api/v1/governance/reviews/{review_id}/items/{item_id}/apply": {
+      "post": {
+        "description": "Human identity must belong to the addressed tenant. Owner/reviewer configuration never grants administrative authority. Writes additionally require current active tenant-administrator authority, fresh phishing-resistant console proof and normal CSRF protection. Reasons and historical snapshots remain private. Decisions do not change access until explicit application. Stale or externally managed sources are refused; independent standing and temporary sources remain intact. Notification transport is disabled.",
+        "operationId": "governance.review.apply",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "review_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A caller-chosen key, unique per creation. A repeat is refused with 409 rather than executed a second time.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "maxProperties": 0,
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request conflicts with the current state, or its Idempotency-Key has already been used."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Applies the recorded decision atomically after rechecking live authority and provenance; requires a same-realm console session, and mutations require fresh phishing-resistant authentication",
+        "x-asterius-idempotent": true,
+        "x-asterius-reach": "console_tenant",
+        "x-asterius-scope": "admin.governance:write",
+        "x-console-only": true,
+        "x-fresh-phishing-resistant-write": true
+      }
+    },
+    "/admin/api/v1/governance/reviews/{review_id}/items/{item_id}/decision": {
+      "put": {
+        "description": "Human identity must belong to the addressed tenant. Owner/reviewer configuration never grants administrative authority. Writes additionally require current active tenant-administrator authority, fresh phishing-resistant console proof and normal CSRF protection. Reasons and historical snapshots remain private. Decisions do not change access until explicit application. Stale or externally managed sources are refused; independent standing and temporary sources remain intact. Notification transport is disabled.",
+        "operationId": "governance.review.decide",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "review_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "description": "An assigned reviewer records one immutable decision and printable nonempty reason. This command does not mutate access.",
+                "properties": {
+                  "decision": {
+                    "enum": [
+                      "retain",
+                      "remove"
+                    ]
+                  },
+                  "reason": {
+                    "maxLength": 1000,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "decision",
+                  "reason"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request conflicts with the current state, or its Idempotency-Key has already been used."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Records an assigned reviewers retain or remove decision without changing access; requires a same-realm console session, and mutations require fresh phishing-resistant authentication",
+        "x-asterius-reach": "console_tenant",
+        "x-asterius-scope": "admin.governance:write",
+        "x-console-only": true,
+        "x-fresh-phishing-resistant-write": true
       }
     },
     "/admin/api/v1/groups": {
@@ -8346,6 +11110,158 @@
       },
       "put": {
         "operationId": "policies.update",
+        "parameters": [
+          {
+            "description": "Quoted canonical sha256 revision from GET /policies. Required when adding, modifying or removing conditional scopes; use If-None-Match: * only for a first publication.",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Explicitly expects no existing policy. Mutually exclusive with If-Match.",
+            "in": "header",
+            "name": "If-None-Match",
+            "required": false,
+            "schema": {
+              "const": "*",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "description": "64 KiB whole policy; at most 128 rules across base and conditional scopes. Conditional selectors reference registered clients and supported server enforcement actions, with no overlap. Every referenced trusted fact is mandatory before ANY/NOT. New predicates are closed and available only inside conditional scopes: application_sensitivity, network_zone, authentication_age_at_most (60..86400 seconds), device_compliance. Unknown/stale sources deny active scopes; report_only emits diagnostics. Named zones must be defined; assurance remedies must be configured attainable ACR levels. Never derives trusted facts from PEP properties.",
+                "properties": {
+                  "conditional_scopes": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "actions": {
+                          "items": {
+                            "enum": [
+                              "authorize",
+                              "authorization_code",
+                              "refresh_token",
+                              "device_code",
+                              "ciba",
+                              "token_exchange",
+                              "client_credentials",
+                              "jwt_bearer",
+                              "access_evaluation"
+                            ]
+                          },
+                          "maxItems": 32,
+                          "minItems": 1,
+                          "type": "array",
+                          "uniqueItems": true
+                        },
+                        "assurance_remedy": {
+                          "maxLength": 256,
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "clients": {
+                          "items": {
+                            "maxLength": 256,
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "maxItems": 64,
+                          "minItems": 1,
+                          "type": "array",
+                          "uniqueItems": true
+                        },
+                        "id": {
+                          "maxLength": 128,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "mode": {
+                          "enum": [
+                            "active",
+                            "report_only"
+                          ]
+                        },
+                        "network_zones": {
+                          "additionalProperties": {
+                            "items": {
+                              "description": "Explicit IPv4 or IPv6 CIDR",
+                              "type": "string"
+                            },
+                            "maxItems": 16,
+                            "minItems": 1,
+                            "type": "array",
+                            "uniqueItems": true
+                          },
+                          "maxProperties": 64,
+                          "type": "object"
+                        },
+                        "required_facts": {
+                          "items": {
+                            "enum": [
+                              "assurance",
+                              "authentication_age",
+                              "application_sensitivity",
+                              "network_zone",
+                              "device_compliance",
+                              "groups",
+                              "roles",
+                              "grants"
+                            ]
+                          },
+                          "maxItems": 32,
+                          "type": "array",
+                          "uniqueItems": true
+                        },
+                        "rules": {
+                          "items": {
+                            "type": "object"
+                          },
+                          "maxItems": 128,
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "mode",
+                        "id",
+                        "clients",
+                        "actions",
+                        "rules"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 64,
+                    "type": "array"
+                  },
+                  "rules": {
+                    "items": {
+                      "type": "object"
+                    },
+                    "maxItems": 128,
+                    "type": "array"
+                  },
+                  "version": {
+                    "const": 1
+                  }
+                },
+                "required": [
+                  "version",
+                  "rules"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -8385,7 +11301,7 @@
                 }
               }
             },
-            "description": "The request conflicts with the current state, or its Idempotency-Key has already been used."
+            "description": "Policy revision changed, or conditional publication lacks an exact precondition."
           },
           "429": {
             "content": {
@@ -8501,7 +11417,7 @@
             "application/json": {
               "schema": {
                 "additionalProperties": false,
-                "description": "Bounded 128 KiB inspection. All references must exist in the routed tenant. Only policy and context properties may be hypothetical. Audited before lookup; never grants access or issues a token.",
+                "description": "Bounded 128 KiB inspection. All references must exist in the routed tenant. Policy, descriptive context and explicitly labelled trusted examples may be hypothetical; directory facts remain server resolved. No selected user transaction means assurance, authentication age and network evidence are absent. Audited before lookup; never grants access or issues a token.",
                 "properties": {
                   "action": {
                     "maxLength": 256,
@@ -8511,6 +11427,22 @@
                   "client_id": {
                     "maxLength": 256,
                     "minLength": 1,
+                    "type": "string"
+                  },
+                  "enforcement_action": {
+                    "default": "access_evaluation",
+                    "description": "Server enforcement boundary, separate from resource action.",
+                    "enum": [
+                      "authorize",
+                      "authorization_code",
+                      "refresh_token",
+                      "device_code",
+                      "ciba",
+                      "token_exchange",
+                      "client_credentials",
+                      "jwt_bearer",
+                      "access_evaluation"
+                    ],
                     "type": "string"
                   },
                   "expected_policy_revision": {
@@ -8524,6 +11456,220 @@
                     "type": "object"
                   },
                   "hypothetical_policy": {
+                    "type": "object"
+                  },
+                  "hypothetical_trusted_context": {
+                    "additionalProperties": false,
+                    "description": "Administrative what-if examples only. Cannot override groups, roles or grants or assert a production source. Missing states never carry a value.",
+                    "maxProperties": 5,
+                    "properties": {
+                      "application_sensitivity": {
+                        "oneOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "availability": {
+                                "enum": [
+                                  "absent",
+                                  "stale",
+                                  "unavailable",
+                                  "invalid"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "availability"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "availability": {
+                                "const": "known"
+                              },
+                              "value": {
+                                "enum": [
+                                  "standard",
+                                  "sensitive",
+                                  "critical"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "availability",
+                              "value"
+                            ],
+                            "type": "object"
+                          }
+                        ]
+                      },
+                      "assurance": {
+                        "oneOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "availability": {
+                                "enum": [
+                                  "absent",
+                                  "stale",
+                                  "unavailable",
+                                  "invalid"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "availability"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "availability": {
+                                "const": "known"
+                              },
+                              "value": {
+                                "description": "An attainable level in this tenant's current ACR ladder; unsupported values are invalid evidence.",
+                                "maxLength": 256,
+                                "minLength": 1,
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "availability",
+                              "value"
+                            ],
+                            "type": "object"
+                          }
+                        ]
+                      },
+                      "authentication_age": {
+                        "oneOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "availability": {
+                                "enum": [
+                                  "absent",
+                                  "stale",
+                                  "unavailable",
+                                  "invalid"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "availability"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "availability": {
+                                "const": "known"
+                              },
+                              "value": {
+                                "maximum": 604800,
+                                "minimum": 0,
+                                "type": "integer"
+                              }
+                            },
+                            "required": [
+                              "availability",
+                              "value"
+                            ],
+                            "type": "object"
+                          }
+                        ]
+                      },
+                      "device_compliance": {
+                        "oneOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "availability": {
+                                "enum": [
+                                  "absent",
+                                  "stale",
+                                  "unavailable",
+                                  "invalid"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "availability"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "availability": {
+                                "const": "known"
+                              },
+                              "value": {
+                                "enum": [
+                                  "compliant",
+                                  "non_compliant",
+                                  "unknown"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "availability",
+                              "value"
+                            ],
+                            "type": "object"
+                          }
+                        ]
+                      },
+                      "network_zone": {
+                        "oneOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "availability": {
+                                "enum": [
+                                  "absent",
+                                  "stale",
+                                  "unavailable",
+                                  "invalid"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "availability"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "availability": {
+                                "const": "known"
+                              },
+                              "value": {
+                                "items": {
+                                  "maxLength": 128,
+                                  "minLength": 1,
+                                  "pattern": "^[A-Za-z0-9_.-]+$",
+                                  "type": "string"
+                                },
+                                "maxItems": 64,
+                                "type": "array",
+                                "uniqueItems": true
+                              }
+                            },
+                            "required": [
+                              "availability",
+                              "value"
+                            ],
+                            "type": "object"
+                          }
+                        ]
+                      }
+                    },
                     "type": "object"
                   },
                   "resource_id": {
@@ -8660,6 +11806,117 @@
                     },
                     "simulation": {
                       "properties": {
+                        "conditional": {
+                          "description": "Inspection only: reports active restrictions and report-only results, without returning fact values, policy literals or directory contents.",
+                          "properties": {
+                            "acr_revision": {
+                              "type": "string"
+                            },
+                            "active_would_permit": {
+                              "type": "boolean"
+                            },
+                            "client_revision": {
+                              "type": "string"
+                            },
+                            "enforcement_action": {
+                              "enum": [
+                                "authorize",
+                                "authorization_code",
+                                "refresh_token",
+                                "device_code",
+                                "ciba",
+                                "token_exchange",
+                                "client_credentials",
+                                "jwt_bearer",
+                                "access_evaluation"
+                              ]
+                            },
+                            "evaluated_policy_revision": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "facts": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "availability": {
+                                    "enum": [
+                                      "known",
+                                      "absent",
+                                      "stale",
+                                      "unavailable",
+                                      "invalid"
+                                    ]
+                                  },
+                                  "hypothetical": {
+                                    "type": "boolean"
+                                  },
+                                  "name": {
+                                    "type": "string"
+                                  },
+                                  "source": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "name",
+                                  "availability",
+                                  "source",
+                                  "hypothetical"
+                                ],
+                                "type": "object"
+                              },
+                              "type": "array"
+                            },
+                            "legacy_would_permit": {
+                              "type": "boolean"
+                            },
+                            "policy_revision": {
+                              "type": "string"
+                            },
+                            "scopes": {
+                              "items": {
+                                "properties": {
+                                  "assurance_remedy": {
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ]
+                                  },
+                                  "conditions": {
+                                    "type": "array"
+                                  },
+                                  "id": {
+                                    "type": "string"
+                                  },
+                                  "missing_required_evidence": {
+                                    "type": "boolean"
+                                  },
+                                  "mode": {
+                                    "enum": [
+                                      "active",
+                                      "report_only"
+                                    ]
+                                  },
+                                  "required_facts": {
+                                    "items": {
+                                      "type": "string"
+                                    },
+                                    "type": "array"
+                                  },
+                                  "would_decision": {
+                                    "type": "boolean"
+                                  }
+                                },
+                                "type": "object"
+                              },
+                              "type": "array"
+                            }
+                          },
+                          "type": "object"
+                        },
                         "current_policy_revision": {
                           "type": [
                             "string",
@@ -8677,7 +11934,7 @@
                                 "hypothetical"
                               ]
                             },
-                            "groups_roles_grants_acr": {
+                            "groups_roles_grants": {
                               "const": "server_resolved"
                             },
                             "policy": {
@@ -8691,6 +11948,9 @@
                             },
                             "subject": {
                               "const": "tenant_user_and_client"
+                            },
+                            "trusted_transaction_evidence": {
+                              "const": "explicit_fact_sources"
                             }
                           },
                           "type": "object"
@@ -12320,6 +15580,1167 @@
         "x-asterius-idempotent": true,
         "x-asterius-reach": "tenant",
         "x-asterius-scope": "admin.ssf:write"
+      }
+    },
+    "/admin/api/v1/temporary-entitlements": {
+      "get": {
+        "description": "Console-only, exact resource owner server user. Existing admin.app_roles scope remains mandatory. Posted editor/actor/authentication evidence is refused. Configuration binding is immutable; UUID CAS revisions invalidate old requests and activations. Timestamps are authoritative Unix seconds. Ordinary account request/approval routes use their own session and CSRF token, never these admin credentials.",
+        "operationId": "temporary_entitlements.list",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Configuration/eligibility CAS or immutable idempotency payload conflicts."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Console-only owner-scoped temporary entitlement list",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.app_roles:read"
+      },
+      "post": {
+        "description": "Console-only, exact resource owner server user. Existing admin.app_roles scope remains mandatory. Posted editor/actor/authentication evidence is refused. Configuration binding is immutable; UUID CAS revisions invalidate old requests and activations. Timestamps are authoritative Unix seconds. Ordinary account request/approval routes use their own session and CSRF token, never these admin credentials.",
+        "operationId": "temporary_entitlements.create",
+        "parameters": [
+          {
+            "description": "A caller-chosen key, unique per creation. A repeat is refused with 409 rather than executed a second time.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "approver_acr": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "approver_user_ids": {
+                    "items": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "maxItems": 16,
+                    "minItems": 1,
+                    "type": "array",
+                    "uniqueItems": true
+                  },
+                  "client_id": {
+                    "maxLength": 2048,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "max_duration_seconds": {
+                    "default": 900,
+                    "maximum": 3600,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "max_eligibility_seconds": {
+                    "default": 86400,
+                    "maximum": 2592000,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "owner_user_id": {
+                    "description": "Must equal verified Console user; binding immutable.",
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "permissions": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "maxItems": 64,
+                    "minItems": 1,
+                    "type": "array",
+                    "uniqueItems": true
+                  },
+                  "requester_acr": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "resource": {
+                    "format": "uri",
+                    "type": "string"
+                  },
+                  "role_name": {
+                    "maxLength": 64,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "owner_user_id",
+                  "client_id",
+                  "resource",
+                  "role_name",
+                  "permissions",
+                  "approver_user_ids",
+                  "requester_acr",
+                  "approver_acr",
+                  "max_duration_seconds",
+                  "max_eligibility_seconds",
+                  "enabled"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Configuration/eligibility CAS or immutable idempotency payload conflicts."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Console-only owner-scoped temporary entitlement create",
+        "x-asterius-idempotent": true,
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.app_roles:write"
+      }
+    },
+    "/admin/api/v1/temporary-entitlements/{id}": {
+      "get": {
+        "description": "Console-only, exact resource owner server user. Existing admin.app_roles scope remains mandatory. Posted editor/actor/authentication evidence is refused. Configuration binding is immutable; UUID CAS revisions invalidate old requests and activations. Timestamps are authoritative Unix seconds. Ordinary account request/approval routes use their own session and CSRF token, never these admin credentials.",
+        "operationId": "temporary_entitlements.read",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Configuration/eligibility CAS or immutable idempotency payload conflicts."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Console-only owner-scoped temporary entitlement read",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.app_roles:read"
+      },
+      "put": {
+        "description": "Console-only, exact resource owner server user. Existing admin.app_roles scope remains mandatory. Posted editor/actor/authentication evidence is refused. Configuration binding is immutable; UUID CAS revisions invalidate old requests and activations. Timestamps are authoritative Unix seconds. Ordinary account request/approval routes use their own session and CSRF token, never these admin credentials.",
+        "operationId": "temporary_entitlements.update",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "approver_acr": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "approver_user_ids": {
+                    "items": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "maxItems": 16,
+                    "minItems": 1,
+                    "type": "array",
+                    "uniqueItems": true
+                  },
+                  "client_id": {
+                    "maxLength": 2048,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "expected_revision": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "max_duration_seconds": {
+                    "default": 900,
+                    "maximum": 3600,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "max_eligibility_seconds": {
+                    "default": 86400,
+                    "maximum": 2592000,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "owner_user_id": {
+                    "description": "Must equal verified Console user; binding immutable.",
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "permissions": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "maxItems": 64,
+                    "minItems": 1,
+                    "type": "array",
+                    "uniqueItems": true
+                  },
+                  "requester_acr": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "resource": {
+                    "format": "uri",
+                    "type": "string"
+                  },
+                  "role_name": {
+                    "maxLength": 64,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "owner_user_id",
+                  "client_id",
+                  "resource",
+                  "role_name",
+                  "permissions",
+                  "approver_user_ids",
+                  "requester_acr",
+                  "approver_acr",
+                  "max_duration_seconds",
+                  "max_eligibility_seconds",
+                  "enabled",
+                  "expected_revision"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Configuration/eligibility CAS or immutable idempotency payload conflicts."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Console-only owner-scoped temporary entitlement update",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.app_roles:write"
+      }
+    },
+    "/admin/api/v1/temporary-entitlements/{id}/activations": {
+      "get": {
+        "description": "Console-only, exact resource owner server user. Existing admin.app_roles scope remains mandatory. Posted editor/actor/authentication evidence is refused. Configuration binding is immutable; UUID CAS revisions invalidate old requests and activations. Timestamps are authoritative Unix seconds. Ordinary account request/approval routes use their own session and CSRF token, never these admin credentials.",
+        "operationId": "temporary_entitlements.activations",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Configuration/eligibility CAS or immutable idempotency payload conflicts."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Console-only owner-scoped temporary entitlement activations",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.app_roles:read"
+      }
+    },
+    "/admin/api/v1/temporary-entitlements/{id}/activations/{activation_id}/revoke": {
+      "post": {
+        "description": "Console-only, exact resource owner server user. Existing admin.app_roles scope remains mandatory. Posted editor/actor/authentication evidence is refused. Configuration binding is immutable; UUID CAS revisions invalidate old requests and activations. Timestamps are authoritative Unix seconds. Ordinary account request/approval routes use their own session and CSRF token, never these admin credentials.",
+        "operationId": "temporary_entitlements.revoke",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "activation_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A caller-chosen key, unique per creation. A repeat is refused with 409 rather than executed a second time.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "activation_id": {
+                    "description": "Must equal addressed activation.",
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "idempotency_key": {
+                    "description": "Authoritative lifecycle replay key, atomically bound to actor/operation/exact payload and original response. Generic admin header is validated, never consumed before this transaction.",
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "description": "UTF-8 byte bound; control characters refused.",
+                    "maxLength": 1024,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "activation_id",
+                  "reason",
+                  "idempotency_key"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Configuration/eligibility CAS or immutable idempotency payload conflicts."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Console-only owner-scoped temporary entitlement revoke",
+        "x-asterius-idempotent": true,
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.app_roles:write"
+      }
+    },
+    "/admin/api/v1/temporary-entitlements/{id}/eligibilities": {
+      "get": {
+        "description": "Console-only, exact resource owner server user. Existing admin.app_roles scope remains mandatory. Posted editor/actor/authentication evidence is refused. Configuration binding is immutable; UUID CAS revisions invalidate old requests and activations. Timestamps are authoritative Unix seconds. Ordinary account request/approval routes use their own session and CSRF token, never these admin credentials.",
+        "operationId": "temporary_entitlements.eligibilities",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Configuration/eligibility CAS or immutable idempotency payload conflicts."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Console-only owner-scoped temporary entitlement eligibilities",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.app_roles:read"
+      },
+      "post": {
+        "description": "Console-only, exact resource owner server user. Existing admin.app_roles scope remains mandatory. Posted editor/actor/authentication evidence is refused. Configuration binding is immutable; UUID CAS revisions invalidate old requests and activations. Timestamps are authoritative Unix seconds. Ordinary account request/approval routes use their own session and CSRF token, never these admin credentials.",
+        "operationId": "temporary_entitlements.eligibility_set",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A caller-chosen key, unique per creation. A repeat is refused with 409 rather than executed a second time.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "expected_revision": {
+                    "format": "uuid",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "expires_at": {
+                    "type": "integer"
+                  },
+                  "not_before": {
+                    "type": "integer"
+                  },
+                  "user_id": {
+                    "format": "uuid",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "user_id",
+                  "not_before",
+                  "expires_at",
+                  "expected_revision"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Configuration/eligibility CAS or immutable idempotency payload conflicts."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Console-only owner-scoped temporary entitlement eligibility_set",
+        "x-asterius-idempotent": true,
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.app_roles:write"
+      }
+    },
+    "/admin/api/v1/temporary-entitlements/{id}/eligibilities/{eligibility_id}": {
+      "delete": {
+        "description": "Console-only, exact resource owner server user. Existing admin.app_roles scope remains mandatory. Posted editor/actor/authentication evidence is refused. Configuration binding is immutable; UUID CAS revisions invalidate old requests and activations. Timestamps are authoritative Unix seconds. Ordinary account request/approval routes use their own session and CSRF token, never these admin credentials.",
+        "operationId": "temporary_entitlements.eligibility_remove",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "eligibility_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "expected_revision": {
+                    "format": "uuid",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "expected_revision"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Configuration/eligibility CAS or immutable idempotency payload conflicts."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Console-only owner-scoped temporary entitlement eligibility_remove",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.app_roles:write"
+      }
+    },
+    "/admin/api/v1/temporary-entitlements/{id}/requests": {
+      "get": {
+        "description": "Console-only, exact resource owner server user. Existing admin.app_roles scope remains mandatory. Posted editor/actor/authentication evidence is refused. Configuration binding is immutable; UUID CAS revisions invalidate old requests and activations. Timestamps are authoritative Unix seconds. Ordinary account request/approval routes use their own session and CSRF token, never these admin credentials.",
+        "operationId": "temporary_entitlements.requests",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Configuration/eligibility CAS or immutable idempotency payload conflicts."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Console-only owner-scoped temporary entitlement requests",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.app_roles:read"
       }
     },
     "/admin/api/v1/tenants": {

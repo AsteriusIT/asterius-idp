@@ -50,6 +50,13 @@ url = "2"
 ipnet = "2"
 
 [[bin]]
+name = "access_review_requests"
+path = "fuzz_targets/access_review_requests.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "access_token_claims"
 path = "fuzz_targets/access_token_claims.rs"
 test = false
@@ -157,6 +164,34 @@ bench = false
 [[bin]]
 name = "agent_profile"
 path = "fuzz_targets/agent_profile.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "agent_task_permissions"
+path = "fuzz_targets/agent_task_permissions.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "agent_task_token_linkage"
+path = "fuzz_targets/agent_task_token_linkage.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "agent_task_view_query"
+path = "fuzz_targets/agent_task_view_query.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "agent_task_withdrawal_form"
+path = "fuzz_targets/agent_task_withdrawal_form.rs"
 test = false
 doc = false
 bench = false
@@ -309,6 +344,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "conditional_client_settings"
+path = "fuzz_targets/conditional_client_settings.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "config_parse"
 path = "fuzz_targets/config_parse.rs"
 test = false
@@ -381,6 +423,13 @@ bench = false
 [[bin]]
 name = "forwarded_resolve"
 path = "fuzz_targets/forwarded_resolve.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "governance_report_query"
+path = "fuzz_targets/governance_report_query.rs"
 test = false
 doc = false
 bench = false
@@ -696,6 +745,20 @@ bench = false
 [[bin]]
 name = "ssf_verification_state"
 path = "fuzz_targets/ssf_verification_state.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "temporary_entitlement_command"
+path = "fuzz_targets/temporary_entitlement_command.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "temporary_entitlement_configuration"
+path = "fuzz_targets/temporary_entitlement_configuration.rs"
 test = false
 doc = false
 bench = false

@@ -79,6 +79,10 @@ pub const NDJSON: &str = "application/x-ndjson";
 /// person.
 pub const PARAMETERS: &[(&str, &str)] = &[
     (
+        "task",
+        "A canonical Task UUID. Recorded correlated evidence, not currently active permission.",
+    ),
+    (
         "agent",
         "A client_id. Records the agent caused, or took part in as a link of the RFC 8693 act chain.",
     ),
@@ -93,6 +97,14 @@ pub const PARAMETERS: &[(&str, &str)] = &[
     (
         "grant",
         "A grant id (UUID). Records naming this authorization.",
+    ),
+    (
+        "request_id",
+        "A server-generated HTTP support reference (32 lowercase hexadecimal characters).",
+    ),
+    (
+        "session",
+        "A session lookup digest (64 lowercase hexadecimal characters), never the browser cookie.",
     ),
     (
         "type",
@@ -126,30 +138,45 @@ pub fn parse_filter(query: &str) -> Result<AuditFilter, AdminError> {
         if matches!(name, "cursor" | "limit") {
             continue;
         }
-        // The name is checked before anything that would put it in a
-        // message: every refusal below names a *documented* parameter, so
-        // none of them can echo what was typed.
-        if !PARAMETERS.iter().any(|(known, _)| *known == name) {
-            return Err(AdminError::Invalid(
-                "unknown filter parameter; see the OpenAPI document for the list".to_owned(),
-            ));
-        }
-        if raw.len() > MAX_VALUE_LEN {
-            return Err(AdminError::Invalid(format!(
-                "{name} is longer than {MAX_VALUE_LEN} bytes"
-            )));
-        }
-        let value = crate::clients::search_term(raw);
-        if value.is_empty() || value.chars().any(char::is_control) {
-            return Err(AdminError::Invalid(format!(
-                "{name} must be a non-empty value"
-            )));
-        }
+        let value = filter_value(name, raw)?;
 
         match name {
             "agent" => set_once(&mut filter.agent, ClientId::new(value), name)?,
             "owner" => set_once(&mut filter.owner, value, name)?,
             "user" => set_once(&mut filter.user, value, name)?,
+            "request_id" => {
+                if value.len() != 32
+                    || !value
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                {
+                    return Err(AdminError::Invalid(
+                        "request_id must be a server support reference".to_owned(),
+                    ));
+                }
+                set_once(&mut filter.request_id, value, name)?;
+            }
+            "session" => {
+                if value.len() != 64
+                    || !value
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                {
+                    return Err(AdminError::Invalid(
+                        "session must be a server lookup digest".to_owned(),
+                    ));
+                }
+                set_once(
+                    &mut filter.session,
+                    asterius_domain::SessionId::new(value),
+                    name,
+                )?;
+            }
+            "task" => {
+                let task = asterius_domain::agent_task_views::identity(&value)
+                    .map_err(|_| AdminError::Invalid("task must be a canonical UUID".to_owned()))?;
+                set_once(&mut filter.task, task, name)?;
+            }
             "grant" => {
                 let uuid: uuid::Uuid = value
                     .parse()
@@ -235,6 +262,70 @@ pub fn render(entry: &TrailEntry) -> Value {
             "opaque": reason.column(),
         }),
     }
+}
+
+/// Adds historical evidence only after the routed tenant's event was found.
+pub async fn render_detail(
+    query: &dyn asterius_domain::audit::AuditQuery,
+    tenant: &asterius_domain::TenantId,
+    entry: &TrailEntry,
+    now: OffsetDateTime,
+) -> Result<Value, DomainError> {
+    let mut document = render(entry);
+    let diagnostic = match &entry.record {
+        AuditRecord::Opaque { .. } => json!({"status": "opaque"}),
+        AuditRecord::Event(event) => {
+            let id = event
+                .detail
+                .iter()
+                .find_map(|(key, value)| match (key.as_str(), value) {
+                    ("diagnostic_id", DetailValue::Text(id)) => uuid::Uuid::parse_str(id).ok(),
+                    _ => None,
+                });
+            let expires =
+                event
+                    .detail
+                    .iter()
+                    .find_map(|(key, value)| match (key.as_str(), value) {
+                        ("diagnostic_expires_at", DetailValue::Number(until)) => Some(*until),
+                        _ => None,
+                    });
+            let digest = event
+                .detail
+                .iter()
+                .find_map(|(key, value)| match (key.as_str(), value) {
+                    ("diagnostic_digest", DetailValue::Fingerprint(digest)) => {
+                        Some(digest.as_str())
+                    }
+                    _ => None,
+                });
+            match id {
+                None => json!({"status": "not_recorded"}),
+                Some(_) if expires.is_some_and(|until| until <= now.unix_timestamp()) => {
+                    json!({"status": "expired"})
+                }
+                Some(id) => match query.diagnostics(tenant, id, now).await? {
+                    Some(evidence) => {
+                        let actual_digest = asterius_domain::audit::redaction::fingerprint(
+                            &asterius_domain::audit::query::canonical_diagnostics(
+                                &evidence.diagnostics,
+                            ),
+                        );
+                        if digest != Some(actual_digest.as_str())
+                            || expires != Some(evidence.expires_at.unix_timestamp())
+                        {
+                            json!({"status": "unavailable", "reason": "integrity_mismatch"})
+                        } else {
+                            json!({"status": "recorded", "expires_at": timestamp(evidence.expires_at), "snapshot": evidence.diagnostics})
+                        }
+                    }
+                    None => json!({"status": "unavailable"}),
+                },
+            }
+        }
+    };
+    document["diagnostic"] = diagnostic;
+    Ok(document)
 }
 
 fn event_document(event: &AuditEvent) -> Map<String, Value> {
@@ -412,8 +503,57 @@ impl futures_core::Stream for Export {
     }
 }
 
+fn filter_value(name: &str, raw: &str) -> Result<String, AdminError> {
+    // The name is checked before anything that would put it in a
+    // message: every refusal below names a *documented* parameter, so
+    // none of them can echo what was typed.
+    if !PARAMETERS.iter().any(|(known, _)| *known == name) {
+        return Err(AdminError::Invalid(
+            "unknown filter parameter; see the OpenAPI document for the list".to_owned(),
+        ));
+    }
+    if raw.len() > MAX_VALUE_LEN {
+        return Err(AdminError::Invalid(format!(
+            "{name} is longer than {MAX_VALUE_LEN} bytes"
+        )));
+    }
+    let value = crate::clients::search_term(raw);
+    if value.is_empty() || value.chars().any(char::is_control) {
+        return Err(AdminError::Invalid(format!(
+            "{name} must be a non-empty value"
+        )));
+    }
+
+    Ok(value)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn correlation_filters_are_exact_server_references() {
+        let request = "a".repeat(32);
+        let session = "b".repeat(64);
+        let filter = super::parse_filter(&format!("request_id={request}&session={session}"))
+            .expect("server references");
+        assert_eq!(filter.request_id.as_deref(), Some(request.as_str()));
+        assert_eq!(
+            filter
+                .session
+                .as_ref()
+                .map(asterius_domain::SessionId::as_str),
+            Some(session.as_str())
+        );
+        for bad in [
+            "request_id=x",
+            "request_id=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "session=cookie",
+            "session=abc",
+            "request_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&request_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ] {
+            assert!(super::parse_filter(bad).is_err());
+        }
+    }
+
     use super::*;
     use asterius_domain::audit::chain::EventHash;
     use asterius_domain::audit::{Detail, Outcome};
@@ -677,6 +817,112 @@ mod tests {
                 .take(limit.min(MAX_PAGE) as usize)
                 .collect())
         }
+    }
+
+    #[derive(Debug)]
+    struct Snapshot {
+        evidence: asterius_domain::audit::query::DiagnosticEvidence,
+        reads: std::sync::atomic::AtomicUsize,
+    }
+    #[async_trait::async_trait]
+    impl AuditQuery for Snapshot {
+        async fn query(
+            &self,
+            _: &TenantId,
+            _: &AuditFilter,
+            _: Option<i64>,
+            _: u32,
+        ) -> Result<Vec<TrailEntry>, DomainError> {
+            Ok(vec![])
+        }
+        async fn diagnostics(
+            &self,
+            _: &TenantId,
+            _: uuid::Uuid,
+            _: OffsetDateTime,
+        ) -> Result<Option<asterius_domain::audit::query::DiagnosticEvidence>, DomainError>
+        {
+            self.reads
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(Some(self.evidence.clone()))
+        }
+    }
+
+    #[tokio::test]
+    async fn immutable_trace_digest_and_expiry_reject_modified_evidence() {
+        use asterius_domain::audit::query::{DiagnosticEvidence, canonical_diagnostics};
+        let tenant = TenantId::new("acme");
+        let now = OffsetDateTime::UNIX_EPOCH;
+        let original = json!({"rules": [{"matched": false}], "policy_revision": "old"});
+        let detail = Detail::new()
+            .text("diagnostic_id", uuid::Uuid::new_v4().to_string())
+            .credential("diagnostic_digest", canonical_diagnostics(&original))
+            .number("diagnostic_expires_at", 100);
+        let event = entry(exchange().detail(detail));
+        let mut query = Snapshot {
+            evidence: DiagnosticEvidence {
+                diagnostics: original.clone(),
+                expires_at: now + time::Duration::seconds(100),
+            },
+            reads: std::sync::atomic::AtomicUsize::new(0),
+        };
+        let valid = render_detail(&query, &tenant, &event, now)
+            .await
+            .expect("original evidence");
+        assert_eq!(valid["diagnostic"]["status"], "recorded");
+        query.evidence.diagnostics["rules"][0]["matched"] = json!(true);
+        let altered = render_detail(&query, &tenant, &event, now)
+            .await
+            .expect("modified evidence");
+        assert_eq!(altered["diagnostic"]["reason"], "integrity_mismatch");
+        assert!(altered["diagnostic"].get("snapshot").is_none());
+        query.evidence.diagnostics = original;
+        query.evidence.expires_at = now + time::Duration::seconds(200);
+        let extended = render_detail(&query, &tenant, &event, now)
+            .await
+            .expect("extended evidence");
+        assert_eq!(extended["diagnostic"]["reason"], "integrity_mismatch");
+        let reads = query.reads.load(std::sync::atomic::Ordering::Relaxed);
+        let expired = render_detail(&query, &tenant, &event, now + time::Duration::seconds(100))
+            .await
+            .expect("immutable expiry");
+        assert_eq!(expired["diagnostic"]["status"], "expired");
+        assert_eq!(
+            query.reads.load(std::sync::atomic::Ordering::Relaxed),
+            reads,
+            "event expiry must stop a tampered storage read"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_historical_evidence_has_explicit_status() {
+        let query = trail(0, false);
+        let tenant = TenantId::new("acme");
+        let now = OffsetDateTime::UNIX_EPOCH;
+        let plain = render_detail(query.as_ref(), &tenant, &entry(exchange()), now)
+            .await
+            .expect("plain event");
+        assert_eq!(plain["diagnostic"]["status"], "not_recorded");
+        let reference = uuid::Uuid::new_v4().to_string();
+        let with_reference = exchange().detail(
+            Detail::new()
+                .text("diagnostic_id", &reference)
+                .number("diagnostic_expires_at", 100),
+        );
+        let active = render_detail(query.as_ref(), &tenant, &entry(with_reference.clone()), now)
+            .await
+            .expect("missing snapshot");
+        assert_eq!(active["diagnostic"]["status"], "unavailable");
+        let expired = render_detail(
+            query.as_ref(),
+            &tenant,
+            &entry(with_reference),
+            now + time::Duration::seconds(100),
+        )
+        .await
+        .expect("expired snapshot");
+        assert_eq!(expired["diagnostic"]["status"], "expired");
+        assert!(expired["diagnostic"].get("snapshot").is_none());
     }
 
     fn trail(n: usize, fail: bool) -> Arc<Trail> {

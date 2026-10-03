@@ -39,6 +39,8 @@ type Config struct {
 	Issuer, ClientID, KeyFile, KeyID, CAFile, Resource, TargetTenant, IssuingTenant, TargetIssuer string
 	Scopes                                                                                        []string
 	Timeout                                                                                       time.Duration
+	// Operator Secret material stays in memory; provider file configuration remains unchanged.
+	KeyMaterial, DPoPMaterial, CAMaterial []byte
 }
 type Client struct {
 	cfg       Config
@@ -102,9 +104,12 @@ func New(cfg Config) (*Client, error) {
 	if cfg.ClientID == "" || cfg.KeyID == "" {
 		return nil, errors.New("client_id and key_id are required")
 	}
-	raw, err := os.ReadFile(cfg.KeyFile)
-	if err != nil {
-		return nil, errors.New("cannot read external signing key")
+	raw := cfg.KeyMaterial
+	if len(raw) == 0 {
+		raw, err = os.ReadFile(cfg.KeyFile)
+		if err != nil {
+			return nil, errors.New("cannot read external signing key")
+		}
 	}
 	block, rest := pem.Decode(raw)
 	if block == nil || len(bytes.TrimSpace(rest)) != 0 || block.Type != "PRIVATE KEY" {
@@ -122,6 +127,21 @@ func New(cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, errors.New("cannot initialize proof key")
 	}
+	if len(cfg.DPoPMaterial) > 0 {
+		proofBlock, remaining := pem.Decode(cfg.DPoPMaterial)
+		if proofBlock == nil || proofBlock.Type != "PRIVATE KEY" || len(bytes.TrimSpace(remaining)) != 0 {
+			return nil, errors.New("proof key must be a single PKCS8 PEM private key")
+		}
+		parsedProof, parseErr := x509.ParsePKCS8PrivateKey(proofBlock.Bytes)
+		if parseErr != nil {
+			return nil, errors.New("invalid proof key")
+		}
+		var valid bool
+		dpop, valid = parsedProof.(*ecdsa.PrivateKey)
+		if !valid || dpop.Curve != elliptic.P256() {
+			return nil, errors.New("proof key must be ES256 (P-256)")
+		}
+	}
 	roots, err := x509.SystemCertPool()
 	if err != nil {
 		roots = x509.NewCertPool()
@@ -132,6 +152,11 @@ func New(cfg Config) (*Client, error) {
 			return nil, errors.New("cannot load CA bundle")
 		}
 	}
+	if len(cfg.CAMaterial) > 0 && !roots.AppendCertsFromPEM(cfg.CAMaterial) {
+		return nil, errors.New("cannot load CA bundle")
+	}
+	// Parsed keys and certificate pools are the only retained credential material.
+	cfg.KeyMaterial, cfg.DPoPMaterial, cfg.CAMaterial = nil, nil, nil
 	if cfg.Timeout <= 0 || cfg.Timeout > 10*time.Minute {
 		return nil, errors.New("request timeout must be greater than zero and at most ten minutes")
 	}
@@ -404,6 +429,22 @@ func (c *Client) Create(ctx context.Context, kind, key string, spec json.RawMess
 	}
 	var d Document
 	err = c.request(ctx, "POST", base, "", map[string]any{"kind": kind, "external_key": key, "spec": spec, "deletion_protection": protection}, &d)
+	if err == nil {
+		err = ValidateDocument(d, d.ID, kind)
+	}
+	return d, err
+}
+
+// Lookup recovers a committed creation whose response/status write was lost.
+// The authenticated owner's exact external key is the only lookup authority.
+func (c *Client) Lookup(ctx context.Context, kind, key string) (Document, error) {
+	base, err := c.base(c.cfg.IssuingTenant)
+	if err != nil {
+		return Document{}, err
+	}
+	query := url.Values{"kind": {kind}, "external_key": {key}}
+	var d Document
+	err = c.request(ctx, "GET", base+"?"+query.Encode(), "", nil, &d)
 	if err == nil {
 		err = ValidateDocument(d, d.ID, kind)
 	}

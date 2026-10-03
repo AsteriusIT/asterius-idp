@@ -1,0 +1,30 @@
+{
+  "verified_at": "2026-10-03T13:05:45.118744+00:00",
+  "ticket": "ast-dd1y.3.6",
+  "target": {
+    "kubernetes": "1.35.0",
+    "flux": "2.9.6",
+    "terraform": "1.15.8",
+    "helm": "v4.2.0+g0646808",
+    "operator_chart": "0.1.0",
+    "management_api": 1,
+    "crd_api": "identity.asterius.io/v1alpha1"
+  },
+  "asterius_binary_sha256": "f285716d9b514d2fc1e9052d44fbbe89eafc474f99eef3b76295661bd0d224b1",
+  "checks": [
+    "real Helm chart Pods use immutable images and projected Kubernetes credentials",
+    "Flux delivery ServiceAccount cannot read credentials, change binding or write status",
+    "real Flux GitRepository and Kustomization deliver all three identity kinds",
+    "real Terraform imports the operator-owned immutable ID and produces an empty read plan",
+    "real Terraform apply visibly rejects a different controller owner",
+    "controller restart preserves all remote identity references and empty Terraform plans",
+    "compatible image upgrade and Helm rollback preserve IDs and empty plans",
+    "lost remoteId status recovers the existing logical-key identity without recreation",
+    "Flux pruning cannot remove a protected remote object or its finalizer",
+    "reviewed Retain and explicit import adoption recover a new Kubernetes incarnation with the original remote ID"
+  ],
+  "limits": [
+    "compatible packaging upgrade of the same controller binary; no incompatible CRD conversion claim",
+    "local public Git HTTP fixture; production Git authentication/TLS remain infrastructure configuration"
+  ]
+}

@@ -68,11 +68,15 @@ cargo +nightly fuzz run --target x86_64-unknown-linux-gnu <target> path/to/crash
 
 ## Coverage
 
-The 104 targets below cover 131 declared entry points. Generated from the
+The 113 targets below cover 147 declared entry points. Generated from the
 `// fuzz-target:` markers in `crates/`.
 
 | Fuzz target | Entry point | Source |
 |---|---|---|
+| `access_review_requests` | `parse_decision` | `crates/domain/src/access_reviews.rs` |
+| `access_review_requests` | `parse_ownership` | `crates/domain/src/access_reviews.rs` |
+| `access_review_requests` | `parse_review` | `crates/domain/src/access_reviews.rs` |
+| `access_review_requests` | `validate_reason` | `crates/domain/src/access_reviews.rs` |
 | `access_token_claims` | `AccessToken::subject_claim` | `crates/oidc/src/tokens/access.rs` |
 | `access_token_claims` | `actor_claim` | `crates/oidc/src/tokens/access.rs` |
 | `access_token_claims` | `thumbprint` | `crates/oidc/src/tokens/access.rs` |
@@ -98,6 +102,13 @@ The 104 targets below cover 131 declared entry points. Generated from the
 | `admin_user_claims` | `accept_claims` | `crates/admin-api/src/users.rs` |
 | `agent_profile` | `AgentLimits::from_json` | `crates/domain/src/entities/agent.rs` |
 | `agent_profile` | `AgentProfile::from_json` | `crates/domain/src/entities/agent.rs` |
+| `agent_task_permissions` | `Permissions::permits` | `crates/domain/src/agent_tasks.rs` |
+| `agent_task_permissions` | `Permissions::validate` | `crates/domain/src/agent_tasks.rs` |
+| `agent_task_permissions` | `parse_details` | `crates/domain/src/agent_tasks.rs` |
+| `agent_task_token_linkage` | `TokenQuery::from_claims` | `crates/domain/src/agent_tasks.rs` |
+| `agent_task_view_query` | `Query::parse` | `crates/domain/src/agent_task_views.rs` |
+| `agent_task_view_query` | `identity` | `crates/domain/src/agent_task_views.rs` |
+| `agent_task_withdrawal_form` | `task_withdrawal` | `crates/server/src/http/account_grants.rs` |
 | `approval_decision` | `decision` | `crates/server/src/http/approvals.rs` |
 | `attestation_object` | `parse` | `crates/webauthn/src/attestation.rs` |
 | `audit_canonical` | `canonical_bytes` | `crates/domain/src/audit/chain.rs` |
@@ -124,6 +135,7 @@ The 104 targets below cover 131 declared entry points. Generated from the
 | `client_certificate_header` | `from_proxy_header` | `crates/server/src/mtls.rs` |
 | `client_metadata_json` | `ClientRegistration::from_json` | `crates/domain/src/entities/client.rs` |
 | `client_update_guard` | `update_guard` | `crates/server/src/http/client_configuration.rs` |
+| `conditional_client_settings` | `RequestedSettings::parse` | `crates/admin-api/src/conditional.rs` |
 | `config_parse` | `Config::parse` | `crates/server/src/config.rs` |
 | `consent_memory` | `Remembered::covers` | `crates/oidc/src/consent_memory.rs` |
 | `cose_key` | `parse` | `crates/webauthn/src/cose.rs` |
@@ -138,6 +150,8 @@ The 104 targets below cover 131 declared entry points. Generated from the
 | `endpoint_bucket` | `endpoint_client_bucket` | `crates/domain/src/rate_limit.rs` |
 | `endpoint_bucket` | `endpoint_subject_bucket` | `crates/domain/src/rate_limit.rs` |
 | `forwarded_resolve` | `resolve` | `crates/server/src/http/forwarded.rs` |
+| `forwarded_resolve` | `resolve_conditional` | `crates/server/src/http/forwarded.rs` |
+| `governance_report_query` | `Query::parse` | `crates/domain/src/governance_reports.rs` |
 | `grant_management` | `parse` | `crates/oidc/src/grant_management.rs` |
 | `grant_record` | `GrantRecord::validate` | `crates/domain/src/entities/grant.rs` |
 | `grant_record` | `LiveAccessToken::new` | `crates/domain/src/entities/grant.rs` |
@@ -188,6 +202,8 @@ The 104 targets below cover 131 declared entry points. Generated from the
 | `ssf_subject` | `Subject::from_json` | `crates/ssf/src/subject.rs` |
 | `ssf_verification_request` | `VerificationRequest::parse` | `crates/ssf/src/management.rs` |
 | `ssf_verification_state` | `VerificationState::parse` | `crates/ssf/src/verification.rs` |
+| `temporary_entitlement_command` | `parse_command` | `crates/server/src/http/entitlements.rs` |
+| `temporary_entitlement_configuration` | `EntitlementConfiguration::validate` | `crates/domain/src/temporary_entitlements.rs` |
 | `tenant_message_overrides` | `MessageOverrides::from_json` | `crates/domain/src/messages.rs` |
 | `tenant_route` | `route` | `crates/oidc/src/tenancy.rs` |
 | `tenant_settings` | `SessionPolicy::from_json` | `crates/domain/src/entities/session.rs` |

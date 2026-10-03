@@ -1,0 +1,44 @@
+{
+  "ticket": "ast-mpgo",
+  "status": "pass",
+  "binary_sha256": "b5196af3f01c2b6b3762f6fbc03e2d55eeecaaa5abf40603a6fa93071b09d777",
+  "baseline": {
+    "test": "final_clock_recheck_removes_expired_temporary_roles_but_preserves_standing",
+    "result": "failed on previous source: expired temporary role remained held after clock advance",
+    "tests_run": 1
+  },
+  "verification": {
+    "check": "workspace all-targets pass",
+    "gate": "fmt and strict workspace Clippy pass; 182 targeted nextest tests pass, 4235 skipped",
+    "fuzz": "112 registered parser targets format/build/strict lint pass",
+    "console": "production TypeScript/build pass",
+    "real_https_and_chromium": {
+      "checks": [
+        "console_owner_csrf_cas_and_ordinary_boundary",
+        "real_chromium_owner_and_read_only_ui",
+        "frozen_methods_and_duration_fail_closed",
+        "independent_scope_immutable_approval_and_command_replay",
+        "administrative_dpop_automation_is_not_console_owner",
+        "real_signed_code_refresh_exact_resource_scopes_human_and_deadline",
+        "revocation_current_recheck_and_bounded_residual_tokens",
+        "database_clock_expiry_without_background_cleanup",
+        "real_active_pdp_exact_permission_current_role_and_revocation",
+        "foreign_tenant_and_agent_catalogue_aba_refusals"
+      ],
+      "fixture": "real_https_seeded_frozen_proof_code_refresh_lifecycle",
+      "status": "pass"
+    }
+  },
+  "controls": [
+    "Final clock prunes temporary-only roles after activation or frozen-proof freshness deadline while preserving standing authority.",
+    "Active PDP base and conditional decisions are both reevaluated after asynchronous audit work.",
+    "Exact-grant roles are rechecked before and after asynchronous signing under the same tenant publication fence.",
+    "UserInfo retains deadline provenance through response-policy lookup and refuses a signed response if its role snapshot expires during signing or encryption.",
+    "The 120-second local-proof freshness bound is private evaluation/issuance metadata; activation and JWT TTL remain independently bounded."
+  ],
+  "limits": [
+    "Baseline reproduction is deterministic for the PDP activation-expiry case; proof-expiry regressions use controlled clock values in pure current-authority tests.",
+    "Real lifecycle acceptance seeds verified frozen proof explicitly and does not claim a new WebAuthn ceremony. Actual fresh WebAuthn is separately evidenced by the access-review and assurance suites.",
+    "No full local suite, ignored PostgreSQL suite or remote CI run was executed."
+  ]
+}

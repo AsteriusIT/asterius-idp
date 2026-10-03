@@ -340,6 +340,22 @@ enum Failure {
 
 impl From<DomainError> for Failure {
     fn from(error: DomainError) -> Self {
-        Self::Server(error)
+        match error {
+            DomainError::Invalid {
+                field: "agent_task",
+                ..
+            } => Self::Client(
+                "invalid_grant",
+                "task authority is not active or does not cover this request",
+            ),
+            DomainError::Invalid {
+                field: "conditional_access",
+                ..
+            } => Self::Client(
+                "access_denied",
+                "access policy does not permit this request",
+            ),
+            error => Self::Server(error),
+        }
     }
 }

@@ -226,6 +226,12 @@ impl EventType {
     /// reconstruct which token a resource server is holding.
     pub const TOKEN_INTROSPECTED: Self = Self("token.introspected");
     /// A grant was revoked.
+    /// An immutable bounded agent task was explicitly approved.
+    pub const AGENT_TASK_APPROVED: Self = Self("agent.task.approved");
+    /// A fenced task access credential was committed.
+    pub const AGENT_TASK_ISSUED: Self = Self("agent.task.issued");
+    /// A task root or a linked subtree was authoritatively withdrawn.
+    pub const AGENT_TASK_WITHDRAWN: Self = Self("agent.task.withdrawn");
     pub const GRANT_REVOKED: Self = Self("grant.revoked");
     /// A session was revoked.
     pub const SESSION_REVOKED: Self = Self("session.revoked");
@@ -608,7 +614,7 @@ impl EventType {
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 102] = [
+    pub const ALL: [Self; 105] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -640,6 +646,9 @@ impl EventType {
         Self::TOKEN_ISSUANCE_DENIED,
         Self::TOKEN_REVOKED,
         Self::TOKEN_INTROSPECTED,
+        Self::AGENT_TASK_APPROVED,
+        Self::AGENT_TASK_ISSUED,
+        Self::AGENT_TASK_WITHDRAWN,
         Self::GRANT_REVOKED,
         Self::SESSION_REVOKED,
         Self::CLIENT_AUTHENTICATED,
@@ -1068,6 +1077,24 @@ impl AuditEvent {
 /// lands in PostgreSQL, in a test vector, or nowhere.
 #[async_trait::async_trait]
 pub trait AuditSink: std::fmt::Debug + Send + Sync {
+    /// Adds trusted adapter metadata before persistence. Transactional writers
+    /// call this before appending inside their own transaction; the default
+    /// preserves the event. This hook cannot establish authorization.
+    fn prepare(&self, event: AuditEvent) -> AuditEvent {
+        event
+    }
+
+    /// Stores bounded policy evidence beside the event when supported. Adapters
+    /// without evidence storage still record the event; readers report that the
+    /// diagnostic snapshot is unavailable rather than reconstructing history.
+    async fn record_with_diagnostics(
+        &self,
+        event: AuditEvent,
+        _diagnostics: &crate::policy::explanation::DecisionExplanation,
+    ) -> Result<(), crate::DomainError> {
+        self.record(event).await
+    }
+
     /// Appends one event.
     ///
     /// # Errors

@@ -95,6 +95,9 @@ pub const PAGE_PATH: &str = "/account/grants";
 
 /// Where a withdrawal posts.
 pub const REVOKE_PATH: &str = "/account/grants/revoke";
+pub const TASK_PREVIEW_PATH: &str = "/account/agent-tasks/approval";
+pub const TASK_APPROVE_PATH: &str = "/account/agent-tasks/approve";
+pub const TASK_REVOKE_PATH: &str = "/account/agent-tasks/revoke";
 
 /// Where a person goes to authenticate again.
 pub const SIGN_IN_PATH: &str = "/account/grants/sign-in";
@@ -404,7 +407,7 @@ pub async fn revoke(
     // them.
     match context
         .grants
-        .revoke(&id, RevocationReason::UserRevoked, &[], now)
+        .revoke_with_audit(&id, RevocationReason::UserRevoked, &[], now, context.audit)
         .await
     {
         Ok(_) => {
@@ -433,6 +436,220 @@ pub async fn revoke(
 /// Whether this authentication happened recently enough to withdraw with.
 fn fresh(session: &Session, now: OffsetDateTime) -> bool {
     now - session.authenticated_at <= FRESHNESS && session.authenticated_at <= now
+}
+
+fn task_csrf(session: &Session) -> String {
+    asterius_domain::sha256_hex(
+        format!("{}:agent-task-approval-csrf", session.id_digest).as_bytes(),
+    )
+}
+
+/// Read exact owner approval evidence and a session-specific CSRF challenge.
+/// This neither approves a task nor accepts owner identity from the request.
+pub async fn task_preview(
+    context: &GrantsContext<'_>,
+    headers: &HeaderMap,
+    root: &str,
+    now: OffsetDateTime,
+) -> Response {
+    let Some(session) = admitted(context, headers, now).await else {
+        return begin(context, now).await;
+    };
+    if !fresh(&session, now) {
+        return begin(context, now).await;
+    }
+    let grant = match context.grants.find(&GrantId::new(root)).await {
+        Ok(Some(grant))
+            if grant.user == Some(UserId::new(session.user)) && grant.parent.is_none() =>
+        {
+            grant
+        }
+        _ => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let permissions = asterius_domain::agent_tasks::Permissions {
+        scopes: grant.scopes.clone(),
+        resources: grant.resources.clone(),
+        authorization_details: grant.authorization_details.clone(),
+        max_delegation_depth: 1,
+    };
+    if permissions.validate().is_err() {
+        return StatusCode::UNPROCESSABLE_ENTITY.into_response();
+    }
+    (
+        crate::http::token::no_store(),
+        axum::Json(serde_json::json!({
+            "root_grant_id":grant.id.as_str(),"client_id":grant.client.as_str(),
+            "permissions":permissions,"max_lifetime_seconds":3600,"csrf":task_csrf(&session),
+            "approval_required":true,
+        })),
+    )
+        .into_response()
+}
+
+/// Explicit fresh owner approval; no administrative client can impersonate
+/// this human action. The preview challenge alone confers no task authority.
+pub async fn task_approve(
+    context: &GrantsContext<'_>,
+    headers: &HeaderMap,
+    body: &Bytes,
+    now: OffsetDateTime,
+) -> Response {
+    let Some(session) = admitted(context, headers, now).await else {
+        return begin(context, now).await;
+    };
+    if !fresh(&session, now) {
+        return begin(context, now).await;
+    }
+    if body.len() > 32768 {
+        return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+    }
+    let Ok(text) = std::str::from_utf8(body) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let params = asterius_oidc::form::Parameters::from_pairs(
+        url::form_urlencoded::parse(text.as_bytes())
+            .map(|(key, value)| (key.into_owned(), value.into_owned())),
+    );
+    if params.names().any(|name| {
+        !matches!(
+            name,
+            "csrf" | "confirm" | "root_grant_id" | "label" | "expires_in" | "permissions"
+        )
+    }) {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let get = |name| params.get(name).ok().flatten();
+    if !get("csrf")
+        .is_some_and(|csrf| asterius_domain::ct_eq(csrf.as_bytes(), task_csrf(&session).as_bytes()))
+        || get("confirm") != Some("approve")
+    {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let Some(root) = get("root_grant_id") else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let Some(label) = get("label") else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let Some(seconds) = get("expires_in")
+        .and_then(|value| value.parse::<i64>().ok())
+        .filter(|value| (1..=3600).contains(value))
+    else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let Some(permissions) = get("permissions").and_then(|raw| {
+        serde_json::from_str::<asterius_domain::agent_tasks::Permissions>(raw).ok()
+    }) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let grant = match context.grants.find(&GrantId::new(root)).await {
+        Ok(Some(grant)) if grant.user == Some(UserId::new(session.user)) => grant,
+        _ => return StatusCode::NOT_FOUND.into_response(),
+    };
+    match context
+        .grants
+        .agent_tasks()
+        .approve(
+            &context.tenant.id,
+            asterius_store_pg::agent_tasks::Approval {
+                owner: UserId::new(session.user),
+                root: &grant,
+                permissions: &permissions,
+                label,
+                expiry: now + Duration::seconds(seconds),
+                now,
+            },
+            context.audit,
+        )
+        .await
+    {
+        Ok(binding) => (
+            StatusCode::CREATED,
+            crate::http::token::no_store(),
+            axum::Json(binding),
+        )
+            .into_response(),
+        Err(
+            asterius_domain::DomainError::Invalid { .. }
+            | asterius_domain::DomainError::Conflict(_),
+        ) => StatusCode::CONFLICT.into_response(),
+        Err(error) => {
+            tracing::error!(%error,"task approval failed");
+            StatusCode::SERVICE_UNAVAILABLE.into_response()
+        }
+    }
+}
+
+/// Strict bounded explicit task withdrawal. This carries no owner/tenant data.
+// fuzz-target: agent_task_withdrawal_form
+#[must_use]
+pub fn task_withdrawal(body: &[u8]) -> Option<(uuid::Uuid, String)> {
+    if body.len() > MAX_BODY {
+        return None;
+    }
+    let text = std::str::from_utf8(body).ok()?;
+    let mut csrf = None;
+    let mut task = None;
+    let mut confirmation = None;
+    for (name, value) in url::form_urlencoded::parse(text.as_bytes()) {
+        match name.as_ref() {
+            "csrf" if csrf.is_none() && value.len() <= MAX_CSRF_CHARS => {
+                csrf = Some(value.into_owned());
+            }
+            "task_id" if task.is_none() => {
+                let id = uuid::Uuid::parse_str(&value).ok()?;
+                if id.hyphenated().to_string() != value {
+                    return None;
+                }
+                task = Some(id);
+            }
+            "confirm" if confirmation.is_none() && value == "revoke" => confirmation = Some(()),
+            _ => return None,
+        }
+    }
+    confirmation?;
+    Some((task?, csrf?))
+}
+
+/// Idempotent withdrawal of an owned task; no body member authenticates the
+/// caller and no task from another tenant or owner is exposed.
+pub async fn task_revoke(
+    context: &GrantsContext<'_>,
+    headers: &HeaderMap,
+    body: &Bytes,
+    now: OffsetDateTime,
+) -> Response {
+    let Some(session) = admitted(context, headers, now).await else {
+        return begin(context, now).await;
+    };
+    if !fresh(&session, now) {
+        return begin(context, now).await;
+    }
+    let Some((task, csrf)) = task_withdrawal(body) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    if !asterius_domain::ct_eq(csrf.as_bytes(), task_csrf(&session).as_bytes()) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    match context
+        .grants
+        .agent_tasks()
+        .revoke_owned(
+            &context.tenant.id,
+            task,
+            UserId::new(session.user),
+            now,
+            context.audit,
+        )
+        .await
+    {
+        Ok(true) => (StatusCode::NO_CONTENT, no_store()).into_response(),
+        Ok(false) => StatusCode::NOT_FOUND.into_response(),
+        Err(error) => {
+            tracing::error!(%error,"task withdrawal failed");
+            StatusCode::SERVICE_UNAVAILABLE.into_response()
+        }
+    }
 }
 
 /// The session behind the cookie, when it is one this tenant will let read the
@@ -821,6 +1038,32 @@ fn no_store() -> [(header::HeaderName, HeaderValue); 1] {
 mod tests {
     use super::*;
     use asterius_domain::{ClientId, TenantId};
+    #[test]
+    fn agent_task_withdrawal_form_is_explicit_strict_and_bounded() {
+        let id = uuid::Uuid::new_v4();
+        let form = format!("task_id={id}&confirm=revoke&csrf=challenge");
+        assert_eq!(
+            task_withdrawal(form.as_bytes()),
+            Some((id, "challenge".to_owned()))
+        );
+        for suffix in [
+            "&task_id=other",
+            "&csrf=other",
+            "&confirm=revoke",
+            "&owner=forged",
+            "&tenant=other",
+        ] {
+            assert!(task_withdrawal(format!("{form}{suffix}").as_bytes()).is_none());
+        }
+        for refused in [
+            format!("task_id={id}&csrf=challenge"),
+            format!("task_id={id}&confirm=approve&csrf=challenge"),
+            format!("task_id={}&confirm=revoke&csrf=challenge", id.simple()),
+            "x".repeat(MAX_BODY + 1),
+        ] {
+            assert!(task_withdrawal(refused.as_bytes()).is_none());
+        }
+    }
 
     const GRANT: &str = "9f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f";
 

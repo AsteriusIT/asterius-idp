@@ -1,0 +1,27 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata: {name: {{ printf "asterius-%s" .Release.Namespace | quote }}}
+spec:
+  failurePolicy: Fail
+  paramKind: {apiVersion: identity.asterius.io/v1alpha1, kind: AsteriusTenantBinding}
+  matchConstraints:
+    namespaceSelector:
+      matchLabels: {kubernetes.io/metadata.name: {{ .Release.Namespace | quote }}}
+    resourceRules:
+      - apiGroups: [identity.asterius.io]
+        apiVersions: [v1alpha1]
+        operations: [CREATE, UPDATE]
+        resources: [applications, resources, policies]
+  validations:
+    - expression: {{ printf "request.namespace == '%s' && object.spec.tenantRef == params.metadata.name" .Release.Namespace | quote }}
+      message: identity must reference its own administrator-owned namespace binding
+    - expression: {{ printf "oldObject == null || !has(oldObject.metadata.finalizers) || !oldObject.metadata.finalizers.exists(f, f == 'identity.asterius.io/remote-resource') || (has(object.metadata.finalizers) && object.metadata.finalizers.exists(f, f == 'identity.asterius.io/remote-resource')) || request.userInfo.username == 'system:serviceaccount:%s:asterius-controller' || authorizer.group('identity.asterius.io').resource('asteriustenantbindings').namespace(request.namespace).name('default').check('update').allowed()" .Release.Namespace | quote }}
+      message: only the controller or binding administrator may remove the identity finalizer
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata: {name: {{ printf "asterius-%s" .Release.Namespace | quote }}}
+spec:
+  policyName: {{ printf "asterius-%s" .Release.Namespace | quote }}
+  validationActions: [Deny]
+  paramRef: {name: default, namespace: {{ .Release.Namespace | quote }}, parameterNotFoundAction: Deny}

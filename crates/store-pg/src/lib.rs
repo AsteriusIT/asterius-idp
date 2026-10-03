@@ -7,7 +7,14 @@
 //! [ADR-0001](../../../docs/adr/0001-modular-monolith.md).
 #![forbid(unsafe_code)]
 
+mod access_reviews;
+mod governance_reports;
+pub use governance_reports::PgGovernanceReports;
 mod admin_seed;
+mod agent_task_lifecycle;
+mod agent_task_views;
+pub mod agent_tasks;
+pub use agent_task_views::PgAgentTaskViews;
 mod aggregated_claims;
 mod application_roles;
 mod architecture_flows;
@@ -20,6 +27,7 @@ mod client_key_fetches;
 mod client_usage;
 mod clients;
 mod codes;
+mod conditional;
 mod cutoffs;
 mod device_codes;
 mod email_change;
@@ -68,13 +76,16 @@ mod ssf_streams;
 mod ssf_subjects;
 mod ssf_upstream_streams;
 mod store;
+mod temporary_entitlements;
 mod tenant_settings;
 mod tenants;
 mod themes;
 mod totp;
+pub use temporary_entitlements::PgTemporaryEntitlements;
 mod users;
 mod verified_claims;
 
+pub use access_reviews::PgAccessReviews;
 pub use admin_seed::{DeploymentAdmin, PgAdminSeed, Seeded};
 pub use aggregated_claims::{PgAggregatedClaims, StoredClaimSource};
 pub use application_roles::PgApplicationRoles;
@@ -129,7 +140,7 @@ pub use outbox::{
 pub use overview::{Metric as OverviewMetric, PgOverview};
 pub use passkeys::{PgPasskeyRepository, RemovedPasskey, RenamedPasskey};
 pub use passwords::PgPasswordVerifier;
-pub use policies::PgPolicies;
+pub use policies::{PgPolicies, PolicyPublicationFence};
 pub use provisioning::ProvisionedTenants;
 pub use rate_limits::PgRateLimitStore;
 pub use recovery::PgRecoveryTokens;
@@ -173,3 +184,5 @@ mod declarative_tenants;
 pub use declarative::PgDeclarative;
 pub mod workload;
 pub use workload::PgWorkloadTrusts;
+
+pub use conditional::PgConditionalSettings;

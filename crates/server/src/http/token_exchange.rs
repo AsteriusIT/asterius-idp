@@ -230,7 +230,23 @@ enum Failure {
 
 impl From<DomainError> for Failure {
     fn from(error: DomainError) -> Self {
-        Self::Server(error)
+        match error {
+            DomainError::Invalid {
+                field: "agent_task",
+                ..
+            } => Self::Client(
+                "invalid_grant",
+                "task authority is not active or does not cover this request",
+            ),
+            DomainError::Invalid {
+                field: "conditional_access",
+                ..
+            } => Self::Client(
+                "access_denied",
+                "access policy does not permit this request",
+            ),
+            other => Self::Server(other),
+        }
     }
 }
 
@@ -368,6 +384,14 @@ impl TokenExchange<'_> {
         use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 
         const INVALID: &str = "the native SSO assertion cannot be exchanged";
+        if self
+            .grants
+            .agent_tasks()
+            .required(&tenant.id, &client.id)
+            .await?
+        {
+            return Err(asterius_domain::agent_tasks::invalid().into());
+        }
         let bad = || Failure::Client("invalid_grant", INVALID);
         let one = |name| {
             params.get(name).map_err(|_| {
@@ -536,6 +560,7 @@ impl TokenExchange<'_> {
         {
             return Err(bad());
         }
+        self.permitted(tenant, client, &grant).await?;
         let claimed = grant.claim(self.now).map_err(|_| bad())?;
         let confirmation = self.constraint.confirmation(client).map_err(|_| bad())?;
         let audience = Audience::new([tenant.issuer.as_str()])
@@ -591,8 +616,13 @@ impl TokenExchange<'_> {
         }
         let access_token = self
             .signer
-            .sign(
+            .sign_access(
                 &tenant.id,
+                asterius_domain::keys::AccessIssuance {
+                    grant: &grant,
+                    kind: GrantType::TokenExchange,
+                    implicit_resources: &[],
+                },
                 access.required_algorithm(),
                 access.typ(),
                 access.claims(),
@@ -606,6 +636,7 @@ impl TokenExchange<'_> {
             tenant,
             client,
             issuance::IdTokenParts {
+                grant: &grant,
                 require_ipsie_assurance: false,
                 rp_session_lifetime_seconds: None,
                 acr_policy: self.acr_policy,
@@ -731,6 +762,10 @@ impl TokenExchange<'_> {
     }
 
     /// The exchange itself, with failures as `Err` so the checks read in order.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep parsed subject, durable task preparation, policy check and access issuance ordered together"
+    )]
     async fn issue(
         &self,
         tenant: &Tenant,
@@ -747,6 +782,14 @@ impl TokenExchange<'_> {
                 .map_err(|_| subject_refused())?
                 != tenant.issuer.as_str()
         {
+            if self
+                .grants
+                .agent_tasks()
+                .required(&tenant.id, &client.id)
+                .await?
+            {
+                return Err(asterius_domain::agent_tasks::invalid().into());
+            }
             return self
                 .issue_workload(tenant, client, params, &request, confirmation)
                 .await;
@@ -806,6 +849,24 @@ impl TokenExchange<'_> {
             .await?;
         grant.resources = targeting.audience.values().map(str::to_owned).collect();
 
+        let requested_details = params.get("authorization_details").map_err(|_| {
+            Failure::Client(
+                "invalid_request",
+                "authorization_details was sent more than once",
+            )
+        })?;
+        let lifetime = self
+            .grants
+            .agent_tasks()
+            .prepare(
+                &mut grant,
+                None,
+                requested_details,
+                self.now,
+                lifetime,
+                self.audit,
+            )
+            .await?;
         self.permitted(tenant, client, &grant).await?;
 
         let claimed = grant
@@ -829,12 +890,23 @@ impl TokenExchange<'_> {
 
         // The row before the signature, so there is no window in which a
         // client holds a token naming a grant that does not exist.
-        self.grants.create(&grant).await?;
+        self.grants.create_for_issuance(&grant).await?;
 
         let access_token = self
             .signer
-            .sign(
+            .sign_access(
                 &tenant.id,
+                asterius_domain::keys::AccessIssuance {
+                    implicit_resources: &issuance::implicit_resources(
+                        tenant,
+                        issuance::ImplicitResources {
+                            grant_management: self.grant_management,
+                            ssf: false,
+                        },
+                    ),
+                    grant: &grant,
+                    kind: GrantType::TokenExchange,
+                },
                 access.required_algorithm(),
                 access.typ(),
                 access.claims(),
@@ -920,7 +992,7 @@ impl TokenExchange<'_> {
                 })
             }
             SubjectTokenType::AccessToken | SubjectTokenType::Jwt => {
-                self.exchangeable_access_token(client, &verified, subject, remaining)
+                self.exchangeable_access_token(tenant, client, &verified, subject, remaining)
                     .await
             }
         }
@@ -930,6 +1002,7 @@ impl TokenExchange<'_> {
     /// this token, and what authority is behind it.
     async fn exchangeable_access_token(
         &self,
+        tenant: &Tenant,
         client: &Client,
         verified: &asterius_jose::verify::Verified,
         subject: Option<SubjectId>,
@@ -948,11 +1021,25 @@ impl TokenExchange<'_> {
         // token narrows. Required: a token this server cannot trace to a grant
         // is one it cannot bound, and issuing a delegation from it would put a
         // credential in the world whose ceiling nobody can read.
-        let parent = verified
-            .claim_str("grant_id")
-            .and_then(|raw| uuid::Uuid::parse_str(raw).ok())
-            .map(GrantId::new)
-            .ok_or_else(subject_refused)?;
+        let parent = if let Some(task) = verified.claim_str("task_id") {
+            let task = uuid::Uuid::parse_str(task).map_err(|_| subject_refused())?;
+            let revision = verified
+                .claims
+                .get("task_approval_revision")
+                .and_then(Value::as_i64)
+                .ok_or_else(subject_refused)?;
+            self.grants
+                .agent_tasks()
+                .token_grant(&tenant.id, jti, task, revision)
+                .await?
+                .ok_or_else(subject_refused)?
+        } else {
+            verified
+                .claim_str("grant_id")
+                .and_then(|raw| uuid::Uuid::parse_str(raw).ok())
+                .map(GrantId::new)
+                .ok_or_else(subject_refused)?
+        };
         let parent = self
             .grants
             .find(&parent)
@@ -962,12 +1049,37 @@ impl TokenExchange<'_> {
             return Err(subject_refused());
         }
 
+        let mut scopes = parent.scopes.clone();
+        let mut resources = parent.resources.clone();
+        if verified.claim_str("task_id").is_some() {
+            let token_scopes = verified
+                .claim_str("scope")
+                .ok_or_else(subject_refused)?
+                .split(' ')
+                .map(str::to_owned)
+                .collect();
+            scopes = scopes.intersection(&token_scopes).cloned().collect();
+            let token_resources = match verified.claims.get("aud") {
+                Some(Value::String(value)) => BTreeSet::from([value.clone()]),
+                Some(Value::Array(values)) => values
+                    .iter()
+                    .map(|value| {
+                        value
+                            .as_str()
+                            .map(str::to_owned)
+                            .ok_or_else(subject_refused)
+                    })
+                    .collect::<Result<_, _>>()?,
+                _ => return Err(subject_refused()),
+            };
+            resources = resources.intersection(&token_resources).cloned().collect();
+        }
         Ok(Ceiling {
             subject: subject.or_else(|| parent.subject.clone()),
             user: parent.user,
             parent: Some(parent.id),
-            scopes: parent.scopes,
-            resources: parent.resources,
+            scopes,
+            resources,
             chain: parent.actor_chain,
             remaining,
         })
@@ -1245,6 +1357,12 @@ impl TokenExchange<'_> {
         .detail(detail);
         if let Some(grant) = grant {
             event = event.grant(grant.id.clone());
+            if let Some(session) = &grant.session {
+                event = event.session(session.clone());
+            }
+            if let Some(parent) = &grant.parent {
+                event.detail = event.detail.text("parent_grant_id", parent.as_str());
+            }
         }
         if let Some(subject) = subject {
             event = event.subject(subject.as_str().to_owned());
@@ -1464,6 +1582,14 @@ impl TokenExchange<'_> {
         client: &Client,
         params: &Parameters,
     ) -> Result<(Response, SubjectId, String), Failure> {
+        if self
+            .grants
+            .agent_tasks()
+            .required(&tenant.id, &client.id)
+            .await?
+        {
+            return Err(asterius_domain::agent_tasks::invalid().into());
+        }
         let one = |name| {
             params
                 .get(name)
@@ -1616,6 +1742,15 @@ impl TokenExchange<'_> {
             .constraint
             .proof_key
             .ok_or(Failure::Dpop(dpop::Refusal::missing_proof()))?;
+        // An ID-JAG is a token-exchange output too. Conditional application
+        // gates run before minting it, without borrowing assurance from an
+        // unrelated live human grant behind the source ID token.
+        let mut conditional_grant = Grant::new(tenant.id.clone(), client.id.clone(), self.now);
+        conditional_grant.user = Some(user.id);
+        conditional_grant.subject = Some(subject.clone());
+        conditional_grant.scopes = scopes.iter().map(|scope| (*scope).to_owned()).collect();
+        conditional_grant.resources.insert(resource.to_owned());
+        self.permitted(tenant, client, &conditional_grant).await?;
         let mut claims = json!({
             "iss": tenant.issuer.as_str(),
             "sub": subject.as_str(),
@@ -1636,7 +1771,17 @@ impl TokenExchange<'_> {
         }
         let signed = self
             .signer
-            .sign(&tenant.id, None, "oauth-id-jag+jwt", &claims)
+            .sign_access(
+                &tenant.id,
+                asterius_domain::keys::AccessIssuance {
+                    grant: &conditional_grant,
+                    kind: GrantType::TokenExchange,
+                    implicit_resources: &[],
+                },
+                None,
+                "oauth-id-jag+jwt",
+                &claims,
+            )
             .await?;
         let response = (
             axum::http::StatusCode::OK,

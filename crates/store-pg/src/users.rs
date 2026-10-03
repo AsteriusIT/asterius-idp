@@ -323,9 +323,11 @@ impl PgUserRepository {
         if tombstoned {
             return Err(DomainError::NotFound);
         }
+        // SCIM deactivation is narrower than clearing an administrator's lock:
+        // keep Locked through disable/delete so a later active=true cannot bypass it.
         let updated = sqlx::query(
             "update users set username = $4, email = $5,
-             status = $6,
+             status = case when status = 'locked' then 'locked' else $6 end,
              email_verified = case when email is distinct from $5
                                    then false else email_verified end
              where tenant_id = $1 and user_id = $2 and scim_revision = $3
@@ -1258,5 +1260,111 @@ impl asterius_domain::SubjectResolver for PgUserRepository {
 impl asterius_domain::UserDirectory for PgUserRepository {
     async fn by_id(&self, id: UserId) -> Result<Option<User>, DomainError> {
         Self::find(self, id).await
+    }
+}
+
+#[cfg(test)]
+mod scim_security_tests {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "slow PostgreSQL SCIM security-lock regression; CI only"]
+    // One persisted lifecycle proves disable, reactivation refusal and delete retain the same lock.
+    #[allow(clippy::too_many_lines)]
+    async fn scim_disable_then_reactivate_never_clears_a_security_lock() {
+        let url = std::env::var("DATABASE_URL").expect("CI database URL");
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("test database");
+        crate::MIGRATOR.run(&pool).await.expect("migrated fixture");
+        let tenant = TenantId::parse(&format!("scim-lock-{}", Uuid::new_v4().simple()))
+            .expect("fixture tenant");
+        let client = ClientId::new("security-lock-fixture".to_owned());
+        let user = UserId::generate();
+        sqlx::query("insert into tenants(tenant_id,issuer,display_name,default_resource) values($1,$2,'Security fixture','https://api.example/')")
+            .bind(tenant.as_str()).bind(format!("https://id.example/t/{}",tenant.as_str()))
+            .execute(&pool).await.expect("fixture tenant");
+        sqlx::query("insert into clients(tenant_id,client_id,redirect_uris) values($1,$2,'{}')")
+            .bind(tenant.as_str())
+            .bind(client.as_str())
+            .execute(&pool)
+            .await
+            .expect("fixture client");
+        sqlx::query("insert into users(tenant_id,user_id,username,status) values($1,$2,'security-fixture','locked')")
+            .bind(tenant.as_str()).bind(user.as_uuid()).execute(&pool).await.expect("locked user");
+        sqlx::query("insert into scim_user_external_ids(tenant_id,client_id,user_id,external_id) values($1,$2,$3,'fixture-owned')")
+            .bind(tenant.as_str()).bind(client.as_str()).bind(user.as_uuid())
+            .execute(&pool).await.expect("SCIM ownership");
+        let repository = PgUserRepository {
+            pool: pool.clone(),
+            tenant: tenant.clone(),
+            kek: Arc::new(asterius_jose::LocalKek::from_bytes(&[0x57; 32]).expect("fixture KEK")),
+        };
+        let before = repository
+            .scim_find(&client, user)
+            .await
+            .expect("read user")
+            .expect("owned user");
+        let mut edit = ScimProfileReplacement {
+            operation: "patch",
+            tenant: tenant.clone(),
+            client: client.clone(),
+            user,
+            expected_revision: before.revision,
+            username: before.user.username.clone(),
+            email: None,
+            external_id: Some("fixture-owned".to_owned()),
+            status: UserStatus::Disabled,
+            delete: false,
+        };
+        let (disabled, _) = repository
+            .scim_replace_profile(&edit)
+            .await
+            .expect("SCIM disable");
+        assert_eq!(disabled.user.status, UserStatus::Locked);
+        assert!(!disabled.user.can_authenticate());
+        assert!(disabled.revision > before.revision);
+        edit.expected_revision = disabled.revision;
+        edit.status = UserStatus::Active;
+        assert!(matches!(
+            repository.scim_replace_profile(&edit).await,
+            Err(DomainError::Conflict(_))
+        ));
+        let after = repository
+            .scim_find(&client, user)
+            .await
+            .expect("read after refusal")
+            .expect("owned user");
+        assert_eq!(after.user.status, UserStatus::Locked);
+        assert_eq!(after.revision, disabled.revision);
+        edit.status = UserStatus::Disabled;
+        edit.delete = true;
+        repository
+            .scim_replace_profile(&edit)
+            .await
+            .expect("SCIM delete");
+        let stored: String =
+            sqlx::query_scalar("select status from users where tenant_id=$1 and user_id=$2")
+                .bind(tenant.as_str())
+                .bind(user.as_uuid())
+                .fetch_one(&pool)
+                .await
+                .expect("retained locked account");
+        assert_eq!(stored, "locked");
+        assert!(
+            repository
+                .scim_find(&client, user)
+                .await
+                .expect("deleted read")
+                .is_none()
+        );
+        sqlx::query("delete from tenants where tenant_id=$1")
+            .bind(tenant.as_str())
+            .execute(&pool)
+            .await
+            .expect("own fixture cleanup");
+        pool.close().await;
     }
 }

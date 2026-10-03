@@ -1,0 +1,67 @@
+{
+  "ticket": "ast-dd1y.4.2",
+  "date": "2026-10-03",
+  "binary_sha256": "6249d979998cec12d8eb8f5b58941404ec7b32de1ed677063ef31b7b50c76cbc",
+  "validation": {
+    "final_fresh_assurance_gate": {
+      "fmt": "pass",
+      "strict_clippy": "pass",
+      "targeted_nextest_passed": 178,
+      "skipped": 4184
+    },
+    "grant_composition_gate": {
+      "targeted_nextest_passed": 212,
+      "skipped": 4149
+    },
+    "context_gate": {
+      "targeted_nextest_passed": 71,
+      "skipped": 4290
+    },
+    "fuzz": {
+      "registered_targets": 106,
+      "build": "pass",
+      "strict_lint": "pass",
+      "smoke_runs_per_target": 100,
+      "coverage_instrumentation": false
+    }
+  },
+  "http": {
+    "controls": [
+      "unscoped_fapi_compatibility",
+      "classification_incarnation_cas",
+      "explicit_policy_publication_and_permit",
+      "stale_publication_refused",
+      "unknown_device_not_and_any_refused",
+      "report_only_issuance",
+      "current_connection_zone",
+      "concurrent_composed_signatures",
+      "publication_vs_signature_race",
+      "online_authzen_current_policy",
+      "refresh_original_authentication_age"
+    ],
+    "fixture": "real_https_fapi_dpop",
+    "human_authentication": "seeded_refresh_grant_not_live_login",
+    "status": "pass"
+  },
+  "browser": {
+    "fixture": "real_chromium_webauthn",
+    "status": "pass",
+    "checks": [
+      "real_password_authorization_baseline",
+      "real_resident_user_verified_passkey_enrollment",
+      "prompt_none_cannot_bypass_conditional_stepup",
+      "verified_stepup_and_signed_code_token_assurance",
+      "device_hard_denial_has_no_authentication_bypass"
+    ]
+  },
+  "limits": [
+    "Targeted test sets overlap; these counts are not a full local suite.",
+    "PostgreSQL conditional_access tests are ignored slow integration tests compiled locally and assigned to CI.",
+    "HTTP refresh authentication age is a controlled seeded grant; browser password and WebAuthn proofs are actual ceremonies.",
+    "Stable fuzz smoke checks are not an instrumented coverage campaign.",
+    "Device posture remains unavailable until the separate registry and reviewed proof source are implemented.",
+    "Authorization completion checks its current snapshot; policy signature fences apply at the selected issuance action. Configure authorize and authorization_code together for both boundaries.",
+    "Offline already-issued JWT acceptance lasts until expiry unless a resource enforces online checks or its own revocation integration.",
+    "Local verification does not claim a remote CI result."
+  ]
+}

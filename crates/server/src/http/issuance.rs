@@ -498,14 +498,20 @@ pub async fn held_roles(
     roles: &dyn asterius_domain::ports::ApplicationRoleDirectory,
     grant: &Grant,
 ) -> Result<asterius_domain::HeldRoles, DomainError> {
-    let Some(user) = grant.user else {
-        return Ok(asterius_domain::HeldRoles::default());
-    };
-    roles.held_by(&grant.tenant, user).await
+    roles.held_by_grant(grant).await
 }
 
 /// RFC 8707 §2.2's error code, for whichever grant is refusing a `resource`.
 pub const INVALID_TARGET: &str = asterius_domain::InvalidTarget::CODE;
+
+/// Bind role authority to the actual access audience and permissions.
+#[must_use]
+pub fn role_grant(grant: &Grant, targeting: &Targeting) -> Grant {
+    let mut exact = grant.clone();
+    exact.resources = targeting.audience.values().map(str::to_owned).collect();
+    exact.scopes.clone_from(&targeting.scopes);
+    exact
+}
 
 /// What a client is told when [`INVALID_TARGET`] applies.
 ///
@@ -607,10 +613,8 @@ pub async fn targeting(
     implicit: ImplicitResources,
 ) -> Result<Targeting, TargetingError> {
     let registry = asterius_domain::ResourceRegistry::new(
-        grant_management_resource(tenant, implicit.grant_management)
+        implicit_resources(tenant, implicit)
             .into_iter()
-            .chain(ssf_resource(tenant, implicit.ssf))
-            .chain(ssf_poll_resource(tenant, implicit.ssf))
             .chain(resource_servers.list().await?),
     );
 
@@ -623,6 +627,19 @@ pub async fn targeting(
     let audience = Audience::new(&targets).map_err(|_| TargetingError::InvalidTarget)?;
 
     Ok(Targeting { audience, scopes })
+}
+
+/// Server-owned audience policy shared with the task signing fence.
+#[must_use]
+pub fn implicit_resources(
+    tenant: &Tenant,
+    implicit: ImplicitResources,
+) -> Vec<asterius_domain::ResourceServer> {
+    grant_management_resource(tenant, implicit.grant_management)
+        .into_iter()
+        .chain(ssf_resource(tenant, implicit.ssf))
+        .chain(ssf_poll_resource(tenant, implicit.ssf))
+        .collect()
 }
 
 /// The APIs this server hosts itself, as audiences a token may be minted for.
@@ -801,6 +818,8 @@ fn grant_management_resource(
 /// which the request's claims could be passed instead.
 #[derive(Debug)]
 pub struct IdTokenParts<'a> {
+    /// Exact grant narrowed to the permissions/resource used for these roles.
+    pub grant: &'a Grant,
     /// A listed IPSIE candidate must release a validated ACR and IANA AMR.
     pub require_ipsie_assurance: bool,
     /// Operator policy for the RP session created by this ID token, in seconds.
@@ -886,6 +905,7 @@ pub async fn sign_id_token(
     now: time::OffsetDateTime,
 ) -> Result<String, DomainError> {
     let IdTokenParts {
+        grant,
         require_ipsie_assurance,
         rp_session_lifetime_seconds,
         acr_policy,
@@ -897,6 +917,15 @@ pub async fn sign_id_token(
         device_secret_hash,
         released,
     } = parts;
+    if grant.id != *claimed.id()
+        || grant.client != *claimed.client()
+        || grant.subject.as_ref() != claimed.subject()
+    {
+        return Err(DomainError::invalid(
+            "id_token",
+            "identity grant context mismatch",
+        ));
+    }
     let authentication = authentication_under(&session.authentication, acr_policy);
     if require_ipsie_assurance && (authentication.acr.is_none() || authentication.amr.is_empty()) {
         // The policy may withhold AMR, or a stored proof may no longer meet
@@ -959,8 +988,9 @@ pub async fn sign_id_token(
         .map_err(|e| DomainError::invalid("id_token", e.to_string()))?;
 
     let token = signer
-        .sign(
+        .sign_identity(
             &tenant.id,
+            grant,
             unsigned.required_algorithm(),
             unsigned.typ(),
             unsigned.claims(),
@@ -1022,6 +1052,7 @@ mod tests {
             &tenant,
             &client,
             IdTokenParts {
+                grant: &grant,
                 require_ipsie_assurance: false,
                 rp_session_lifetime_seconds: None,
                 acr_policy: &policy,
@@ -1485,6 +1516,9 @@ mod tests {
                     user: uuid::Uuid::from_u128(1),
                     created_at: epoch(),
                     authenticated_at: epoch() + Duration::hours(2),
+                    assurance_authenticated_at: None,
+                    assurance_policy_revision: None,
+                    assurance_methods: Vec::new(),
                     last_seen_at: epoch() + Duration::hours(2),
                     expires_at: epoch() + Duration::hours(8),
                     idle_expires_at: epoch() + Duration::hours(3),
@@ -1571,6 +1605,9 @@ mod tests {
             .collect();
         grant.session = Some(SessionId::new(DIGEST));
         grant.authentication = Some(GrantAuthentication {
+            assurance_authenticated_at: None,
+            assurance_policy_revision: None,
+            assurance_methods: Vec::new(),
             authenticated_at: epoch(),
             acr: Some("urn:asterius:acr:password".to_owned()),
             amr: vec![AuthenticationMethod::Password],

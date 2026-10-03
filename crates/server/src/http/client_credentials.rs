@@ -155,7 +155,23 @@ enum Failure {
 
 impl From<DomainError> for Failure {
     fn from(error: DomainError) -> Self {
-        Self::Server(error)
+        match error {
+            DomainError::Invalid {
+                field: "agent_task",
+                ..
+            } => Self::Client(
+                "invalid_grant",
+                "task authority is not active or does not cover this request",
+            ),
+            DomainError::Invalid {
+                field: "conditional_access",
+                ..
+            } => Self::Client(
+                "access_denied",
+                "access policy does not permit this request",
+            ),
+            other => Self::Server(other),
+        }
     }
 }
 
@@ -189,6 +205,25 @@ impl GrantHandler for ClientCredentials<'_> {
 }
 
 impl ClientCredentials<'_> {
+    fn requested_details(params: &Parameters) -> Result<Option<&str>, Failure> {
+        params.get("authorization_details").map_err(|_| {
+            Failure::Client(
+                "invalid_request",
+                "authorization_details was sent more than once",
+            )
+        })
+    }
+
+    fn implicit_resources(&self, tenant: &Tenant) -> Vec<asterius_domain::ResourceServer> {
+        issuance::implicit_resources(
+            tenant,
+            issuance::ImplicitResources {
+                grant_management: self.grant_management,
+                ssf: self.ssf,
+            },
+        )
+    }
+
     /// The issuance itself, with failures as `Err` so the checks read in order.
     ///
     /// The order is the order of the things that can be wrong with the
@@ -262,6 +297,23 @@ impl ClientCredentials<'_> {
         // audience are settled and before `claim` — so that the policy is
         // asked about the token that would really be signed, and so that a
         // deny leaves no claimed grant behind.
+        let selected_task = params
+            .get("task_id")
+            .map_err(|_| Failure::Client("invalid_request", "task_id was sent more than once"))?;
+        let requested_details = Self::requested_details(params)?;
+        let access_lifetime = self
+            .grants
+            .agent_tasks()
+            .prepare(
+                &mut grant,
+                selected_task,
+                requested_details,
+                self.now,
+                lifetimes.access_token(),
+                self.audit,
+            )
+            .await?;
+
         self.agent_policy
             .permits(
                 tenant,
@@ -299,7 +351,7 @@ impl ClientCredentials<'_> {
         // reaches this token through. A client-only token that did not carry it
         // would be the one credential this server cannot withdraw.
         .with_grant_id_when(self.grant_id_claim)
-        .for_lifetime(lifetimes.access_token())
+        .for_lifetime(access_lifetime)
         // Deliberately no `authenticated_by`: RFC 9068 §2.2.1's `auth_time`,
         // `acr` and `amr` describe how a *person* authenticated, and asserting
         // anything there about a client would be a claim a relying party uses
@@ -311,12 +363,17 @@ impl ClientCredentials<'_> {
         // which a client holds a credential naming a grant that does not exist.
         // The other order fails safe — an unused claimed grant is a row nothing
         // points at — and this one does not need to.
-        self.grants.create(&grant).await?;
+        self.grants.create_for_issuance(&grant).await?;
 
         let access_token = self
             .signer
-            .sign(
+            .sign_access(
                 &tenant.id,
+                asterius_domain::keys::AccessIssuance {
+                    implicit_resources: &self.implicit_resources(tenant),
+                    grant: &grant,
+                    kind: GrantType::ClientCredentials,
+                },
                 access.required_algorithm(),
                 access.typ(),
                 access.claims(),
@@ -328,7 +385,7 @@ impl ClientCredentials<'_> {
                 issuance::token_type(client),
                 access_token.as_str(),
                 &targeting.scopes,
-                lifetimes.access_token(),
+                access_lifetime,
             ),
             grant,
         ))
@@ -374,7 +431,8 @@ impl ClientCredentials<'_> {
         // this token to inherit one from. It is refused here rather than
         // silently dropped, because a client that asked for a scope and got a
         // token without it has no way to tell.
-        if let Some(agent) = &client.registration.agent
+        if params.get("task_id").ok().flatten().is_none()
+            && let Some(agent) = &client.registration.agent
             && let Some(scope) =
                 agent.scope_needing_human_approval(scopes.iter().map(String::as_str))
         {

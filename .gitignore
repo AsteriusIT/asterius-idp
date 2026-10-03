@@ -104,3 +104,7 @@ node_modules/
 
 # Public generated controlled-cluster acceptance report (CI artifact).
 /artifacts/kubernetes-e2e.json
+/artifacts/operator-e2e.json
+
+/artifacts/operator-gitops-e2e.json
+/scripts/operator/__pycache__/

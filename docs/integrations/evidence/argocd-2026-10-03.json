@@ -1,0 +1,105 @@
+{
+  "date": "2026-10-03",
+  "product": {
+    "version": {
+      "Version": "v3.5.3"
+    },
+    "images": [
+      {
+        "image": "sha256:4381d9282971725183749c5a8e7ea34fa625d2add16cdee26478c909868fcdb2",
+        "imageID": "quay.io/argoproj/argocd@sha256:dd3f47d5a5e4da563a7a398506e892481b358a7cec50abdf320c71aa55904bfa"
+      }
+    ],
+    "installManifestUrl": "https://raw.githubusercontent.com/argoproj/argo-cd/v3.5.3/manifests/install.yaml",
+    "installManifestSha256": "7efe2d6bbc03f63623640f1e4198f16c84009d510fb810ef71e56df1b7614ba9"
+  },
+  "asterius_binary_sha256": "6249d979998cec12d8eb8f5b58941404ec7b32de1ed677063ef31b7b50c76cbc",
+  "source": "main585733ed",
+  "configuration_sha256": "70af857ccff0481efe6bd32fba712e0de83732073e6a524f14a0d48775d3ad84",
+  "native": {
+    "cases": [
+      {
+        "case": "anonymous application API denied",
+        "status": 401
+      },
+      {
+        "case": "forged identity headers do not authenticate",
+        "status": 401
+      },
+      {
+        "case": "native approved callback",
+        "status": 303
+      },
+      {
+        "case": "observer reads own application",
+        "status": 200
+      },
+      {
+        "case": "observer cannot synchronize application",
+        "status": 403
+      },
+      {
+        "case": "observer cannot delete application",
+        "status": 403
+      },
+      {
+        "case": "forged admin group header retains observer",
+        "status": 403
+      },
+      {
+        "case": "source logout retains separate application session",
+        "status": 200
+      },
+      {
+        "case": "legacy session DELETE does not revoke",
+        "status": 200
+      },
+      {
+        "case": "legacy session DELETE leaves native access active",
+        "status": 200
+      },
+      {
+        "case": "native logout endpoint",
+        "status": 303
+      },
+      {
+        "case": "native logout clears browser cookie",
+        "status": 401
+      },
+      {
+        "case": "captured OIDC cookie cannot replay after native logout",
+        "status": 401
+      },
+      {
+        "case": "unassigned subject authenticates without role",
+        "status": 303
+      },
+      {
+        "case": "unassigned subject cannot read private application",
+        "status": 403
+      },
+      {
+        "case": "unassigned subject cannot synchronize",
+        "status": 403
+      }
+    ],
+    "nativeNonce": false,
+    "cookie": {
+      "secure": true,
+      "httpOnly": true,
+      "sameSite": "Lax"
+    },
+    "role": "Exact issuer subject observer; no group/admin mapping",
+    "roleDenials": "native PermissionDenied code7 on real bounded application actions",
+    "sourceLogoutImmediatelyRevokes": false,
+    "nativeLogoutImmediatelyRevokesCapturedToken": true,
+    "idTokenLifetimeSeconds": 300
+  },
+  "profile": "explicit standard OIDC confidential client; S256; exact subject observer of one project; no group/admin mapping",
+  "limits": [
+    "no PAR/FAPI/CLI/public-client/downstream DPoP claim",
+    "source logout does not immediately revoke Argo access; use native /auth/logout, not legacy /api/v1/session DELETE; source JWT lifetime is recorded separately",
+    "fixture disables reconciliation/repository/notification controllers; tests real server OIDC and RBAC against seeded objects, not deployment"
+  ],
+  "cleanup": "only uniquely named owned kind cluster, isolated database/source process/keyfiles removed"
+}

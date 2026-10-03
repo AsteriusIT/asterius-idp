@@ -25,6 +25,7 @@
  * Nothing in this bundle decides which rows an operator sees.
  */
 import { useCallback, useEffect, useState } from 'react';
+import { AgentTaskViewer } from './agent-task-viewer';
 import type { JSX } from 'react';
 import { useRouteParameters, setRouteParameters } from './route-state';
 import { hrefOf } from './routes';
@@ -73,6 +74,7 @@ export interface AuditRow {
   readonly grant_id?: string;
   readonly request_id?: string;
   readonly detail?: Readonly<Record<string, unknown>>;
+  readonly diagnostic?: { readonly status: 'recorded' | 'expired' | 'unavailable' | 'not_recorded' | 'opaque'; readonly expires_at?: string; readonly snapshot?: unknown; readonly reason?: 'integrity_mismatch' };
 }
 
 interface Page {
@@ -86,6 +88,9 @@ export interface Filters {
   readonly owner: string;
   readonly user: string;
   readonly grant: string;
+  readonly task?: string;
+  readonly request_id?: string;
+  readonly session?: string;
   readonly type: string;
   readonly from: string;
   readonly until: string;
@@ -96,6 +101,9 @@ export const EMPTY_FILTERS: Filters = {
   owner: '',
   user: '',
   grant: '',
+  task: '',
+  request_id: '',
+  session: '',
   type: '',
   from: '',
   until: '',
@@ -110,7 +118,7 @@ export const EMPTY_FILTERS: Filters = {
 export function queryOf(filters: Filters, cursor?: string): string {
   const query = new URLSearchParams();
   for (const [name, value] of Object.entries(filters)) {
-    const trimmed = value.trim();
+    const trimmed = (value ?? "").trim();
     if (trimmed !== '') {
       query.set(name, trimmed);
     }
@@ -166,6 +174,8 @@ type Load =
   | { readonly kind: 'failed'; readonly message: string };
 
 export function AuditExplorer({ session }: Readonly<{ session: Session }>): JSX.Element {
+  const parameters = useRouteParameters();
+  const correlation = ['request_id', 'session', 'grant'].map(key => parameters.get(key) ?? '').join('|');
   const [draft, setDraft] = useState<Filters>(EMPTY_FILTERS);
   const [applied, setApplied] = useState<Filters>(EMPTY_FILTERS);
   const [load, setLoad] = useState<Load>({ kind: 'loading' });
@@ -192,6 +202,11 @@ export function AuditExplorer({ session }: Readonly<{ session: Session }>): JSX.
   );
 
   useEffect(() => refresh(applied), [applied, refresh]);
+  useEffect(() => {
+    const [request_id = '', session = '', grant = ''] = correlation.split('|');
+    const linked = { ...EMPTY_FILTERS, request_id, session, grant };
+    setDraft(linked); setApplied(linked);
+  }, [correlation]);
 
   const loadMore = (): void => {
     if (load.kind !== 'ready' || load.next === null) {
@@ -258,6 +273,7 @@ export function AuditExplorer({ session }: Readonly<{ session: Session }>): JSX.
         ) : undefined
       }
     >
+      <AgentTaskViewer session={session} onAudit={task => { const next = { ...EMPTY_FILTERS, task }; setDraft(next); setApplied(next); }} />
       <p className="muted">Times use UTC. The export includes records matching the applied filters, up to the server’s export limit.</p>
       <Actions>{[1, 24, 168].map(hours => <Button key={hours} small onClick={() => {
         const next = { ...draft, from: new Date(Date.now() - hours * 3600000).toISOString(), until: new Date().toISOString() };
@@ -276,6 +292,9 @@ export function AuditExplorer({ session }: Readonly<{ session: Session }>): JSX.
           {field('owner', 'Owner', 'subject the agent acts for')}
           {field('user', 'User', 'subject')}
           {field('grant', 'Grant ID', 'Paste a grant ID')}
+          {field('task', 'Task ID', 'Paste an immutable task ID')}
+          {field('request_id', 'Support reference', '32 lowercase hexadecimal characters')}
+          {field('session', 'Session reference', '64 lowercase hexadecimal characters')}
           {field('type', 'Event type', 'token.exchanged, session.revoked')}
           {field('from', 'From', '2026-01-01T00:00:00Z')}
           {field('until', 'Until', '2026-12-31T00:00:00Z')}
@@ -434,6 +453,7 @@ function DetailList({ row }: Readonly<{ row: AuditRow }>): JSX.Element {
   if (row.client_id !== undefined) {
     entries.push(['client', row.client_id]);
   }
+  if (row.request_id !== undefined) { entries.push(['support reference', row.request_id]); }
   if (row.grant_id !== undefined) {
     entries.push(['grant', row.grant_id]);
   }
@@ -499,6 +519,19 @@ function AuditEventDrawer() {
         {error && <LoadFailure message={error} onRetry={() => setRetry(retry + 1)} />}
         {!record && !error && <Skeleton rows={3} label="Reading event." />}
         {record && <><p><strong>{record.type ?? 'Unreadable record'}</strong> · {record.outcome}</p><p>{record.occurred_at}</p><Chain links={chainOf(record)} /><DetailList row={record} />
+          <Panel title="Authorization evidence">
+            <p>{({ recorded: 'Evidence from the evaluated policy snapshot.', expired: 'The policy evidence has expired.', unavailable: 'The recorded evidence is currently unavailable.', not_recorded: 'No policy evidence was recorded for this event.', opaque: 'This event cannot be decoded by this server.' })[record.diagnostic?.status ?? 'not_recorded']}</p>
+            {record.diagnostic?.reason === 'integrity_mismatch' && <p>The recorded evidence failed its integrity check and has been withheld.</p>}
+            {record.diagnostic?.expires_at && <p>Available until <Timestamp value={record.diagnostic.expires_at} /></p>}
+            {record.diagnostic?.snapshot !== undefined && <JsonValue value={record.diagnostic.snapshot} />}
+            <p>Only events recorded by Asterius or an integrated policy enforcement point are visible here.</p>
+          </Panel>
+          <Actions>
+            {record.request_id && <a href={hrefOf('audit', { request_id: record.request_id })}>Follow request</a>}
+            {record.session_id && <a href={hrefOf('audit', { session: record.session_id })}>Follow session</a>}
+            {record.grant_id && <a href={hrefOf('audit', { grant: record.grant_id })}>Follow grant</a>}
+            {typeof record.detail?.parent_grant_id === 'string' && <a href={hrefOf('audit', { grant: record.detail.parent_grant_id })}>Follow parent grant</a>}
+          </Actions>
           <CopyValue value={new URL(hrefOf('audit', { id: String(record.id) }), window.location.href).href} label="Copy event link" />
         </>}
       </div>

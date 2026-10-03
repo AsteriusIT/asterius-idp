@@ -64,6 +64,80 @@ impl PgApplicationRoles {
     }
 }
 
+impl PgApplicationRoles {
+    /// Withdraws one standing source on the caller transaction.
+    pub async fn withdraw_on(
+        connection: &mut sqlx::PgConnection,
+        tenant: &TenantId,
+        user: UserId,
+        owner: &RoleOwner,
+        name: &RoleName,
+    ) -> Result<bool, DomainError> {
+        let affected = match owner {
+            RoleOwner::Tenant => sqlx::query!(
+                "delete from user_tenant_roles
+                  where tenant_id = $1 and user_id = $2 and name = $3",
+                tenant.as_str(),
+                user.as_uuid(),
+                name.as_str()
+            )
+            .execute(&mut *connection)
+            .await
+            .map_err(to_domain_error)?
+            .rows_affected(),
+            RoleOwner::Client(client) => sqlx::query!(
+                "delete from user_client_roles
+                  where tenant_id = $1 and client_id = $2 and user_id = $3 and name = $4",
+                tenant.as_str(),
+                client.as_str(),
+                user.as_uuid(),
+                name.as_str()
+            )
+            .execute(&mut *connection)
+            .await
+            .map_err(to_domain_error)?
+            .rows_affected(),
+        };
+        Ok(affected > 0)
+    }
+
+    /// Withdraws one standing source on the caller transaction.
+    pub async fn withdraw_group_on(
+        connection: &mut sqlx::PgConnection,
+        tenant: &TenantId,
+        group: GroupId,
+        owner: &RoleOwner,
+        name: &RoleName,
+    ) -> Result<bool, DomainError> {
+        let affected = match owner {
+            RoleOwner::Tenant => sqlx::query(
+                "delete from group_tenant_roles
+                 where tenant_id = $1 and group_id = $2 and name = $3",
+            )
+            .bind(tenant.as_str())
+            .bind(group.as_uuid())
+            .bind(name.as_str())
+            .execute(&mut *connection)
+            .await
+            .map_err(to_domain_error)?
+            .rows_affected(),
+            RoleOwner::Client(client) => sqlx::query(
+                "delete from group_client_roles
+                 where tenant_id = $1 and group_id = $2 and client_id = $3 and name = $4",
+            )
+            .bind(tenant.as_str())
+            .bind(group.as_uuid())
+            .bind(client.as_str())
+            .bind(name.as_str())
+            .execute(&mut *connection)
+            .await
+            .map_err(to_domain_error)?
+            .rows_affected(),
+        };
+        Ok(affected > 0)
+    }
+}
+
 /// Turns a stored name back into a [`RoleName`].
 ///
 /// The schema carries the same alphabet as a check constraint, so a failure
@@ -239,32 +313,8 @@ impl ApplicationRoleDirectory for PgApplicationRoles {
         owner: &RoleOwner,
         name: &RoleName,
     ) -> Result<bool, DomainError> {
-        let affected = match owner {
-            RoleOwner::Tenant => sqlx::query!(
-                "delete from user_tenant_roles
-                  where tenant_id = $1 and user_id = $2 and name = $3",
-                tenant.as_str(),
-                user.as_uuid(),
-                name.as_str()
-            )
-            .execute(&self.pool)
-            .await
-            .map_err(to_domain_error)?
-            .rows_affected(),
-            RoleOwner::Client(client) => sqlx::query!(
-                "delete from user_client_roles
-                  where tenant_id = $1 and client_id = $2 and user_id = $3 and name = $4",
-                tenant.as_str(),
-                client.as_str(),
-                user.as_uuid(),
-                name.as_str()
-            )
-            .execute(&self.pool)
-            .await
-            .map_err(to_domain_error)?
-            .rows_affected(),
-        };
-        Ok(affected > 0)
+        let mut connection = self.pool.acquire().await.map_err(to_domain_error)?;
+        Self::withdraw_on(&mut connection, tenant, user, owner, name).await
     }
 
     async fn assign_group(
@@ -314,32 +364,8 @@ impl ApplicationRoleDirectory for PgApplicationRoles {
         owner: &RoleOwner,
         name: &RoleName,
     ) -> Result<bool, DomainError> {
-        let affected = match owner {
-            RoleOwner::Tenant => sqlx::query(
-                "delete from group_tenant_roles
-                 where tenant_id = $1 and group_id = $2 and name = $3",
-            )
-            .bind(tenant.as_str())
-            .bind(group.as_uuid())
-            .bind(name.as_str())
-            .execute(&self.pool)
-            .await
-            .map_err(to_domain_error)?
-            .rows_affected(),
-            RoleOwner::Client(client) => sqlx::query(
-                "delete from group_client_roles
-                 where tenant_id = $1 and group_id = $2 and client_id = $3 and name = $4",
-            )
-            .bind(tenant.as_str())
-            .bind(group.as_uuid())
-            .bind(client.as_str())
-            .bind(name.as_str())
-            .execute(&self.pool)
-            .await
-            .map_err(to_domain_error)?
-            .rows_affected(),
-        };
-        Ok(affected > 0)
+        let mut connection = self.pool.acquire().await.map_err(to_domain_error)?;
+        Self::withdraw_group_on(&mut connection, tenant, group, owner, name).await
     }
 
     async fn held_by_group(
@@ -429,6 +455,44 @@ impl ApplicationRoleDirectory for PgApplicationRoles {
                 sources,
             })
             .collect())
+    }
+
+    async fn held_by_grant(
+        &self,
+        grant: &asterius_domain::Grant,
+    ) -> Result<HeldRoles, DomainError> {
+        use asterius_domain::temporary_entitlements::TemporaryEntitlements as _;
+        let Some(user) = grant.user else {
+            return Ok(HeldRoles::empty());
+        };
+        let mut held = self.held_by(&grant.tenant, user).await?;
+        let snapshot = crate::PgTemporaryEntitlements::new(self.pool.clone())
+            .resolve_for_grant(&grant.tenant, grant)
+            .await?;
+        held.temporary_proof_expires_at = grant
+            .authentication
+            .as_ref()
+            .and_then(|auth| auth.assurance_authenticated_at)
+            .and_then(|at| at.checked_add(time::Duration::seconds(120)));
+        for activation in snapshot.roles {
+            let roles = held.clients.entry(activation.client.clone()).or_default();
+            if roles.insert(activation.role.clone()) {
+                held.temporary_deadlines
+                    .entry(activation.client)
+                    .or_default()
+                    .insert(activation.role, activation.expires_at);
+            } else if let Some(deadline) = held
+                .temporary_deadlines
+                .get_mut(&activation.client)
+                .and_then(|deadlines| deadlines.get_mut(&activation.role))
+            {
+                // Independent standing authority has no marker. Multiple
+                // temporary sources may supply the same role until the last ends.
+                *deadline = (*deadline).max(activation.expires_at);
+            }
+        }
+        held.retain_current_temporary_roles(OffsetDateTime::now_utc());
+        Ok(held)
     }
 
     async fn held_by(&self, tenant: &TenantId, user: UserId) -> Result<HeldRoles, DomainError> {

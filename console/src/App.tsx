@@ -4,9 +4,12 @@ import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { SESSION_EXPIRED, ApiError, endSession, loadSession, type Session } from './api';
 import { AuditExplorer } from './audit';
+import { TemporaryEntitlements } from './temporary-entitlements';
 import { Branding } from './branding';
 import { AuthorizationDetailsTypes } from './authorizationDetailsTypes';
 import { Roles } from './appRoles';
+import { AccessReviews } from './access-reviews';
+import { GovernanceFindings } from './governance-findings';
 import { Clients } from './clients';
 import { AppSidebar } from './components/app-sidebar';
 import { AppTopbar } from './components/app-topbar';
@@ -181,6 +184,8 @@ function RouteScreen({
   session: Session;
 }>): JSX.Element {
   if (route === 'health') return <WorkspaceHealth session={session} />;
+  if (route === 'access-reviews') return <AccessReviews session={session} />;
+  if (route === 'governance-findings') return <GovernanceFindings session={session} />;
   if (route === 'roles') return <Roles session={session} client={paramsOf(fragment).get('client')} />;
   if (route === 'users') {
     return <Users session={session} />;
@@ -223,6 +228,7 @@ function RouteScreen({
   if (route === 'mail') {
     return <MailStatus session={session} />;
   }
+  if (route === 'temporary-privileges') return <TemporaryEntitlements session={session} />;
   if (route === 'audit') {
     return <AuditExplorer session={session} />;
   }

@@ -6,12 +6,16 @@
 //! never depend on a database driver, an HTTP framework or an async runtime.
 #![forbid(unsafe_code)]
 
+pub mod access_reviews;
 pub mod administration;
+pub mod agent_task_views;
+pub mod agent_tasks;
 pub mod audit;
 pub mod capabilities;
 pub mod credentials;
 pub mod entities;
 pub mod error;
+pub mod governance_reports;
 pub mod groups;
 pub mod ids;
 pub mod issuance;
@@ -29,6 +33,7 @@ pub mod ports;
 pub mod rate_limit;
 pub mod secret;
 mod secret_audit;
+pub mod temporary_entitlements;
 pub mod tenant_rate_limits;
 pub mod totp;
 

@@ -192,7 +192,23 @@ enum Failure {
 
 impl From<DomainError> for Failure {
     fn from(error: DomainError) -> Self {
-        Self::Server(error)
+        match error {
+            DomainError::Invalid {
+                field: "agent_task",
+                ..
+            } => Self::Client(
+                "invalid_grant",
+                "task authority is not active or does not cover this request",
+            ),
+            DomainError::Invalid {
+                field: "conditional_access",
+                ..
+            } => Self::Client(
+                "access_denied",
+                "access policy does not permit this request",
+            ),
+            other => Self::Server(other),
+        }
     }
 }
 
@@ -288,7 +304,7 @@ impl CibaGrant<'_> {
 
         let redeemed = self.spent(client, &digest).await?;
 
-        let grant = self
+        let mut grant = self
             .grants
             .find(&redeemed.grant_id)
             .await?
@@ -301,7 +317,10 @@ impl CibaGrant<'_> {
         ) {
             return Err(invalid_grant());
         }
-        let claimed = self.grants.claim(&redeemed.grant_id, self.now).await?;
+        let claimed = self
+            .grants
+            .claim_for_issuance(&redeemed.grant_id, self.now)
+            .await?;
 
         let mut session = issuance::session_facts(self.sessions, &grant).await?;
         session.revalidate_acr(self.acr_policy);
@@ -315,11 +334,25 @@ impl CibaGrant<'_> {
         // spent, and a policy deny does not give it back.
         let audience: std::collections::BTreeSet<String> =
             targeting.audience.values().map(str::to_owned).collect();
+        let access_lifetime = self
+            .grants
+            .agent_tasks()
+            .prepare(
+                &mut grant,
+                None,
+                None,
+                self.now,
+                self.lifetimes.access_token(),
+                self.audit,
+            )
+            .await?;
+
         self.agent_policy
             .permits(tenant, client, &grant, &audience, GrantType::Ciba, self.now)
             .await
             .map_err(|refusal| Failure::Client(refusal.code, refusal.description))?;
-        let held = issuance::held_roles(self.roles, &grant).await?;
+        let role_grant = issuance::role_grant(&grant, &targeting);
+        let held = issuance::held_roles(self.roles, &role_grant).await?;
 
         let access = AccessToken::new(
             &tenant.issuer,
@@ -334,14 +367,25 @@ impl CibaGrant<'_> {
         .restricted_to_scopes(targeting.scopes)
         .with_grant_id_when(self.grant_id_claim)
         .with_roles(&held)
-        .for_lifetime(self.lifetimes.access_token())
+        .for_lifetime(access_lifetime)
         .build()
         .map_err(|e| Failure::Server(DomainError::invalid("access_token", e.to_string())))?;
 
         let access_token = self
             .signer
-            .sign(
+            .sign_access(
                 &tenant.id,
+                asterius_domain::keys::AccessIssuance {
+                    implicit_resources: &issuance::implicit_resources(
+                        tenant,
+                        issuance::ImplicitResources {
+                            grant_management: self.grant_management,
+                            ssf: false,
+                        },
+                    ),
+                    grant: &grant,
+                    kind: GrantType::Ciba,
+                },
                 access.required_algorithm(),
                 access.typ(),
                 access.claims(),
@@ -354,6 +398,7 @@ impl CibaGrant<'_> {
         // flow has no authorization request to have carried one.
         let id_token = if grant.scopes.contains("openid") {
             let parts = issuance::IdTokenParts {
+                grant: &role_grant,
                 require_ipsie_assurance: false,
                 rp_session_lifetime_seconds: None,
                 device_secret_hash: None,
@@ -395,7 +440,7 @@ impl CibaGrant<'_> {
             access_token.as_str(),
             id_token.as_deref(),
             refresh_token.as_deref(),
-            self.lifetimes.access_token(),
+            access_lifetime,
         );
         Ok((response, grant))
     }

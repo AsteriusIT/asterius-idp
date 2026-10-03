@@ -47,6 +47,7 @@ pub mod auth;
 pub mod authorization_details_types;
 pub mod backend;
 pub mod clients;
+pub mod conditional;
 pub mod console;
 pub mod csrf;
 mod declarative;
@@ -72,6 +73,7 @@ pub mod saml;
 pub mod scim;
 mod scim_groups;
 pub mod ssf;
+pub mod temporary_entitlements;
 pub mod theme_image;
 mod theme_preview;
 pub mod throttle;
@@ -135,6 +137,8 @@ pub const CLIENT_READ_ID: &str = "clients.read";
 /// The `operationId` of `GET /clients/{client_id}/health`.
 pub const CLIENT_HEALTH_ID: &str = "clients.health";
 /// Reads a cluster's bounded onboarding profile and examples.
+pub const CONDITIONAL_SETTINGS_READ_ID: &str = "clients.conditional.read";
+pub const CONDITIONAL_SETTINGS_UPDATE_ID: &str = "clients.conditional.update";
 pub const KUBERNETES_PROFILE_READ_ID: &str = "clients.kubernetes.read";
 /// Replaces a cluster's tenant-owned group release profile.
 pub const KUBERNETES_PROFILE_UPDATE_ID: &str = "clients.kubernetes.update";
@@ -275,6 +279,8 @@ pub const USER_SESSION_REVOKE_ID: &str = "users.sessions.revoke";
 /// The `operationId` of `GET /users/{user_id}/grants`.
 pub const USER_GRANTS_LIST_ID: &str = "users.grants.list";
 /// The `operationId` of `DELETE /users/{user_id}/grants/{grant_id}`.
+pub const AGENT_TASKS_LIST_ID: &str = "agents.tasks.list";
+pub const AGENT_TASK_READ_ID: &str = "agents.tasks.read";
 pub const USER_GRANT_REVOKE_ID: &str = "users.grants.revoke";
 /// The `operationId` of `GET /users/{user_id}/roles`.
 pub const USER_ROLES_READ_ID: &str = "users.roles.read";
@@ -583,6 +589,20 @@ pub const CLIENT_HEALTH: Operation = Operation::read(
 );
 
 /// Tenant-scoped, read-only cluster onboarding configuration.
+pub const CONDITIONAL_SETTINGS_READ: Operation = Operation::read(
+    CONDITIONAL_SETTINGS_READ_ID,
+    "/clients/{client_id}/conditional-access",
+    S::Get,
+    A::new(R::Tenant, "admin.clients:read"),
+    "Reads server-owned application sensitivity and classification revision",
+);
+pub const CONDITIONAL_SETTINGS_UPDATE: Operation = Operation::mutation(
+    CONDITIONAL_SETTINGS_UPDATE_ID,
+    "/clients/{client_id}/conditional-access",
+    M::Put,
+    A::new(R::Tenant, "admin.clients:write"),
+    "Classifies an application with an exact saved revision",
+);
 pub const KUBERNETES_PROFILE_READ: Operation = Operation::read(
     KUBERNETES_PROFILE_READ_ID,
     "/clients/{client_id}/kubernetes",
@@ -1514,6 +1534,22 @@ pub const USER_GRANTS_LIST: Operation = Operation::read(
     "Lists the authorizations one account has granted",
 );
 
+/// Bounded tenant-local task provenance, separate from recorded audit.
+pub const AGENT_TASKS_LIST: Operation = Operation::read(
+    AGENT_TASKS_LIST_ID,
+    "/agents/tasks",
+    S::Get,
+    A::new(R::Tenant, "admin.audit:read"),
+    "Lists bounded task approval provenance and current lifecycle state",
+);
+pub const AGENT_TASK_READ: Operation = Operation::read(
+    AGENT_TASK_READ_ID,
+    "/agents/tasks/{task_id}",
+    S::Get,
+    A::new(R::Tenant, "admin.audit:read"),
+    "Reads current task ceilings and bounded stored descendant lineage",
+);
+
 /// Withdraws one authorization, with Grant Management ID1 §6.5's semantics.
 ///
 /// The same call the client-facing `DELETE /grants/{grant_id}` makes, through
@@ -2053,7 +2089,100 @@ pub const SCIM_BULK: Operation = Operation::mutation(
     "SCIM Bulk is unsupported by this service",
 );
 
+pub const GOVERNANCE_OWNERSHIP_LIST: Operation = Operation::read(
+    "governance.ownership.list",
+    "/governance/ownership",
+    S::Get,
+    A::new(R::ConsoleTenant, "admin.governance:read"),
+    "Lists current explicit standing-assignment owners and reviewers; requires a same-realm console session, and mutations require fresh phishing-resistant authentication",
+);
+pub const GOVERNANCE_OWNERSHIP_CONFIGURE: Operation = Operation::mutation(
+    "governance.ownership.configure",
+    "/governance/ownership",
+    M::Put,
+    A::new(R::ConsoleTenant, "admin.governance:write"),
+    "Configures ownership with optimistic revision and current same-tenant human authority; requires a same-realm console session, and mutations require fresh phishing-resistant authentication",
+);
+pub const GOVERNANCE_REVIEW_LIST: Operation = Operation::read(
+    "governance.review.list",
+    "/governance/reviews",
+    S::Get,
+    A::new(R::ConsoleTenant, "admin.governance:read"),
+    "Lists tenant review history; requires a same-realm console session, and mutations require fresh phishing-resistant authentication",
+);
+pub const GOVERNANCE_REVIEW_START: Operation = Operation::mutation(
+    "governance.review.start",
+    "/governance/reviews",
+    M::Post,
+    A::new(R::ConsoleTenant, "admin.governance:write"),
+    "Snapshots selected current assignments with effective provenance and an explicit reviewer; requires a same-realm console session, and mutations require fresh phishing-resistant authentication",
+);
+pub const GOVERNANCE_REVIEW_ITEMS: Operation = Operation::read(
+    "governance.review.items",
+    "/governance/reviews/{review_id}/items",
+    S::Get,
+    A::new(R::ConsoleTenant, "admin.governance:read"),
+    "Reads immutable review evidence and application results; requires a same-realm console session, and mutations require fresh phishing-resistant authentication",
+);
+pub const GOVERNANCE_REVIEW_DECIDE: Operation = Operation::mutation(
+    "governance.review.decide",
+    "/governance/reviews/{review_id}/items/{item_id}/decision",
+    M::Put,
+    A::new(R::ConsoleTenant, "admin.governance:write"),
+    "Records an assigned reviewers retain or remove decision without changing access; requires a same-realm console session, and mutations require fresh phishing-resistant authentication",
+);
+pub const GOVERNANCE_REVIEW_APPLY: Operation = Operation::mutation(
+    "governance.review.apply",
+    "/governance/reviews/{review_id}/items/{item_id}/apply",
+    M::Post,
+    A::new(R::ConsoleTenant, "admin.governance:write"),
+    "Applies the recorded decision atomically after rechecking live authority and provenance; requires a same-realm console session, and mutations require fresh phishing-resistant authentication",
+);
+pub const GOVERNANCE_REVIEW_CANCEL: Operation = Operation::mutation(
+    "governance.review.cancel",
+    "/governance/reviews/{review_id}/cancel",
+    M::Post,
+    A::new(R::ConsoleTenant, "admin.governance:write"),
+    "Cancels the creators open review without changing access; requires a same-realm console session, and mutations require fresh phishing-resistant authentication",
+);
+
+pub const GOVERNANCE_REVIEWERS: Operation = Operation::read(
+    "governance.reviewers",
+    "/governance/reviewers",
+    S::Get,
+    A::new(R::ConsoleTenant, "admin.governance:read"),
+    "Lists current active tenant administrators eligible for explicit human owner/reviewer assignment; requires a same-realm console session",
+);
+
+pub const GOVERNANCE_REVIEW_READ: Operation = Operation::read(
+    "governance.review.read",
+    "/governance/reviews/{review_id}",
+    S::Get,
+    A::new(R::ConsoleTenant, "admin.governance:read"),
+    "Reads one current or historical review; requires a same-realm console session",
+);
+
+/// Bounded current provenance and review proposals; no cleanup operation.
+pub const GOVERNANCE_FINDINGS: Operation = Operation::read(
+    "governance.findings",
+    "/governance/findings",
+    S::Get,
+    A::new(R::ConsoleTenant, "admin.governance:read"),
+    "Reports missing ownership, source disconnection, activity uncertainty and overdue privileged reviews without changing access",
+);
+
 static REGISTRY: &[Operation] = &[
+    GOVERNANCE_FINDINGS,
+    GOVERNANCE_REVIEW_READ,
+    GOVERNANCE_REVIEWERS,
+    GOVERNANCE_OWNERSHIP_LIST,
+    GOVERNANCE_OWNERSHIP_CONFIGURE,
+    GOVERNANCE_REVIEW_LIST,
+    GOVERNANCE_REVIEW_START,
+    GOVERNANCE_REVIEW_ITEMS,
+    GOVERNANCE_REVIEW_DECIDE,
+    GOVERNANCE_REVIEW_APPLY,
+    GOVERNANCE_REVIEW_CANCEL,
     DECLARATIVE_READ,
     DECLARATIVE_RESOLVE,
     DECLARATIVE_CREATE,
@@ -2084,6 +2213,8 @@ static REGISTRY: &[Operation] = &[
     CLIENTS_LIST,
     CLIENT_READ,
     CLIENT_HEALTH,
+    CONDITIONAL_SETTINGS_READ,
+    CONDITIONAL_SETTINGS_UPDATE,
     KUBERNETES_PROFILE_READ,
     KUBERNETES_PROFILE_UPDATE,
     CLIENT_CREATE,
@@ -2167,6 +2298,8 @@ static REGISTRY: &[Operation] = &[
     USER_SESSION_REVOKE,
     USER_GRANTS_LIST,
     USER_GRANT_REVOKE,
+    AGENT_TASKS_LIST,
+    AGENT_TASK_READ,
     USER_ROLES_READ,
     USER_ROLES_UPDATE,
     FLOWS_LIST,
@@ -2203,6 +2336,16 @@ static REGISTRY: &[Operation] = &[
     USER_GROUPS_LIST,
     GROUP_DELETE,
     APP_ROLES_LIST,
+    TEMPORARY_ENTITLEMENT_LIST,
+    TEMPORARY_ENTITLEMENT_CREATE,
+    TEMPORARY_ENTITLEMENT_READ,
+    TEMPORARY_ENTITLEMENT_UPDATE,
+    TEMPORARY_ENTITLEMENT_ELIGIBILITIES,
+    TEMPORARY_ENTITLEMENT_ELIGIBILITY_SET,
+    TEMPORARY_ENTITLEMENT_ELIGIBILITY_REMOVE,
+    TEMPORARY_ENTITLEMENT_REQUESTS,
+    TEMPORARY_ENTITLEMENT_ACTIVATIONS,
+    TEMPORARY_ENTITLEMENT_REVOKE,
     APP_ROLE_CREATE,
     APP_ROLE_DELETE,
     CLIENT_APP_ROLES_LIST,
@@ -2341,6 +2484,88 @@ pub const POLICY_SIMULATE: Operation = Operation::probe(
     M::Post,
     A::new(R::Tenant, "admin.policies:read"),
     "Simulates a stored or hypothetical policy over actual tenant-owned user, client and resource references; additionally requires admin.users:read, admin.clients:read and admin.resource_servers:read",
+);
+
+pub const TEMPORARY_ENTITLEMENT_LIST_ID: &str = "temporary_entitlements.list";
+pub const TEMPORARY_ENTITLEMENT_LIST: Operation = Operation::read(
+    TEMPORARY_ENTITLEMENT_LIST_ID,
+    "/temporary-entitlements",
+    S::Get,
+    A::new(R::Tenant, "admin.app_roles:read"),
+    "Console-only owner-scoped temporary entitlement list",
+);
+pub const TEMPORARY_ENTITLEMENT_CREATE_ID: &str = "temporary_entitlements.create";
+pub const TEMPORARY_ENTITLEMENT_CREATE: Operation = Operation::mutation(
+    TEMPORARY_ENTITLEMENT_CREATE_ID,
+    "/temporary-entitlements",
+    M::Post,
+    A::new(R::Tenant, "admin.app_roles:write"),
+    "Console-only owner-scoped temporary entitlement create",
+);
+pub const TEMPORARY_ENTITLEMENT_READ_ID: &str = "temporary_entitlements.read";
+pub const TEMPORARY_ENTITLEMENT_READ: Operation = Operation::read(
+    TEMPORARY_ENTITLEMENT_READ_ID,
+    "/temporary-entitlements/{id}",
+    S::Get,
+    A::new(R::Tenant, "admin.app_roles:read"),
+    "Console-only owner-scoped temporary entitlement read",
+);
+pub const TEMPORARY_ENTITLEMENT_UPDATE_ID: &str = "temporary_entitlements.update";
+pub const TEMPORARY_ENTITLEMENT_UPDATE: Operation = Operation::mutation(
+    TEMPORARY_ENTITLEMENT_UPDATE_ID,
+    "/temporary-entitlements/{id}",
+    M::Put,
+    A::new(R::Tenant, "admin.app_roles:write"),
+    "Console-only owner-scoped temporary entitlement update",
+);
+pub const TEMPORARY_ENTITLEMENT_ELIGIBILITIES_ID: &str = "temporary_entitlements.eligibilities";
+pub const TEMPORARY_ENTITLEMENT_ELIGIBILITIES: Operation = Operation::read(
+    TEMPORARY_ENTITLEMENT_ELIGIBILITIES_ID,
+    "/temporary-entitlements/{id}/eligibilities",
+    S::Get,
+    A::new(R::Tenant, "admin.app_roles:read"),
+    "Console-only owner-scoped temporary entitlement eligibilities",
+);
+pub const TEMPORARY_ENTITLEMENT_ELIGIBILITY_SET_ID: &str = "temporary_entitlements.eligibility_set";
+pub const TEMPORARY_ENTITLEMENT_ELIGIBILITY_SET: Operation = Operation::mutation(
+    TEMPORARY_ENTITLEMENT_ELIGIBILITY_SET_ID,
+    "/temporary-entitlements/{id}/eligibilities",
+    M::Post,
+    A::new(R::Tenant, "admin.app_roles:write"),
+    "Console-only owner-scoped temporary entitlement eligibility_set",
+);
+pub const TEMPORARY_ENTITLEMENT_ELIGIBILITY_REMOVE_ID: &str =
+    "temporary_entitlements.eligibility_remove";
+pub const TEMPORARY_ENTITLEMENT_ELIGIBILITY_REMOVE: Operation = Operation::mutation(
+    TEMPORARY_ENTITLEMENT_ELIGIBILITY_REMOVE_ID,
+    "/temporary-entitlements/{id}/eligibilities/{eligibility_id}",
+    M::Delete,
+    A::new(R::Tenant, "admin.app_roles:write"),
+    "Console-only owner-scoped temporary entitlement eligibility_remove",
+);
+pub const TEMPORARY_ENTITLEMENT_REQUESTS_ID: &str = "temporary_entitlements.requests";
+pub const TEMPORARY_ENTITLEMENT_REQUESTS: Operation = Operation::read(
+    TEMPORARY_ENTITLEMENT_REQUESTS_ID,
+    "/temporary-entitlements/{id}/requests",
+    S::Get,
+    A::new(R::Tenant, "admin.app_roles:read"),
+    "Console-only owner-scoped temporary entitlement requests",
+);
+pub const TEMPORARY_ENTITLEMENT_ACTIVATIONS_ID: &str = "temporary_entitlements.activations";
+pub const TEMPORARY_ENTITLEMENT_ACTIVATIONS: Operation = Operation::read(
+    TEMPORARY_ENTITLEMENT_ACTIVATIONS_ID,
+    "/temporary-entitlements/{id}/activations",
+    S::Get,
+    A::new(R::Tenant, "admin.app_roles:read"),
+    "Console-only owner-scoped temporary entitlement activations",
+);
+pub const TEMPORARY_ENTITLEMENT_REVOKE_ID: &str = "temporary_entitlements.revoke";
+pub const TEMPORARY_ENTITLEMENT_REVOKE: Operation = Operation::mutation(
+    TEMPORARY_ENTITLEMENT_REVOKE_ID,
+    "/temporary-entitlements/{id}/activations/{activation_id}/revoke",
+    M::Post,
+    A::new(R::Tenant, "admin.app_roles:write"),
+    "Console-only owner-scoped temporary entitlement revoke",
 );
 
 /// The registry.

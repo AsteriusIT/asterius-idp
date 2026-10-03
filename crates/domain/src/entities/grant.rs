@@ -341,6 +341,12 @@ pub enum GrantError {
 pub struct GrantAuthentication {
     /// OIDC Core §2's `auth_time`: when the person authenticated.
     pub authenticated_at: OffsetDateTime,
+    /// Frozen provenance copied from the verified session; never renewed by refresh.
+    pub assurance_authenticated_at: Option<OffsetDateTime>,
+    /// Exact assurance ladder revision that the frozen proof satisfied.
+    pub assurance_policy_revision: Option<String>,
+    /// Verified assurance methods, separate from cumulative historical AMR.
+    pub assurance_methods: Vec<AuthenticationMethod>,
     /// The authentication context class the sign-in reached, if the tenant's
     /// ladder has a rung for it.
     pub acr: Option<String>,
@@ -410,6 +416,8 @@ pub struct Grant {
     /// grant is minted at the token endpoint, so it is claimed the moment it
     /// exists.
     pub parent: Option<GrantId>,
+    /// Authoritative task metadata resolved by the task preparer; never a JWT claim source.
+    pub task: Option<crate::agent_tasks::Binding>,
     /// The browser session the authorization happened in, when there was one.
     pub session: Option<SessionId>,
     /// When and how the person authenticated, as [`session`](Self::session)
@@ -518,6 +526,7 @@ impl Grant {
             resources: BTreeSet::new(),
             actor_chain: Vec::new(),
             parent: None,
+            task: None,
             session: None,
             authentication: None,
             created_at,
@@ -774,6 +783,9 @@ impl GrantRecord {
         // cannot be read as either "no authentication" or "this one".
         let authentication = match self.authenticated_at {
             Some(authenticated_at) => Some(GrantAuthentication {
+                assurance_authenticated_at: None,
+                assurance_policy_revision: None,
+                assurance_methods: Vec::new(),
                 authenticated_at,
                 acr: self.acr,
                 // An unrecognised `amr` is dropped rather than failing the
@@ -819,6 +831,7 @@ impl GrantRecord {
             resources,
             actor_chain,
             parent: self.parent,
+            task: None,
             session: self.session.map(SessionId::new),
             authentication,
             created_at: self.created_at,
@@ -1409,6 +1422,9 @@ mod tests {
         assert_eq!(
             grant.authentication,
             Some(GrantAuthentication {
+                assurance_authenticated_at: None,
+                assurance_policy_revision: None,
+                assurance_methods: Vec::new(),
                 authenticated_at: epoch(),
                 acr: Some("urn:asterius:acr:passkey-uv".to_owned()),
                 amr: vec![AuthenticationMethod::Passkey],

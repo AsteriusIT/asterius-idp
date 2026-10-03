@@ -73,6 +73,8 @@ const INVALID_GRANT: &str = "the authorization code cannot be redeemed";
 /// with it. [`crate::http::protocol`] constructs it inside the token endpoint,
 /// where both are already in hand.
 pub struct AuthorizationCode<'a> {
+    /// Current issuance policy and correlated audit adapter.
+    pub agent_policy: crate::http::agent_issuance::AgentPolicy<'a>,
     /// Client IDs whose issued access tokens must target only this OP.
     pub ipsie_identity_only_clients: Option<&'a std::collections::BTreeSet<String>>,
     /// Explicit RP session lifetimes; only identity-only clients may appear.
@@ -170,7 +172,23 @@ enum Failure {
 
 impl From<DomainError> for Failure {
     fn from(error: DomainError) -> Self {
-        Self::Server(error)
+        match error {
+            DomainError::Invalid {
+                field: "agent_task",
+                ..
+            } => Self::Client(
+                "invalid_grant",
+                "task authority is not active or does not cover this request",
+            ),
+            DomainError::Invalid {
+                field: "conditional_access",
+                ..
+            } => Self::Client(
+                "access_denied",
+                "access policy does not permit this request",
+            ),
+            other => Self::Server(other),
+        }
     }
 }
 
@@ -300,7 +318,7 @@ impl AuthorizationCode<'_> {
         // carries the authority to mint from it. Both are needed, and `claim`
         // is what stamps `claimed_at` — the grant stops being `Pending` here,
         // at the moment a credential is actually taken from it.
-        let grant = self
+        let mut grant = self
             .grants
             .find(&binding.grant_id)
             .await?
@@ -355,7 +373,10 @@ impl AuthorizationCode<'_> {
                 "device_secret requires device_sso",
             ));
         }
-        let claimed = self.grants.claim(&binding.grant_id, self.now).await?;
+        let claimed = self
+            .grants
+            .claim_for_issuance(&binding.grant_id, self.now)
+            .await?;
 
         let mut session = issuance::session_facts(self.sessions, &grant).await?;
         session.revalidate_acr(self.acr_policy);
@@ -384,7 +405,21 @@ impl AuthorizationCode<'_> {
         // One read for both tokens of this response (`ast-mqt`): two reads
         // could disagree, and the disagreement would be a role withdrawn
         // between them.
-        let held = issuance::held_roles(self.roles, &grant).await?;
+        let role_grant = issuance::role_grant(&grant, &targeting);
+        let held = issuance::held_roles(self.roles, &role_grant).await?;
+
+        let access_lifetime = self
+            .grants
+            .agent_tasks()
+            .prepare(
+                &mut grant,
+                None,
+                None,
+                self.now,
+                self.lifetimes.access_token(),
+                self.agent_policy.audit,
+            )
+            .await?;
 
         let access = AccessToken::new(
             &tenant.issuer,
@@ -416,14 +451,25 @@ impl AuthorizationCode<'_> {
         // `client_id` and `sub`.
         .with_grant_id_when(self.grant_id_claim)
         .with_roles(&held)
-        .for_lifetime(self.lifetimes.access_token())
+        .for_lifetime(access_lifetime)
         .build()
         .map_err(|e| Failure::Server(DomainError::invalid("access_token", e.to_string())))?;
 
         let access_token = self
             .signer
-            .sign(
+            .sign_access(
                 &tenant.id,
+                asterius_domain::keys::AccessIssuance {
+                    grant: &grant,
+                    implicit_resources: &issuance::implicit_resources(
+                        tenant,
+                        issuance::ImplicitResources {
+                            grant_management: self.grant_management,
+                            ssf: false,
+                        },
+                    ),
+                    kind: GrantType::AuthorizationCode,
+                },
                 access.required_algorithm(),
                 access.typ(),
                 access.claims(),
@@ -435,6 +481,7 @@ impl AuthorizationCode<'_> {
         // than on the request, because the scope was settled at consent.
         let id_token = if grant.scopes.contains("openid") {
             let parts = issuance::IdTokenParts {
+                grant: &role_grant,
                 require_ipsie_assurance: self
                     .ipsie_identity_only_clients
                     .is_some_and(|clients| clients.contains(client.id.as_str())),
@@ -491,7 +538,7 @@ impl AuthorizationCode<'_> {
             access_token.as_str(),
             id_token.as_deref(),
             refresh_token.as_deref(),
-            self.lifetimes.access_token(),
+            access_lifetime,
             // Grant Management ID1 §5.5, from the code and not from the grant:
             // the question is whether *this* request asked for an action, and
             // a fact stored on the grant would answer for every later refresh

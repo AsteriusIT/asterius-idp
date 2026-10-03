@@ -608,6 +608,14 @@ impl<'a> AccessToken<'a> {
         }
 
         let lifetime = usable_lifetime(self.lifetime, Self::MAX_LIFETIME)?;
+        let temporary_deadline = self.roles.temporary_expiry_for(self.claimed.client());
+        let expires_at = temporary_deadline.map_or(self.issued_at + lifetime, |deadline| {
+            deadline.min(self.issued_at + lifetime)
+        });
+        if expires_at.unix_timestamp() <= self.issued_at.unix_timestamp() {
+            return Err(IssuanceError::Lifetime);
+        }
+
         let client_id = self.claimed.client().as_str();
 
         // RFC 9068 §5: a distinct `aud` per resource is what prevents cross-JWT
@@ -626,10 +634,7 @@ impl<'a> AccessToken<'a> {
             "iss".to_owned(),
             Value::String(self.issuer.as_str().to_owned()),
         );
-        claims.insert(
-            "exp".to_owned(),
-            Value::from((self.issued_at + lifetime).unix_timestamp()),
-        );
+        claims.insert("exp".to_owned(), Value::from(expires_at.unix_timestamp()));
         claims.insert("aud".to_owned(), self.audience.claim());
         // §2.2: "In cases of access tokens obtained through grants where a
         // resource owner is involved […] the value of `sub` SHOULD correspond
@@ -853,6 +858,40 @@ mod tests {
                 .collect(),
         );
         held
+    }
+
+    #[test]
+    fn temporary_roles_cap_the_actual_access_expiry_after_lifetime_override() {
+        let grant = grant();
+        let claimed = grant.claim(now()).expect("live grant");
+        let mut held = held();
+        let deadline = now() + Duration::seconds(10);
+        held.temporary_deadlines.insert(
+            ClientId::new("billing"),
+            [(
+                asterius_domain::RoleName::parse("refund").expect("role"),
+                deadline,
+            )]
+            .into_iter()
+            .collect(),
+        );
+        let token = AccessToken::new(
+            &issuer(),
+            &grant,
+            &claimed,
+            Audience::of_grant(&grant).expect("audience"),
+            dpop(),
+            JwtId::from_bytes([7; 16]),
+            now(),
+        )
+        .with_roles(&held)
+        .for_lifetime(AccessToken::MAX_LIFETIME)
+        .build()
+        .expect("capped access");
+        assert_eq!(token.claims()["exp"], deadline.unix_timestamp());
+        held.temporary_deadlines.clear();
+        let standing = token_with_roles(&held);
+        assert!(standing["exp"].as_i64().expect("expiry") > deadline.unix_timestamp());
     }
 
     fn token_with_roles(held: &asterius_domain::HeldRoles) -> Value {

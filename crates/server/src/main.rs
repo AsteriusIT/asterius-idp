@@ -33,7 +33,6 @@ use asterius_store_pg::{
     PgInitialAccessTokens, PgKekRewrap, PgReplayGuard, PgRetention, PgTenantRepository,
     PgTenantSettings, ProvisionedTenants, RewrapOutcome, Store, TenantKeyStore,
 };
-use sha2::Digest as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -108,13 +107,7 @@ fn ldap_sync(
         .map_err(|error| format!("cannot start LDAP synchronization: {error}"))?;
     runtime.block_on(async {
         let snapshot = asterius_server::ldap_sync::read(source).await?;
-        let source_key = hex::encode(sha2::Sha256::digest(format!(
-            "{}\n{}\n{}\n{}",
-            source.url,
-            source.base_dn,
-            source.bind_dn,
-            source.group_base_dn.as_deref().unwrap_or_default(),
-        )));
+        let source_key = source.source_key();
         let store = Store::connect(
             config.database.url.expose(),
             config.database.max_connections,
@@ -170,7 +163,7 @@ fn federation_rotate(path: &std::path::Path, tenant: &str) -> Result<(), String>
         let keys = PgFederationKeys::new(
             store.pool().clone(),
             kek,
-            Arc::new(PgAuditSink::new(store.pool().clone())),
+            asterius_server::http::request_id::audit(PgAuditSink::new(store.pool().clone())),
         );
         let kid = keys
             .stage(
@@ -233,7 +226,9 @@ fn client_authenticator(
             // Wired here rather than at the six endpoints that need it,
             // because the authenticator is the one place all six agree on what
             // "this client failed to authenticate" means.
-            .auditing(Arc::new(PgAuditSink::new(store.pool().clone())))
+            .auditing(asterius_server::http::request_id::audit(PgAuditSink::new(
+                store.pool().clone(),
+            )))
             .with_trust_anchors(trust_anchors);
     Ok(Arc::new(authenticator))
 }
@@ -307,7 +302,7 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
             PgFederationKeys::new(
                 store.pool().clone(),
                 Arc::clone(&kek),
-                Arc::new(PgAuditSink::new(store.pool().clone())),
+                asterius_server::http::request_id::audit(PgAuditSink::new(store.pool().clone())),
             ),
         )
         .await?;
@@ -399,7 +394,7 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
                     store.pool().clone(),
                 )),
                 Arc::clone(&outbound),
-                Arc::new(PgAuditSink::new(store.pool().clone())),
+                asterius_server::http::request_id::audit(PgAuditSink::new(store.pool().clone())),
             ))),
             upstream_identity_resolver: Some(Arc::new(
                 asterius_server::http::upstream_oidc::StoreUpstreamIdentityResolver::new(
@@ -512,7 +507,7 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
             initial_access_tokens: Some(Arc::new(PgInitialAccessTokens::new(store.pool().clone()))),
             outbound,
             cimd_documents,
-            audit: Arc::new(PgAuditSink::new(store.pool().clone())),
+            audit: asterius_server::http::request_id::audit(PgAuditSink::new(store.pool().clone())),
             session_lifetimes: Lifetimes::default().clamped(),
             // Passwords are the legacy path and passkeys are primary, but
             // the parameters are checked here rather than at first login:
@@ -654,6 +649,7 @@ fn operational_routes(store: &Store, config: &Config, metrics: Metrics) -> Opera
 /// protocol endpoints', and the two would then disagree about what a valid
 /// client is.
 struct AdminContext {
+    governance_ldap_sources: std::collections::BTreeMap<String, String>,
     ipsie_https_only_clients:
         Arc<std::collections::HashMap<String, std::collections::BTreeSet<String>>>,
     ipsie_identity_only_clients:
@@ -736,6 +732,16 @@ impl AdminContext {
             ),
             id_jag_trusts: Arc::clone(id_jag_trusts),
             ssf_upstream: None,
+            governance_ldap_sources: config
+                .tenants
+                .iter()
+                .filter_map(|tenant| {
+                    tenant
+                        .ldap_source
+                        .as_ref()
+                        .map(|source| (tenant.id.as_str().to_owned(), source.source_key()))
+                })
+                .collect(),
             rate_limit_policy: (config.login, config.limits),
             issuance: issuance_guard(config),
             capabilities: config.features,
@@ -821,7 +827,8 @@ fn admin_routes(
                 argon2: Argon2Parameters::default(),
                 issuance: context.issuance,
             })
-            .with_rate_limit_policy(context.rate_limit_policy.0, context.rate_limit_policy.1),
+            .with_rate_limit_policy(context.rate_limit_policy.0, context.rate_limit_policy.1)
+            .with_governance_ldap_sources(context.governance_ldap_sources),
         ),
         tokens: Some(tokens),
         rate_limit: asterius_admin_api::throttle::DEFAULT_LIMIT,
@@ -894,7 +901,7 @@ fn tenant_repository(
     let keys = Arc::new(TenantKeyStore::new(
         store.pool().clone(),
         Arc::clone(kek),
-        Arc::new(PgAuditSink::new(store.pool().clone())),
+        asterius_server::http::request_id::audit(PgAuditSink::new(store.pool().clone())),
     ));
     let repository = ProvisionedTenants::new(
         PgTenantRepository::new(store.pool().clone(), Arc::clone(kek)),
@@ -1019,6 +1026,15 @@ fn spawn_workers(
         Arc::clone(kek),
     ));
 
+    let temporary = asterius_server::temporary_entitlements::TemporaryEntitlementSweep::new(
+        Arc::new(asterius_store_pg::PgTemporaryEntitlements::new(
+            store.pool().clone(),
+        )),
+        Arc::new(PgTenantRepository::new(
+            store.pool().clone(),
+            Arc::clone(kek),
+        )),
+    );
     let rotation = RotationSweep::new(keys, tenants_for_rotation, Arc::clone(&clock));
     let retention = RetentionSweep::new(retention, tenants_for_retention, Arc::clone(&clock));
     let delivery = outbox_worker(
@@ -1027,7 +1043,7 @@ fn spawn_workers(
         Arc::clone(&clock),
         store,
         kek,
-        Arc::new(PgAuditSink::new(store.pool().clone())),
+        asterius_server::http::request_id::audit(PgAuditSink::new(store.pool().clone())),
         SsfSigning {
             signer,
             tenants: tenants_for_streams,
@@ -1039,6 +1055,7 @@ fn spawn_workers(
     let handles = vec![
         tokio::spawn(rotation.run(stopped(stopping.clone()))),
         tokio::spawn(retention.run(stopped(stopping.clone()))),
+        tokio::spawn(temporary.run(stopped(stopping.clone()))),
         tokio::spawn(delivery.run(stopped(stopping))),
     ];
     Ok(Workers { stop, handles })

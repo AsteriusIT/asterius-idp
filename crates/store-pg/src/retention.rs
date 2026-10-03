@@ -105,6 +105,28 @@ pub const MAX_BATCHES: usize = 100;
 /// Kept in the schema's own order so that reading this next to
 /// `0001_baseline.sql` is a straight comparison.
 pub const POLICY: &[Retention] = &[
+    Retention { table: "temporary_entitlements", rule: Rule::Kept("durable independent-approval history and terminal replay outcomes; live authority always checks current versions and exclusive expiry; cascades with tenant/user/catalogue ownership") },
+    Retention { table: "temporary_entitlement_approvers", rule: Rule::Kept("durable independent-approval history and terminal replay outcomes; live authority always checks current versions and exclusive expiry; cascades with tenant/user/catalogue ownership") },
+    Retention { table: "temporary_entitlement_eligibility", rule: Rule::Kept("durable independent-approval history and terminal replay outcomes; live authority always checks current versions and exclusive expiry; cascades with tenant/user/catalogue ownership") },
+    Retention { table: "temporary_entitlement_requests", rule: Rule::Kept("durable independent-approval history and terminal replay outcomes; live authority always checks current versions and exclusive expiry; cascades with tenant/user/catalogue ownership") },
+    Retention { table: "temporary_entitlement_activations", rule: Rule::Kept("durable independent-approval history and terminal replay outcomes; live authority always checks current versions and exclusive expiry; cascades with tenant/user/catalogue ownership") },
+    Retention { table: "temporary_entitlement_replays", rule: Rule::Kept("durable independent-approval history and terminal replay outcomes; live authority always checks current versions and exclusive expiry; cascades with tenant/user/catalogue ownership") },
+    Retention {
+        table: "authorization_diagnostics",
+        rule: Rule::Sweep {
+            statement: "delete from authorization_diagnostics where ctid = any (array(
+                select ctid from authorization_diagnostics where tenant_id = $1 and expires_at <= $2 limit $3))",
+            grace: Duration::ZERO,
+        },
+    },
+    Retention { table: "session_assurance_proofs", rule: Rule::Kept("verified class provenance cascades with its browser session") },
+    Retention { table: "grant_assurance_proofs", rule: Rule::Kept("original assurance clock survives session cleanup and cascades with its grant") },
+    Retention { table: "conditional_client_settings", rule: Rule::Kept("administrative application classification; removed with its registered client") },
+    Retention { table: "agent_task_withdrawals", rule: Rule::Kept("durable bounded descendant withdrawal cursor and terminal evidence; cascade with task/grant") },
+    Retention { table: "agent_task_clients", rule: Rule::Kept("persistent task obligation survives client recreation; removed only with tenant") },
+    Retention { table: "agent_tasks", rule: Rule::Kept("immutable approval and terminal root fence; retain while descendant credentials may live") },
+    Retention { table: "agent_task_grants", rule: Rule::Kept("durable task lineage for authoritative online checks; removed only with grant") },
+    Retention { table: "agent_task_tokens", rule: Rule::Kept("private JTI lineage independent of public grant claims; retained with task grant") },
     Retention { table: "kubernetes_profiles", rule: Rule::Kept("tenant-owned cluster configuration; removed with its registered client") },
     Retention { table: "declarative_owners", rule: Rule::Kept("live ownership and deleted-resource generations prevent ABA and unsafe adoption; explicit release, cascade with tenant") },
     Retention { table: "declarative_creation_keys", rule: Rule::Kept("durable declarative retry receipts cannot expire while stale controller retries remain possible; cascade with tenant") },
@@ -646,6 +668,7 @@ pub const POLICY: &[Retention] = &[
             statement: "delete from grants where ctid = any (array(
                             select g.ctid from grants g
                              where g.tenant_id = $1
+                               and not exists (select 1 from agent_task_grants t where t.tenant_id=g.tenant_id and t.grant_id=g.grant_id)
                                and g.user_id is null
                                and (g.subject is null or exists (select 1 from workload_grant_bindings w where w.tenant_id=g.tenant_id and w.grant_id=g.grant_id))
                                and g.session_id is null
@@ -1076,7 +1099,11 @@ impl PgRetention {
         tenant: &TenantId,
         now: OffsetDateTime,
     ) -> Result<Sweep, DomainError> {
-        let mut sweep = Sweep::default();
+        let mut sweep = Sweep {
+            more_to_do: crate::agent_task_lifecycle::cleanup_withdrawals(connection, tenant)
+                .await?,
+            ..Sweep::default()
+        };
 
         for entry in POLICY {
             let Rule::Sweep { statement, grace } = entry.rule else {
