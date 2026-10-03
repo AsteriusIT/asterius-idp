@@ -122,6 +122,8 @@ pub struct ProtocolState {
 /// Separate from [`ProtocolState`] so that the discovery and JWKS handlers —
 /// which need none of it — can be tested without a database.
 pub struct ClientEndpoints {
+    /// Current operator bundle revisions, never values supplied by a request.
+    pub device_anchors: Arc<std::collections::BTreeMap<String, asterius_domain::managed_devices::LeafFingerprint>>,
     /// Persistent external workload verifier; absence disables external exchange.
     pub workloads: Option<Arc<dyn asterius_domain::workload::Verifier>>,
     /// Identity binding for verified upstream issuer/subject pairs. Absent
@@ -3008,7 +3010,7 @@ async fn access_search_dispatch(
             endpoints.capabilities,
             Arc::clone(&endpoints.kek),
             Arc::clone(&endpoints.audit),
-        ),
+        ).with_device_anchors(Arc::clone(&endpoints.device_anchors)),
         tenant.clone(),
         now,
     );
@@ -3128,7 +3130,7 @@ async fn access_evaluation_dispatch(
             endpoints.capabilities,
             Arc::clone(&endpoints.kek),
             Arc::clone(&endpoints.audit),
-        ),
+        ).with_device_anchors(Arc::clone(&endpoints.device_anchors)),
         tenant.clone(),
         now,
     );
@@ -4072,7 +4074,7 @@ fn agent_policy<'a>(
             endpoints.capabilities,
             Arc::clone(&endpoints.kek),
             Arc::clone(&endpoints.audit),
-        ))),
+        ).with_device_anchors(Arc::clone(&endpoints.device_anchors)))),
         policy: pdp,
         fail_open: endpoints
             .issuance
@@ -4145,7 +4147,7 @@ async fn dispatch_grants(
             endpoints.capabilities,
             Arc::clone(&endpoints.kek),
             Arc::clone(&endpoints.audit),
-        ),
+        ).with_device_anchors(Arc::clone(&endpoints.device_anchors)),
         tenant.as_ref().clone(),
     );
     let task_signer = asterius_store_pg::agent_tasks::TaskSigner {

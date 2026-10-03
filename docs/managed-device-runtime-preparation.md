@@ -208,3 +208,33 @@ private sidecar beside the exact code digest. Redemption uses the existing
 single-winner code spend and `DELETE RETURNING` of its sidecar in the same
 transaction. The interaction-capture/transfer and removal writers are not yet
 implemented; this remains incomplete source, without checks or runtime evidence.
+
+
+The dedicated certificate candidate is implemented in
+`crates/server/src/managed_devices.rs` and strict single-leaf transport in
+`mtls::device_from_proxy_header`. It reuses the established aws-lc/webpki chain
+verifier; [x509-parser0.18.1](https://docs.rs/x509-parser/0.18.1/x509_parser/certificate/struct.X509Certificate.html)
+reads bounded DER constraints, explicit clientAuth and expiry, and never verifies
+signatures with another provider. CA-only operator bundles are bounded to256KiB
+and32 certificates; their sorted unique DER is length-prefixed and SHA256 hashed
+with a device-profile domain separator to obtain the current stable trust
+revision. It is not supplied by the browser or source. The proxy must perform
+actual TLS client-key possession verification and strip the incoming field; the
+adapter cannot prove those operator responsibilities from a forwarded header.
+Startup configuration uses a separate `[managed_devices]` table and header,
+requires `behind_proxy` when device roots exist, loads dedicated roots, emits a
+private verified leaf extension and distributes the operator-derived revision
+map through `ClientEndpoints` to each conditional gate. It depends on the
+coordinated conditional setter in the parent's isolated candidate branch.
+No compilation, TLS fixture or runtime acceptance has yet been run.
+
+
+Source review found that the existing `BehindProxy` listener uses plain HTTP.
+Trusted CIDR plus an ordinary forwarded public certificate therefore does not
+establish the ADR's protected-hop possession boundary. The verifier now requires
+an explicit private `VerifiedProxyHop` in addition to the trusted immediate IP;
+no existing listener constructs it, so this checkpoint produces no managed
+facts. A dedicated proxy client TLS handshake plus operator pin adapter is still
+required. No configuration boolean, raw leaf digest or proxy header may create
+that context. The upcoming candidate will document and test this transport
+boundary before claiming certificate possession or runtime enforcement.

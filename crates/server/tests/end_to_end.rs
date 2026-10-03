@@ -1351,6 +1351,7 @@ fn assemble(
         tenant_settings: Some(settings.clone()),
         signed_metadata: None,
         clients: Some(Arc::new(ClientEndpoints {
+            device_anchors: Arc::new(std::collections::BTreeMap::new()),
             workloads: Some(Arc::new(asterius_server::workload::ExternalWorkloads::new(
                 Arc::new(asterius_store_pg::PgWorkloadTrusts::new(
                     store.pool().clone(),

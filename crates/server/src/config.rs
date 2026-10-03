@@ -91,6 +91,8 @@ pub struct Config {
     /// `[features] mtls` gets a deployment that does not look at certificates,
     /// which is the same posture every other flag has.
     pub mtls: crate::mtls::MtlsConfig,
+    /// Separate operator device PKI; empty roots leave device evidence unavailable.
+    pub managed_devices: crate::managed_devices::DeviceConfig,
     /// AuthZEN settings that are not capability flags (`ast-pj0.3`).
     ///
     /// Read only where `[features] authzen` is on, like `[mtls]` and `[dpop]`:
@@ -672,6 +674,8 @@ struct RawConfig {
     dpop: RawDpop,
     #[serde(default)]
     mtls: RawMtls,
+    #[serde(default)]
+    managed_devices: RawMtls,
     #[serde(default)]
     authzen: RawAuthzen,
 }
@@ -1444,6 +1448,15 @@ impl RawConfig {
         let mail = validate_mail(self.mail, env, &mut errors);
         let dpop = validate_dpop(self.dpop, env, &mut errors);
         let mtls = validate_mtls(self.mtls, &tenants, &mut errors);
+        let managed_devices = validate_managed_devices(self.managed_devices, &tenants, &mut errors);
+        if !managed_devices.trust_anchors.is_empty() {
+            if server.mode != TransportMode::BehindProxy {
+                errors.problem("managed_devices", "device possession requires the trusted TLS proxy profile");
+            }
+            if managed_devices.certificate_header == mtls.certificate_header {
+                errors.problem("managed_devices.certificate_header", "must differ from OAuth client authentication header");
+            }
+        }
 
         errors.finish(Config {
             server,
@@ -1461,6 +1474,7 @@ impl RawConfig {
             mail,
             dpop,
             mtls,
+            managed_devices,
             authzen: AuthzenConfig {
                 signed_metadata: self.authzen.signed_metadata.unwrap_or_default(),
                 search: self.authzen.search.unwrap_or_default(),
@@ -1524,6 +1538,47 @@ fn validate_mtls(
     }
 
     crate::mtls::MtlsConfig {
+        certificate_header,
+        trust_anchors,
+    }
+}
+
+/// Validate the independently configured device trust boundary.
+fn validate_managed_devices(
+    raw: RawMtls,
+    tenants: &[TenantConfig],
+    errors: &mut Collector,
+) -> crate::managed_devices::DeviceConfig {
+    let certificate_header = raw.certificate_header.map_or_else(
+        || crate::managed_devices::DEFAULT_DEVICE_CERTIFICATE_HEADER.to_owned(),
+        |name| {
+            if axum::http::HeaderName::try_from(name.as_str()).is_err() {
+                errors.problem(
+                    "managed_devices.certificate_header",
+                    "must be a valid HTTP header name: lowercase letters, digits and \
+                     `-`. A name no header can carry means no certificate is ever read",
+                );
+            }
+            name.to_ascii_lowercase()
+        },
+    );
+
+    let mut trust_anchors = std::collections::BTreeMap::new();
+    for (tenant, path) in raw.trust_anchors {
+        if !tenants.iter().any(|known| known.id.as_str() == tenant) {
+            errors.problem(
+                "managed_devices.trust_anchors",
+                format!(
+                    "`{tenant}` is not a tenant this deployment serves; its trust anchors \
+                     would vouch for nobody"
+                ),
+            );
+            continue;
+        }
+        trust_anchors.insert(TenantId::new(tenant), path);
+    }
+
+    crate::managed_devices::DeviceConfig {
         certificate_header,
         trust_anchors,
     }
