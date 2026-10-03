@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod administration;
+pub mod agent_task_views;
 pub mod agent_tasks;
 pub mod audit;
 pub mod capabilities;

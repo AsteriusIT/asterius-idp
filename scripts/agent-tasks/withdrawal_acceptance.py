@@ -38,7 +38,7 @@ full_detail=[{"type":"urn:asterius:workload-actions","actions":["read","write"],
 schema=json.loads((pathlib.Path(__file__).resolve().parents[2]/"examples/kubernetes/workload-exchange/actions-schema.json").read_text())
 policy={"grant_types":["client_credentials","urn:ietf:params:oauth:grant-type:token-exchange","urn:ietf:params:oauth:grant-type:device_code"],"max_delegation_depth":2,"scopes":["admin.scim:read","admin.scim:write"],"audiences":[resource],"access_token_ttl_seconds":120}
 sql(f"""insert into users(tenant_id,user_id,username,status) values('tasks',{literal(owner)},'controlled-owner','active'),('tasks',{literal(other)},'foreign-owner','active');
-insert into resource_servers(tenant_id,identifier,scopes) values('tasks',{literal(resource)},array['admin.scim:read','admin.scim:write','admin.grants:write']);
+insert into resource_servers(tenant_id,identifier,scopes) values('tasks',{literal(resource)},array['admin.scim:read','admin.scim:write','admin.grants:write','admin.audit:read']);
 insert into authorization_details_types(tenant_id,type_name,schema) values('tasks','urn:asterius:workload-actions',{literal(json.dumps(schema))}::jsonb);
 insert into clients(tenant_id,client_id,client_name,token_endpoint_auth_method,grant_types,response_types,scopes,resources,jwks,is_agent,agent_owner_user_id,agent_policy,authorization_details_types) values('tasks','task-agent','Controlled agent','private_key_jwt',array['client_credentials','urn:ietf:params:oauth:grant-type:token-exchange','urn:ietf:params:oauth:grant-type:device_code'],array[]::text[],array['admin.scim:read','admin.scim:write'],array[{literal(resource)}],{literal(json.dumps({'keys':[jwk]}))}::jsonb,true,{literal(owner)},{literal(json.dumps(policy))}::jsonb,array['urn:asterius:workload-actions']);
 insert into grants(tenant_id,grant_id,client_id,user_id,subject,scopes,resources,authorization_details,claimed_at,expires_at) values('tasks',{literal(root_grant)},'task-agent',{literal(owner)},'controlled-owner-subject',array['admin.scim:read','admin.scim:write'],array[{literal(resource)}],{literal(json.dumps(full_detail))}::jsonb,now(),now()+interval '30 minutes');""")
@@ -131,9 +131,9 @@ assert refresh_claims['task_id']==binding['task_id'],"refresh cannot discard lin
 
 # Separate authenticated management identity. Task approval never grants its
 # initiating agent permission to withdraw other users' grants.
-sql(f"insert into clients(tenant_id,client_id,client_name,token_endpoint_auth_method,grant_types,response_types,scopes,resources,jwks) values('tasks','controlled-admin','Controlled management','private_key_jwt',array['client_credentials'],array[]::text[],array['admin.grants:write'],array[{literal(resource)}],{literal(json.dumps({'keys':[jwk]}))}::jsonb);")
+sql(f"insert into clients(tenant_id,client_id,client_name,token_endpoint_auth_method,grant_types,response_types,scopes,resources,jwks) values('tasks','controlled-admin','Controlled management','private_key_jwt',array['client_credentials'],array[]::text[],array['admin.grants:write','admin.audit:read'],array[{literal(resource)}],{literal(json.dumps({'keys':[jwk]}))}::jsonb);")
 admin=Agent(issuer,'controlled-admin',root/'agent.pem','task-agent',root/'cert.pem')
-status,_,admin_issued=admin.mint({'grant_type':'client_credentials','scope':'admin.grants:write'})
+status,_,admin_issued=admin.mint({'grant_type':'client_credentials','scope':'admin.grants:write admin.audit:read'})
 assert status==200,f"independent management authentication status={status} error={admin_issued.get('error','none')}"
 admin.token=admin_issued['access_token']
 def protected(client,presented):
@@ -156,8 +156,13 @@ status,_,sibling=agent.mint(params);assert status==200
 independent_root=str(uuid.uuid4())
 sql(f"insert into grants(tenant_id,grant_id,client_id,user_id,scopes,resources,authorization_details,claimed_at,expires_at) values('tasks',{literal(independent_root)},'task-agent',{literal(owner)},array['admin.scim:read'],array[{literal(resource)}],{literal(json.dumps(ceiling['authorization_details']))}::jsonb,now(),now()+interval '30 minutes');")
 status,_,independent_preview=owner_request('GET','/account/agent-tasks/approval?root_grant_id='+independent_root);assert status==200
-status,_,independent_binding=owner_request('POST','/account/agent-tasks/approve',{**form,'root_grant_id':independent_root,'csrf':independent_preview['csrf']});assert status==201
+status,_,independent_binding=owner_request('POST','/account/agent-tasks/approve',{**form,'root_grant_id':independent_root,'csrf':independent_preview['csrf'],'label':'independent run'});assert status==201
 status,_,independent=agent.mint({'grant_type':'client_credentials','task_id':independent_binding['task_id']});assert status==200
+viewer=None
+if os.environ.get('ASTERIUS_TASK_VIEWER_ACCEPTANCE')=='1':
+    from viewer_fixture import ViewerFixture
+    viewer=ViewerFixture(admin,issuer,sql,literal,binding,owner,agent,token)
+    viewer.before()
 first_grant=refresh_grant
 admin.token=admin_issued['access_token']
 # Wrong path user must not authorize a same-tenant grant owned by someone else.
@@ -165,6 +170,7 @@ wrong=admin.request('DELETE',issuer+'/admin/api/v1/users/'+other+'/grants/'+root
 assert wrong==404,f'exact admin grant ownership boundary: expected404 actual{wrong}'
 status,_,_=admin.request('DELETE',issuer+'/admin/api/v1/users/'+owner+'/grants/'+first_grant)
 assert status==200,'real intermediate grant withdrawal'
+if viewer: viewer.after_intermediate(first_grant)
 assert not introspect(consumer,refreshed['access_token']),'intermediate token immediately inactive'
 assert not introspect(consumer,withdrawn_descendant['access_token']),'descendant immediately inactive'
 # User-delegated recipient credentials are intentionally not service authority
@@ -191,7 +197,24 @@ withdrawals=int(sql("select count(*) from agent_task_withdrawals where tenant_id
 assert withdrawals==2,'durable intermediate and root cleanup ledger'
 audit_count=int(sql("select count(*) from audit_events where tenant_id='tasks' and event_type='agent.task.withdrawn'",True))
 assert audit_count==2,'transactional withdrawal events and idempotence'
+browser_controls=[]
+if viewer:
+    viewer.after_root()
+    if os.environ.get('ASTERIUS_TASK_VIEWER_BROWSER')=='1':
+        sql(f"insert into user_roles(tenant_id,user_id,role,tenant_is_reserved) values('tasks',{literal(owner)},'tenant_admin',false);")
+        browser_input=root/'viewer-browser.json'
+        browser_input.write_text(json.dumps({'issuer':issuer,'cookie':cookie,'task':independent_binding['task_id']}))
+        browser_run=subprocess.run(['node',str(pathlib.Path(__file__).with_name('viewer_browser.mjs')),str(browser_input)],check=True,capture_output=True,text=True)
+        browser_report=json.loads(browser_run.stdout)
+        assert browser_report['status']=='pass','actual browser control result'
+        browser_controls=browser_report['checks']
+
 with pathlib.Path(os.environ['ASTERIUS_BIN']).open('rb') as binary:
     binary_digest=hashlib.file_digest(binary,'sha256').hexdigest()
 evidence={'binary_sha256':binary_digest,'ticket':'ast-dd1y.8.3','controlled_fixture':True,'live_human_login':False,'timestamp_utc':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),'checks':['real HTTPS private_key_jwt + DPoP issuance','local signature and exact private JTI linkage','intermediate descendant introspection refusal before cleanup','same-task sibling survives intermediate withdrawal','exact administrative grant owner boundary','fresh owner and CSRF task withdrawal','terminal idempotence without duplicate audit','root withdrawal denies ordinary recipient refresh','independent task remains usable','offline signature residual explicitly observed','durable cleanup ledger and transactional audits'],'limits':['human root grants and owner sessions are controlled seeded inputs','opaque recipient refresh input seeded; rotation response used for withdrawal test','ignored PostgreSQL tests reserved to CI; no full local suite','no external introspection cache or SSF delivery deadline asserted']}
+if viewer:
+    evidence['ticket']='ast-dd1y.8.4'
+    evidence['live_browser_controls']=os.environ.get('ASTERIUS_TASK_VIEWER_BROWSER')=='1'
+    evidence['checks'] += ['read scope separate from task approval','bounded UUID keyset task/lineage pagination','cross-tenant task metadata refusal','public identifiers and private JTI exclusion','current scope/resource/TTL ceilings and not-evaluated conditional status','intermediate/root current snapshot versus exact recorded timeline','current client narrowing preserves recorded approval'] + browser_controls
+    evidence['limits'] += ['console administrator role is a controlled seed; browser exercises real controls but no live human login ceremony']
 print(json.dumps(evidence,sort_keys=True))
