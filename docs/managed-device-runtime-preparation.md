@@ -14,6 +14,19 @@ passed 26 controlled HTTPS/browser checks with 114 embedded migrations; see
 Human review still gates delivery. This proves the controlled software PKI
 profile; it does not prove live MDM interoperability or hardware attestation.
 
+A subsequent source review found that original-code identity issuance and online
+identity issuance needed a common final grant fence. The correction candidate
+locks the current recipient client, then the complete bounded lineage from root
+to exact claimed grant on the existing publication connection. It rejects tuple
+changes, missing/cyclic/deeper-than-ten lineage, revocation and expiry after lock
+waits. The minimum current lineage expiry caps the signed identity and is
+rechecked after cryptography and online digest persistence. Separate consent/code
+and exact-parent exchange preflight helpers never establish final issued authority.
+The previously recorded 26 runtime controls describe the earlier binary; they do
+not claim that this later concurrency correction has already been exercised.
+Focused ignored PostgreSQL regressions are supplied separately for CI, and a
+composed targeted gate/runtime proof remains pending alongside human review.
+
 The fixture performs real password and user-verified WebAuthn authentication,
 FAPI private-key JWT/DPoP PAR/PKCE, exact interaction-to-code transfer, current
 refresh/exchange/PDP possession, relay enrollment/posture and human source CRUD.
