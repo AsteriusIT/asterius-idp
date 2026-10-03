@@ -2675,6 +2675,23 @@ expiry/online-revocation limits. No instant withdrawal or device attestation
 claim is made. See [the operator guide](conditional-access.md) for exact sources,
 limits and deployment capacity.
 
+### Assurance freshness provenance
+
+Cumulative AMR is historical evidence, not a fresh proof of every listed
+factor. Session rotation keeps a server-owned assurance timestamp, exact ladder
+digest and verified factor set separate from public `auth_time`. Proving only
+a password cannot renew a class that depends on an older passkey. Combining
+known factors retains the earliest proof timestamp; only a complete fresh
+class proof starts a new interval. A changed ladder cannot promote historical
+AMR into current freshness. Legacy rows have no inferred marker.
+
+Session rotation and its proof replace atomically; proof rows cascade with
+session identity rotation and deletion. Grants capture only the exact session
+or exact parent authentication tuple in their creation transaction. Their proof
+survives session cleanup, while changed original tuples discard it. Refresh
+claims never renew its clock. Conditional trusted facts consume this frozen
+provenance; unavailable or malformed provenance cannot satisfy a scoped guard.
+
 ### Conditional access simulation and rollout
 
 Administrative examples use a closed bounded dialect separate from PEP properties

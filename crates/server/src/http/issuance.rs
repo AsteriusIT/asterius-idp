@@ -1496,6 +1496,9 @@ mod tests {
                     user: uuid::Uuid::from_u128(1),
                     created_at: epoch(),
                     authenticated_at: epoch() + Duration::hours(2),
+                    assurance_authenticated_at: None,
+                    assurance_policy_revision: None,
+                    assurance_methods: Vec::new(),
                     last_seen_at: epoch() + Duration::hours(2),
                     expires_at: epoch() + Duration::hours(8),
                     idle_expires_at: epoch() + Duration::hours(3),
@@ -1582,6 +1585,9 @@ mod tests {
             .collect();
         grant.session = Some(SessionId::new(DIGEST));
         grant.authentication = Some(GrantAuthentication {
+            assurance_authenticated_at: None,
+            assurance_policy_revision: None,
+            assurance_methods: Vec::new(),
             authenticated_at: epoch(),
             acr: Some("urn:asterius:acr:password".to_owned()),
             amr: vec![AuthenticationMethod::Password],
