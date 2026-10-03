@@ -410,12 +410,13 @@ async fn answer(
         ))
     })?;
     let role_grant = token_role_grant(&grant, &verified);
-    let held = context.source.roles_for_grant(&role_grant).await?;
-    let body = userinfo::with_roles(body, grant.client.as_str(), &held);
+    let mut held = context.source.roles_for_grant(&role_grant).await?;
     let groups = context
         .source
         .managed_group_ids(user, &grant.client)
         .await?;
+    held.retain_current_temporary_roles(time::OffsetDateTime::now_utc());
+    let body = userinfo::with_roles(body, grant.client.as_str(), &held);
     let body = userinfo::with_managed_groups(body, groups);
     render(context, &grant, body).await
 }

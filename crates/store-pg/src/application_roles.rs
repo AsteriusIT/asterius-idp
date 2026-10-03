@@ -443,6 +443,9 @@ impl ApplicationRoleDirectory for PgApplicationRoles {
         let snapshot = crate::PgTemporaryEntitlements::new(self.pool.clone())
             .resolve_for_grant(&grant.tenant, grant)
             .await?;
+        held.temporary_proof_expires_at = grant.authentication.as_ref()
+            .and_then(|auth| auth.assurance_authenticated_at)
+            .and_then(|at| at.checked_add(time::Duration::seconds(120)));
         for activation in snapshot.roles {
             let roles = held.clients.entry(activation.client.clone()).or_default();
             if roles.insert(activation.role.clone()) {
@@ -460,6 +463,7 @@ impl ApplicationRoleDirectory for PgApplicationRoles {
                 *deadline = (*deadline).max(activation.expires_at);
             }
         }
+        held.retain_current_temporary_roles(OffsetDateTime::now_utc());
         Ok(held)
     }
 
