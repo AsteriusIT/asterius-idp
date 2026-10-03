@@ -352,6 +352,9 @@ impl RefreshToken<'_> {
         // own `revoked_at` catches the ordinary case — the revocation cascade
         // stamps both in one transaction — and this catches an expiry, which
         // is computed rather than stored and so reaches no row.
+        if !self.grants.task_grant_active(&grant.id).await? {
+            return Err(invalid_grant());
+        }
         if !matches!(grant.status(self.now), GrantStatus::Active) {
             return Err(invalid_grant());
         }

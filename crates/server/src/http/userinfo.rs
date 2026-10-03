@@ -77,6 +77,15 @@ pub const JWT_CONTENT_TYPE: &str = "application/jwt";
 /// UserInfo writes nothing.
 #[async_trait::async_trait]
 pub trait UserInfoSource: std::fmt::Debug + Send + Sync {
+    /// Uncached task/ancestor state after JWT and sender verification.
+    /// Compatibility implementations refuse every task-linked credential.
+    async fn task_token_active(
+        &self,
+        query: &asterius_domain::agent_tasks::TokenQuery,
+    ) -> Result<bool, DomainError> {
+        Ok(query.approval.is_none())
+    }
+
     /// The grant a token names.
     ///
     /// # Errors
@@ -330,6 +339,11 @@ async fn answer(
     let jti = verified
         .claim_str("jti")
         .ok_or(UserInfoError::InvalidToken)?;
+    let task_query = asterius_domain::agent_tasks::TokenQuery::from_claims(&verified.claims)
+        .map_err(|_| UserInfoError::InvalidToken)?;
+    if !context.source.task_token_active(&task_query).await? {
+        return Err(UserInfoError::InvalidToken.into());
+    }
     if context.source.is_denylisted(jti).await? {
         return Err(UserInfoError::InvalidToken.into());
     }

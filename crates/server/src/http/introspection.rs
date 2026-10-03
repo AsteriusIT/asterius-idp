@@ -132,6 +132,20 @@ pub struct RefreshTokenFacts {
 /// endpoint writes nothing but its audit entry.
 #[async_trait::async_trait]
 pub trait IntrospectionSource: std::fmt::Debug + Send + Sync {
+    /// Authoritative task lineage for an opaque refresh credential.
+    async fn task_grant_active(&self, _grant: &GrantId) -> Result<bool, DomainError> {
+        Ok(true)
+    }
+
+    /// Uncached task/ancestor state after JWT and sender verification.
+    /// Compatibility implementations refuse every task-linked credential.
+    async fn task_token_active(
+        &self,
+        query: &asterius_domain::agent_tasks::TokenQuery,
+    ) -> Result<bool, DomainError> {
+        Ok(query.approval.is_none())
+    }
+
     /// Whether this `jti` was revoked before its own expiry.
     ///
     /// # Errors
@@ -477,6 +491,11 @@ async fn describe_access_token(
     // FAPI 2.0 SP §5.3.4 item 3, and the one thing that can withdraw a named
     // stateless token.
     let denylisted = context.source.is_denylisted(jti).await?;
+    let task_active = match asterius_domain::agent_tasks::TokenQuery::from_claims(&verified.claims)
+    {
+        Ok(query) => context.source.task_token_active(&query).await?,
+        Err(_) => false,
+    };
     // The bulk half: a deprovisioned client (RFC 7592 §2.3) and a revoked
     // refresh token (RFC 7009 §2.1) withdraw tokens nobody wrote down.
     let cutoff = context
@@ -505,7 +524,7 @@ async fn describe_access_token(
 
     // --- one decision, on values already in hand ---
 
-    let live = !denylisted
+    let live = task_active && !denylisted
         && !access_token::withdrawn(&verified, cutoff)
         // A token that names a grant is only live while the row still stands:
         // a grant this tenant no longer holds, or holds as revoked, expired or
@@ -542,6 +561,10 @@ async fn describe_refresh_token(
     else {
         return Ok(IntrospectionResponse::inactive());
     };
+
+    if !context.source.task_grant_active(&facts.grant).await? {
+        return Ok(IntrospectionResponse::inactive());
+    }
 
     // Rendered as the claims an access token would carry and then projected
     // through the one projection, so that the two kinds of token cannot come

@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 mod admin_seed;
+mod agent_task_lifecycle;
 pub mod agent_tasks;
 mod aggregated_claims;
 mod application_roles;
