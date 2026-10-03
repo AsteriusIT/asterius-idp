@@ -178,6 +178,9 @@
                         "format": "int64",
                         "minimum": 0
                       },
+                      "observedDeletionProtection": {
+                        "type": "boolean"
+                      },
                       "remoteId": {
                         "type": "string",
                         "minLength": 1,
@@ -458,6 +461,9 @@
                         "format": "int64",
                         "minimum": 0
                       },
+                      "observedDeletionProtection": {
+                        "type": "boolean"
+                      },
                       "remoteId": {
                         "type": "string",
                         "minLength": 1,
@@ -695,6 +701,9 @@
                         "format": "int64",
                         "minimum": 0
                       },
+                      "observedDeletionProtection": {
+                        "type": "boolean"
+                      },
                       "remoteId": {
                         "type": "string",
                         "minLength": 1,
@@ -897,6 +906,9 @@
                         "type": "integer",
                         "format": "int64",
                         "minimum": 0
+                      },
+                      "observedDeletionProtection": {
+                        "type": "boolean"
                       },
                       "remoteId": {
                         "type": "string",

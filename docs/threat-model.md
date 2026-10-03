@@ -2515,3 +2515,18 @@ can orphan live authority. Status/events/logs contain bounded categories and
 opaque public identity/revision only, never secrets, credentials or raw policy
 literals. [The CRD ADR](adr/kubernetes-identity-resources.md) specifies this trust
 boundary; operator runtime verification is separate.
+
+The operator pins namespace, tenant/issuer/client, binding UID and cluster ID on
+every cycle. Status and import IDs are parsed and tenant/kind checked before any
+remote read. FAPI private keys and issuer CA remain selected Secret material in
+memory; a malformed rotation discards prior usable credentials. A 30-second
+conditional Lease and ten-second operation deadline bound overlapping replicas,
+and exact remote ETags protect concurrent state writes. Same-generation console
+drift is reported without overwrite. GitOps finalizer stripping is refused by
+admission; only the exact controller service account or an administrator permitted
+to update the local binding can remove it. Delete requires the confirmed prior
+protection-disabled generation, accounting for the API server's deletion bump,
+and the same live revision. Errors/conditions use bounded fixed categories,
+including invalid Secret canaries; no raw error body or private key enters status.
+The controlled real-server/Kubernetes evidence is described in
+[the operator guide](kubernetes-identity-operator.md).

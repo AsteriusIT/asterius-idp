@@ -18,6 +18,7 @@ const common = {
 };
 const status = obj({
   observedGeneration:{type:'integer', format:'int64', minimum:0},
+  observedDeletionProtection:{type:'boolean'},
   remoteId:str(2048), remoteRevision:{...str(64),pattern:'^[0-9a-f]{64}$'},
   conditions: {...arr(obj({type:str(64), status:{type:'string',enum:['True','False','Unknown']},
     reason:str(64), message:{type:'string',maxLength:256},
@@ -96,7 +97,9 @@ export function namespaceDocuments(namespace, secretNames=['asterius-auth-key','
         matchConstraints:{namespaceSelector:{matchLabels:{'kubernetes.io/metadata.name':namespace}},
           resourceRules:[{apiGroups:['identity.asterius.io'],apiVersions:['v1alpha1'],operations:['CREATE','UPDATE'],resources:managed}]},
         validations:[{expression:`request.namespace == '${namespace}' && object.spec.tenantRef == params.metadata.name`,
-          message:'identity must reference the administrator-owned binding in its own namespace'}],
+          message:'identity must reference the administrator-owned binding in its own namespace'},
+          {expression:`oldObject == null || !has(oldObject.metadata.finalizers) || !oldObject.metadata.finalizers.exists(f, f == 'identity.asterius.io/remote-resource') || (has(object.metadata.finalizers) && object.metadata.finalizers.exists(f, f == 'identity.asterius.io/remote-resource')) || request.userInfo.username == 'system:serviceaccount:${namespace}:asterius-controller' || authorizer.group('identity.asterius.io').resource('asteriustenantbindings').namespace(request.namespace).name('default').check('update').allowed()`,
+            message:'only the controller or binding administrator may remove the identity finalizer'}],
       }},
     {apiVersion:'admissionregistration.k8s.io/v1',kind:'ValidatingAdmissionPolicyBinding',metadata:{name:bindingName},
       spec:{policyName:bindingName,validationActions:['Deny'],paramRef:{name:'default',namespace,parameterNotFoundAction:'Deny'}}},
@@ -127,5 +130,8 @@ export const examples = [
 if (process.argv.includes('--write')) {
   for (const [file,items] of [['crds.json',crds],['namespace-acme.json',namespaceDocuments('identity-acme')],['examples.json',examples]]) {
     writeFileSync(fileURLToPath(new URL(`../../deploy/operator/${file}`,import.meta.url)),JSON.stringify({apiVersion:'v1',kind:'List',items},null,2)+'\n');
+  }
+  for (const crd of crds) {
+    writeFileSync(fileURLToPath(new URL(`../../charts/asterius-operator/crds/${crd.metadata.name}.yaml`,import.meta.url)),JSON.stringify(crd,null,2)+'\n');
   }
 }

@@ -36,6 +36,43 @@ func TestPublicSpecRejectsCredentialsAndPreservesOrderedRules(t *testing.T) {
 		t.Fatal("ordered rules lost")
 	}
 }
+func TestOperatorKeyMaterialPinsDPoPAndRejectsInvalidRotation(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proofKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encode := func(key *ecdsa.PrivateKey) []byte {
+		raw, err := x509.MarshalPKCS8PrivateKey(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: raw})
+	}
+	cfg := Config{Issuer: "https://idp.example/t/acme", ClientID: "controller", KeyID: "key", KeyMaterial: encode(key), DPoPMaterial: encode(proofKey), Timeout: time.Second}
+	c, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compact, err := c.proof("GET", "https://idp.example/t/acme/admin/api/v1", "token", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	header, claims := VerifyJWT(t, compact, &proofKey.PublicKey)
+	if header["typ"] != "dpop+jwt" || claims["ath"] == nil {
+		t.Fatal("proof key or token binding lost")
+	}
+	if c.cfg.KeyMaterial != nil || c.cfg.DPoPMaterial != nil {
+		t.Fatal("raw Secret material retained after parsing")
+	}
+	cfg.DPoPMaterial = []byte("not a private key")
+	if _, err := New(cfg); err == nil {
+		t.Fatal("invalid rotated DPoP key accepted")
+	}
+}
 func TestImportIdentityBoundaries(t *testing.T) {
 	for _, p := range [][]string{{"acme", "resource", "https://api.example/a?x=y"}, {"acme", "membership", "00000000-0000-0000-0000-000000000001", "00000000-0000-0000-0000-000000000002"}} {
 		raw, _ := json.Marshal(p)
