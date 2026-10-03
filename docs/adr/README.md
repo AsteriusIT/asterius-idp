@@ -40,3 +40,5 @@ The modern IDP decisions use descriptive filenames to avoid concurrent numbering
 [Task-bound agent grants](task-bound-agent-grants.md) defines the accepted task,
 approval and descendant revocation architecture under ast-dd1y.8.1; runtime
 enforcement remains tracked by ast-dd1y.8.2 and ast-dd1y.8.3.
+
+| [Trusted conditional access](trusted-conditional-access-context.md) | Server-resolved facts guard bounded declarative policies | Decided; enforcement tracked separately |
