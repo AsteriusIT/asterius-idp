@@ -272,6 +272,7 @@ pub(super) fn holds(condition: &Condition, request: &EvaluationRequest) -> bool 
             .iter()
             .any(|grant| grant_matches(matcher, grant, request)),
         Condition::AcrAtLeast(required) => request.context.acr_at_least(required),
+        Condition::Trusted(predicate) => request.context.trusted().is_some_and(|trusted| predicate.holds(trusted)),
     }
 }
 

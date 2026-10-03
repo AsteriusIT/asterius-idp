@@ -367,6 +367,8 @@ pub enum Condition {
     Grant(GrantMatch),
     /// The session's `acr` is at or above this rung of the tenant's ladder.
     AcrAtLeast(String),
+    /// Reads separately bound server facts; allowed only in conditional scopes.
+    Trusted(super::conditional::TrustedPredicate),
 }
 
 /// One rule: what it matches, and what it does about it.
@@ -397,6 +399,7 @@ pub struct Rule {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RuleSet {
     rules: Vec<Rule>,
+    conditional_scopes: Vec<super::conditional::ConditionalScope>,
 }
 
 impl RuleSet {
@@ -406,7 +409,7 @@ impl RuleSet {
     /// the PDP is safe on the day it is mounted.
     #[must_use]
     pub const fn deny_all() -> Self {
-        Self { rules: Vec::new() }
+        Self { rules: Vec::new(), conditional_scopes: Vec::new() }
     }
 
     /// Parses a document.
@@ -431,6 +434,14 @@ impl RuleSet {
     ///
     /// [`PolicyDocumentError`] as [`Self::parse`].
     pub fn from_json(document: &Value) -> Result<Self, PolicyDocumentError> {
+        Self::from_json_inner(document, false)
+    }
+
+    pub(super) fn conditional_rules(document: &Value) -> Result<Self, PolicyDocumentError> {
+        Self::from_json_inner(document, true)
+    }
+
+    fn from_json_inner(document: &Value, conditional: bool) -> Result<Self, PolicyDocumentError> {
         let object = document
             .as_object()
             .ok_or(PolicyDocumentError::Malformed("it is not an object"))?;
@@ -466,13 +477,35 @@ impl RuleSet {
             rules.push(rule);
         }
 
-        Ok(Self { rules })
+        if !conditional && rules.iter().filter_map(|rule| rule.when.as_ref()).any(super::conditional::contains_trusted) {
+            return Err(PolicyDocumentError::Malformed("trusted predicates require an explicit conditional scope"));
+        }
+        let mut conditional_scopes = Vec::new();
+        if let Some(value) = object.get("conditional_scopes") {
+            if conditional {
+                return Err(PolicyDocumentError::Malformed("nested conditional scopes are forbidden"));
+            }
+            let scopes = value.as_array().filter(|scopes| scopes.len() <= 64).ok_or(PolicyDocumentError::Malformed("conditional_scopes must be an array of at most 64 scopes"))?;
+            for value in scopes {
+                let scope = super::conditional::ConditionalScope::parse(value)?;
+                if conditional_scopes.iter().any(|other: &super::conditional::ConditionalScope| other.id == scope.id || (!other.clients.is_disjoint(&scope.clients) && !other.actions.is_disjoint(&scope.actions))) {
+                    return Err(PolicyDocumentError::Malformed("conditional scopes overlap or repeat identities"));
+                }
+                conditional_scopes.push(scope);
+            }
+        }
+        Ok(Self { rules, conditional_scopes })
     }
 
     /// The rules, in the order they were written.
     #[must_use]
     pub fn rules(&self) -> &[Rule] {
         &self.rules
+    }
+
+    #[must_use]
+    pub fn conditional_scopes(&self) -> &[super::conditional::ConditionalScope] {
+        &self.conditional_scopes
     }
 
     /// Whether the policy denies everything by having nothing to say.
@@ -490,10 +523,14 @@ impl RuleSet {
     /// understood.
     #[must_use]
     pub fn to_json(&self) -> Value {
-        json!({
+        let mut document = json!({
             "version": VERSION,
             "rules": self.rules.iter().map(rule_to_json).collect::<Vec<_>>(),
-        })
+        });
+        if !self.conditional_scopes.is_empty() {
+            document["conditional_scopes"] = Value::Array(self.conditional_scopes.iter().map(super::conditional::ConditionalScope::to_json).collect());
+        }
+        document
     }
 }
 
@@ -746,10 +783,7 @@ fn parse_condition(
             &format!("{path}.acr_at_least"),
             "an acr value",
         )?)),
-        _ => Err(PolicyDocumentError::condition(
-            path,
-            "no condition of that name exists",
-        )),
+        _ => super::conditional::TrustedPredicate::parse(name, body)?.map(Condition::Trusted).ok_or_else(|| PolicyDocumentError::condition(path, "no condition of that name exists")),
     }
 }
 
@@ -1007,6 +1041,7 @@ fn condition_to_json(condition: &Condition) -> Value {
             json!({ "grant": Value::Object(body) })
         }
         Condition::AcrAtLeast(value) => json!({ "acr_at_least": value }),
+        Condition::Trusted(predicate) => predicate.to_json(),
     }
 }
 

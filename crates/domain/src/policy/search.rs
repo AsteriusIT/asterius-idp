@@ -189,7 +189,8 @@ fn literals(condition: &Condition) -> Vec<String> {
             Condition::Attribute { .. }
             | Condition::Group(_)
             | Condition::Role { .. }
-            | Condition::AcrAtLeast(_) => {}
+            | Condition::AcrAtLeast(_)
+            | Condition::Trusted(_) => {}
         }
     }
     found

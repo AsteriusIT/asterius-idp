@@ -147,6 +147,7 @@ fn trace(
             };
             ("attribute", bag.get(name).is_none())
         }
+        Condition::Trusted(predicate) => ("trusted_fact", request.context.trusted().is_none_or(|trusted| trusted.availability(predicate.fact()) != super::conditional::Availability::Known)),
         Condition::Group(_) => ("group", false),
         Condition::Role { .. } => ("role", false),
         Condition::Grant(_) => ("grant", false),

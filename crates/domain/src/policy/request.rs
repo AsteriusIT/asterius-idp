@@ -555,6 +555,7 @@ impl Resource {
 /// everybody.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Context {
+    trusted: Option<Box<super::conditional::TrustedAccessContext>>,
     acr: Option<String>,
     ladder: Vec<String>,
     properties: Properties,
@@ -565,10 +566,23 @@ impl Context {
     #[must_use]
     pub fn new(properties: Properties) -> Self {
         Self {
+            trusted: None,
             acr: None,
             ladder: Vec::new(),
             properties,
         }
+    }
+
+    /// The separate server-owned snapshot, never read from PEP properties.
+    #[must_use]
+    pub fn trusted(&self) -> Option<&super::conditional::TrustedAccessContext> {
+        self.trusted.as_deref()
+    }
+
+    #[must_use]
+    pub fn with_trusted(mut self, trusted: super::conditional::TrustedAccessContext) -> Self {
+        self.trusted = Some(Box::new(trusted));
+        self
     }
 
     /// Attaches the `acr` the session reached, and the tenant's ladder to read
