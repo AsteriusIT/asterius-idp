@@ -140,6 +140,9 @@ pub const CLIENT_HEALTH_ID: &str = "clients.health";
 pub const CONDITIONAL_SETTINGS_READ_ID: &str = "clients.conditional.read";
 pub const CONDITIONAL_SETTINGS_UPDATE_ID: &str = "clients.conditional.update";
 pub const KUBERNETES_PROFILE_READ_ID: &str = "clients.kubernetes.read";
+pub const KUBERNETES_ONLINE_READ_ID: &str = "clients.kubernetes_online.read";
+pub const KUBERNETES_ONLINE_UPDATE_ID: &str = "clients.kubernetes_online.update";
+pub const KUBERNETES_REVIEW_ID: &str = "clients.kubernetes_online.review";
 /// Replaces a cluster's tenant-owned group release profile.
 pub const KUBERNETES_PROFILE_UPDATE_ID: &str = "clients.kubernetes.update";
 /// The `operationId` of `POST /clients`.
@@ -617,6 +620,20 @@ pub const KUBERNETES_PROFILE_UPDATE: Operation = Operation::mutation(
     M::Put,
     A::new(R::Tenant, "admin.clients:write"),
     "Replaces a cluster's exact managed-group release allow-list",
+);
+
+pub const KUBERNETES_ONLINE_READ: Operation = Operation::read(
+    KUBERNETES_ONLINE_READ_ID,"/clients/{client_id}/kubernetes/online",S::Get,
+    A::new(R::Tenant,"admin.clients:read"),"Reads the selected online authentication reviewer",
+);
+pub const KUBERNETES_ONLINE_UPDATE: Operation = Operation::mutation(
+    KUBERNETES_ONLINE_UPDATE_ID,"/clients/{client_id}/kubernetes/online",M::Put,
+    A::new(R::Tenant,"admin.clients:write"),"Selects an exact service reviewer using the saved revision",
+);
+pub const KUBERNETES_REVIEW: Operation = Operation::probe(
+    KUBERNETES_REVIEW_ID,"/clients/{client_id}/kubernetes/reviews",M::Post,
+    A::new(R::AutomationTenant,asterius_domain::kubernetes_online::REVIEW_SCOPE),
+    "Reviews one issued identity against current exact grant and session authority",
 );
 
 /// Registers a client from the console, through the RFC 7591 validator.
@@ -2217,6 +2234,9 @@ static REGISTRY: &[Operation] = &[
     CONDITIONAL_SETTINGS_UPDATE,
     KUBERNETES_PROFILE_READ,
     KUBERNETES_PROFILE_UPDATE,
+    KUBERNETES_ONLINE_READ,
+    KUBERNETES_ONLINE_UPDATE,
+    KUBERNETES_REVIEW,
     CLIENT_CREATE,
     CLIENT_UPDATE,
     CLIENT_RESOURCES_UPDATE,

@@ -151,7 +151,17 @@ impl AdminApi {
         for operation in operations {
             let operation = *operation;
             let state = state.clone();
-            let handler = move |request: Request| dispatch(operation, state, request);
+            let handler = move |request: Request| async move {
+                if operation.id()==crate::KUBERNETES_REVIEW_ID {
+                    match tokio::time::timeout(std::time::Duration::from_secs(3),dispatch(operation,state,request)).await {
+                        Ok(response) => response,
+                        Err(_) => Ok(json_no_store(StatusCode::OK,&serde_json::json!(
+                            asterius_domain::kubernetes_online::TokenReviewResponse::denied()))),
+                    }
+                } else {
+                    dispatch(operation,state,request).await
+                }
+            };
             let method_router = match operation.method() {
                 Method::Get => axum::routing::get(handler),
                 Method::Post => axum::routing::post(handler),
@@ -404,6 +414,9 @@ async fn route_standard(
         crate::CONDITIONAL_SETTINGS_UPDATE_ID => context.update_conditional_settings(body).await,
         crate::KUBERNETES_PROFILE_READ_ID => context.read_kubernetes_profile().await,
         crate::KUBERNETES_PROFILE_UPDATE_ID => context.update_kubernetes_profile(body).await,
+        crate::KUBERNETES_ONLINE_READ_ID => context.read_kubernetes_online().await,
+        crate::KUBERNETES_ONLINE_UPDATE_ID => context.update_kubernetes_online(body).await,
+        crate::KUBERNETES_REVIEW_ID => context.review_kubernetes_identity(body).await,
         crate::CLIENT_CREATE_ID => context.create_client(body).await,
         crate::CLIENT_UPDATE_ID => context.update_client(body).await,
         crate::CLIENT_RESOURCES_UPDATE_ID => context.update_client_resources(body).await,
@@ -2280,6 +2293,41 @@ impl Handling<'_> {
         result["registration_compatible"] =
             serde_json::json!(profile.check_client(&client).is_ok());
         Ok(json_no_store(StatusCode::OK, &result))
+    }
+
+    async fn read_kubernetes_online(&self) -> Result<Response,AdminError> {
+        let client = self.client_in_path("/kubernetes/online")?;
+        let port = self.state.backend.kubernetes_online().ok_or(AdminError::Unavailable)?;
+        let profile = port.profile(&self.tenant.id,&client).await
+            .map_err(|e|group_error(crate::KUBERNETES_ONLINE_READ_ID,e))?.ok_or(AdminError::NotFound)?;
+        Ok(json_no_store(StatusCode::OK,&serde_json::json!(profile)))
+    }
+
+    async fn update_kubernetes_online(&self, body: axum::body::Body)
+        -> Result<Response,AdminError> {
+        let client = self.client_in_path("/kubernetes/online")?;
+        let change: asterius_domain::kubernetes_online::ProfileChange = self.parse_body(body).await?;
+        let port = self.state.backend.kubernetes_online().ok_or(AdminError::Unavailable)?;
+        let actor = self.principal.audit_actor();
+        let profile = port.replace_profile(&self.tenant.id,&client,&actor,&change).await
+            .map_err(|e|group_error(crate::KUBERNETES_ONLINE_UPDATE_ID,e))?;
+        Ok(json_no_store(StatusCode::OK,&serde_json::json!(profile)))
+    }
+
+    async fn review_kubernetes_identity(&self, body: axum::body::Body)
+        -> Result<Response,AdminError> {
+        use asterius_domain::kubernetes_online::{TokenReviewRequest,TokenReviewResponse};
+        let Principal::Automation {subject,held} = self.principal else { return Err(AdminError::Forbidden); };
+        let crate::rbac::Held::Scopes {tenant:Some(realm),..} = held else { return Err(AdminError::Forbidden); };
+        if realm!=&self.tenant.id { return Err(AdminError::Forbidden); }
+        let client = self.client_in_path("/kubernetes/reviews")?;
+        let denied = || Ok(json_no_store(StatusCode::OK,&serde_json::json!(TokenReviewResponse::denied())));
+        let Ok(bytes) = axum::body::to_bytes(body,asterius_domain::kubernetes_online::MAX_REQUEST_BYTES).await else { return denied(); };
+        let Ok(request) = TokenReviewRequest::parse(&bytes) else { return denied(); };
+        let Some(port) = self.state.backend.kubernetes_online() else { return denied(); };
+        let response = port.review(self.tenant,&asterius_domain::ClientId::new(subject.clone()),&client,&request)
+            .await.unwrap_or_else(|_|TokenReviewResponse::denied());
+        Ok(json_no_store(StatusCode::OK,&serde_json::json!(response)))
     }
 
     async fn update_kubernetes_profile(

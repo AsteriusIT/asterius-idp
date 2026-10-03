@@ -603,6 +603,12 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
         None
     }
 
+    fn kubernetes_online(
+        &self,
+    ) -> Option<Arc<dyn asterius_domain::kubernetes_online::KubernetesOnline>> {
+        None
+    }
+
     /// The deployment's clients, for the console's client screen.
     ///
     /// A handle for the same reason [`Self::tenants`] is one, and with the same

@@ -64,6 +64,7 @@ pub(crate) struct ConditionalAccess {
     capabilities: Capabilities,
     kek: Arc<dyn asterius_jose::Kek>,
     audit: Arc<dyn AuditSink>,
+    device_anchors: Arc<std::collections::BTreeMap<String,asterius_domain::managed_devices::LeafFingerprint>>,
 }
 
 #[derive(Clone, Copy)]
@@ -86,7 +87,14 @@ impl ConditionalAccess {
             capabilities,
             kek,
             audit,
+            device_anchors: Arc::new(std::collections::BTreeMap::new()),
         }
+    }
+
+    pub(crate) fn with_device_anchors(mut self,
+        anchors: Arc<std::collections::BTreeMap<String,asterius_domain::managed_devices::LeafFingerprint>>) -> Self {
+        self.device_anchors=anchors;
+        self
     }
 
     /// Necessary before grant side effects; the signing boundary rechecks it.
@@ -1267,6 +1275,22 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
         typ: &'static str,
         claims: &serde_json::Value,
     ) -> Result<asterius_domain::CompactJws, DomainError> {
+        self.sign_identity_bound(tenant,grant,None,algorithm,typ,claims).await
+    }
+    async fn sign_identity_bound(
+        &self,
+        tenant: &asterius_domain::TenantId,
+        grant: &Grant,
+        binding: Option<&asterius_domain::managed_devices::DeviceBinding>,
+        algorithm: Option<asterius_domain::SigningAlgorithm>,
+        typ: &'static str,
+        claims: &serde_json::Value,
+    ) -> Result<asterius_domain::CompactJws, DomainError> {
+        // Candidate integration remains closed until the supplied-connection
+        // device resolver and current operator anchor map are installed.
+        if binding.is_some() {
+            return Err(DomainError::invalid("managed_device","device publication resolver unavailable"));
+        }
         if claims.get("asterius_jit").is_some()
             || grant.tenant != *tenant
             || claims.get("iss").and_then(serde_json::Value::as_str)
@@ -1284,7 +1308,7 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
         }
         if let Some(prepared) = self.prepare(tenant, algorithm).await? {
             return prepared
-                .sign_identity(tenant, grant, algorithm, typ, claims)
+                .sign_identity_bound(tenant, grant, binding, algorithm, typ, claims)
                 .await;
         }
         let mut transaction = self.fence(tenant).await?;
@@ -1299,6 +1323,18 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
             )
             .await?
             .filter(|identity| identity_role_released(claims, identity));
+        let online = asterius_store_pg::kubernetes_online::enabled_on(
+            transaction.connection(),tenant,&grant.client).await?;
+        if online {
+            if identity.is_some() || typ!="JWT" || algorithm!=Some(asterius_domain::SigningAlgorithm::Es256) {
+                return Err(DomainError::invalid("kubernetes_online","plain ES256 online identity required"));
+            }
+            let issued = identity_claims.get("iat").and_then(serde_json::Value::as_i64)
+                .ok_or_else(|| DomainError::invalid("id_token","integer issue time required"))?;
+            let expiry = identity_claims.get("exp").and_then(serde_json::Value::as_i64)
+                .ok_or_else(|| DomainError::invalid("id_token","integer expiry required"))?;
+            identity_claims["exp"]=serde_json::json!(expiry.min(issued.saturating_add(300)));
+        }
         if let Some(identity) = &identity {
             if algorithm != Some(asterius_domain::SigningAlgorithm::Es256) {
                 return Err(DomainError::invalid(
@@ -1330,7 +1366,7 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
         let signed = self
             .inner
             .get()
-            .sign_identity(tenant, grant, algorithm, typ, &identity_claims)
+            .sign_identity_bound(tenant, grant, binding, algorithm, typ, &identity_claims)
             .await?;
         if !signed_roles_current(
             &identity_claims,
@@ -1349,6 +1385,8 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
                 "temporary authority expired during signing",
             ));
         }
+        asterius_store_pg::kubernetes_online::record_signed_on(
+            transaction.connection(),tenant,grant,&signed,&identity_claims).await?;
         transaction.commit().await?;
         Ok(signed)
     }

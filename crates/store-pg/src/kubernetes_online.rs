@@ -99,6 +99,12 @@ fn invalid() -> DomainError {
     DomainError::invalid("kubernetes_online", "current exact online identity required")
 }
 
+pub async fn enabled_on(connection: &mut PgConnection, tenant: &TenantId,
+    client: &ClientId) -> Result<bool, DomainError> {
+    sqlx::query_scalar("select exists(select 1 from kubernetes_online_profiles where tenant_id=$1 and client_id=$2 and enabled)")
+        .bind(tenant.as_str()).bind(client.as_str()).fetch_one(connection).await.map_err(to_domain_error)
+}
+
 /// Persist only the digest of the complete, successfully signed compact ID JWT.
 /// An enabled profile never falls back to an unbound identity on storage failure.
 /// The transaction is the signer's existing publication transaction.
@@ -109,14 +115,7 @@ pub async fn record_signed_on(
     signed: &CompactJws,
     claims: &Value,
 ) -> Result<(), DomainError> {
-    let enabled: bool = sqlx::query_scalar(
-        "select exists(select 1 from kubernetes_online_profiles where tenant_id=$1 and client_id=$2 and enabled)",
-    )
-    .bind(tenant.as_str())
-    .bind(grant.client.as_str())
-    .fetch_one(&mut *connection)
-    .await
-    .map_err(to_domain_error)?;
+    let enabled = enabled_on(connection,tenant,&grant.client).await?;
     if !enabled {
         return Ok(());
     }
