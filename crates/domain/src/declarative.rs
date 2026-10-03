@@ -62,6 +62,7 @@ pub struct Identity {
 }
 
 impl Identity {
+    // fuzz-target: declarative_import_id
     pub fn parse(encoded: &str) -> Result<Self, Error> {
         if encoded.len() > 4096 {
             return Err(Error::Invalid);
