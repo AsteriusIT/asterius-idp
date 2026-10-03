@@ -139,6 +139,10 @@ algorithm = "ES256"
             client = 'outbound-browser'
             secret = secrets.token_urlsafe(32)
             seed_source(source_db, client, secret)
+            # Load the controlled browser client's tenant option at startup,
+            # matching the existing real-browser fixture's cache boundary.
+            command(['docker', 'restart', source])
+            readiness(source)
             owned['start_relay']()
             payload = owned['root'] / 'browser.json'
             payload.write_text(json.dumps({'issuer': owned['source_issuer'], 'target_issuer': owned['target_issuer'],
