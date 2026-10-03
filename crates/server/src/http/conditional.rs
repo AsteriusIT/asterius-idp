@@ -110,6 +110,7 @@ impl ConditionalAccess {
         self.check_grant_fact(tenant, client, grant, kind, now, None).await
     }
 
+    #[expect(clippy::too_many_arguments, reason = "Exact issuance context and the separately verified device fact must remain explicit")]
     async fn check_grant_fact(
         &self, tenant: &Tenant, client: &Client, grant: &Grant,
         kind: GrantType, now: OffsetDateTime, device: Option<&Fact>,

@@ -373,6 +373,15 @@ impl AuthorizationCode<'_> {
                 "device_secret requires device_sso",
             ));
         }
+        let targeting = self.targeting(tenant, client, &grant, params).await?;
+        // One read for both tokens of this response (`ast-mqt`): two reads
+        // could disagree, and the disagreement would be a role withdrawn
+        // between them.
+        let role_grant = issuance::role_grant(&grant, &targeting);
+        self.agent_policy.permits_bound(
+            tenant, client, &role_grant, &role_grant.resources,
+            GrantType::AuthorizationCode, self.now, binding.device_binding.as_ref(),
+        ).await.map_err(|refusal| Failure::Client(refusal.code, refusal.description))?;
         let claimed = self
             .grants
             .claim_for_issuance(&binding.grant_id, self.now)
@@ -401,15 +410,6 @@ impl AuthorizationCode<'_> {
         // client a participant in this person's session.
         issuance::remember_participant(self.sessions, &grant, self.now).await;
 
-        let targeting = self.targeting(tenant, client, &grant, params).await?;
-        // One read for both tokens of this response (`ast-mqt`): two reads
-        // could disagree, and the disagreement would be a role withdrawn
-        // between them.
-        let role_grant = issuance::role_grant(&grant, &targeting);
-        self.agent_policy.permits_bound(
-            tenant, client, &role_grant, &targeting.audience,
-            GrantType::AuthorizationCode, self.now, binding.device_binding.as_ref(),
-        ).await.map_err(|refusal| Failure::Client(refusal.code, refusal.description))?;
         let held = issuance::held_roles(self.roles, &role_grant).await?;
 
         let access_lifetime = self
