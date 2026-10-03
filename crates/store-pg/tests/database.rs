@@ -7046,6 +7046,77 @@ mod sessions {
     }
 
     db_test! {
+        #[ignore = "requires PostgreSQL: exact grant lookup rotation and frozen proof"]
+        async fn assurance_proof_grant_lookup_rotation_preserves_exact_lineage(db) {
+            use asterius_domain::entities::session::VerifiedSessionRotation;
+            use asterius_domain::{Grant, GrantAuthentication, ClientId, UserId};
+            use asterius_store_pg::PgGrantRepository;
+            super::grants::seed_client(&db.pool, "rotation", "proof-client").await;
+            let user = super::seed_user(&db.pool, "rotation", "proof-user").await;
+            let id = SessionId::generate();
+            let mut original = session_for("rotation", &id, *user.as_uuid());
+            let at = original.authenticated_at;
+            original.acr = Some("phr".to_owned());
+            original.amr = vec![AuthenticationMethod::Passkey, AuthenticationMethod::UserVerified];
+            original.assurance_authenticated_at = Some(at);
+            original.assurance_policy_revision = Some("a".repeat(64));
+            original.assurance_methods.clone_from(&original.amr);
+            let sessions = repo(&db.pool, "rotation");
+            sessions.begin(&original).await.expect("original verified source");
+            let other_id = SessionId::generate();
+            let mut unrelated = original.clone();
+            unrelated.id_digest = other_id.digest();
+            unrelated.public_sid = uuid::Uuid::new_v4().to_string();
+            unrelated.assurance_policy_revision = Some("b".repeat(64));
+            sessions.begin(&unrelated).await.expect("same-user unrelated session with identical legacy tuple");
+            let grants = PgGrantRepository::new(db.pool.clone(), TenantId::new("rotation"));
+            let mut grant = Grant::new(TenantId::new("rotation"), ClientId::new("proof-client"), at);
+            grant.user = Some(UserId::new(*user.as_uuid()));
+            grant.session = Some(asterius_domain::SessionId::new(id.digest()));
+            grant.authentication = Some(GrantAuthentication {
+                authenticated_at: at, acr: original.acr.clone(), amr: original.amr.clone(),
+                assurance_authenticated_at: Some(at), assurance_policy_revision: Some("a".repeat(64)),
+                assurance_methods: original.amr.clone(),
+            });
+            grants.create(&grant).await.expect("original grant and lineage");
+            let mut other_grant = grant.clone();
+            other_grant.id = asterius_domain::GrantId::new(uuid::Uuid::new_v4().to_string());
+            other_grant.session = Some(asterius_domain::SessionId::new(other_id.digest()));
+            grants.create(&other_grant).await.expect("unrelated grant");
+            let other_user = super::seed_user(&db.pool, "rotation", "different-user").await;
+            let mut different_user_grant = grant.clone();
+            different_user_grant.id = asterius_domain::GrantId::new(uuid::Uuid::new_v4().to_string());
+            different_user_grant.user = Some(UserId::new(*other_user.as_uuid()));
+            grants.create(&different_user_grant).await.expect("inconsistent different-user source has no proof");
+            let new_id = SessionId::generate();
+            let now = at + time::Duration::seconds(30);
+            sessions.rotate_verified(&id.digest(), &new_id.digest(), VerifiedSessionRotation {
+                methods: &original.amr, acr: Some("phr"), assurance_authenticated_at: Some(now),
+                assurance_policy_revision: Some(&"c".repeat(64)), assurance_methods: &original.amr,
+            }, now).await.expect("exact rotation");
+            let stored = grants.find(&grant.id).await.expect("grant lookup").expect("grant");
+            assert_eq!(stored.session.expect("linked digest").as_str(), new_id.digest());
+            let frozen = stored.authentication.expect("original authentication");
+            assert_eq!(frozen.authenticated_at, at);
+            assert_eq!(frozen.assurance_authenticated_at, Some(at));
+            assert_eq!(frozen.assurance_policy_revision.as_deref(), Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+            assert_eq!(grants.find(&other_grant.id).await.expect("other lookup").expect("other grant").session.expect("other digest").as_str(), other_id.digest());
+            assert_eq!(grants.find(&different_user_grant.id).await.expect("different-user lookup").expect("different-user grant").session.expect("original digest").as_str(), id.digest());
+            assert!(sessions.rotate(&id.digest(), &SessionId::generate().digest(), &[], None, now).await.is_err(), "losing old-digest rotation cannot mutate grants");
+            // Matching user and authentication tuple cannot borrow another public SID.
+            sqlx::query("update grants set session_id=$3 where tenant_id=$1 and grant_id=$2")
+                .bind("rotation").bind(uuid::Uuid::parse_str(grant.id.as_str()).expect("UUID"))
+                .bind(other_id.digest()).execute(&db.pool).await.expect("adversarial unrelated reassignment");
+            let refused = grants.find(&grant.id).await.expect("lookup").expect("grant");
+            assert!(refused.authentication.expect("legacy authentication retained").assurance_authenticated_at.is_none());
+            let lineage: i64 = sqlx::query_scalar("select count(*) from grant_session_lineage where tenant_id=$1 and grant_id=$2")
+                .bind("rotation").bind(uuid::Uuid::parse_str(grant.id.as_str()).expect("UUID"))
+                .fetch_one(&db.pool).await.expect("lineage count");
+            assert_eq!(lineage, 0);
+        }
+    }
+
+    db_test! {
         #[ignore = "requires PostgreSQL: tenant session policy enforcement"]
         async fn session_policy_controls_issuance_expiry_rotation_and_tenant_isolation(db) {
             use asterius_domain::ports::TenantSettingsRepository as _;

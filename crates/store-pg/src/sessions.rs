@@ -428,6 +428,19 @@ impl SessionRepository for PgSessionRepository {
         .map_err(to_domain_error)?;
 
         if updated.rows_affected() == 1 {
+            // Move only grants belonging to the exact session we successfully
+            // rotated. The lineage trigger preserves their original proof only
+            // when this is the same stable public session, never another one.
+            sqlx::query(
+                "update grants set session_id=$4 where tenant_id=$1 and user_id=$2 and session_id=$3",
+            )
+            .bind(self.tenant.as_str())
+            .bind(session.user)
+            .bind(old_digest)
+            .bind(new_digest)
+            .execute(&mut *transaction)
+            .await
+            .map_err(to_domain_error)?;
             Self::store_proof(&mut transaction, &self.tenant, new_digest, proof, now).await?;
             transaction.commit().await.map_err(to_domain_error)?;
             Ok(())
