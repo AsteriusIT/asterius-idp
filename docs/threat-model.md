@@ -2883,3 +2883,43 @@ source-derived bound is forty seconds plus measured scheduling/transport margin.
 The local three-second review deadline does not establish a shorter wire-level
 bound. Actual delayed-response, outage and replica evidence is still required;
 healthy-network latency alone is not worst-case acceptance evidence.
+## Candidate managed-device registry and protected ingress (ast-dd1y.4.5)
+
+The isolated managed-device candidate introduces three explicit authorities:
+the tenant's device CA, a separately authenticated and leaf-pinned proxy TLS
+hop, and its registered confidential client-credentials relay. A trusted proxy
+IP or publicly readable certificate header alone proves no possession. The
+edge must verify the actual device TLS handshake, strip caller evidence and
+forward only that leaf over its authenticated hop. Device and proxy CA/pin
+generations are included in the current operator trust revision. OAuth client
+authentication remains independent; a device key raises no user assurance.
+
+Only an exact successful client-credentials access signature creates a private
+JTI/grant receipt for dedicated enrollment/posture ingress. The writer rechecks
+this receipt, current client mode/status and source generation after acquiring
+the tenant publication fence, before any device lock. Delegated/user/task-shaped
+tokens cannot substitute for relay authority. Bounded batches and monotonic
+sequences commit together with prepared audit events; audit failure rolls back
+state. Human source CRUD retains existing exact-realm console role/session/CSRF
+admission and does not inherit machine tokens or deployment-wide shortcuts.
+
+Private original proofs transfer only from a winning interaction to its exact
+code digest. Refresh, ordinary local exchange and PDP require newly verified
+request possession and an exact current grant. Only early exchange may use an
+explicit verified parent's provisional child; final signing requires the
+persisted claimed child. No other session, strongest grant, caller device hint,
+public claim or stale source observation supplies missing authority. The same
+publication connection holds current source/enrollment/authority facts through
+decisions/signing, and original proof/source/certificate/grant deadlines bound
+their release. Unknown management/compliance, removal, disable and expiry deny
+active required-fact rules without a positive authority cache.
+
+Removal erases the leaf/user/application/posture association and private proof
+sidecars, retaining only a minimal generation tombstone for 30 days. Re-enrollment
+receives a new server UUID and generation. This changes new protected decisions;
+it cannot withdraw already-issued offline JWTs before their expiry. A malicious
+relay or trusted proxy remains capable of lying within its explicit authority,
+and copied software keys remain usable. The controlled HTTPS/browser evidence
+uses disposable software PKI, seeded refresh/source inputs and real local user
+authentication; it claims neither live MDM verification nor hardware attestation.
+Human normative review remains pending before delivery of this candidate.

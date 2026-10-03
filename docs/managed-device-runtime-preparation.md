@@ -6,11 +6,32 @@ remains pending before delivery to main. The candidate exports typed ports,
 mounts bounded management/relay and owner inspection routes, implements private
 interaction/code proof transfer, and configures a dedicated authenticated proxy
 TLS listener. Sources remain disabled by default. Source checkpoints composed by
-the parent passed workspace checks/strict lint; the latest owned request-bound
-candidate has not yet been checked or exercised. No runtime interoperability,
-live MDM, hardware-attestation or completed acceptance result is claimed.
+the parent passed workspace checks/strict lint. The composed candidate at
+`372a51de` passed 156 targeted Rust checks and all 115 fuzz target smoke checks.
+Its retained binary (`11f0d89427097dd2d4797311abea5e0fb26b973838fa3bebb70e531f453785ca`)
+passed 26 controlled HTTPS/browser checks with 114 embedded migrations; see
+[sanitized acceptance evidence](testing/managed-device-asterius-controlled.json).
+Human review still gates delivery. This proves the controlled software PKI
+profile; it does not prove live MDM interoperability or hardware attestation.
 
-The initial management API will separate `admin.device_sources:read/write` and
+The fixture performs real password and user-verified WebAuthn authentication,
+FAPI private-key JWT/DPoP PAR/PKCE, exact interaction-to-code transfer, current
+refresh/exchange/PDP possession, relay enrollment/posture and human source CRUD.
+Initial primary source registration and offline refresh grants are seeded inputs.
+Its stale observation check perturbs an owned database timestamp; it does not
+claim to measure a real 300-second outage. Source/enrollment incarnation,
+monotonic replay, tenant/user bounds, audit rollback, removal erasure and a
+concurrent source publication/signature fence are exercised. The measured owner
+removal-to-next-refusal interval was 0.363 seconds. Already-issued offline JWTs
+remain bounded by their expiry and resource-server enforcement.
+
+Source administration uses established exact-realm `ConsoleTenant` administrator
+authority, current role admission, CSRF and existing session policy. A local
+tenant administrator's password session is permitted under that existing policy;
+this profile does not introduce governance's separate fresh-UV requirement.
+The fixture also exercises source mutation from an actual UV passkey session.
+
+The management API separates `admin.device_sources:read/write` and
 `admin.devices:read/write` from relay-only `device.enrollments:write` and
 `device.posture:write`. Tenant administrators register, inspect, disable and
 revoke; they do not replace the source's device/user association with a browser
