@@ -3,7 +3,9 @@ mod registry_optional {
     use super::*;
     mod online {
         use super::*;
-        use asterius_domain::kubernetes_online::*;
+        use asterius_domain::kubernetes_online::{
+            KubernetesOnline, OnlineProfile, ProfileChange, TokenReviewRequest, TokenReviewResponse,
+        };
         use asterius_domain::{Actor, ClientId, Tenant};
         #[async_trait::async_trait]
         impl KubernetesOnline for Handle {
@@ -40,7 +42,10 @@ mod registry_optional {
     mod jit {
         use super::*;
         use asterius_domain::ClientId;
-        use asterius_domain::temporary_kubernetes::*;
+        use asterius_domain::temporary_kubernetes::{
+            KubernetesAccessProjection, KubernetesBindingChange, KubernetesEntitlementBinding,
+            TemporaryKubernetes,
+        };
         use uuid::Uuid;
         #[async_trait::async_trait]
         impl TemporaryKubernetes for Handle {
@@ -77,7 +82,9 @@ mod registry_optional {
     mod devices {
         use super::*;
         use asterius_domain::Actor;
-        use asterius_domain::managed_devices::*;
+        use asterius_domain::managed_devices::{
+            DeviceSummary, Registry, RemovalAuthority, SourceChange, SourceSummary,
+        };
         use uuid::Uuid;
         #[async_trait::async_trait]
         impl Registry for Handle {
@@ -122,7 +129,12 @@ mod registry_optional {
     mod temporary {
         use super::*;
         use asterius_domain::Grant;
-        use asterius_domain::temporary_entitlements::*;
+        use asterius_domain::temporary_entitlements::{
+            AccountEntitlements, Activation, CancelRequest, DecideRequest, Eligibility,
+            EligibilityChange, Entitlement, EntitlementConfiguration, EntitlementRequest,
+            RequestActivation, RevokeActivation, SessionActor, TemporaryEntitlements,
+            TemporaryRoleSnapshot,
+        };
         use uuid::Uuid;
         #[async_trait::async_trait]
         impl TemporaryEntitlements for Handle {
