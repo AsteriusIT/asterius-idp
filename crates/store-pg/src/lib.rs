@@ -166,3 +166,6 @@ pub use users::PgUserRepository;
 pub use verified_claims::{PgVerifiedClaims, StoredVerifiedClaims};
 
 pub use groups::PgGroups;
+
+pub mod workload;
+pub use workload::PgWorkloadTrusts;

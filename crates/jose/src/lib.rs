@@ -130,3 +130,5 @@ pub enum JoseError {
     #[error("signature verification failed")]
     InvalidSignature,
 }
+
+pub mod workload;

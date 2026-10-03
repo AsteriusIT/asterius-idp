@@ -755,3 +755,10 @@ path = "fuzz_targets/webauthn_client_data.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "workload_token"
+path = "fuzz_targets/workload_token.rs"
+test = false
+doc = false
+bench = false

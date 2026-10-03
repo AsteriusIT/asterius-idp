@@ -209,6 +209,10 @@ pub const ID_JAG_SUBJECT_BIND_ID: &str = "id_jag.subject.bind";
 pub const ID_JAG_SUBJECT_REMOVE_ID: &str = "id_jag.subject.remove";
 pub const SAML_SP_LIST_ID: &str = "saml.sp.list";
 pub const OIDC_PROVIDER_CHECK_ID: &str = "oidc.providers.check";
+pub const WORKLOAD_TRUSTS_LIST_ID: &str = "workload.trusts.list";
+pub const WORKLOAD_TRUST_READ_ID: &str = "workload.trusts.read";
+pub const WORKLOAD_TRUST_PUT_ID: &str = "workload.trusts.put";
+pub const WORKLOAD_TRUST_DELETE_ID: &str = "workload.trusts.delete";
 pub const OIDC_PROVIDERS_LIST_ID: &str = "oidc.providers.list";
 pub const OIDC_PROVIDERS_PUT_ID: &str = "oidc.providers.put";
 pub const OIDC_PROVIDERS_DELETE_ID: &str = "oidc.providers.delete";
@@ -1072,6 +1076,35 @@ pub const OIDC_PROVIDER_CHECK: Operation = Operation::probe(
     M::Post,
     A::new(R::Tenant, "admin.oidc_providers:read"),
     "Checks stored provider discovery and public keys without using client credentials",
+);
+
+pub const WORKLOAD_TRUSTS_LIST: Operation = Operation::read(
+    WORKLOAD_TRUSTS_LIST_ID,
+    "/workload-trusts",
+    S::Get,
+    A::new(R::Tenant, "admin.workload_trusts:read"),
+    "Lists workload trust metadata and public fingerprints without key material",
+);
+pub const WORKLOAD_TRUST_READ: Operation = Operation::read(
+    WORKLOAD_TRUST_READ_ID,
+    "/workload-trusts/{trust_id}",
+    S::Get,
+    A::new(R::Tenant, "admin.workload_trusts:read"),
+    "Reads one tenant workload trust without key material",
+);
+pub const WORKLOAD_TRUST_PUT: Operation = Operation::mutation(
+    WORKLOAD_TRUST_PUT_ID,
+    "/workload-trusts/{trust_id}",
+    M::Put,
+    A::new(R::Tenant, "admin.workload_trusts:write"),
+    "Conditionally creates or replaces a pinned workload trust; default disabled",
+);
+pub const WORKLOAD_TRUST_DELETE: Operation = Operation::mutation(
+    WORKLOAD_TRUST_DELETE_ID,
+    "/workload-trusts/{trust_id}",
+    M::Delete,
+    A::new(R::Tenant, "admin.workload_trusts:write"),
+    "Conditionally deletes a workload trust and preserves assertion replay marks",
 );
 
 pub const OIDC_PROVIDERS_LIST: Operation = Operation::read(
@@ -1996,7 +2029,7 @@ pub const SCIM_BULK: Operation = Operation::mutation(
     "SCIM Bulk is unsupported by this service",
 );
 
-static REGISTRY: [Operation; 154] = [
+static REGISTRY: [Operation; 158] = [
     SESSION_READ,
     SESSION_END,
     OVERVIEW_USERS,
@@ -2060,6 +2093,10 @@ static REGISTRY: [Operation; 154] = [
     ID_JAG_SUBJECT_BIND,
     ID_JAG_SUBJECT_REMOVE,
     SAML_SP_LIST,
+    WORKLOAD_TRUSTS_LIST,
+    WORKLOAD_TRUST_READ,
+    WORKLOAD_TRUST_PUT,
+    WORKLOAD_TRUST_DELETE,
     OIDC_PROVIDERS_LIST,
     OIDC_PROVIDER_CHECK,
     OIDC_PROVIDERS_PUT,
@@ -2271,6 +2308,46 @@ pub fn registry() -> &'static [Operation] {
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+
+    #[test]
+    fn workload_trust_operations_require_dedicated_tenant_authority() {
+        use crate::rbac::{Held, Reach};
+        use asterius_domain::{Role, TenantId};
+        let tenant = TenantId::new("one");
+        let foreign = TenantId::new("two");
+        for operation in registry()
+            .iter()
+            .filter(|op| op.path().starts_with("/workload-trusts"))
+        {
+            let authority = operation.authority();
+            assert_eq!(authority.reach(), Reach::Tenant);
+            assert!(authority.scope().starts_with("admin.workload_trusts:"));
+            let exact = Held::Scopes {
+                tenant: Some(tenant.clone()),
+                scopes: vec![authority.scope().to_owned()],
+            };
+            assert!(exact.satisfies(authority, &tenant));
+            assert!(!exact.satisfies(authority, &foreign));
+            let unrelated = Held::Scopes {
+                tenant: Some(tenant.clone()),
+                scopes: vec!["admin.clients:write".to_owned()],
+            };
+            assert!(!unrelated.satisfies(authority, &tenant));
+            let support = Held::Roles {
+                tenant: tenant.clone(),
+                roles: vec![Role::UserSupport],
+            };
+            assert!(!support.satisfies(authority, &tenant));
+            let auditor = Held::Roles {
+                tenant: tenant.clone(),
+                roles: vec![Role::SecurityAuditor],
+            };
+            assert_eq!(
+                auditor.satisfies(authority, &tenant),
+                authority.scope().ends_with(":read")
+            );
+        }
+    }
 
     #[test]
     fn every_operation_id_is_unique() {

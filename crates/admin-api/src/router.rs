@@ -433,6 +433,10 @@ async fn route_standard(
         crate::ID_JAG_SUBJECT_REMOVE_ID => context.remove_id_jag_subject(body).await,
         crate::SAML_SP_LIST_ID => context.list_saml_sp_trust().await,
         crate::OIDC_PROVIDER_CHECK_ID => context.check_oidc_provider(body).await,
+        crate::WORKLOAD_TRUSTS_LIST_ID => context.list_workload_trusts().await,
+        crate::WORKLOAD_TRUST_READ_ID => context.read_workload_trust().await,
+        crate::WORKLOAD_TRUST_PUT_ID => context.put_workload_trust(body).await,
+        crate::WORKLOAD_TRUST_DELETE_ID => context.delete_workload_trust(body).await,
         crate::OIDC_PROVIDERS_LIST_ID => context.list_oidc_providers().await,
         crate::OIDC_PROVIDERS_PUT_ID => context.put_oidc_provider(body).await,
         crate::OIDC_PROVIDERS_DELETE_ID => context.delete_oidc_provider(body).await,
@@ -3493,6 +3497,100 @@ impl Handling<'_> {
                 other => AdminError::from_storage(crate::OIDC_PROVIDER_CHECK_ID, &other),
             })?;
         Ok(json_no_store(StatusCode::OK, &report))
+    }
+
+    fn workload_trust_in_path(&self) -> Result<&str, AdminError> {
+        self.path
+            .rsplit('/')
+            .next()
+            .filter(|id| asterius_domain::workload::valid_id(id))
+            .ok_or(AdminError::NotFound)
+    }
+    async fn list_workload_trusts(&self) -> Result<Response, AdminError> {
+        let registry = self
+            .state
+            .backend
+            .workload_trusts()
+            .ok_or(AdminError::NotFound)?;
+        let summaries = registry
+            .list(&self.tenant.id)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::WORKLOAD_TRUSTS_LIST_ID, &error))?;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({"trusts":summaries}),
+        ))
+    }
+    async fn read_workload_trust(&self) -> Result<Response, AdminError> {
+        let registry = self
+            .state
+            .backend
+            .workload_trusts()
+            .ok_or(AdminError::NotFound)?;
+        let summary = registry
+            .find(&self.tenant.id, self.workload_trust_in_path()?)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::WORKLOAD_TRUST_READ_ID, &error))?
+            .ok_or(AdminError::NotFound)?;
+        Ok(json_no_store(StatusCode::OK, &serde_json::json!(summary)))
+    }
+    async fn put_workload_trust(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Input {
+            expected_version: Option<i64>,
+            config: asterius_domain::workload::Config,
+        }
+        let bytes = axum::body::to_bytes(body, 96 * 1024)
+            .await
+            .map_err(|_| AdminError::Invalid("the workload trust body is too large".to_owned()))?;
+        let input: Input = serde_json::from_slice(&bytes)
+            .map_err(|_| AdminError::Invalid("invalid workload trust request".to_owned()))?;
+        let registry = self
+            .state
+            .backend
+            .workload_trusts()
+            .ok_or(AdminError::NotFound)?;
+        let summary = registry
+            .put(
+                &self.tenant.id,
+                self.workload_trust_in_path()?,
+                &input.config,
+                input.expected_version,
+                Actor::Admin(self.principal.audit_actor()),
+                self.now,
+            )
+            .await
+            .map_err(|error| AdminError::from_storage(crate::WORKLOAD_TRUST_PUT_ID, &error))?;
+        Ok(json_no_store(StatusCode::OK, &serde_json::json!(summary)))
+    }
+    async fn delete_workload_trust(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Input {
+            expected_version: i64,
+        }
+        let bytes = axum::body::to_bytes(body, 1024)
+            .await
+            .map_err(|_| AdminError::Invalid("the request body is too large".to_owned()))?;
+        let input: Input = serde_json::from_slice(&bytes)
+            .map_err(|_| AdminError::Invalid("invalid workload trust request".to_owned()))?;
+        let registry = self
+            .state
+            .backend
+            .workload_trusts()
+            .ok_or(AdminError::NotFound)?;
+        registry
+            .delete(
+                &self.tenant.id,
+                self.workload_trust_in_path()?,
+                input.expected_version,
+                Actor::Admin(self.principal.audit_actor()),
+                self.now,
+            )
+            .await
+            .map_err(|error| AdminError::from_storage(crate::WORKLOAD_TRUST_DELETE_ID, &error))?;
+        Ok(StatusCode::NO_CONTENT.into_response())
     }
 
     async fn list_oidc_providers(&self) -> Result<Response, AdminError> {

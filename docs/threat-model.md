@@ -2330,3 +2330,16 @@ traversal is bounded by the existing 64 nodes/rule and depth 8. Responses use
 trail. The `admin_policy_trial` enforcement-point marker identifies a simulation
 that made no access change; it does not claim correlation with a prior live
 login or enforcement event.
+
+### External workload assertions
+
+External JWTs cross a separate trust boundary from browser OIDC login and
+OAuth client authentication. Tenant-pinned workload trust versions require
+exact provider claims, public keys and client allowlists. JWT routing fields
+cannot supply a JWKS URL or establish issuer trust. Guarded JWKS fetches never
+extend an expired cache entry during outages. Administrative enable/disable
+changes are audited atomically; minting must lock and recheck the same live
+trust version while consuming the assertion digest and persisting its child
+grant. See [workload trust administration](workload-trusts.md) for bounds and
+[the approved decision](adr/external-workload-trust.md) for offline revocation
+and independent FAPI client authentication requirements.

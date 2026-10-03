@@ -3405,6 +3405,13 @@ impl AdminBackend for Deployment {
         }))
     }
 
+    fn workload_trusts(&self) -> Option<Arc<dyn asterius_domain::workload::Registry>> {
+        Some(Arc::new(crate::workload::Administration::new(
+            asterius_store_pg::PgWorkloadTrusts::new(self.store.pool().clone()),
+            Arc::clone(&self.outbound),
+        )))
+    }
+
     fn oidc_providers(
         &self,
     ) -> Option<Arc<dyn asterius_admin_api::oidc_providers::ProviderAdministration>> {
