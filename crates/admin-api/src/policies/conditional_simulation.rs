@@ -443,4 +443,40 @@ mod tests {
         );
         assert!(request.context.trusted().is_none());
     }
+    #[test]
+    fn conditional_simulation_remedy_uses_current_attainable_ladder_and_never_reveals_literals() {
+        let ladder = AcrPolicy::default();
+        let (mut policy, request, trusted) = fixture(
+            "active",
+            "permit",
+            json!({"all":[{"acr_at_least":"urn:asterius:acr:passkey-uv"},{"authentication_age_at_most":60}]}),
+        );
+        let mut document = policy.rules.to_json();
+        document["conditional_scopes"][0]["assurance_remedy"] =
+            json!("urn:asterius:acr:passkey-uv");
+        policy.rules =
+            asterius_domain::policy::RuleSet::from_json(&document).expect("remedy policy");
+        let (decision, response) =
+            evaluate(Some(&policy), &request, trusted.clone(), None, &ladder);
+        assert!(!decision.permit());
+        assert_eq!(
+            response["scopes"][0]["assurance_remedy"],
+            "urn:asterius:acr:passkey-uv"
+        );
+        let examples = TrustedExamples::parse(
+            &json!({"assurance":{"availability":"known","value":"private-unsupported-level"}}),
+        )
+        .expect("bounded example");
+        let (_, response) = evaluate(Some(&policy), &request, trusted, Some(&examples), &ladder);
+        assert_eq!(
+            response["facts"]
+                .as_array()
+                .expect("facts")
+                .iter()
+                .find(|fact| fact["name"] == "assurance")
+                .expect("assurance")["availability"],
+            "invalid"
+        );
+        assert!(!response.to_string().contains("private-unsupported-level"));
+    }
 }

@@ -112,6 +112,9 @@ for examples in [{'groups':{'availability':'known','value':['private-canary']}},
     status,_,result=simulate(examples)
     assert status==400 and 'private-canary' not in json.dumps(result),'closed non-value-bearing refusal'
 assert simulate(enforcement_action='read')[0]==400,'resource operation is not enforcement boundary'
+status,_,result=simulate({'assurance':{'availability':'known','value':'private-unsupported-level'}})
+assert status==200 and fact(result,'assurance')['availability']=='invalid'
+assert 'private-unsupported-level' not in json.dumps(result)
 passed('closed_authority_and_boundary_dialect')
 for condition in [{'not':{'device_compliance':'compliant'}},{'any':[{'device_compliance':'compliant'},{'all':[]}]}]:
     publish(document(condition))
