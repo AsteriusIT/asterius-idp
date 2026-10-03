@@ -1,6 +1,6 @@
 # Kubernetes human access uses a confidential browser-login broker
 
-- **Status:** Proposed; implementation and human normative review outstanding
+- **Status:** Approved design; implementation interoperability outstanding
 - **Date:** 2026-10-03
 - **Bead:** ast-dd1y.1.1
 - **Refines:** [ADR-0014](0014-explicitly-gated-standard-oidc-clients.md)
@@ -196,9 +196,10 @@ API server with actual Asterius ES256 ID tokens: authorized access, wrong
 issuer/audience, expired/forged token, disallowed algorithm, absent groups,
 cross-cluster use, signing rotation and disablement/refresh behavior. The
 broker and helper described here are contracts, not implemented components.
-`ast-dd1y.1.1` remains open until signing interoperability and human review of
-the relevant normative text are recorded. Dependent work must not infer
-approval from a proposed ADR or mark the integration supported.
+The user approved this document's human normative review on 2026-10-03
+("ok pour les deux documents"). `ast-dd1y.1.1` remains open until signing
+interoperability is recorded. Dependent work may use the approved design but
+must not mark the integration supported without implementation evidence.
 
 ## Normative and implementation references
 
@@ -210,5 +211,5 @@ approval from a proposed ADR or mark the integration supported.
 - [RFC 9449](https://www.rfc-editor.org/rfc/rfc9449): DPoP proof and token binding; Kubernetes bearer use does not implement this resource-server protocol.
 - [RFC 9700](https://www.rfc-editor.org/rfc/rfc9700): authorization-code defenses and refresh-token protection.
 
-These sources were checked for this proposed contract; this does not substitute
-for the repository's required human normative review or an external interop run.
+These sources informed the approved contract. Human review approval is recorded
+above; an external interoperability run remains a separate evidence requirement.
