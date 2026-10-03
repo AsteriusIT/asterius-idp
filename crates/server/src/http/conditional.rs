@@ -39,6 +39,7 @@ pub(crate) struct PdpAuthority {
     pub scopes: std::collections::BTreeSet<String>,
     pub resources: std::collections::BTreeSet<String>,
     pub task: Option<PdpTaskAuthority>,
+    pub device_certificate: Option<asterius_domain::managed_devices::DeviceCertificateEvidence>,
 }
 #[derive(Debug, Clone)]
 pub(crate) struct PdpTaskAuthority {
@@ -674,14 +675,25 @@ impl super::agent_issuance::ConditionalGuard for ConditionalAccess {
         let mut fence = PgPolicies::new(self.store.pool().clone())
             .signing_fence(&tenant.id, &tenant.issuer)
             .await?;
-        let device = asterius_store_pg::PgManagedDevices::resolve_for_grant_on(
-            fence.connection(),
-            &tenant.id,
-            grant,
-            binding,
-            self.device_anchors.get(tenant.id.as_str()),
-        )
-        .await?;
+        let device = if kind == GrantType::TokenExchange {
+            asterius_store_pg::PgManagedDevices::resolve_preflight_on(
+                fence.connection(),
+                &tenant.id,
+                grant,
+                binding,
+                self.device_anchors.get(tenant.id.as_str()),
+            )
+            .await?
+        } else {
+            asterius_store_pg::PgManagedDevices::resolve_for_grant_on(
+                fence.connection(),
+                &tenant.id,
+                grant,
+                binding,
+                self.device_anchors.get(tenant.id.as_str()),
+            )
+            .await?
+        };
         let permitted = self
             .check_grant_fact(
                 tenant,
@@ -811,6 +823,61 @@ impl asterius_domain::ports::PolicyEngine for ConditionalPolicyEngine {
                     && authority.subject.as_deref() == Some(question.subject.id())
                     && ActiveGrant::of(grant, self.now).is_some()
             });
+            // Only fresh authenticated TLS possession and this token's exact
+            // verified grant can establish a PDP device fact. Hold the same
+            // tenant publication fence through policy, audit and final freshness.
+            let _device_admission = if authority.device_certificate.is_some() && exact.is_some() {
+                if self.access.store.pool().options().get_max_connections() < 3 {
+                    return Err(DomainError::Storage(
+                        "bound device evaluation requires database.max_connections >= 3".into(),
+                    ));
+                }
+                Some(
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        Arc::clone(self.access.store.signing_admission()).acquire_owned(),
+                    )
+                    .await
+                    .map_err(|_| {
+                        DomainError::Storage("device evaluation admission timed out".into())
+                    })?
+                    .map_err(|_| {
+                        DomainError::Storage("device evaluation admission unavailable".into())
+                    })?,
+                )
+            } else {
+                None
+            };
+            let mut device_fence = None;
+            let device = match (authority.device_certificate.as_ref(), exact) {
+                (Some(certificate), Some(grant)) => {
+                    let mut fence = policies.signing_fence(tenant, &self.tenant.issuer).await?;
+                    let digest = asterius_domain::sha256_hex(uuid::Uuid::new_v4().as_bytes());
+                    let binding = asterius_store_pg::PgManagedDevices::bind_request_on(
+                        fence.connection(),
+                        tenant,
+                        grant,
+                        certificate,
+                        &digest,
+                        OffsetDateTime::now_utc(),
+                    )
+                    .await?;
+                    let fact = asterius_store_pg::PgManagedDevices::resolve_for_grant_on(
+                        fence.connection(),
+                        tenant,
+                        grant,
+                        binding.as_ref(),
+                        self.access.device_anchors.get(tenant.as_str()),
+                    )
+                    .await?;
+                    device_fence = Some(fence);
+                    fact
+                }
+                (Some(_), None) => {
+                    Fact::missing(Availability::Unavailable, "exact_request_device_proof")
+                }
+                (None, _) => Fact::missing(Availability::Absent, "exact_request_device_proof"),
+            };
             let authentication = exact
                 .filter(|grant| grant.actor_chain.is_empty() && client.registration.agent.is_none())
                 .and_then(|grant| grant.authentication.as_ref());
@@ -819,7 +886,7 @@ impl asterius_domain::ports::PolicyEngine for ConditionalPolicyEngine {
                 subject: Some(question.subject.id()),
                 authentication,
                 grant: exact,
-                device: None,
+                device: Some(&device),
             };
             let resolved = self
                 .access
@@ -917,7 +984,13 @@ impl asterius_domain::ports::PolicyEngine for ConditionalPolicyEngine {
                     &policy.rules,
                 ));
                 add_guard_trace(&mut explanation, scope, &request);
+                if let Some(fence) = device_fence {
+                    fence.commit().await?;
+                }
                 return Ok(conditional.with_explanation(explanation));
+            }
+            if let Some(fence) = device_fence {
+                fence.commit().await?;
             }
             return Ok(base);
         }

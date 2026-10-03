@@ -720,9 +720,13 @@ impl TokenExchange<'_> {
         client: &Client,
         grant: &Grant,
     ) -> Result<(), Failure> {
-        self.permitted_bound(tenant,client,grant,None).await
+        self.permitted_bound(tenant, client, grant, None).await
     }
-    async fn permitted_bound(&self, tenant: &Tenant, client: &Client, grant: &Grant,
+    async fn permitted_bound(
+        &self,
+        tenant: &Tenant,
+        client: &Client,
+        grant: &Grant,
         device_binding: Option<&asterius_domain::managed_devices::DeviceBinding>,
     ) -> Result<(), Failure> {
         self.agent_policy
@@ -880,10 +884,11 @@ impl TokenExchange<'_> {
             )
             .await?;
         let device_binding = match self.device_request {
-            Some(context) => context.bind(&tenant.id,&grant,self.now).await?,
+            Some(context) => context.bind(&tenant.id, &grant, self.now).await?,
             None => None,
         };
-        self.permitted_bound(tenant, client, &grant, device_binding.as_ref()).await?;
+        self.permitted_bound(tenant, client, &grant, device_binding.as_ref())
+            .await?;
 
         let claimed = grant
             .claim(self.now)

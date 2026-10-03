@@ -234,7 +234,12 @@ pub async fn record_signed_on(
     }
     let user = grant.user.as_ref().ok_or_else(invalid)?;
     let subject = grant.subject.as_ref().ok_or_else(invalid)?;
-    let session = grant.session.as_ref().ok_or_else(invalid)?;
+    let session_lookup = grant.session.as_ref().ok_or_else(invalid)?;
+    let public_sid = claims
+        .get("sid")
+        .and_then(Value::as_str)
+        .filter(|sid| !sid.is_empty() && sid.len() <= 2048)
+        .ok_or_else(invalid)?;
     if grant.task.is_some()
         || grant.parent.is_some()
         || !grant.actor_chain.is_empty()
@@ -243,7 +248,6 @@ pub async fn record_signed_on(
         || claims.get("asterius_jit").is_some()
         || claims.get("aud").and_then(Value::as_str) != Some(grant.client.as_str())
         || claims.get("sub").and_then(Value::as_str) != Some(subject.as_str())
-        || claims.get("sid").and_then(Value::as_str) != Some(session.as_str())
     {
         return Err(invalid());
     }
@@ -263,6 +267,9 @@ pub async fn record_signed_on(
     let digest = sha256(signed.as_str().as_bytes());
     // All identifiers are joined to authoritative current rows. The stable sid
     // survives cookie rotation, while logout, expiry and account disable refuse.
+    // Grant.session is the private lookup digest, never the public signed sid.
+    // Both must identify this exact authoritative session; neither substitutes
+    // for the other, and no same-user session can repair a missing association.
     let inserted: Option<(Uuid,)> = sqlx::query_as(
         "insert into kubernetes_online_tokens(tenant_id,token_digest,client_id,grant_id,user_id,public_sid,subject,profile_revision,cluster_profile_revision,reviewer_client_id,issued_at,expires_at)
          select p.tenant_id,$2,p.client_id,g.grant_id,u.user_id,s.public_sid,g.subject,p.revision,k.revision,p.reviewer_client_id,$8,$9
@@ -273,7 +280,7 @@ pub async fn record_signed_on(
          join clients r on r.tenant_id=p.tenant_id and r.client_id=p.reviewer_client_id
          join grants g on g.tenant_id=p.tenant_id and g.client_id=p.client_id and g.grant_id=$4
          join users u on u.tenant_id=g.tenant_id and u.user_id=g.user_id and u.user_id=$5
-         join sessions s on s.tenant_id=g.tenant_id and s.public_sid=g.session_id and s.public_sid=$6 and s.user_id=u.user_id
+         join sessions s on s.tenant_id=g.tenant_id and s.session_id=g.session_id and s.session_id=$10 and s.public_sid=$6 and s.user_id=u.user_id
          where p.tenant_id=$1 and p.client_id=$3 and p.enabled
            and g.subject=$7 and g.claimed_at is not null and g.revoked_at is null
            and (g.expires_at is null or g.expires_at>clock_timestamp())
@@ -301,10 +308,11 @@ pub async fn record_signed_on(
     .bind(grant.client.as_str())
     .bind(Uuid::parse_str(grant.id.as_str()).map_err(|_| invalid())?)
     .bind(user.as_uuid())
-    .bind(session.as_str())
+    .bind(public_sid)
     .bind(subject.as_str())
     .bind(issued_at)
     .bind(expires_at)
+    .bind(session_lookup.as_str())
     .fetch_optional(&mut *connection)
     .await
     .map_err(to_domain_error)?;
@@ -351,9 +359,9 @@ pub async fn review_verified_on(
          join tenants t on t.tenant_id=b.tenant_id and t.status='active'
          join clients c on c.tenant_id=b.tenant_id and c.client_id=b.client_id
          join clients r on r.tenant_id=p.tenant_id and r.client_id=p.reviewer_client_id
-         join grants g on g.tenant_id=b.tenant_id and g.grant_id=b.grant_id and g.client_id=b.client_id and g.user_id=b.user_id and g.subject=b.subject and g.session_id=b.public_sid
+         join grants g on g.tenant_id=b.tenant_id and g.grant_id=b.grant_id and g.client_id=b.client_id and g.user_id=b.user_id and g.subject=b.subject
          join users u on u.tenant_id=b.tenant_id and u.user_id=b.user_id
-         join sessions s on s.tenant_id=b.tenant_id and s.public_sid=b.public_sid and s.user_id=b.user_id
+         join sessions s on s.tenant_id=b.tenant_id and s.session_id=g.session_id and s.public_sid=b.public_sid and s.user_id=b.user_id
          where b.tenant_id=$1 and b.token_digest=$2 and b.client_id=$3 and b.subject=$4 and b.expires_at=$5
            and p.enabled and p.reviewer_client_id=$6 and b.reviewer_client_id=$6
            and b.expires_at>clock_timestamp() and g.claimed_at is not null and g.revoked_at is null
