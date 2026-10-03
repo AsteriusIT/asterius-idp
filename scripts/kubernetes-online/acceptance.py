@@ -22,6 +22,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+import concurrent.futures
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519, utils
@@ -30,6 +31,7 @@ sys.path.insert(0, str(repo / 'scripts/scim'))
 from dpop_fixture import FixtureClient, b64, sign
 root, database, issuer = sys.argv[1:]
 root = Path(root)
+from tls_transport import OpaqueTlsTransport
 owned_database = urllib.parse.urlsplit(database)
 assert owned_database.hostname == '127.0.0.1' and owned_database.path.startswith('/ast_online_'), 'only owned fixture database allowed'
 tenant = 'temporary'
@@ -316,7 +318,13 @@ for name in ['api-client','wrong-client']:
 leaf=serialization.load_pem_public_key(subprocess.check_output(['openssl','x509','-in',str(root/'api-client.pem'),'-pubkey','-noout']))
 pin=hashlib.sha256(leaf.public_bytes(serialization.Encoding.DER,serialization.PublicFormat.SubjectPublicKeyInfo)).hexdigest()
 adapter_log=(root/'adapter.log').open('w')
-adapter=subprocess.Popen([str(root/'asterius-token-review'),'--listen','0.0.0.0:9470','--issuer',issuer,'--human-client','app','--reviewer-client','controller','--reviewer-key',str(root/'client.pem'),'--reviewer-kid','temporary-fixture','--issuer-ca',str(root/'cert.pem'),'--server-cert',str(root/'cert.pem'),'--server-key',str(root/'key.pem'),'--apiserver-ca',str(root/'api-ca.pem'),'--apiserver-spki-sha256',pin,'--identity-prefix','asterius:temporary:online:'],stdout=adapter_log,stderr=adapter_log)
+adapter_command=[str(root/'asterius-token-review'),'--listen','0.0.0.0:9470','--issuer',issuer,'--human-client','app','--reviewer-client','controller','--reviewer-key',str(root/'client.pem'),'--reviewer-kid','temporary-fixture','--issuer-ca',str(root/'cert.pem'),'--server-cert',str(root/'cert.pem'),'--server-key',str(root/'key.pem'),'--apiserver-ca',str(root/'api-ca.pem'),'--apiserver-spki-sha256',pin,'--identity-prefix','asterius:temporary:online:']
+adapter=subprocess.Popen(adapter_command,stdout=adapter_log,stderr=adapter_log)
+secondary_log=(root/'adapter-secondary.log').open('w')
+secondary_command=list(adapter_command);secondary_command[secondary_command.index('--listen')+1]='0.0.0.0:9471'
+secondary=subprocess.Popen(secondary_command,stdout=secondary_log,stderr=secondary_log)
+(root/'adapter-secondary.pid').write_text(str(secondary.pid))
+transport=OpaqueTlsTransport()
 (root/'adapter.pid').write_text(str(adapter.pid))
 
 try:
@@ -324,7 +332,7 @@ try:
     wrong_context=ssl.create_default_context(cafile=root/'cert.pem'); wrong_context.load_cert_chain(root/'wrong-client.pem',root/'wrong-client.key')
     def adapter_review(token,ctx=context):
         body=json.dumps({'apiVersion':'authentication.k8s.io/v1','kind':'TokenReview','metadata':{'creationTimestamp':None},'spec':{'token':token,'audiences':['app']},'status':{'user':{}}}).encode()
-        try: response=urllib.request.urlopen(urllib.request.Request('https://localhost:9470/review',body,{'Content-Type':'application/json'}),context=ctx,timeout=5)
+        try: response=urllib.request.urlopen(urllib.request.Request('https://localhost:'+str(9470 if adapter.poll() is None else 9471)+'/review',body,{'Content-Type':'application/json'}),context=ctx,timeout=5)
         except urllib.error.HTTPError as error: response=error
         raw_response=response.read(65537)
         return response.status,json.loads(raw_response) if raw_response else {}
@@ -345,7 +353,7 @@ try:
     except (urllib.error.URLError,ssl.SSLError): pass
     record_check('real_mtls_and_exact_spki')
     # Webhook-only kind configuration: no native OIDC or structured JWT fallback.
-    webhook={'apiVersion':'v1','kind':'Config','clusters':[{'name':'review','cluster':{'server':'https://localhost:9470/review','certificate-authority':'/etc/kubernetes/online/cert.pem'}}],'users':[{'name':'api','user':{'client-certificate':'/etc/kubernetes/online/api-client.pem','client-key':'/etc/kubernetes/online/api-client.key'}}],'contexts':[{'name':'review','context':{'cluster':'review','user':'api'}}],'current-context':'review'}
+    webhook={'apiVersion':'v1','kind':'Config','clusters':[{'name':'review','cluster':{'server':'https://localhost:9472/review','certificate-authority':'/etc/kubernetes/online/cert.pem'}}],'users':[{'name':'api','user':{'client-certificate':'/etc/kubernetes/online/api-client.pem','client-key':'/etc/kubernetes/online/api-client.key'}}],'contexts':[{'name':'review','context':{'cluster':'review','user':'api'}}],'current-context':'review'}
     (root/'webhook.json').write_text(json.dumps(webhook))
     patch={'kind':'ClusterConfiguration','apiServer':{'extraArgs':{'authentication-token-webhook-config-file':'/etc/kubernetes/online/webhook.json','authentication-token-webhook-version':'v1','authentication-token-webhook-cache-ttl':'0s','api-audiences':'app'},'extraVolumes':[{'name':'online','hostPath':'/etc/kubernetes/online','mountPath':'/etc/kubernetes/online','readOnly':True,'pathType':'Directory'}]}}
     kind_config={'kind':'Cluster','apiVersion':'kind.x-k8s.io/v1alpha4','nodes':[{'role':'control-plane','extraMounts':[{'hostPath':str(root),'containerPath':'/etc/kubernetes/online','readOnly':True}],'kubeadmConfigPatches':[json.dumps(patch)]}]}
@@ -357,7 +365,7 @@ try:
         while subprocess.run(['docker','inspect',cluster+'-control-plane'],capture_output=True).returncode:
             assert create.poll() is None and time.monotonic()<deadline;time.sleep(.25)
         gateway=next(x['Gateway'] for x in json.loads(subprocess.check_output(['docker','network','inspect','kind']))[0]['IPAM']['Config'] if ':' not in x['Gateway'])
-        subprocess.run(['docker','run','-d','--name',cluster+'-issuer','--network','container:'+cluster+'-control-plane','alpine/socat@sha256:5ffbd6ae916cbad86a58fabe0d6d5a6fd5c2b47ddf031e82996baac9300e732f','TCP-LISTEN:9470,bind=127.0.0.1,fork,reuseaddr','TCP:'+gateway+':9470'],check=True,capture_output=True)
+        subprocess.run(['docker','run','-d','--name',cluster+'-issuer','--network','container:'+cluster+'-control-plane','alpine/socat@sha256:5ffbd6ae916cbad86a58fabe0d6d5a6fd5c2b47ddf031e82996baac9300e732f','TCP-LISTEN:9472,bind=127.0.0.1,fork,reuseaddr','TCP:'+gateway+':9472'],check=True,capture_output=True)
         assert create.wait(timeout=150)==0,'owned webhook-only Kubernetes startup'
     finally:
         if create.poll() is None:create.terminate();create.wait(timeout=20)
@@ -369,14 +377,89 @@ try:
     cluster_config=json.loads(kube_admin('config','view','--raw','-o','json'))['clusters'][0]['cluster']
     (root/'kube-ca.pem').write_bytes(base64.b64decode(cluster_config['certificate-authority-data']))
     kube_context=ssl.create_default_context(cafile=root/'kube-ca.pem')
-    def kube_get(token):
+    def kube_get(token,timeout=5):
         # Bearer only: never accidentally attach the kind admin client certificate.
-        try: response=urllib.request.urlopen(urllib.request.Request(cluster_config['server']+'/api/v1/namespaces/online/configmaps/proof',headers={'Authorization':'Bearer '+token}),context=kube_context,timeout=5)
+        try: response=urllib.request.urlopen(urllib.request.Request(cluster_config['server']+'/api/v1/namespaces/online/configmaps/proof',headers={'Authorization':'Bearer '+token}),context=kube_context,timeout=timeout)
         except urllib.error.HTTPError as error:response=error
         response.read(65537);return response.status
     native_status=kube_get(first['id_token'])
     assert native_status==200,'real Kube webhook authenticates held code token status='+str(native_status)+' source_group_match='+str('asterius:temporary:online:group:group:'+group in adapter_review(first['id_token'])[1].get('status',{}).get('user',{}).get('groups',[]))
     assert kube_get(second['id_token'])==200,'second independent grant works'
+    # Two production replicas behind an opaque TLS connection selector. Kill
+    # the first replica, then require an uncached human token via the second.
+    failover_token,_,_=code_tokens()
+    adapter.terminate();adapter.wait(timeout=10)
+    assert secondary.poll() is None,'independent adapter replica remains alive'
+    deadline=time.monotonic()+10
+    while kube_get(failover_token['id_token'])!=200:
+        assert time.monotonic()<deadline,'uncached native credential survives single-replica loss';time.sleep(.25)
+    record_check('two_production_adapters_opaque_tls_failover_uncached_native_identity')
+    # Warm the existing mTLS connection using a different token. The next token
+    # has never been observed by Kubernetes' outer authentication cache.
+    delayed,_,_=code_tokens();delayed_binding=binding(delayed['id_token'])
+    assert authenticated(delayed['id_token']),'delayed credential initially has exact current source authority'
+    transport.hold()
+    wire_started=time.monotonic()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        # The production route still has its unmodified3-second deadline. This
+        # caller allows the pinned upstream30-second timeout to be exercised.
+        pending=executor.submit(kube_get,delayed['id_token'],35)
+        try:
+            assert transport.buffered.wait(5),'opaque server ciphertext withheld on warmed mTLS connection'
+            # Await production handler completion before changing authority.
+            # Its local deadline is3 seconds; ciphertext has already left it.
+            time.sleep(3.5)
+            assert not pending.done(),'encrypted response is withheld outside completed adapter route'
+            revoked_at=time.monotonic()
+            assert owner.admin('DELETE','/users/'+ids['requester']+'/grants/'+delayed_binding['grant'])[0] in (200,204),'revoke exact grant while completed response is held in transport'
+            assert not authenticated(delayed['id_token']),'current primary authority denies held response token'
+            target_release=wire_started+25
+            while time.monotonic()<target_release:time.sleep(min(.25,target_release-time.monotonic()))
+            transport.release()
+            assert pending.result(timeout=8)==200,'previously completed positive can arrive after revocation'
+            stale_arrival=time.monotonic()-wire_started
+            last_positive=stale_arrival
+            deadline=wire_started+45
+            while kube_get(delayed['id_token'])==200:
+                last_positive=time.monotonic()-wire_started
+                assert time.monotonic()<deadline,'source-derived40s bound plus scheduling margin';time.sleep(.25)
+            delayed_denial=time.monotonic()-wire_started
+            assert 23<=stale_arrival<=30 and delayed_denial>=stale_arrival+8,'delayed response starts outer success cache after completed lookup'
+            print(json.dumps({'measurement':'delayed_wire_and_outer_cache','stale_arrival_seconds':round(stale_arrival,3),'last_native_positive_seconds':round(last_positive,3),'native_denial_seconds':round(delayed_denial,3),'revocation_seconds':round(revoked_at-wire_started,3),'revocation_to_denial_seconds':round(time.monotonic()-revoked_at,3)}),flush=True)
+        finally:transport.release()
+    record_check('opaque_delayed_completed_response_and_outer_cache_bound')
+    # A held completed positive which crosses the upstream30-second deadline
+    # must never enter the outer cache after its abandoned lookup has finished.
+    assert kube_get(failover_token['id_token'])==200,'warm current replica TLS before timeout trial'
+    abandoned,_,_=code_tokens()
+    status,_,abandoned_refresh=client.authenticated('/token',{'grant_type':'refresh_token','refresh_token':abandoned['refresh_token'],'resource':resource})
+    assert status==200,'fresh original-grant renewal before timeout trial'
+    abandoned_token=abandoned_refresh['id_token'];abandoned_binding=binding(abandoned_token)
+    assert authenticated(abandoned_token),'timeout-trial grant initially current'
+    transport.hold();abandoned_started=time.monotonic()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        pending=executor.submit(kube_get,abandoned_token,42)
+        try:
+            assert transport.buffered.wait(5),'timeout-trial server ciphertext withheld'
+            time.sleep(3.5)
+            assert owner.admin('DELETE','/users/'+ids['requester']+'/grants/'+abandoned_binding['grant'])[0] in (200,204),'timeout-trial exact grant revoke'
+            assert not authenticated(abandoned_token)
+            # The response remains withheld while the pinned30-second native
+            # lookup times out. A caller timeout shorter than this is not used.
+            outcome=pending.result(timeout=30)
+            abandoned_timeout=time.monotonic()-abandoned_started
+            assert outcome in (401,500) and 28<=abandoned_timeout<=34,'native upstream lookup deadline refuses unavailable response'
+            while time.monotonic()<abandoned_started+35:time.sleep(.25)
+            transport.release()
+            assert kube_get(abandoned_token) in (401,500),'releasing late ciphertext cannot populate a successful cache entry'
+            time.sleep(1)
+            assert kube_get(abandoned_token) in (401,500),'abandoned positive remains denied after late-release scheduling'
+            print(json.dumps({'measurement':'late_completed_response_after_native_timeout','timeout_seconds':round(abandoned_timeout,3),'late_release_seconds':35,'late_positive_cached':False}),flush=True)
+        finally:transport.release()
+    record_check('past_native_lookup_timeout_never_late_caches_completed_positive')
+
+
+    assert kube_get(first['id_token'])==200,'refresh warm outer-cache positive immediately before revoke'
     started=time.monotonic()
     assert owner.admin('DELETE','/users/'+ids['requester']+'/grants/'+first_binding['grant'])[0] in (200,204),'exact real grant revoke'
     assert not authenticated(first['id_token']) and authenticated(second['id_token']),'other same-user grant cannot repair revoked digest binding'
@@ -459,7 +542,7 @@ try:
     # A different fresh token is used for total adapter outage, after primary
     # recovery, so no preceding rejection/cache observation is being reused.
     adapter_outage_token,_,_=code_tokens(browser=approver)
-    adapter.terminate();adapter.wait(timeout=10)
+    secondary.terminate();secondary.wait(timeout=10)
     assert kube_get(adapter_outage_token['id_token']) in (401,500),'all-adapter outage refuses fresh uncached identity'
     record_check('all_adapter_outage_no_native_oidc_fallback')
     assert authenticated(third['id_token']),'direct source review still healthy during isolated adapter outage'
@@ -472,7 +555,10 @@ try:
     assert not authenticated(third['id_token']),'explicit re-enable UUID generation does not resurrect prior binding'
     fresh,_,_=code_tokens(browser=approver);assert authenticated(fresh['id_token']),'fresh login after reviewed profile generation regains valid identity'
     record_check('terminal_metadata_restore_and_revision_aba_denial')
-    print(json.dumps({'status':'pass','controls':checks,'measured_revoke_seconds':round(revoke_seconds,3),'limits':['seeded browser/session proofs; no new WebAuthn ceremony','warm-cache measurement only; delayed transport 40s source bound not injected','no delayed-JWKS or delayed-webhook transport injection; source worst-case timing only']}))
+    print(json.dumps({'status':'pass','controls':checks,'measured_revoke_seconds':round(revoke_seconds,3),'limits':['seeded browser/session proofs; no new WebAuthn ceremony','opaque25s completed-response hold plus outer cache measured; entire40s worst-case boundary not saturated','two adapter replicas tested; primary-database replication and signature/storage races not tested']}))
 finally:
+    transport.close()
+    if secondary.poll() is None:secondary.terminate();secondary.wait(timeout=10)
+    secondary_log.close()
     if adapter.poll() is None:adapter.terminate();adapter.wait(timeout=10)
     adapter_log.close()
