@@ -3222,6 +3222,7 @@ mod experience_tests {
 /// Immutable entitlement request presentation. Askama escapes every reason/catalogue value.
 #[derive(Debug)]
 pub struct TemporaryRequestLine {
+    pub deadline: String,
     pub request: asterius_domain::temporary_entitlements::EntitlementRequest,
     pub own: bool,
     pub pending: bool,
@@ -3258,6 +3259,8 @@ pub struct AccountEntitlementsPage<'a> {
     pub activations_label: &'a str,
     pub reason_label: &'a str,
     pub duration_label: &'a str,
+    pub requester_label: &'a str,
+    pub deadline_label: &'a str,
     pub approve_label: &'a str,
     pub deny_label: &'a str,
     pub cancel_label: &'a str,

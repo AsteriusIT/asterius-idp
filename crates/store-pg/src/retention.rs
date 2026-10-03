@@ -105,6 +105,12 @@ pub const MAX_BATCHES: usize = 100;
 /// Kept in the schema's own order so that reading this next to
 /// `0001_baseline.sql` is a straight comparison.
 pub const POLICY: &[Retention] = &[
+    Retention { table: "temporary_entitlements", rule: Rule::Kept("durable independent-approval history and terminal replay outcomes; live authority always checks current versions and exclusive expiry; cascades with tenant/user/catalogue ownership") },
+    Retention { table: "temporary_entitlement_approvers", rule: Rule::Kept("durable independent-approval history and terminal replay outcomes; live authority always checks current versions and exclusive expiry; cascades with tenant/user/catalogue ownership") },
+    Retention { table: "temporary_entitlement_eligibility", rule: Rule::Kept("durable independent-approval history and terminal replay outcomes; live authority always checks current versions and exclusive expiry; cascades with tenant/user/catalogue ownership") },
+    Retention { table: "temporary_entitlement_requests", rule: Rule::Kept("durable independent-approval history and terminal replay outcomes; live authority always checks current versions and exclusive expiry; cascades with tenant/user/catalogue ownership") },
+    Retention { table: "temporary_entitlement_activations", rule: Rule::Kept("durable independent-approval history and terminal replay outcomes; live authority always checks current versions and exclusive expiry; cascades with tenant/user/catalogue ownership") },
+    Retention { table: "temporary_entitlement_replays", rule: Rule::Kept("durable independent-approval history and terminal replay outcomes; live authority always checks current versions and exclusive expiry; cascades with tenant/user/catalogue ownership") },
     Retention {
         table: "authorization_diagnostics",
         rule: Rule::Sweep {

@@ -51,6 +51,7 @@ create table temporary_entitlement_eligibility (
     expires_at timestamptz not null check (expires_at > not_before),
     revoked_at timestamptz,
     primary key (tenant_id, eligibility_id),
+    unique (tenant_id,eligibility_id,entitlement_id,user_id),
     foreign key (tenant_id, entitlement_id) references temporary_entitlements on delete cascade,
     foreign key (tenant_id, user_id) references users on delete cascade
 );
@@ -81,8 +82,9 @@ create table temporary_entitlement_requests (
     decided_by uuid,
     decision_key uuid,
     primary key (tenant_id, request_id),
+    unique (tenant_id,request_id,entitlement_id,requester_user_id),
     foreign key (tenant_id, entitlement_id) references temporary_entitlements on delete cascade,
-    foreign key (tenant_id, eligibility_id) references temporary_entitlement_eligibility on delete cascade,
+    foreign key (tenant_id,eligibility_id,entitlement_id,requester_user_id) references temporary_entitlement_eligibility(tenant_id,eligibility_id,entitlement_id,user_id) on delete cascade,
     foreign key (tenant_id, requester_user_id) references users on delete cascade,
     check ((status = 'pending') = (decided_at is null)),
     check (decided_by is null or decided_by <> requester_user_id or status = 'cancelled')
@@ -102,7 +104,7 @@ create table temporary_entitlement_activations (
     expiry_recorded_at timestamptz,
     primary key (tenant_id, activation_id),
     unique (tenant_id, request_id),
-    foreign key (tenant_id, request_id) references temporary_entitlement_requests on delete cascade,
+    foreign key (tenant_id,request_id,entitlement_id,user_id) references temporary_entitlement_requests(tenant_id,request_id,entitlement_id,requester_user_id) on delete cascade,
     foreign key (tenant_id, entitlement_id) references temporary_entitlements on delete cascade,
     foreign key (tenant_id, user_id) references users on delete cascade,
     check ((revoked_at is null) = (revocation_reason is null))

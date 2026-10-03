@@ -236,10 +236,7 @@ async fn temporary_entitlement_independence_replay_concurrency_and_revocation() 
     let (actor, key) = if one.is_ok() {
         (&f.approver, decision.idempotency_key)
     } else {
-        (
-            &f.second,
-            second.idempotency_key,
-        )
+        (&f.second, second.idempotency_key)
     };
     // Check exact lost-response replay for the actual winner; no second activation exists.
     {
@@ -370,5 +367,83 @@ async fn temporary_entitlement_frozen_proof_and_catalogue_aba_fail_closed() {
             .await
             .is_err()
     );
+    f.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL and real DB-clock expiry; CI runs lifecycle"]
+async fn temporary_entitlement_expiry_denies_before_reconciliation_and_is_idempotent() {
+    let f = Fixture::new().await;
+    let entitlement = f.entitlement().await;
+    let request = f
+        .port
+        .request(
+            &f.tenant,
+            &f.requester,
+            RequestActivation {
+                entitlement_id: entitlement.entitlement_id,
+                duration_seconds: 1,
+                reason: "One-second expiry boundary".into(),
+                idempotency_key: Uuid::new_v4(),
+            },
+        )
+        .await
+        .expect("request");
+    let decision = DecideRequest {
+        request_id: request.request_id,
+        decision: Decision::Approve,
+        idempotency_key: Uuid::new_v4(),
+    };
+    f.port
+        .decide(&f.tenant, &f.approver, decision.clone())
+        .await
+        .expect("approval");
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+    let grant = f.grant();
+    assert!(
+        f.port
+            .resolve_for_grant(&f.tenant, &grant)
+            .await
+            .expect("expired resolution")
+            .roles
+            .is_empty()
+    );
+    let before = f
+        .port
+        .account(&f.tenant, &f.requester)
+        .await
+        .expect("account");
+    assert_eq!(before.activations[0].status, ActivationStatus::Expired);
+    assert!(before.activations[0].expiry_recorded_at.is_none());
+    assert_eq!(
+        f.port
+            .reconcile_expired(&f.tenant, 100)
+            .await
+            .expect("reconcile"),
+        1
+    );
+    assert_eq!(
+        f.port
+            .reconcile_expired(&f.tenant, 100)
+            .await
+            .expect("repeat reconcile"),
+        0
+    );
+    let replay = f
+        .port
+        .decide(&f.tenant, &f.approver, decision)
+        .await
+        .expect("original approval replay");
+    assert_eq!(replay.status, RequestStatus::Approved);
+    assert!(
+        f.port
+            .resolve_for_grant(&f.tenant, &grant)
+            .await
+            .expect("replay cannot extend")
+            .roles
+            .is_empty()
+    );
+    let (events,): (i64,) = sqlx::query_as("select count(*) from audit_events where tenant_id='one' and detail->>'operation'='temporary_entitlement.expired'").fetch_one(&f.pool).await.expect("audit");
+    assert_eq!(events, 1);
     f.close().await;
 }

@@ -107,3 +107,83 @@ impl PgTemporaryEntitlements {
         Ok(snapshot)
     }
 }
+
+impl PgTemporaryEntitlements {
+    /// Read current lifecycle provenance inside the caller's transaction.
+    /// Keeps the same tenant publication fence as review/apply; never constructs
+    /// HeldRoles and never infers grant scopes or authentication from history.
+    pub async fn provenance_for_user_on(
+        connection: &mut PgConnection,
+        tenant: &TenantId,
+        user: &UserId,
+    ) -> Result<TemporaryEntitlementProvenanceSnapshot, DomainError> {
+        let anchor: Option<(String,)> = sqlx::query_as(
+            "select tenant_id from tenants where tenant_id=$1 and status='active' for share",
+        )
+        .bind(tenant.as_str())
+        .fetch_optional(&mut *connection)
+        .await
+        .map_err(to_domain_error)?;
+        if anchor.is_none() {
+            return Err(DomainError::NotFound);
+        }
+        let (observed_at,): (OffsetDateTime,) = sqlx::query_as("select clock_timestamp()")
+            .fetch_one(&mut *connection)
+            .await
+            .map_err(to_domain_error)?;
+        Self::provenance_for_user_at_on(connection, tenant, user, observed_at).await
+    }
+    /// Uses the caller's single database clock snapshot, never a browser or
+    /// process-local timestamp. This read-only result is not an authority port.
+    pub async fn provenance_for_user_at_on(
+        connection: &mut PgConnection,
+        tenant: &TenantId,
+        user: &UserId,
+        observed_at: OffsetDateTime,
+    ) -> Result<TemporaryEntitlementProvenanceSnapshot, DomainError> {
+        let anchor: Option<(String,)> = sqlx::query_as(
+            "select tenant_id from tenants where tenant_id=$1 and status='active' for share",
+        )
+        .bind(tenant.as_str())
+        .fetch_optional(&mut *connection)
+        .await
+        .map_err(to_domain_error)?;
+        if anchor.is_none() {
+            return Err(DomainError::NotFound);
+        }
+        let rows:Vec<(Uuid,Uuid,Uuid,String,String,String,Vec<String>,Uuid,Uuid,OffsetDateTime)>=sqlx::query_as("select a.activation_id,e.entitlement_id,r.request_id,e.client_id,e.resource,e.role_name,e.permissions,e.revision,el.revision,a.expires_at from temporary_entitlement_activations a join temporary_entitlement_requests r on r.tenant_id=a.tenant_id and r.request_id=a.request_id join temporary_entitlements e on e.tenant_id=r.tenant_id and e.entitlement_id=r.entitlement_id join temporary_entitlement_eligibility el on el.tenant_id=r.tenant_id and el.eligibility_id=r.eligibility_id join users u on u.tenant_id=a.tenant_id and u.user_id=a.user_id join users o on o.tenant_id=e.tenant_id and o.user_id=e.owner_reference join clients c on c.tenant_id=e.tenant_id and c.client_id=e.client_reference join client_roles role on role.tenant_id=e.tenant_id and role.client_id=e.client_reference and role.name=e.role_reference join resource_servers rs on rs.tenant_id=e.tenant_id and rs.identifier=e.resource_reference where a.tenant_id=$1 and a.user_id=$2 and e.enabled and e.revision=r.policy_revision and el.revision=r.eligibility_revision and el.user_id=a.user_id and el.revoked_at is null and el.not_before<=$3 and el.expires_at>$3 and a.revoked_at is null and a.activated_at<=$3 and a.expires_at>$3 and r.status='approved' and u.status='active' and o.status='active' and c.status='active' and not c.is_agent and (rs.scopes is null or e.permissions<@rs.scopes) order by a.expires_at,a.activation_id limit 100")
+            .bind(tenant.as_str()).bind(user.as_uuid()).bind(observed_at).fetch_all(connection).await.map_err(to_domain_error)?;
+        let entries = rows
+            .into_iter()
+            .map(
+                |(
+                    activation_id,
+                    entitlement_id,
+                    request_id,
+                    client,
+                    resource,
+                    role_name,
+                    permissions,
+                    policy_revision,
+                    eligibility_revision,
+                    expires_at,
+                )| TemporaryEntitlementProvenance {
+                    activation_id,
+                    entitlement_id,
+                    request_id,
+                    client,
+                    resource,
+                    role_name,
+                    permissions,
+                    policy_revision,
+                    eligibility_revision,
+                    expires_at,
+                },
+            )
+            .collect();
+        Ok(TemporaryEntitlementProvenanceSnapshot {
+            observed_at,
+            entries,
+        })
+    }
+}

@@ -199,6 +199,7 @@ fn render(
         .iter()
         .map(|r| pages::TemporaryRequestLine {
             request: r.clone(),
+            deadline: timestamp(r.deadline),
             own: r.requester_user_id == session.user,
             pending: r.status == RequestStatus::Pending && data.observed_at < r.deadline,
             idempotency_key: Uuid::new_v4().to_string(),
@@ -214,6 +215,8 @@ fn render(
                 choose("Révoqué", "Revoked")
             } else if a.status == ActivationStatus::Expired {
                 choose("Expiré", "Expired")
+            } else if a.status == ActivationStatus::Invalidated {
+                choose("Périmètre invalidé", "Scope invalidated")
             } else {
                 choose(
                     "Éligibilité vérifiée à chaque utilisation",
@@ -242,6 +245,8 @@ fn render(
             activations_label: choose("Activations", "Activations"),
             reason_label: choose("Motif", "Reason"),
             duration_label: choose("Durée en secondes", "Duration in seconds"),
+            requester_label: choose("Demandeur", "Requester"),
+            deadline_label: choose("Décision avant", "Decide before"),
             approve_label: choose("Approuver", "Approve"),
             deny_label: choose("Refuser", "Deny"),
             cancel_label: choose("Annuler", "Cancel"),

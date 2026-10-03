@@ -20,6 +20,7 @@ pub struct EntitlementConfiguration {
     pub enabled: bool,
 }
 impl EntitlementConfiguration {
+    // fuzz-target: temporary_entitlement_configuration
     pub fn validate(&self) -> Result<(), DomainError> {
         RoleName::parse(&self.role_name)
             .map_err(|e| DomainError::invalid("role_name", e.to_string()))?;
@@ -28,6 +29,10 @@ impl EntitlementConfiguration {
         let unique: std::collections::BTreeSet<_> = self.approver_user_ids.iter().collect();
         if !(1..=16).contains(&self.approver_user_ids.len())
             || unique.len() != self.approver_user_ids.len()
+            || !self
+                .approver_user_ids
+                .iter()
+                .any(|id| *id != self.owner_user_id)
             || !(1..=3600).contains(&self.max_duration_seconds)
             || !(1..=2_592_000).contains(&self.max_eligibility_seconds)
             || self.client_id.is_empty()
@@ -226,6 +231,27 @@ pub struct ActiveTemporaryRole {
 pub struct TemporaryRoleSnapshot {
     pub observed_at: OffsetDateTime,
     pub roles: Vec<ActiveTemporaryRole>,
+}
+
+/// Read-only lifecycle evidence for governance. This is not role authority:
+/// actual issuance still requires an exact, nondelegated grant and frozen proof.
+#[derive(Debug, Clone, Serialize)]
+pub struct TemporaryEntitlementProvenance {
+    pub activation_id: Uuid,
+    pub entitlement_id: Uuid,
+    pub request_id: Uuid,
+    pub client: String,
+    pub resource: String,
+    pub role_name: String,
+    pub permissions: Vec<String>,
+    pub policy_revision: Uuid,
+    pub eligibility_revision: Uuid,
+    pub expires_at: OffsetDateTime,
+}
+#[derive(Debug, Clone, Serialize)]
+pub struct TemporaryEntitlementProvenanceSnapshot {
+    pub observed_at: OffsetDateTime,
+    pub entries: Vec<TemporaryEntitlementProvenance>,
 }
 
 /// Frozen methods and their policy incarnation are distinct from cumulative AMR.

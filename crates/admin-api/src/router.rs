@@ -282,14 +282,18 @@ async fn handle(
             .and_then(|value| value.to_str().ok())
             .ok_or(AdminError::IdempotencyKeyMissing)?;
         let key = IdempotencyKey::parse(key)?;
-        idempotency::claim(
-            backend.replay().as_ref(),
-            &tenant.id,
-            &principal.audit_actor(),
-            &key,
-            now,
-        )
-        .await?;
+        // Temporary revocation commits its canonical body UUID and response
+        // atomically. A generic one-shot claim would reject lost-response retries.
+        if operation.id() != crate::TEMPORARY_ENTITLEMENT_REVOKE_ID {
+            idempotency::claim(
+                backend.replay().as_ref(),
+                &tenant.id,
+                &principal.audit_actor(),
+                &key,
+                now,
+            )
+            .await?;
+        }
     }
 
     let context = Handling {

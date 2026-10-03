@@ -8756,10 +8756,12 @@ mod retention {
             ("stale", now() - Duration::days(2)),
             ("fresh", now() + Duration::hours(1)),
         ] {
-            for statement in include_str!("fixtures/retention-additions.sql")
-                .split(';')
-                .filter(|sql| !sql.trim().is_empty())
-            {
+            let additions = format!(
+                "{}\n{}",
+                include_str!("fixtures/retention-additions.sql"),
+                include_str!("fixtures/temporary-retention.sql")
+            );
+            for statement in additions.split(';').filter(|sql| !sql.trim().is_empty()) {
                 sqlx::query(statement)
                     .bind(tenant)
                     .bind(user)

@@ -46,7 +46,7 @@ impl PgTemporaryEntitlements {
             now,
         )
         .await?;
-        let (eligibility_id, eligibility_revision, _, _) = eligible(
+        let (eligibility_id, eligibility_revision, _, eligibility_editor) = eligible(
             &mut tx,
             tenant,
             c.entitlement_id,
@@ -54,6 +54,11 @@ impl PgTemporaryEntitlements {
             now,
         )
         .await?;
+        let independent:Option<(Uuid,)>=sqlx::query_as("select ap.user_id from temporary_entitlement_approvers ap join users u on u.tenant_id=ap.tenant_id and u.user_id=ap.user_id where ap.tenant_id=$1 and ap.entitlement_id=$2 and ap.user_id<>all($3) and u.status='active' limit 1")
+            .bind(tenant.as_str()).bind(e.entitlement_id).bind(vec![*actor.user.as_uuid(),e.editor_user_id,eligibility_editor]).fetch_optional(&mut *tx).await.map_err(to_domain_error)?;
+        if independent.is_none() {
+            return Err(DomainError::NotFound);
+        }
         if !(1..=e.configuration.max_duration_seconds).contains(&c.duration_seconds) {
             return Err(DomainError::invalid(
                 "duration_seconds",
