@@ -4792,7 +4792,7 @@ async fn run_authorize(
                 endpoints.capabilities,
                 Arc::clone(&endpoints.kek),
                 Arc::clone(&endpoints.audit),
-            ))),
+            ).with_device_anchors(Arc::clone(&endpoints.device_anchors)))),
             tenant,
             signer: Some(endpoints.signer.as_ref()),
             language: &language,
@@ -5486,6 +5486,7 @@ async fn interaction_show(
     client: Option<Extension<crate::http::forwarded::ClientAddr>>,
     mount: Option<Extension<MountPrefix>>,
     headers: axum::http::HeaderMap,
+    device_leaf: Option<Extension<Arc<crate::managed_devices::VerifiedDeviceLeaf>>>,
 ) -> Response {
     let theme = crate::http::theme_of(theme.as_ref());
     let settings =
@@ -5562,12 +5563,13 @@ async fn interaction_show(
     let mail = scope.mail();
     interaction::show(
         InteractionContext {
+            device_leaf: device_leaf.as_ref().map(|Extension(leaf)| leaf.as_ref()),
             conditional: Some(Arc::new(super::conditional::ConditionalAccess::new(
                 endpoints.store.clone(),
                 endpoints.capabilities,
                 Arc::clone(&endpoints.kek),
                 Arc::clone(&endpoints.audit),
-            ))),
+            ).with_device_anchors(Arc::clone(&endpoints.device_anchors)))),
             upstream_providers: &upstream_providers,
             tenant: &tenant,
             signer: Some(endpoints.signer.as_ref()),
@@ -5632,6 +5634,7 @@ async fn interaction_submit(
     client: Option<Extension<crate::http::forwarded::ClientAddr>>,
     mount: Option<Extension<MountPrefix>>,
     headers: axum::http::HeaderMap,
+    device_leaf: Option<Extension<Arc<crate::managed_devices::VerifiedDeviceLeaf>>>,
     body: axum::body::Bytes,
 ) -> Response {
     let theme = crate::http::theme_of(theme.as_ref());
@@ -5709,12 +5712,13 @@ async fn interaction_submit(
     let mail = scope.mail();
     interaction::submit(
         InteractionContext {
+            device_leaf: device_leaf.as_ref().map(|Extension(leaf)| leaf.as_ref()),
             conditional: Some(Arc::new(super::conditional::ConditionalAccess::new(
                 endpoints.store.clone(),
                 endpoints.capabilities,
                 Arc::clone(&endpoints.kek),
                 Arc::clone(&endpoints.audit),
-            ))),
+            ).with_device_anchors(Arc::clone(&endpoints.device_anchors)))),
             upstream_providers: &upstream_providers,
             tenant: &tenant,
             signer: Some(endpoints.signer.as_ref()),
@@ -5837,6 +5841,7 @@ async fn upstream_callback(
     client: Option<Extension<crate::http::forwarded::ClientAddr>>,
     mount: Option<Extension<MountPrefix>>,
     headers: axum::http::HeaderMap,
+    device_leaf: Option<Extension<Arc<crate::managed_devices::VerifiedDeviceLeaf>>>,
 ) -> Response {
     let theme = crate::http::theme_of(theme.as_ref());
     let mount = mount_of(mount);
@@ -6034,12 +6039,13 @@ async fn upstream_callback(
     let mail = scope.mail();
     interaction::complete_external(
         InteractionContext {
+            device_leaf: device_leaf.as_ref().map(|Extension(leaf)| leaf.as_ref()),
             conditional: Some(Arc::new(super::conditional::ConditionalAccess::new(
                 endpoints.store.clone(),
                 endpoints.capabilities,
                 Arc::clone(&endpoints.kek),
                 Arc::clone(&endpoints.audit),
-            ))),
+            ).with_device_anchors(Arc::clone(&endpoints.device_anchors)))),
             upstream_providers: &upstream_providers,
             tenant: &tenant,
             signer: Some(endpoints.signer.as_ref()),
