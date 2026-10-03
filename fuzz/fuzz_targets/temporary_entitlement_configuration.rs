@@ -24,6 +24,7 @@ fuzz_target!(|body: &[u8]| {
         assert!((1..=64).contains(&config.permissions.len()));
     }
     if let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) {
-        let _ = asterius_domain::temporary_kubernetes::KubernetesBindingChange::parse(value);
+        let _ = asterius_domain::temporary_kubernetes::KubernetesBindingChange::parse(value.clone());
+        let _ = asterius_domain::temporary_kubernetes::KubernetesJitIdentity::parse(value);
     }
 });

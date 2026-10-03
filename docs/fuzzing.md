@@ -68,7 +68,7 @@ cargo +nightly fuzz run --target x86_64-unknown-linux-gnu <target> path/to/crash
 
 ## Coverage
 
-The 112 targets below cover 148 declared entry points. Generated from the
+The 112 targets below cover 150 declared entry points. Generated from the
 `// fuzz-target:` markers in `crates/`.
 
 | Fuzz target | Entry point | Source |
@@ -205,6 +205,8 @@ The 112 targets below cover 148 declared entry points. Generated from the
 | `temporary_entitlement_configuration` | `EntitlementConfiguration::validate` | `crates/domain/src/temporary_entitlements.rs` |
 | `temporary_entitlement_configuration` | `KubernetesBindingChange::parse` | `crates/domain/src/temporary_kubernetes.rs` |
 | `temporary_entitlement_configuration` | `KubernetesBindingChange::validate` | `crates/domain/src/temporary_kubernetes.rs` |
+| `temporary_entitlement_configuration` | `KubernetesJitIdentity::parse` | `crates/domain/src/temporary_kubernetes.rs` |
+| `temporary_entitlement_configuration` | `KubernetesJitIdentity::validate` | `crates/domain/src/temporary_kubernetes.rs` |
 | `tenant_message_overrides` | `MessageOverrides::from_json` | `crates/domain/src/messages.rs` |
 | `tenant_route` | `route` | `crates/oidc/src/tenancy.rs` |
 | `tenant_settings` | `SessionPolicy::from_json` | `crates/domain/src/entities/session.rs` |

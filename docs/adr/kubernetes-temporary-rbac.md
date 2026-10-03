@@ -19,7 +19,8 @@ are gated on this review. Source implementation and disposable acceptance can pr
 A dedicated cluster client has at most one enabled temporary entitlement mapping.
 The exact same-tenant resource owner configures this mapping through an existing
 Console session, CSRF and `admin.app_roles:write`, with explicit UUID CAS. It pins
-the current public-subject Kubernetes profile and immutable controller client.
+the current public-subject Kubernetes profile with explicit `roles_in_id_token`
+release and immutable controller client.
 Any mapping mutation creates a new UUID revision. Profile/client invalidation
 turns the mapping off; reenabling requires an explicit owner replacement.
 

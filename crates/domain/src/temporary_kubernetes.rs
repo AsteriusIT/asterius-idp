@@ -77,6 +77,43 @@ pub struct KubernetesJitIdentity {
     pub expires_at: i64,
 }
 
+impl KubernetesJitIdentity {
+    /// Parse the closed private provenance shape; this never establishes authority.
+    // fuzz-target: temporary_entitlement_configuration
+    pub fn parse(value: serde_json::Value) -> Result<Self, DomainError> {
+        let identity: Self = serde_json::from_value(value).map_err(|_| {
+            DomainError::invalid("asterius_jit", "closed temporary identity required")
+        })?;
+        identity.validate()?;
+        Ok(identity)
+    }
+
+    // fuzz-target: temporary_entitlement_configuration
+    pub fn validate(&self) -> Result<(), DomainError> {
+        crate::kubernetes::KubernetesProfile::parse(&self.cluster, &self.namespace, vec![], self.profile_revision)?;
+        crate::RoleName::parse(&self.role)
+            .map_err(|error| DomainError::invalid("asterius_jit.role", error.to_string()))?;
+        crate::ResourceIdentifier::parse(&self.resource)
+            .map_err(|error| DomainError::invalid("asterius_jit.resource", error.to_string()))?;
+        let unique: std::collections::BTreeSet<_> = self.permissions.iter().collect();
+        if self.binding_revision.is_nil() || self.entitlement_id.is_nil()
+            || self.client_id.is_empty() || self.client_id.len() > 2048
+            || self.client_id.chars().any(char::is_control)
+            || self.profile_revision <= 0 || self.profile_revision > 9_007_199_254_740_991
+            || self.expires_at <= 0 || self.expires_at > 9_007_199_254_740_991
+            || self.permissions.is_empty() || self.permissions.len() > 64
+            || unique.len() != self.permissions.len()
+            || self.permissions.iter().any(|scope| {
+                !crate::entities::grant::is_scope_token(scope)
+                    || !crate::temporary_entitlements::is_resource_permission(scope)
+            })
+        {
+            return Err(DomainError::invalid("asterius_jit", "bounded exact temporary provenance required"));
+        }
+        Ok(())
+    }
+}
+
 /// This generation-scoped JIT username comes only from the exact public subject.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -121,6 +158,28 @@ pub trait TemporaryKubernetes: std::fmt::Debug + Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn temporary_kubernetes_private_provenance_is_closed_and_resource_bounded() {
+        let valid = serde_json::json!({
+            "binding_revision":Uuid::from_u128(1), "entitlement_id":Uuid::from_u128(2),
+            "client_id":"cluster-client", "resource":"https://incident.example",
+            "permissions":["read"], "role":"incident-reader", "cluster":"incident",
+            "namespace":"incident", "profile_revision":1, "expires_at":2_000_000_000,
+        });
+        assert!(KubernetesJitIdentity::parse(valid.clone()).is_ok());
+        for (key, value) in [
+            ("username", serde_json::json!("system:admin")),
+            ("permissions", serde_json::json!(["openid"])),
+            ("permissions", serde_json::json!(["read","read"])),
+            ("namespace", serde_json::json!("../foreign")),
+            ("expires_at", serde_json::json!(9_007_199_254_740_992_i64)),
+        ] {
+            let mut posted = valid.clone();
+            posted[key] = value;
+            assert!(KubernetesJitIdentity::parse(posted).is_err(), "{key}");
+        }
+    }
+
     #[test]
     fn temporary_kubernetes_controller_reference_is_exact_and_bounded() {
         for value in ["", "x\nadmin"] {

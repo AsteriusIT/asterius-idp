@@ -8975,9 +8975,13 @@ impl Handling<'_> {
                     .binding(&self.tenant.id, user, id)
                     .await
                     .map_err(error)?;
+                let authentication = match &result {
+                    Some(binding) if binding.enabled => Some(self.temporary_kubernetes_example(user, binding).await?),
+                    _ => None,
+                };
                 Ok(json_no_store(
                     StatusCode::OK,
-                    &serde_json::json!({"binding":result}),
+                    &serde_json::json!({"binding":result,"authentication_configuration":authentication}),
                 ))
             }
             crate::TEMPORARY_KUBERNETES_BINDING_WRITE_ID => {
@@ -8992,6 +8996,36 @@ impl Handling<'_> {
             _ => Err(AdminError::NotFound),
         }
     }
+    async fn temporary_kubernetes_example(
+        &self,
+        owner: &asterius_domain::UserId,
+        binding: &asterius_domain::temporary_kubernetes::KubernetesEntitlementBinding,
+    ) -> Result<serde_json::Value, AdminError> {
+        let operation = crate::TEMPORARY_KUBERNETES_BINDING_READ_ID;
+        let port = self.state.backend.temporary_entitlements().ok_or(AdminError::Unavailable)?;
+        let entitlement = port.get(&self.tenant.id, owner, binding.entitlement_id).await
+            .map_err(|error| group_error(operation, error))?;
+        let client_id = asterius_domain::ClientId::new(binding.cluster_client_id.clone());
+        let client = self.load_client(&client_id, operation).await?;
+        let profile = self.state.backend.groups().kubernetes_profile(&self.tenant.id, &client_id).await
+            .map_err(|error| group_error(operation, error))?.ok_or(AdminError::NotFound)?;
+        if profile.revision() != binding.profile_revision || profile.cluster() != binding.cluster
+            || profile.namespace() != binding.namespace {
+            return Err(AdminError::Conflict("Kubernetes profile revision changed".into()));
+        }
+        let tuple = asterius_domain::temporary_kubernetes::KubernetesJitIdentity {
+            binding_revision: binding.revision, entitlement_id: binding.entitlement_id,
+            client_id: binding.cluster_client_id.clone(), resource: entitlement.configuration.resource,
+            permissions: entitlement.configuration.permissions, role: entitlement.configuration.role_name,
+            cluster: binding.cluster.clone(), namespace: binding.namespace.clone(),
+            profile_revision: binding.profile_revision,
+            // No deadline is pinned in a configuration template. The renderer
+            // validates each actual token's exclusive server-resolved deadline.
+            expires_at: 1,
+        };
+        Ok(crate::kubernetes::temporary_authentication_document(self.tenant, &client, &profile, &tuple))
+    }
+
 }
 
 #[cfg(test)]
