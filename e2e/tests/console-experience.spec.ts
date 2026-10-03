@@ -880,6 +880,7 @@ test('conditional rollout stages locally and stale publication preserves the rev
 });
 
 test('conditional simulation labels hypothetical evidence and missing report-only facts accessibly', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
   let requested: Record<string, unknown> | null = null;
   const errors = await prepare(page, (path, route) => {
     if (path === 'session') return { body: { ...session, scopes: [...session.scopes, 'admin.policies:read'] } };
@@ -902,6 +903,11 @@ test('conditional simulation labels hypothetical evidence and missing report-onl
   await expect(page.getByText('Hypothetical example', { exact: true })).toBeVisible();
   await expect(page.getByText('Required evidence is missing, stale, invalid or unavailable.')).toBeVisible();
   expect(requested).toMatchObject({ action: 'read', enforcement_action: 'refresh_token', hypothetical_trusted_context: { device_compliance: { availability: 'stale' } } });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+  const sourceTable = page.locator('[data-slot="table-container"]').filter({ hasText: 'Evidence source' });
+  await sourceTable.focus();
+  await page.keyboard.press('ArrowRight');
+  await expect.poll(() => sourceTable.evaluate(element => element.scrollLeft)).toBeGreaterThan(0);
   const audit = await new AxeBuilder({ page }).analyze();
   expect(audit.violations.filter(v => v.impact === 'critical' || v.impact === 'serious')).toEqual([]);
   expect(errors).toEqual([]);
