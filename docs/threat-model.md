@@ -1,5 +1,14 @@
 # Threat model
 
+Kubernetes cluster profiles add an operator-owned group-release boundary:
+each tenant/client has one immutable cluster association and at most 100
+explicit managed-group identifiers. ID-token and UserInfo release intersect
+current server memberships with that allow-list; unknown/cross-tenant IDs and
+metadata downgrades fail closed. Claim names and safe prefixes are generated,
+so caller claims cannot grant `system:` authority. Generated RoleBindings are
+namespace-scoped read-only examples. Cluster bearer JWTs still have offline
+revocation limits; see [Kubernetes onboarding](kubernetes-human-access.md).
+
 **Status:** review-ready (`ast-p2l.6`). Every story that adds a protocol surface
 updates this file as part of its definition of done. Three sections exist for
 somebody reading this from outside the project: [§4.1](#41-agent-threats-in-detail-ast-p2l6)

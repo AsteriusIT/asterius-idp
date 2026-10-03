@@ -35,6 +35,14 @@ use libfuzzer_sys::fuzz_target;
 use time::OffsetDateTime;
 
 fuzz_target!(|data: &[u8]| {
+    // Cluster release policy is a separate strict administrative document.
+    if let Ok(requested) =
+        serde_json::from_slice::<asterius_admin_api::kubernetes::RequestedProfile>(data)
+        && let Ok(profile) = requested.validate()
+    {
+        assert!(profile.groups().len() <= 100);
+        assert!(!profile.prefix("demo").starts_with("system:"));
+    }
     // 0. The search term, over arbitrary query-string bytes. It cannot fail
     //    and must not panic on a truncated or invalid escape, because a search
     //    box is not a place to answer a person with a 400.

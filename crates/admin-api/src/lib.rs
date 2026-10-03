@@ -56,6 +56,7 @@ pub mod id_jag;
 pub mod idempotency;
 pub mod initial_access_tokens;
 pub mod keys;
+pub mod kubernetes;
 pub mod oidc_providers;
 pub mod openapi;
 pub mod operations;
@@ -132,6 +133,10 @@ pub const CLIENTS_LIST_ID: &str = "clients.list";
 pub const CLIENT_READ_ID: &str = "clients.read";
 /// The `operationId` of `GET /clients/{client_id}/health`.
 pub const CLIENT_HEALTH_ID: &str = "clients.health";
+/// Reads a cluster's bounded onboarding profile and examples.
+pub const KUBERNETES_PROFILE_READ_ID: &str = "clients.kubernetes.read";
+/// Replaces a cluster's tenant-owned group release profile.
+pub const KUBERNETES_PROFILE_UPDATE_ID: &str = "clients.kubernetes.update";
 /// The `operationId` of `POST /clients`.
 pub const CLIENT_CREATE_ID: &str = "clients.create";
 pub const FLOWS_LIST_ID: &str = "flows.list";
@@ -570,6 +575,23 @@ pub const CLIENT_HEALTH: Operation = Operation::read(
     S::Get,
     A::new(R::Tenant, "admin.clients:read"),
     "Checks a registered client's integration configuration without issuing tokens",
+);
+
+/// Tenant-scoped, read-only cluster onboarding configuration.
+pub const KUBERNETES_PROFILE_READ: Operation = Operation::read(
+    KUBERNETES_PROFILE_READ_ID,
+    "/clients/{client_id}/kubernetes",
+    S::Get,
+    A::new(R::Tenant, "admin.clients:read"),
+    "Reads Kubernetes authentication and RBAC onboarding examples",
+);
+/// Administrative replacement with a saved-profile revision.
+pub const KUBERNETES_PROFILE_UPDATE: Operation = Operation::mutation(
+    KUBERNETES_PROFILE_UPDATE_ID,
+    "/clients/{client_id}/kubernetes",
+    M::Put,
+    A::new(R::Tenant, "admin.clients:write"),
+    "Replaces a cluster's exact managed-group release allow-list",
 );
 
 /// Registers a client from the console, through the RFC 7591 validator.
@@ -1996,7 +2018,7 @@ pub const SCIM_BULK: Operation = Operation::mutation(
     "SCIM Bulk is unsupported by this service",
 );
 
-static REGISTRY: [Operation; 154] = [
+static REGISTRY: [Operation; 156] = [
     SESSION_READ,
     SESSION_END,
     OVERVIEW_USERS,
@@ -2019,6 +2041,8 @@ static REGISTRY: [Operation; 154] = [
     CLIENTS_LIST,
     CLIENT_READ,
     CLIENT_HEALTH,
+    KUBERNETES_PROFILE_READ,
+    KUBERNETES_PROFILE_UPDATE,
     CLIENT_CREATE,
     CLIENT_UPDATE,
     CLIENT_RESOURCES_UPDATE,

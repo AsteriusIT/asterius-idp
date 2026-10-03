@@ -424,16 +424,9 @@ pub async fn released_claims(
         claims,
         role_claims: role_claims(&requested, client),
         held: held.clone(),
-        managed_groups: if client.registration.managed_groups_claim.is_issued() {
+        managed_groups: {
             use asterius_domain::GroupDirectory;
-            groups
-                .groups_for_user(&grant.tenant, id, None, 100)
-                .await?
-                .into_iter()
-                .map(|group| group.id.to_string())
-                .collect()
-        } else {
-            Vec::new()
+            groups.released_group_ids(client, id).await?
         },
     })
 }

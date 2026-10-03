@@ -198,6 +198,7 @@ fn operation_object(operation: &Operation) -> Value {
         });
     }
     client_resources_documentation(operation, &mut object);
+    kubernetes_documentation(operation, &mut object);
     invitation_documentation(operation, &mut object);
     theme_documentation(operation, &mut object);
     if let Some(request_body) = group_request_body(operation) {
@@ -358,6 +359,21 @@ fn client_resources_documentation(operation: &Operation, object: &mut Value) {
             }
         }}}
     });
+}
+
+fn kubernetes_documentation(operation: &Operation, object: &mut Value) {
+    if operation.id() == crate::KUBERNETES_PROFILE_UPDATE_ID {
+        object["requestBody"] = json!({"required": true, "content": {"application/json": {"schema": {
+            "type": "object", "additionalProperties": false,
+            "required": ["cluster_id", "namespace", "group_ids", "revision"],
+            "properties": {
+                "cluster_id": {"type": "string", "maxLength": 63, "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"},
+                "namespace": {"type": "string", "maxLength": 63, "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"},
+                "group_ids": {"type": "array", "maxItems": 100, "uniqueItems": true, "items": {"type": "string", "format": "uuid"}, "description": "Exact tenant-managed group allow-list; empty releases none"},
+                "revision": {"type": "integer", "minimum": 0, "description": "Saved revision; zero creates a new profile"}
+            }
+        }}}});
+    }
 }
 
 fn theme_documentation(operation: &Operation, object: &mut Value) {

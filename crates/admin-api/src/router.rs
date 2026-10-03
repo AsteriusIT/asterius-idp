@@ -369,6 +369,8 @@ async fn route_standard(
         crate::CLIENTS_LIST_ID => context.list_clients().await,
         crate::CLIENT_READ_ID => context.read_client().await,
         crate::CLIENT_HEALTH_ID => context.check_client_health().await,
+        crate::KUBERNETES_PROFILE_READ_ID => context.read_kubernetes_profile().await,
+        crate::KUBERNETES_PROFILE_UPDATE_ID => context.update_kubernetes_profile(body).await,
         crate::CLIENT_CREATE_ID => context.create_client(body).await,
         crate::CLIENT_UPDATE_ID => context.update_client(body).await,
         crate::CLIENT_RESOURCES_UPDATE_ID => context.update_client_resources(body).await,
@@ -2155,6 +2157,76 @@ impl Handling<'_> {
         let client = self.load_client(&id, crate::CLIENT_READ_ID).await?;
 
         Ok(json_no_store(StatusCode::OK, &clients::document(&client)))
+    }
+
+    async fn read_kubernetes_profile(&self) -> Result<Response, AdminError> {
+        let id = self.client_in_path("/kubernetes")?;
+        let client = self
+            .load_client(&id, crate::KUBERNETES_PROFILE_READ_ID)
+            .await?;
+        let profile = self
+            .state
+            .backend
+            .groups()
+            .kubernetes_profile(&self.tenant.id, &id)
+            .await
+            .map_err(|error| group_error(crate::KUBERNETES_PROFILE_READ_ID, error))?
+            .ok_or(AdminError::NotFound)?;
+        let mut result = crate::kubernetes::document(self.tenant, &client, &profile);
+        let records = self
+            .state
+            .backend
+            .keys()
+            .inventory(&self.tenant.id)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::KUBERNETES_PROFILE_READ_ID, &error))?;
+        result["signing_keys"] = crate::keys::jwks_document(&records);
+        result["registration_compatible"] =
+            serde_json::json!(profile.check_client(&client).is_ok());
+        Ok(json_no_store(StatusCode::OK, &result))
+    }
+
+    async fn update_kubernetes_profile(
+        &self,
+        body: axum::body::Body,
+    ) -> Result<Response, AdminError> {
+        let id = self.client_in_path("/kubernetes")?;
+        let client = self
+            .load_client(&id, crate::KUBERNETES_PROFILE_UPDATE_ID)
+            .await?;
+        let requested: crate::kubernetes::RequestedProfile = self.parse_body(body).await?;
+        let profile = requested
+            .validate()
+            .map_err(|error| group_error(crate::KUBERNETES_PROFILE_UPDATE_ID, error))?;
+        profile
+            .check_client(&client)
+            .map_err(|error| group_error(crate::KUBERNETES_PROFILE_UPDATE_ID, error))?;
+        self.ensure_client_profile_allowed(
+            client.registration.compliance_profile,
+            crate::KUBERNETES_PROFILE_UPDATE_ID,
+        )
+        .await?;
+        self.check_client_is_serviceable(&client.registration, crate::KUBERNETES_PROFILE_UPDATE_ID)
+            .await?;
+        let profile = self
+            .state
+            .backend
+            .groups()
+            .replace_kubernetes_profile(&self.tenant.id, &id, &profile)
+            .await
+            .map_err(|error| group_error(crate::KUBERNETES_PROFILE_UPDATE_ID, error))?;
+        self.record(
+            EventType::ADMIN_CHANGED,
+            Detail::new()
+                .label("operation", crate::KUBERNETES_PROFILE_UPDATE_ID)
+                .text("client_id", id.as_str())
+                .number("revision", profile.revision()),
+        )
+        .await;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &crate::kubernetes::document(self.tenant, &client, &profile),
+        ))
     }
 
     /// `GET /clients/{client_id}/health` — safe, read-only integration checks.
