@@ -825,9 +825,32 @@ pub struct PresentedToken<'a> {
     pub url: &'a str,
 }
 
+/// Private metadata supplied only after an adapter verifies the exact signed
+/// access token, issuer/audience, sender constraint and current token status.
+/// This is not an HTTP field and is never serialized in an admin response.
+#[derive(Debug, Clone)]
+pub struct VerifiedMachineCredential {
+    jti: asterius_domain::Secret<String>,
+}
+impl VerifiedMachineCredential {
+    /// Seal the verified JWT's identifier; parsing an identifier does not prove
+    /// a credential mode. Dedicated consumers must check the exact private
+    /// successful-issuance receipt and current grant on their transaction.
+    pub fn from_verified_jti(jti: &str) -> Result<Self, DomainError> {
+        if jti.is_empty() || jti.len() > 256 || !jti.bytes().all(|byte| byte.is_ascii_graphic()) {
+            return Err(DomainError::invalid("token", "invalid verified token identifier"));
+        }
+        Ok(Self { jti: asterius_domain::Secret::new(jti.to_owned()) })
+    }
+    #[must_use]
+    pub fn jti(&self) -> &str { self.jti.expose() }
+}
+
 /// A resolved automation caller.
 #[derive(Debug, Clone)]
 pub struct TokenPrincipal {
+    /// Exact signed identifier for private dedicated-service mode receipts.
+    pub credential: Option<VerifiedMachineCredential>,
     /// The subject the audit trail records, which under ADR-0009 is a user
     /// identifier when a human's authority is behind the token.
     pub subject: String,

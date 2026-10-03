@@ -93,6 +93,16 @@ pub struct DeviceProxyRequest<'a> {
     pub header_name: &'a str,
 }
 
+impl std::fmt::Debug for DeviceProxyRequest<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("DeviceProxyRequest")
+            .field("hop", &self.hop)
+            .field("peer", &self.peer)
+            .field("headers", &"[redacted]")
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DeviceTrustRoots {
     anchors: crate::mtls::TrustAnchors,

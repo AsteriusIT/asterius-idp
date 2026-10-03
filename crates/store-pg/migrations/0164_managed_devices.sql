@@ -81,3 +81,21 @@ create table managed_device_code_proofs (
     foreign key (tenant_id, device_id) references managed_devices(tenant_id, device_id) on delete cascade
 );
 create index managed_device_code_expiry on managed_device_code_proofs(expires_at);
+
+-- A public sub==client shape does not establish issuance mode. Only successful
+-- root client-credentials signatures may create these private bounded receipts.
+-- Dedicated ingress never falls back to a caller-selected/public grant ID.
+create table managed_device_relay_tokens (
+    tenant_id text not null references tenants(tenant_id) on delete cascade,
+    jti text not null check(octet_length(jti) between 1 and 256),
+    grant_id uuid not null,
+    client_id text not null,
+    enrollments boolean not null,
+    posture boolean not null,
+    expires_at timestamptz not null,
+    primary key(tenant_id,jti),
+    foreign key(tenant_id,grant_id) references grants(tenant_id,grant_id) on delete cascade,
+    foreign key(tenant_id,client_id) references clients(tenant_id,client_id) on delete cascade,
+    check(enrollments or posture)
+);
+create index managed_device_relay_expiry on managed_device_relay_tokens(expires_at);
