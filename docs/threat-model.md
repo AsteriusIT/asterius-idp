@@ -2339,3 +2339,18 @@ traversal is bounded by the existing 64 nodes/rule and depth 8. Responses use
 trail. The `admin_policy_trial` enforcement-point marker identifies a simulation
 that made no access change; it does not claim correlation with a prior live
 login or enforcement event.
+
+## Native enterprise SCIM compatibility verification
+
+Entra acceptance creates only nonce-named app/service-principal objects and disabled
+jobs in the explicitly authorized current Azure tenant. A temporary tunnel exposes
+only the isolated fixture's SCIM resource paths through a loopback proxy; upstream
+TLS is validated and Bearer/DPoP headers are forwarded unchanged. No credentials,
+bodies or queries appear in evidence. No authentication adapter is installed: real
+native Entra Bearer requests without proof receive 401, while independent scoped
+DPoP controls exercise tenant/client isolation and account security locks. Jobs
+are never started or assigned tenant identities. The runner deletes only its own
+returned cloud object IDs and random local database; an external public-ID manifest
+supports recovery if cleanup fails. A process/host crash can leave owned cloud
+objects, so the operator must inspect that manifest. Linked decisions ast-9mjp and
+ast-p3p3 must precede any compatible authentication or mapping expansion.

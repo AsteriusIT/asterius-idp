@@ -1,0 +1,162 @@
+{
+  "date": "2026-10-03",
+  "asterius_commit": "a351d707",
+  "azure_cli": "2.88.0",
+  "cloudflared": "2026.9.3",
+  "cloudflared_sha256": "77e26d8d900e0b8469f416239d14b5f296525fdf79fee6f511ef55609e3fbac2",
+  "control": {
+    "profile": "Asterius scoped DPoP control; not native Entra provisioning",
+    "cases": [
+      {
+        "case": "DPoP discovery ServiceProviderConfig",
+        "status": 200
+      },
+      {
+        "case": "DPoP discovery Schemas",
+        "status": 200
+      },
+      {
+        "case": "DPoP discovery ResourceTypes",
+        "status": 200
+      },
+      {
+        "case": "same token Bearer refused",
+        "status": 401
+      },
+      {
+        "case": "cross-tenant creation refused",
+        "status": 401
+      },
+      {
+        "case": "create user",
+        "status": 201
+      },
+      {
+        "case": "duplicate user retry refused",
+        "status": 409
+      },
+      {
+        "case": "exact userName filter",
+        "status": 200
+      },
+      {
+        "case": "externalId matching unsupported",
+        "status": 400
+      },
+      {
+        "case": "native shape without If-Match refused",
+        "status": 428
+      },
+      {
+        "case": "disable user with ETag",
+        "status": 200
+      },
+      {
+        "case": "stale retry refused",
+        "status": 412
+      },
+      {
+        "case": "reactivate provisioning-disabled user",
+        "status": 200
+      },
+      {
+        "case": "read security-locked user",
+        "status": 200
+      },
+      {
+        "case": "security lock cannot be cleared by SCIM",
+        "status": 409
+      },
+      {
+        "case": "disable locked user",
+        "status": 200
+      },
+      {
+        "case": "legacy string active unsupported",
+        "status": 400
+      },
+      {
+        "case": "default name mapping unsupported",
+        "status": 400
+      },
+      {
+        "case": "create group with member",
+        "status": 201
+      },
+      {
+        "case": "foreign controller cannot read group",
+        "status": 404
+      },
+      {
+        "case": "excludedAttributes unsupported",
+        "status": 400
+      },
+      {
+        "case": "modern member remove with ETag",
+        "status": 200
+      },
+      {
+        "case": "delete group",
+        "status": 204
+      },
+      {
+        "case": "delete user",
+        "status": 204
+      },
+      {
+        "case": "deleted user invisible",
+        "status": 404
+      }
+    ]
+  },
+  "native": {
+    "graph_version": "v1.0",
+    "application_template": "8adf8e6e-67b2-4cf2-a259-e3dc5476c621",
+    "available_templates": [
+      "customappsso",
+      "customappssoOutDelta",
+      "customappssoRoleIn",
+      "scim"
+    ],
+    "native_validation": [
+      {
+        "requested_template": "customappsso",
+        "effective_template": "customappssoOutDelta",
+        "job_disabled": true,
+        "refused": true,
+        "credential_validation_error": true,
+        "upstream_401": false,
+        "upstream_404": true
+      },
+      {
+        "requested_template": "scim",
+        "effective_template": "scim",
+        "job_disabled": true,
+        "refused": true,
+        "credential_validation_error": true,
+        "upstream_401": true,
+        "upstream_404": false
+      }
+    ],
+    "sanitized_requests": [
+      {
+        "method": "GET",
+        "boundary": "denied",
+        "path_shape": "/t/e2e/admin/api/v1/scim/v2/scim/Users",
+        "status": 404
+      },
+      {
+        "method": "GET",
+        "resource": "Users",
+        "authorization_scheme": "Bearer",
+        "dpop_present": false,
+        "status": 401
+      }
+    ],
+    "cleanup_deleted_owned_objects": [
+      "servicePrincipals",
+      "applications"
+    ],
+    "lifecycle_after_native_auth_refusal": "not executed"
+  }
+}
