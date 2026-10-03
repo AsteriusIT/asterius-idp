@@ -136,6 +136,10 @@ pub trait UserInfoSource: std::fmt::Debug + Send + Sync {
 
     /// Current authority for the verified token's exact grant and bounds.
     /// Older adapters retain their standing-role behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns a domain error if current role authority cannot be read.
     async fn roles_for_grant(&self, grant: &Grant) -> Result<asterius_domain::HeldRoles, DomainError> {
         match grant.user {
             Some(user) => self.roles(user).await,

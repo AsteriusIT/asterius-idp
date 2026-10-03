@@ -1236,6 +1236,7 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
         claims: &serde_json::Value,
     ) -> Result<asterius_domain::CompactJws, DomainError> {
         if grant.tenant != *tenant
+            || claims.get("iss").and_then(serde_json::Value::as_str) != Some(self.tenant.issuer.as_str())
             || !matches!(typ, "JWT" | "dpop+id_token")
             || claims.get("aud").and_then(serde_json::Value::as_str) != Some(grant.client.as_str())
             || grant.subject.as_ref().is_none_or(|subject| {

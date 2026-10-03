@@ -66,7 +66,11 @@ supported online policy decision path, configure an active conditional
 `access_evaluation` boundary that resolves roles from the verified human grant,
 and enforce its result on each privileged action. Caller-supplied role
 attributes and an unrelated service-account token do not prove a current
-activation. Offline validation does not promise immediate revocation. An unrelated
+activation. That boundary needs a verified human token whose grant can be
+resolved exactly; enable `grant_id_in_access_token` for the intended PDP client
+profile when using this path. Missing or ambiguous grant context supplies no
+temporary authority. Unguarded PDP evaluation continues to resolve standing
+roles only. Offline validation does not promise immediate revocation. An unrelated
 standing assignment can still authorize the same role; review standing and
 temporary provenance separately before interpreting a withdrawal as loss of
 all access.

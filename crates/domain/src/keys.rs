@@ -414,8 +414,12 @@ pub trait Signer: fmt::Debug + Send + Sync {
         claims: &serde_json::Value,
     ) -> Result<CompactJws, crate::DomainError>;
 
-    /// Signs an identity assertion with its exact authorized human grant.
+    /// Signs an identity assertion with its exact authorized grant.
     /// Production decorators recheck temporary role authority at signing.
+    ///
+    /// # Errors
+    ///
+    /// Returns a domain error when signing fails or current role authority changed.
     async fn sign_identity(
         &self,
         tenant: &TenantId,

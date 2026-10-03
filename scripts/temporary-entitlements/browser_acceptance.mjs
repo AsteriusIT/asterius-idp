@@ -52,6 +52,18 @@ try {
  if(input.screenshot_path) await page.screenshot({path:input.screenshot_path,fullPage:true});
  checks.push('390px_no_page_overflow_and_keyboard_focus');
  await context.close();
+ if(input.reader_session) {
+  stage='real auditor read-only console';
+  const reader=await browser.newContext({ignoreHTTPSErrors:true,viewport:{width:390,height:844}});
+  await reader.addCookies([{name:'__Host-asterius_session',value:input.reader_session,url:input.origin,secure:true,httpOnly:true,sameSite:'Lax'}]);
+  const readonly=await reader.newPage();
+  await readonly.goto(input.issuer+'/admin/#temporary-privileges');
+  await readonly.getByRole('heading',{name:'Temporary privileges',exact:true}).waitFor();
+  assert.equal(await readonly.getByRole('button',{name:'Create entitlement',exact:true}).count(),0);
+  assert.equal(await readonly.getByRole('button',{name:'Grant eligibility',exact:true}).count(),0);
+  checks.push('real_auditor_console_has_no_privilege_mutation_actions');
+  await reader.close();
+ }
  console.log(JSON.stringify({fixture:'real_chromium_temporary_privileges',status:'pass',checks}));
 } catch(error) {
  console.error('TEMPORARY_CONSOLE_STAGE='+stage+' error='+error.constructor.name);
