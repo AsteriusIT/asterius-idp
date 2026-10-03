@@ -2886,7 +2886,6 @@ source-derived bound is forty seconds plus measured scheduling/transport margin.
 The local three-second review deadline does not establish a shorter wire-level
 bound. Actual delayed-response, outage and replica evidence is still required;
 healthy-network latency alone is not worst-case acceptance evidence.
-
 The shared signer caches decrypted signing material with a sixty-second lease.
 Prepared signing checks the lease deadline, tenant and algorithm, but does not
 serialize emergency key retirement/purge with final signature release or online
@@ -2908,3 +2907,76 @@ edge must verify the actual device TLS handshake, strip caller evidence and
 forward only that leaf over its authenticated hop. Device and proxy CA/pin
 generations are included in the current operator trust revision. OAuth client
 authentication remains independent; a device key raises no user assurance.
+
+Only an exact successful client-credentials access signature creates a private
+JTI/grant receipt for dedicated enrollment/posture ingress. The writer rechecks
+this receipt, current client mode/status and source generation after acquiring
+the tenant publication fence, before any device lock. Delegated/user/task-shaped
+tokens cannot substitute for relay authority. Bounded batches and monotonic
+sequences commit together with prepared audit events; audit failure rolls back
+state. Human source CRUD retains existing exact-realm console role/session/CSRF
+admission and does not inherit machine tokens or deployment-wide shortcuts.
+
+Private original proofs transfer only from a winning interaction to its exact
+code digest, with a nonrenewable five-minute/certificate deadline. Refresh, ordinary local exchange and PDP require newly verified
+request possession and an exact current grant. Only early exchange may use an
+explicit verified parent's provisional child; final signing requires the
+persisted claimed child. No other session, strongest grant, caller device hint,
+public claim or stale source observation supplies missing authority. The same
+publication connection holds current source/enrollment/authority facts through
+decisions/signing, and original proof/source/certificate/grant deadlines bound
+their release. Fresh clocks after awaited audit/cryptographic work re-evaluate
+those original deadlines. Unknown management/compliance, removal, disable and expiry deny
+active required-fact rules without a positive authority cache.
+
+Removal erases the leaf/user/application/posture association and private proof
+sidecars, retaining only a minimal generation tombstone for 30 days. Re-enrollment
+receives a new server UUID and generation. This changes new protected decisions;
+it cannot withdraw already-issued offline JWTs before their expiry. A malicious
+relay or trusted proxy remains capable of lying within its explicit authority,
+and copied software keys remain usable. The controlled HTTPS/browser evidence
+uses disposable software PKI, seeded refresh/source inputs and real local user
+authentication; it claims neither live MDM verification nor hardware attestation.
+Human normative review remains pending before delivery of this candidate.
+
+The shared private Tailscale bridge forwards no device certificate and cannot
+exercise this separately configured candidate device source.
+
+
+### Outbound SCIM candidate (normative review pending)
+
+The isolated outbound candidate uses an operator signing catalogue keyed by the
+complete source tenant and destination issuer/client/resource/origin/generation.
+Reference knowledge cannot borrow another tenant's key, and the admin API never
+resolves a path or stores credentials. The sole HTTPS transport repeats DNS
+address validation on every request, connects to the vetted address, verifies
+TLS and refuses redirects. Internally derived token/SCIM paths and canonical
+UUIDs constrain egress; response Location/$ref values grant no authority.
+
+Each dispatch checks database-clock lease, connector and credential revisions,
+assignment generation and source revision after acquiring current locks. A
+request already transmitted may finish after pause, but its local receipt cannot
+cross a changed fence. SCIM source ownership is refused and audited; no password,
+role, grant, authenticator or key is projected. Remote mappings require exact
+immutable alias/externalId, canonical UUID and a bounded weak ETag. PUT and DELETE
+keep If-Match; conflicts cannot strip the condition or adopt another UUID.
+
+Explicit five-minute human lifecycle approvals are durably ordered with normal
+assignment work. Archive advances the owned inactive/empty target's version to
+fence prior PUTs before retiring local authority. Reviewed deletion additionally
+requires separately enabled policy and a saved same-incarnation UUID/version;
+durable DELETE admission permits404 recovery only for that saved UUID. A missing
+ordinary mapping never authorizes recreation. Fresh generation is a separate
+confirmed lifecycle and preserves prior history. Source tenant deletion is
+refused while current assignments remain. Target incarnation tombstones cover
+only the closed outbound externalId namespace and are verified by an explicit
+SCIM configuration capability. Their per-client/kind bound is 10,000; capacity
+refuses retirement rather than expiring keys that could permit late POSTs.
+Ordinary SCIM delete/recreate semantics remain unchanged.
+
+Diagnostics persist closed codes and IDs; assertions, access tokens, DPoP keys,
+response bodies and source attributes are excluded from logs/outbox/audit.
+Source and peer snapshots are bounded; dry run uses authenticated GETs only and
+cannot establish a mapping or target mutation. These candidate boundaries still
+require the proposed contract review and real source-to-target acceptance before
+delivery or shared enablement.
