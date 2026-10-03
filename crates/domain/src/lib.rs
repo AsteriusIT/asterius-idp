@@ -26,6 +26,7 @@ pub mod keys;
 pub mod kubernetes;
 pub mod limits;
 pub mod locale;
+pub mod managed_devices;
 pub mod messages;
 pub mod notification;
 pub mod outbox;

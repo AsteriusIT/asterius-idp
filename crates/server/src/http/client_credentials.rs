@@ -370,6 +370,7 @@ impl ClientCredentials<'_> {
             .sign_access(
                 &tenant.id,
                 asterius_domain::keys::AccessIssuance {
+                    device_binding: None,
                     implicit_resources: &self.implicit_resources(tenant),
                     grant: &grant,
                     kind: GrantType::ClientCredentials,

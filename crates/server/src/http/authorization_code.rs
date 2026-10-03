@@ -460,6 +460,7 @@ impl AuthorizationCode<'_> {
             .sign_access(
                 &tenant.id,
                 asterius_domain::keys::AccessIssuance {
+                    device_binding: binding.device_binding.as_ref(),
                     grant: &grant,
                     implicit_resources: &issuance::implicit_resources(
                         tenant,
@@ -481,6 +482,7 @@ impl AuthorizationCode<'_> {
         // than on the request, because the scope was settled at consent.
         let id_token = if grant.scopes.contains("openid") {
             let parts = issuance::IdTokenParts {
+                device_binding: binding.device_binding.as_ref(),
                 grant: &role_grant,
                 require_ipsie_assurance: self
                     .ipsie_identity_only_clients

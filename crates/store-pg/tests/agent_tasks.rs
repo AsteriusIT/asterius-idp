@@ -172,6 +172,7 @@ impl Fixture {
             .sign_access(
                 &self.tenant,
                 AccessIssuance {
+                    device_binding: None,
                     grant,
                     kind: GrantType::ClientCredentials,
                     implicit_resources: &[],
@@ -234,6 +235,7 @@ async fn agent_task_signing_commits_private_lineage_and_rejects_replay_expansion
         .sign_access(
             &fixture.tenant,
             AccessIssuance {
+                device_binding: None,
                 implicit_resources: &[],
                 grant: &grant,
                 kind: GrantType::ClientCredentials,
@@ -279,6 +281,7 @@ async fn agent_task_signing_commits_private_lineage_and_rejects_replay_expansion
             .sign_access(
                 &fixture.tenant,
                 AccessIssuance {
+                    device_binding: None,
                     implicit_resources: &[],
                     grant: &grant,
                     kind: GrantType::ClientCredentials
@@ -297,6 +300,7 @@ async fn agent_task_signing_commits_private_lineage_and_rejects_replay_expansion
             .sign_access(
                 &fixture.tenant,
                 AccessIssuance {
+                    device_binding: None,
                     implicit_resources: &[],
                     grant: &expanded,
                     kind: GrantType::ClientCredentials
@@ -346,6 +350,7 @@ async fn agent_task_failed_signature_rolls_back_child_and_jti() {
             .sign_access(
                 &fixture.tenant,
                 AccessIssuance {
+                    device_binding: None,
                     implicit_resources: &[],
                     grant: &grant,
                     kind: GrantType::ClientCredentials
@@ -424,6 +429,7 @@ async fn agent_task_owner_disable_expiry_and_refresh_cannot_reactivate() {
             .sign_access(
                 &fixture.tenant,
                 AccessIssuance {
+                    device_binding: None,
                     implicit_resources: &[],
                     grant: &grant,
                     kind: GrantType::ClientCredentials
@@ -484,6 +490,7 @@ async fn agent_task_root_revocation_and_signing_share_one_linearization_fence() 
         .sign_access(
             &tenant,
             AccessIssuance {
+                device_binding: None,
                 implicit_resources: &[],
                 grant: &minted,
                 kind: GrantType::ClientCredentials,
@@ -539,6 +546,7 @@ async fn agent_task_root_revocation_and_signing_share_one_linearization_fence() 
             .sign_access(
                 &fixture.tenant,
                 AccessIssuance {
+                    device_binding: None,
                     implicit_resources: &[],
                     grant: &retry,
                     kind: GrantType::ClientCredentials

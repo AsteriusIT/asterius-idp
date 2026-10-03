@@ -818,6 +818,8 @@ fn grant_management_resource(
 /// which the request's claims could be passed instead.
 #[derive(Debug)]
 pub struct IdTokenParts<'a> {
+    /// Private proof from this code; refresh and unrelated grants supply None.
+    pub device_binding: Option<&'a asterius_domain::managed_devices::DeviceBinding>,
     /// Exact grant narrowed to the permissions/resource used for these roles.
     pub grant: &'a Grant,
     /// A listed IPSIE candidate must release a validated ACR and IANA AMR.
@@ -905,6 +907,7 @@ pub async fn sign_id_token(
     now: time::OffsetDateTime,
 ) -> Result<String, DomainError> {
     let IdTokenParts {
+        device_binding,
         grant,
         require_ipsie_assurance,
         rp_session_lifetime_seconds,
@@ -988,9 +991,10 @@ pub async fn sign_id_token(
         .map_err(|e| DomainError::invalid("id_token", e.to_string()))?;
 
     let token = signer
-        .sign_identity(
+        .sign_identity_bound(
             &tenant.id,
             grant,
+            device_binding,
             unsigned.required_algorithm(),
             unsigned.typ(),
             unsigned.claims(),
@@ -1052,6 +1056,7 @@ mod tests {
             &tenant,
             &client,
             IdTokenParts {
+                device_binding: None,
                 grant: &grant,
                 require_ipsie_assurance: false,
                 rp_session_lifetime_seconds: None,

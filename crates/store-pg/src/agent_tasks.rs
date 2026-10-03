@@ -602,6 +602,18 @@ impl Signer for TaskSigner<'_> {
         typ: &'static str,
         claims: &serde_json::Value,
     ) -> Result<asterius_domain::CompactJws, DomainError> {
+        self.sign_identity_bound(tenant, grant, None, algorithm, typ, claims).await
+    }
+
+    async fn sign_identity_bound(
+        &self,
+        tenant: &TenantId,
+        grant: &Grant,
+        binding: Option<&asterius_domain::managed_devices::DeviceBinding>,
+        algorithm: Option<asterius_domain::SigningAlgorithm>,
+        typ: &'static str,
+        claims: &serde_json::Value,
+    ) -> Result<asterius_domain::CompactJws, DomainError> {
         if !matches!(typ, "JWT" | "dpop+id_token") {
             return Err(DomainError::invalid(
                 "id_token",
@@ -610,11 +622,11 @@ impl Signer for TaskSigner<'_> {
         }
         if let Some(prepared) = self.prepare(tenant, algorithm).await? {
             return prepared
-                .sign_identity(tenant, grant, algorithm, typ, claims)
+                .sign_identity_bound(tenant, grant, binding, algorithm, typ, claims)
                 .await;
         }
         self.inner
-            .sign_identity(tenant, grant, algorithm, typ, claims)
+            .sign_identity_bound(tenant, grant, binding, algorithm, typ, claims)
             .await
     }
 
@@ -1023,6 +1035,18 @@ impl Signer for PreparedTaskSigner<'_> {
         typ: &'static str,
         claims: &serde_json::Value,
     ) -> Result<asterius_domain::CompactJws, DomainError> {
+        self.sign_identity_bound(tenant, grant, None, algorithm, typ, claims).await
+    }
+
+    async fn sign_identity_bound(
+        &self,
+        tenant: &TenantId,
+        grant: &Grant,
+        binding: Option<&asterius_domain::managed_devices::DeviceBinding>,
+        algorithm: Option<asterius_domain::SigningAlgorithm>,
+        typ: &'static str,
+        claims: &serde_json::Value,
+    ) -> Result<asterius_domain::CompactJws, DomainError> {
         if !matches!(typ, "JWT" | "dpop+id_token") {
             return Err(DomainError::invalid(
                 "id_token",
@@ -1030,7 +1054,7 @@ impl Signer for PreparedTaskSigner<'_> {
             ));
         }
         self.inner
-            .sign_identity(tenant, grant, algorithm, typ, claims)
+            .sign_identity_bound(tenant, grant, binding, algorithm, typ, claims)
             .await
     }
 

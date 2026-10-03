@@ -75,6 +75,7 @@ impl TokenExchange<'_> {
             .sign_access(
                 &tenant.id,
                 asterius_domain::keys::AccessIssuance {
+                    device_binding: None,
                     grant: &grant,
                     kind: asterius_domain::GrantType::TokenExchange,
                     implicit_resources: &[],
