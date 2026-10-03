@@ -61,7 +61,9 @@ impl Decision {
         self.explanation.as_ref()
     }
 
-    pub(super) fn with_explanation(
+    /// Attaches diagnostics from the same trusted evaluation snapshot.
+    #[must_use]
+    pub fn with_explanation(
         mut self,
         explanation: super::explanation::DecisionExplanation,
     ) -> Self {

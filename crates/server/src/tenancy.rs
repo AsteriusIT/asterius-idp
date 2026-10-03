@@ -386,7 +386,7 @@ pub async fn layer(State(state): State<TenantState>, mut request: Request, next:
     // The prefix routing just removed, so a handler can put it back on a URL
     // it hands to the browser (`ast-295`).
     request.extensions_mut().insert(resolved.prefix);
-    crate::http::conditional::ORIGIN.scope(origin, next.run(request)).await
+    crate::http::conditional::PDP_AUTHORITY.scope(std::cell::RefCell::new(None), crate::http::conditional::ORIGIN.scope(origin, next.run(request))).await
 }
 
 /// A resolved request: which tenant, and what path the handler should see.

@@ -255,6 +255,28 @@ impl Stage {
     }
 }
 
+/// Server-owned conditional requirement bound to one pushed application/action.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConditionalBinding {
+    pub client: String,
+    pub action: String,
+    pub policy_revision: String,
+    pub acr: Option<String>,
+    pub acceptable_acr: Vec<String>,
+    pub max_age: Option<u32>,
+}
+impl ConditionalBinding {
+    /// Intersects requirements; never weakens a client's existing essential ACR.
+    pub fn apply(&self, essential: &mut Vec<String>, max_age: &mut Option<u32>) {
+        if let Some(acr) = &self.acr {
+            if essential.is_empty() { essential.extend(self.acceptable_acr.iter().cloned()); if essential.is_empty() { essential.push(acr.clone()); } }
+            else { essential.retain(|existing| self.acceptable_acr.contains(existing)); if essential.is_empty() { essential.push("urn:asterius:unattainable-conditional-requirement".to_owned()); } }
+        }
+        if let Some(age) = self.max_age { *max_age = Some(max_age.map_or(age, |existing| existing.min(age))); }
+    }
+}
+
 /// What is stored between one request and the next.
 ///
 /// Lives in `auth_requests.interaction_state`, which the store treats as
@@ -268,6 +290,8 @@ impl Stage {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StoredState {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conditional: Option<ConditionalBinding>,
     /// Where the interaction has got to.
     pub stage: Stage,
     /// SHA-256 of the token issued with the last rendered form, if any.
@@ -331,6 +355,7 @@ impl Default for StoredState {
     fn default() -> Self {
         Self {
             stage: Stage::Login,
+            conditional: None,
             csrf_digest: None,
             decision: None,
             username: None,
@@ -1254,5 +1279,24 @@ mod tests {
         assert!(interaction.has_expired(now), "expiry is inclusive");
         assert!(interaction.has_expired(now + time::Duration::seconds(1)));
         assert!(!interaction.has_expired(now - time::Duration::seconds(1)));
+    }
+}
+
+#[cfg(test)]
+mod conditional_binding_tests {
+    use super::*;
+    #[test]
+    fn conditional_requirements_intersect_existing_assurance_and_age() {
+        let binding = ConditionalBinding { client: "app".to_owned(), action: "authorize".to_owned(), policy_revision: "revision".to_owned(), acr: Some("strong".to_owned()), acceptable_acr: vec!["strong".to_owned(), "stronger".to_owned()], max_age: Some(60) };
+        let mut essential = vec!["weak".to_owned(), "stronger".to_owned()];
+        let mut age = Some(30);
+        binding.apply(&mut essential, &mut age);
+        assert_eq!(essential, ["stronger"]);
+        assert_eq!(age, Some(30));
+        let mut impossible = vec!["weak".to_owned()];
+        binding.apply(&mut impossible, &mut age);
+        assert_eq!(impossible, ["urn:asterius:unattainable-conditional-requirement"]);
+        let state = StoredState { conditional: Some(binding), ..StoredState::default() };
+        assert_eq!(serde_json::from_value::<StoredState>(serde_json::to_value(&state).expect("valid state")).expect("round trip"), state);
     }
 }

@@ -466,6 +466,12 @@ impl asterius_domain::ports::PolicyStore for InvalidatingPolicies {
         Ok(())
     }
 
+    async fn replace_if_revision(&self, tenant: &TenantId, rules: &asterius_domain::policy::RuleSet, expected: Option<&str>, now: OffsetDateTime) -> Result<(), DomainError> {
+        self.inner.replace_if_revision(tenant, rules, expected, now).await?;
+        self.guard.invalidate(tenant);
+        Ok(())
+    }
+
     async fn clear(&self, tenant: &TenantId) -> Result<bool, DomainError> {
         let removed = self.inner.clear(tenant).await?;
         if removed {

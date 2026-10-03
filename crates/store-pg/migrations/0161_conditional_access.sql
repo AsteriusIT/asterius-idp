@@ -29,3 +29,16 @@ end;
 $$;
 create trigger conditional_policy_clients before insert or update of document on tenant_policies
 for each row execute function validate_conditional_policy_clients();
+
+-- All policy publication paths, including declarative ownership and deletion,
+-- share a tenant fence with final issuance. A reader holding FOR SHARE sees
+-- either the complete old publication before its signature or the new one.
+create function fence_tenant_policy_publication() returns trigger language plpgsql as $$
+begin
+    perform 1 from tenants where tenant_id = coalesce(new.tenant_id, old.tenant_id) for no key update;
+    if tg_op = 'DELETE' then return old; end if;
+    return new;
+end;
+$$;
+create trigger a_conditional_policy_publication_fence before insert or update or delete on tenant_policies
+for each row execute function fence_tenant_policy_publication();

@@ -202,6 +202,7 @@ fn operation_object(operation: &Operation) -> Value {
     declarative_documentation(operation, &mut object);
     client_resources_documentation(operation, &mut object);
     kubernetes_documentation(operation, &mut object);
+    conditional_documentation(operation, &mut object);
     invitation_documentation(operation, &mut object);
     theme_documentation(operation, &mut object);
     if let Some(request_body) = group_request_body(operation) {
@@ -296,6 +297,10 @@ fn operation_parameters(operation: &Operation) -> Vec<Value> {
             parameters.push(json!({"name":"external_key","in":"query","required":true,"schema":{"type":"string","minLength":1,"maxLength":512}}));
         }
     }
+    if operation.id() == crate::POLICY_UPDATE_ID {
+        parameters.push(json!({"name":"If-Match","in":"header","required":false,"schema":{"type":"string"},"description":"Quoted canonical sha256 revision from GET /policies. Required when adding, modifying or removing conditional scopes; use If-None-Match: * only for a first publication."}));
+        parameters.push(json!({"name":"If-None-Match","in":"header","required":false,"schema":{"type":"string","const":"*"},"description":"Explicitly expects no existing policy. Mutually exclusive with If-Match."}));
+    }
     if operation.is_paginated() {
         parameters.push(json!({ "$ref": "#/components/parameters/cursor" }));
         parameters.push(json!({ "$ref": "#/components/parameters/limit" }));
@@ -358,6 +363,19 @@ fn operation_parameters(operation: &Operation) -> Vec<Value> {
     }
 
     parameters
+}
+
+fn conditional_documentation(operation: &Operation, object: &mut Value) {
+    if matches!(operation.id(), crate::CONDITIONAL_SETTINGS_READ_ID | crate::CONDITIONAL_SETTINGS_UPDATE_ID) {
+        object["responses"]["200"]["content"]["application/json"]["schema"] = json!({"type":"object","required":["sensitivity","revision"],"additionalProperties":false,"properties":{"sensitivity":{"enum":[null,"standard","sensitive","critical"]},"revision":{"type":["string","null"],"format":"uuid"}}});
+        if operation.id() == crate::CONDITIONAL_SETTINGS_UPDATE_ID {
+            object["requestBody"] = json!({"required":true,"content":{"application/json":{"schema":{"type":"object","additionalProperties":false,"required":["sensitivity","expected_revision"],"properties":{"sensitivity":{"enum":[null,"standard","sensitive","critical"]},"expected_revision":{"type":["string","null"],"format":"uuid"}},"description":"Administrative application classification. Both keys required; null revision expects no saved settings. Exact UUID CAS; stale updates are 409. This source is independent of dynamic client registration and PEP attributes."}}}});
+            object["responses"]["409"] = error_response("The saved classification revision changed.");
+        }
+    }
+    if operation.id() == crate::POLICY_UPDATE_ID {
+        object["responses"]["409"] = error_response("Policy revision changed, or conditional publication lacks an exact precondition.");
+    }
 }
 
 fn invitation_documentation(operation: &Operation, object: &mut Value) {

@@ -43,6 +43,7 @@ impl TokenExchange<'_> {
         let (grant, targeting, lifetime) = self
             .workload_grant(tenant, client, params, request, &verified, &limits)
             .await?;
+        self.permitted(tenant, client, &grant).await?;
         let claimed = grant
             .claim(self.now)
             .map_err(|error| Failure::Server(DomainError::invalid("grant", error.to_string())))?;

@@ -71,6 +71,8 @@ pub const SIGN_IN_QUERY: &str = "signin";
 
 /// What the handlers need.
 pub struct InteractionContext<'a> {
+    /// Current application/action guard, independent of optional agent PDP.
+    pub conditional: Option<std::sync::Arc<dyn super::authorize::ConditionalAuthorization>>,
     /// Enabled provider choices loaded from this tenant's public config.
     pub upstream_providers: &'a [asterius_store_pg::OidcProvider],
     /// The tenant the request arrived at.
@@ -995,10 +997,16 @@ async fn authenticated(
     // the client did not ask for and the requirement would fail on the token it
     // claims to satisfy. A first-party interaction has no client request and
     // asks for nothing (`ast-2vk.7`).
-    let requested = record
+    let mut requested = record
         .client_request()
         .map(|request| Requirements::from_parameters(&request.parameters))
         .unwrap_or_default();
+    if let Some(binding) = &state.conditional {
+        if record.client_request().is_none_or(|request| request.client.as_str() != binding.client || binding.action != "authorize") {
+            return error_page(context, StatusCode::BAD_REQUEST, InteractionError::NotAvailable);
+        }
+        binding.apply(&mut requested.essential_acr, &mut requested.max_age);
+    }
 
     // A session id the browser has never held before. See
     // `asterius_domain::entities::session`: an id it held
@@ -2013,6 +2021,13 @@ async fn mint(
         // An amended grant would keep its earlier sub or replace it with a
         // later one. Neither is a fresh subject for one authorization.
         return Err("invalid_request");
+    }
+    if let Some(guard) = &context.conditional {
+        match guard.permits(context.tenant, &client, &grant, now).await {
+            Ok(true) => {},
+            Ok(false) => return Err("access_denied"),
+            Err(error) => { tracing::warn!(%error, "conditional completion refused"); return Err("access_denied"); }
+        }
     }
     let amendment = amended(context, &request.parameters, &mut grant, user, now).await?;
     let grant_id = if let Some(existing) = amendment {

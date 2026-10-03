@@ -536,6 +536,7 @@ impl TokenExchange<'_> {
         {
             return Err(bad());
         }
+        self.permitted(tenant, client, &grant).await?;
         let claimed = grant.claim(self.now).map_err(|_| bad())?;
         let confirmation = self.constraint.confirmation(client).map_err(|_| bad())?;
         let audience = Audience::new([tenant.issuer.as_str()])

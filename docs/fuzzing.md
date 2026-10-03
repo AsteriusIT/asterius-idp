@@ -68,7 +68,7 @@ cargo +nightly fuzz run --target x86_64-unknown-linux-gnu <target> path/to/crash
 
 ## Coverage
 
-The 104 targets below cover 131 declared entry points. Generated from the
+The 105 targets below cover 133 declared entry points. Generated from the
 `// fuzz-target:` markers in `crates/`.
 
 | Fuzz target | Entry point | Source |
@@ -124,6 +124,7 @@ The 104 targets below cover 131 declared entry points. Generated from the
 | `client_certificate_header` | `from_proxy_header` | `crates/server/src/mtls.rs` |
 | `client_metadata_json` | `ClientRegistration::from_json` | `crates/domain/src/entities/client.rs` |
 | `client_update_guard` | `update_guard` | `crates/server/src/http/client_configuration.rs` |
+| `conditional_client_settings` | `RequestedSettings::parse` | `crates/admin-api/src/conditional.rs` |
 | `config_parse` | `Config::parse` | `crates/server/src/config.rs` |
 | `consent_memory` | `Remembered::covers` | `crates/oidc/src/consent_memory.rs` |
 | `cose_key` | `parse` | `crates/webauthn/src/cose.rs` |
@@ -138,6 +139,7 @@ The 104 targets below cover 131 declared entry points. Generated from the
 | `endpoint_bucket` | `endpoint_client_bucket` | `crates/domain/src/rate_limit.rs` |
 | `endpoint_bucket` | `endpoint_subject_bucket` | `crates/domain/src/rate_limit.rs` |
 | `forwarded_resolve` | `resolve` | `crates/server/src/http/forwarded.rs` |
+| `forwarded_resolve` | `resolve_conditional` | `crates/server/src/http/forwarded.rs` |
 | `grant_management` | `parse` | `crates/oidc/src/grant_management.rs` |
 | `grant_record` | `GrantRecord::validate` | `crates/domain/src/entities/grant.rs` |
 | `grant_record` | `LiveAccessToken::new` | `crates/domain/src/entities/grant.rs` |

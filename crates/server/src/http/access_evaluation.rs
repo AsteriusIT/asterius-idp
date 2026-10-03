@@ -992,6 +992,10 @@ pub(crate) async fn authorize(
         return Err(Refused::MissingScope);
     }
 
+    super::conditional::bind_pdp(super::conditional::PdpAuthority {
+        tenant: context.tenant.id.clone(), client: client.clone(), grant: own_grant,
+        subject: verified.claim_str("sub").map(str::to_owned),
+    });
     Ok(client)
 }
 

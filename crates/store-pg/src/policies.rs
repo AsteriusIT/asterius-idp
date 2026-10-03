@@ -37,6 +37,32 @@ impl PgPolicies {
     pub const fn new(pool: PgPool) -> Self {
         Self { pool }
     }
+    async fn publish(&self, tenant: &TenantId, rules: &RuleSet, expected: Option<Option<&str>>, now: OffsetDateTime) -> Result<(), DomainError> {
+        let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
+        // Also serializes the first publication, for which no policy row exists.
+        let exists: Option<String> = sqlx::query_scalar("select tenant_id from tenants where tenant_id=$1 for update").bind(tenant.as_str()).fetch_optional(&mut *tx).await.map_err(to_domain_error)?;
+        if exists.is_none() { return Err(DomainError::Conflict("no such tenant".to_owned())); }
+        let old: Option<serde_json::Value> = sqlx::query_scalar("select document from tenant_policies where tenant_id=$1 for update").bind(tenant.as_str()).fetch_optional(&mut *tx).await.map_err(to_domain_error)?;
+        let old = old.as_ref().map(RuleSet::from_json).transpose().map_err(|error| DomainError::invalid("tenant_policies.document", error.to_string()))?;
+        let revision = old.as_ref().map(asterius_domain::policy::explanation::revision);
+        match expected {
+            Some(expected) if revision.as_deref() != expected => return Err(DomainError::Conflict("policy revision changed".to_owned())),
+            None if !rules.conditional_scopes().is_empty() || old.as_ref().is_some_and(|rules| !rules.conditional_scopes().is_empty()) => return Err(DomainError::Conflict("conditional publication requires an expected policy revision".to_owned())),
+            _ => {},
+        }
+        if !rules.conditional_scopes().is_empty() {
+            use asterius_domain::ports::TenantSettingsRepository as _;
+            let settings = crate::PgTenantSettings::new(self.pool.clone()).settings(tenant).await?;
+            for scope in rules.conditional_scopes() {
+                if scope.assurance_remedy.as_ref().is_some_and(|target| !settings.acr_policy().can_produce(target)) {
+                    return Err(DomainError::invalid("conditional_scopes.assurance_remedy", "authentication requirement unavailable"));
+                }
+            }
+        }
+        sqlx::query("insert into tenant_policies(tenant_id,document,created_at,updated_at) values($1,$2,$3,$3) on conflict(tenant_id) do update set document=excluded.document,updated_at=excluded.updated_at").bind(tenant.as_str()).bind(rules.to_json()).bind(now).execute(&mut *tx).await.map_err(to_domain_error)?;
+        tx.commit().await.map_err(to_domain_error)
+    }
+
 }
 
 #[async_trait::async_trait]
@@ -92,37 +118,17 @@ impl PolicyStore for PgPolicies {
         rules: &RuleSet,
         now: OffsetDateTime,
     ) -> Result<(), DomainError> {
-        // `insert … on conflict`, like the theme: a tenant that has never had a
-        // policy has no row to update, and the caller should not have to know
-        // which case it is in. The `where exists` turns an unknown tenant into
-        // a `Conflict` rather than a foreign-key violation surfacing as a
-        // storage failure.
-        let affected = sqlx::query!(
-            "insert into tenant_policies (tenant_id, document, created_at, updated_at)
-             select $1, $2::jsonb, $3, $3
-              where exists (select 1 from tenants where tenant_id = $1)
-             on conflict (tenant_id)
-             do update set document = excluded.document, updated_at = excluded.updated_at",
-            tenant.as_str(),
-            rules.to_json(),
-            now
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(to_domain_error)?
-        .rows_affected();
+        self.publish(tenant, rules, None, now).await
+    }
 
-        if affected == 0 {
-            return Err(DomainError::Conflict("no such tenant".to_owned()));
-        }
-        Ok(())
+    async fn replace_if_revision(&self, tenant: &TenantId, rules: &RuleSet, expected: Option<&str>, now: OffsetDateTime) -> Result<(), DomainError> {
+        self.publish(tenant, rules, Some(expected), now).await
     }
 
     async fn clear(&self, tenant: &TenantId) -> Result<bool, DomainError> {
-        let affected = sqlx::query!(
-            "delete from tenant_policies where tenant_id = $1",
-            tenant.as_str()
-        )
+        let conditional: bool = sqlx::query_scalar("select exists(select 1 from tenant_policies where tenant_id=$1 and coalesce(jsonb_array_length(document->'conditional_scopes'),0)>0)").bind(tenant.as_str()).fetch_one(&self.pool).await.map_err(to_domain_error)?;
+        if conditional { return Err(DomainError::Conflict("remove conditional scopes using revision-checked publication".to_owned())); }
+        let affected = sqlx::query("delete from tenant_policies where tenant_id=$1 and coalesce(jsonb_array_length(document->'conditional_scopes'),0)=0").bind(tenant.as_str())
         .execute(&self.pool)
         .await
         .map_err(to_domain_error)?

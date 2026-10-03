@@ -2966,9 +2966,9 @@ async fn access_search_dispatch(
     let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
     let scope = endpoints.store.scope(tenant.id.clone());
     let policies = asterius_store_pg::PgPolicies::new(endpoints.store.pool().clone());
-    let engine = asterius_domain::policy::DeclarativeEngine::new(Arc::new(
-        asterius_store_pg::PgPolicies::new(endpoints.store.pool().clone()),
-    ));
+    let engine = super::conditional::ConditionalPolicyEngine::new(
+        super::conditional::ConditionalAccess::new(endpoints.store.clone(), endpoints.capabilities, Arc::clone(&endpoints.kek), Arc::clone(&endpoints.audit)), tenant.clone(), now,
+    );
     let subjects = StoredSubjects {
         users: scope.users(Arc::clone(&endpoints.kek)),
         groups: asterius_store_pg::PgGroups::new(endpoints.store.pool().clone()),
@@ -3079,10 +3079,9 @@ async fn access_evaluation_dispatch(
     let now = time::OffsetDateTime::now_utc();
     let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
     let scope = endpoints.store.scope(tenant.id.clone());
-    let engine = asterius_domain::policy::DeclarativeEngine::new(Arc::new(
-        asterius_store_pg::PgPolicies::new(endpoints.store.pool().clone()),
-    ))
-    .with_explanations("access_evaluation");
+    let engine = super::conditional::ConditionalPolicyEngine::new(
+        super::conditional::ConditionalAccess::new(endpoints.store.clone(), endpoints.capabilities, Arc::clone(&endpoints.kek), Arc::clone(&endpoints.audit)), tenant.clone(), now,
+    );
     let subjects = StoredSubjects {
         users: scope.users(Arc::clone(&endpoints.kek)),
         groups: asterius_store_pg::PgGroups::new(endpoints.store.pool().clone()),
@@ -4655,6 +4654,7 @@ async fn run_authorize(
 
     authorize::authorize(
         AuthorizeContext {
+            conditional: Some(Arc::new(super::conditional::ConditionalAccess::new(endpoints.store.clone(), endpoints.capabilities, Arc::clone(&endpoints.kek), Arc::clone(&endpoints.audit)))),
             tenant,
             signer: Some(endpoints.signer.as_ref()),
             language: &language,
@@ -5424,6 +5424,7 @@ async fn interaction_show(
     let mail = scope.mail();
     interaction::show(
         InteractionContext {
+            conditional: Some(Arc::new(super::conditional::ConditionalAccess::new(endpoints.store.clone(), endpoints.capabilities, Arc::clone(&endpoints.kek), Arc::clone(&endpoints.audit)))),
             upstream_providers: &upstream_providers,
             tenant: &tenant,
             signer: Some(endpoints.signer.as_ref()),
@@ -5565,6 +5566,7 @@ async fn interaction_submit(
     let mail = scope.mail();
     interaction::submit(
         InteractionContext {
+            conditional: Some(Arc::new(super::conditional::ConditionalAccess::new(endpoints.store.clone(), endpoints.capabilities, Arc::clone(&endpoints.kek), Arc::clone(&endpoints.audit)))),
             upstream_providers: &upstream_providers,
             tenant: &tenant,
             signer: Some(endpoints.signer.as_ref()),
@@ -5884,6 +5886,7 @@ async fn upstream_callback(
     let mail = scope.mail();
     interaction::complete_external(
         InteractionContext {
+            conditional: Some(Arc::new(super::conditional::ConditionalAccess::new(endpoints.store.clone(), endpoints.capabilities, Arc::clone(&endpoints.kek), Arc::clone(&endpoints.audit)))),
             upstream_providers: &upstream_providers,
             tenant: &tenant,
             signer: Some(endpoints.signer.as_ref()),

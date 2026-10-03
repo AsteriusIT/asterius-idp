@@ -3076,12 +3076,19 @@ impl Handling<'_> {
             .map_err(|_| AdminError::Invalid("the request body is too large".to_owned()))?;
         let rules = policies::parse_document(&bytes)?;
 
-        self.state
-            .backend
-            .policies()
-            .replace(&self.tenant.id, &rules, self.now)
-            .await
-            .map_err(|error| AdminError::from_storage(crate::POLICY_UPDATE_ID, &error))?;
+        let policies = self.state.backend.policies();
+        let matches = self.headers.get_all(axum::http::header::IF_MATCH);
+        let absent = self.headers.get_all(axum::http::header::IF_NONE_MATCH);
+        let condition = if matches.iter().count() == 1 && absent.iter().count() == 0 {
+            let revision = matches.iter().next().and_then(|value| value.to_str().ok()).and_then(|value| value.strip_prefix('"')).and_then(|value| value.strip_suffix('"')).filter(|value| value.starts_with("sha256:") && value.len()==71 && value[7..].bytes().all(|byte| byte.is_ascii_hexdigit())).ok_or_else(|| AdminError::Invalid("a canonical quoted policy revision is required".to_owned()))?;
+            Some(Some(revision))
+        } else if absent.iter().count() == 1 && matches.iter().count() == 0 && absent.iter().next().is_some_and(|value| value == "*") { Some(None) }
+        else if matches.iter().count() == 0 && absent.iter().count() == 0 { None }
+        else { return Err(AdminError::Invalid("one policy publication precondition is required".to_owned())); };
+        match condition {
+            Some(expected) => policies.replace_if_revision(&self.tenant.id, &rules, expected, self.now).await,
+            None => policies.replace(&self.tenant.id, &rules, self.now).await,
+        }.map_err(|error| group_error(crate::POLICY_UPDATE_ID, error))?;
 
         self.record(
             EventType::POLICY_UPDATED,

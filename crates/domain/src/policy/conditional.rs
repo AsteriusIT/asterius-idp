@@ -324,13 +324,27 @@ impl ConditionalScope {
         if wire.network_zones.len() > 64 || wire.network_zones.iter().any(|(name, networks)| name.is_empty() || name.len() > 128 || !name.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')) || networks.is_empty() || networks.len() > 16 || networks.iter().collect::<BTreeSet<_>>().len() != networks.len()) {
             return Err(PolicyDocumentError::Malformed("invalid bounded network zones"));
         }
+        let rules = RuleSet::conditional_rules(&json!({"version":1,"rules":wire.rules}))?;
+        for rule in rules.rules() {
+            let mut pending: Vec<_> = rule.when.iter().collect();
+            while let Some(condition) = pending.pop() {
+                match condition {
+                    Condition::All(children) | Condition::Any(children) => pending.extend(children),
+                    Condition::Not(child) => pending.push(child),
+                    Condition::Trusted(TrustedPredicate::NetworkZone(name)) if !wire.network_zones.contains_key(name) => {
+                        return Err(PolicyDocumentError::Malformed("network predicate references an undefined zone"));
+                    }
+                    _ => {},
+                }
+            }
+        }
         Ok(Self {
             mode: wire.mode,
             id: wire.id,
             clients: wire.clients.into_iter().map(ClientId::new).collect(),
             actions: wire.actions.into_iter().collect(),
             required_facts: wire.required_facts.into_iter().collect(),
-            rules: RuleSet::conditional_rules(&json!({"version":1,"rules":wire.rules}))?,
+            rules,
             assurance_remedy: wire.assurance_remedy,
             network_zones: wire.network_zones,
         })
@@ -398,4 +412,26 @@ mod tests {
         assert!(RuleSet::from_json(&json!({"version":1,"rules":[{"id":"bypass","effect":"permit","when":{"device_compliance":"compliant"}}]})).is_err());
         assert!(scope(json!({"application_sensitivity":"critical"})).evaluate(&request(BTreeMap::new())).context().acr_values().is_empty());
     }
+    #[test]
+    fn missing_invalid_and_unavailable_facts_cannot_be_negated_or_ignored() {
+        let now = OffsetDateTime::UNIX_EPOCH;
+        let rule = scope(json!({"any":[{"not":{"device_compliance":"compliant"}},{"application_sensitivity":"critical"}]}));
+        let sensitivity = Fact::known(FactValue::Text("critical".to_owned()), "admin", now, now + time::Duration::seconds(30));
+        for state in [Availability::Absent, Availability::Stale, Availability::Unavailable, Availability::Invalid] {
+            let facts = BTreeMap::from([(FactName::DeviceCompliance, Fact::missing(state, "registry")), (FactName::ApplicationSensitivity, sensitivity.clone())]);
+            assert!(!rule.evaluate(&request(facts)).permit());
+        }
+        let wrong_type = Fact::known(FactValue::Names(BTreeSet::new()), "registry", now, now + time::Duration::seconds(30));
+        assert!(!rule.evaluate(&request(BTreeMap::from([(FactName::DeviceCompliance, wrong_type), (FactName::ApplicationSensitivity, sensitivity)]))).permit());
+    }
+
+    #[test]
+    fn undefined_network_zones_cannot_be_used_under_not() {
+        let document = json!({"version":1,"rules":[],"conditional_scopes":[{"id":"network","mode":"active","clients":["app"],"actions":["client_credentials"],"rules":[{"id":"bypass","effect":"permit","when":{"not":{"network_zone":"undefined"}}}]}]});
+        assert!(RuleSet::from_json(&document).is_err());
+        for name in ["trusted", "trusted.device_compliance", "asterius.trusted.assurance"] {
+            assert!(Properties::new([(name, json!("compliant"))]).is_err());
+        }
+    }
+
 }
