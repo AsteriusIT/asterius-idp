@@ -2625,3 +2625,20 @@ add no browser origin. This explicitly trusts one registered client origin in
 the completing form policy, never wildcard destinations or raw browser URLs.
 The source templates still escape all field content and nonce-protect scripts;
 authentication, CSRF tokens and redirect validation are unchanged.
+
+## Private application gateway
+
+The OAuth2 Proxy/Envoy profile establishes a separate cached browser-session
+authority after explicit confidential standard OIDC login. Public Envoy strips
+caller credentials, identity and forwarding headers; OAuth2 Proxy trusts only
+the exact Envoy peer and supplies verified user/email to a private backend.
+No group authorization is configured; adding an issuer group mapping requires a
+separate review. Bearer/JWT bypass is disabled. Backend/proxy ports must
+never be publicly published. Source logout cannot immediately revoke this
+gateway cookie; a 30-second non-refreshed TTL bounds retained authority. Login
+CSRF and browser cross-site POST refusal do not replace application mutation
+CSRF protection. Host/network owners and the authenticated backend remain
+trusted. The native proxy forwards its sensitive gateway session cookie to that
+backend, which must exclude it from logs and disclosure; OAuth access/ID tokens
+and caller Authorization are not delegated. The [gateway recipe](integrations/gateway.md) describes the tested
+topology and native product evidence without claiming downstream DPoP binding.
