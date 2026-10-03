@@ -16,10 +16,13 @@ import uuid
 ROOT=Path(__file__).resolve().parents[2]
 
 
-def command(args,body=None):
-    result=subprocess.run(args,input=body,text=True,capture_output=True,timeout=120)
+def command(args,body=None,timeout=120):
+    result=subprocess.run(args,input=body,text=True,capture_output=True,timeout=timeout)
     if result.returncode:
-        stage=next((line for line in result.stderr.splitlines() if line.startswith(('GATEWAY_BROWSER_STAGE=','GATEWAY_CHECK='))), '')
+        stage=next((line for line in result.stderr.splitlines() if line.startswith(('GATEWAY_BROWSER_STAGE=','GATEWAY_CHECK=','PRODUCT_BROWSER_STAGE='))), '')
+        if not stage:
+            markers=['browserType.launch','SyntaxError','Target page, context or browser has been closed','TimeoutError','ENOSPC','ERR_MODULE_NOT_FOUND','page.waitForRequest','ERR_CONNECTION_REFUSED','Cannot find','undefined service','invalid compose','no such service','mount source path does not exist','permission denied','unhealthy','manifest unknown','pull access denied','invalid interpolation','failed to solve','unauthorized','no matching manifest','unsupported config']
+            stage='SAFE_CHILD_DIAGNOSTIC='+','.join(marker for marker in markers if marker in result.stderr)
         raise RuntimeError('controlled fixture command failed: '+Path(args[0]).name+' exit='+str(result.returncode)+(' '+stage if stage else ''))
     return result.stdout
 
@@ -83,8 +86,16 @@ def fixture(port,callback,client_id,hostname='127.0.0.1',bind='127.0.0.1'):
                      values('e2e','{client_id}','Disposable product integration','oidc','client_secret_basic',decode('{digest}','hex'),
                      array['authorization_code'],array['code'],array['{callback}'],array['openid','email'],
                      array[(select default_resource from tenants where tenant_id='e2e')],false,false,'ES256');""")
+                # Stable opaque identities are seeded only in this owned disposable DB.
+                # Production obtains these identifiers from verified tokens, never local UUIDs.
+                approved_sub='subject-'+secrets.token_urlsafe(32)
+                denied_sub='subject-'+secrets.token_urlsafe(32)
+                sql(database,f"""insert into subject_identifiers(tenant_id,user_id,sector_identifier,subject)
+                     select 'e2e',user_id,'',case when username='sweep@example.test' then '{approved_sub}' else '{denied_sub}' end
+                     from users where tenant_id='e2e' and username in ('sweep@example.test','denied@example.test');""")
                 process.terminate();process.wait(timeout=15);process=start()
                 yield {'root':root,'issuer':issuer,'secret':secret,'client_id':client_id,'database':database,
+                       'approved_sub':approved_sub,'denied_sub':denied_sub,
                        'binary_sha256':hashlib.sha256(binary.read_bytes()).hexdigest()}
             finally:
                 if process is not None and process.poll() is None:

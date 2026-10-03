@@ -1,0 +1,59 @@
+# Grafana 13.2.3: explicit confidential standard OIDC, explicit Bearer compatibility selected for this client.
+[server]
+protocol = https
+http_port = 3000
+root_url = ${APPLICATION_ORIGIN}
+cert_file = /cfg/application.crt
+cert_key = /cfg/application.key
+[paths]
+data = /data
+logs = /data/logs
+plugins = /data/plugins
+[security]
+disable_initial_admin_creation = true
+secret_key = $__file{/cfg/application.secret}
+cookie_secure = true
+cookie_samesite = lax
+[users]
+allow_sign_up = false
+allow_org_create = false
+[auth]
+disable_login_form = true
+oauth_allow_insecure_email_lookup = false
+login_maximum_inactive_lifetime_duration = 30s
+login_maximum_lifetime_duration = 30s
+[auth.basic]
+enabled = false
+[auth.anonymous]
+enabled = false
+[auth.generic_oauth]
+enabled = true
+name = Asterius
+allow_sign_up = true
+client_id = ${CLIENT_ID}
+client_secret = $__file{/cfg/client.secret}
+scopes = openid email
+auth_url = ${ISSUER}/authorize
+token_url = ${ISSUER}/token
+api_url = ${ISSUER}/userinfo
+login_attribute_path = sub
+email_attribute_path = email
+role_attribute_path = sub == '${ALLOWED_SUB}' && email_verified == `true` && 'Viewer' || ''
+role_attribute_strict = true
+allow_assign_grafana_admin = false
+skip_org_role_sync = false
+auth_style = InHeader
+use_pkce = true
+use_refresh_token = false
+validate_id_token = true
+jwk_set_url = ${ISSUER}/jwks
+tls_skip_verify_insecure = false
+tls_client_ca = /cfg/source-ca.pem
+[plugins]
+preinstall_disabled = true
+[analytics]
+reporting_enabled = false
+check_for_updates = false
+[log]
+mode = console
+level = warn
