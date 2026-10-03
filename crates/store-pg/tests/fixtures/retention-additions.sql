@@ -165,3 +165,10 @@ with f as (select $1::text as tenant, $2::uuid as owner, $3::uuid as grant_id, $
 insert into grant_assurance_proofs (tenant_id,grant_id,authenticated_at,acr,amr,assurance_authenticated_at,assurance_policy_revision,assurance_methods)
 select g.tenant_id,g.grant_id,f.expires,g.acr,g.amr,f.expires,repeat('a',64),array['pwd'] from grants g,f
 where g.tenant_id=f.tenant and g.grant_id=f.grant_id on conflict do nothing;
+
+-- Retention-only exact lineage; never a runtime source of fresh assurance.
+with f as (select $1::text as tenant, $2::uuid as owner, $3::uuid as grant_id, $4::text as label, $5::timestamptz as expires)
+insert into grant_session_lineage(tenant_id,grant_id,user_id,public_sid,lookup_digest)
+select g.tenant_id,g.grant_id,f.owner,s.public_sid,s.session_id from grants g,f,sessions s
+where g.tenant_id=f.tenant and g.grant_id=f.grant_id and s.tenant_id=f.tenant and s.session_id=f.label
+on conflict do nothing;
