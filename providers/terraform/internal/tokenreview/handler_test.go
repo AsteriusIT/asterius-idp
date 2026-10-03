@@ -80,7 +80,12 @@ const accepted = `{"apiVersion":"authentication.k8s.io/v1","kind":"TokenReview",
 
 func request(t *testing.T, s *httptest.Server, c *http.Client) (int, string) {
 	t.Helper()
-	r, err := http.NewRequest(http.MethodPost, s.URL+"/review", strings.NewReader(`{"apiVersion":"authentication.k8s.io/v1","kind":"TokenReview","spec":{"token":"must-never-echo","audiences":["cluster-client"]}}`))
+	return requestAt(t, s, c, "/review")
+}
+
+func requestAt(t *testing.T, s *httptest.Server, c *http.Client, path string) (int, string) {
+	t.Helper()
+	r, err := http.NewRequest(http.MethodPost, s.URL+path, strings.NewReader(`{"apiVersion":"authentication.k8s.io/v1","kind":"TokenReview","spec":{"token":"must-never-echo","audiences":["cluster-client"]}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,5 +157,27 @@ func TestTokenReviewTimeoutCannotReleasePositiveIdentity(t *testing.T) {
 	_, body := request(t, s, c)
 	if time.Since(started) > 4*time.Second || !strings.Contains(body, `"authenticated":false`) {
 		t.Fatal("late positive escaped total deadline")
+	}
+}
+
+func TestTokenReviewKubernetesTransportQueryCannotExtendDeadline(t *testing.T) {
+	for _, query := range []string{"", "?timeout=30s", "?timeout=300s", "?timeout=30s&timeout=30s", "?timeout=30s&audience=foreign", "?timeout=%33%30s"} {
+		t.Run(query, func(t *testing.T) {
+			called := false
+			remote := remoteFunc(func(ctx context.Context, _ string, _ json.RawMessage) (json.RawMessage, error) {
+				called = true
+				deadline, ok := ctx.Deadline()
+				if !ok || time.Until(deadline) > 3*time.Second {
+					t.Error("transport query changed local review deadline")
+				}
+				return json.RawMessage(accepted), nil
+			})
+			server, client := fixture(t, remote, false)
+			status, body := requestAt(t, server, client, "/review"+query)
+			allowed := query == "" || query == "?timeout=30s"
+			if status != 200 || called != allowed || strings.Contains(body, `"authenticated":true`) != allowed {
+				t.Fatalf("query=%q status=%d called=%t allowed=%t", query, status, called, allowed)
+			}
+		})
 	}
 }

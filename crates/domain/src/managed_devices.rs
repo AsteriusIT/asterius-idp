@@ -127,7 +127,7 @@ impl DeviceBinding {
         }
         let mut binding = Self::from_verified(evidence, now)?;
         binding.bound_grant_id = Some(grant.id.clone());
-        binding.request_parent = grant.parent.clone();
+        binding.request_parent.clone_from(&grant.parent);
         binding.validate(now)?;
         Ok(binding)
     }
@@ -167,7 +167,9 @@ impl DeviceBinding {
         }
         if let Some(parent) = &self.request_parent {
             let id = Uuid::parse_str(parent.as_str()).map_err(|_| invalid())?;
-            if id.is_nil() { return Err(invalid()); }
+            if id.is_nil() {
+                return Err(invalid());
+            }
         }
         LeafFingerprint::parse(&self.interaction_digest)?;
         LeafFingerprint::parse(&self.leaf_sha256)?;

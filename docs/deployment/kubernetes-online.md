@@ -75,7 +75,7 @@ kind: Config
 clusters:
 - name: asterius-review
   cluster:
-    server: https://review.example:9448/
+    server: https://review.example:9448/review
     certificate-authority: /etc/kubernetes/review-server-ca.pem
 users:
 - name: api-server

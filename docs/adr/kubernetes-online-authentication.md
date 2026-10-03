@@ -107,6 +107,15 @@ leaving the equivalent offline JWT authenticator enabled bypasses online
 revocation. Existing service-account and certificate authenticators remain
 independent. Generated configuration must make this replacement explicit.
 
+The configured webhook URL ends in `/review`. Kubernetes 1.35 client-go adds
+`?timeout=30s` from its configured transport timeout. The adapter accepts only
+an empty query or that exact bounded transport query; it ignores the parameter
+for its own deadline and rejects duplicate/unknown/alternate values. This carries
+no identity or audience authority. See the pinned
+[client-go request construction](https://github.com/kubernetes/client-go/blob/v0.35.0/rest/request.go)
+and [webhook timeout configuration](https://github.com/kubernetes/kubernetes/blob/v1.35.0/staging/src/k8s.io/apiserver/pkg/util/webhook/webhook.go).
+This compatibility refinement is part of the same pending normative review.
+
 No adapter or backend positive identity cache is permitted. The adapter gives
 each complete review a three-second deadline, including service authentication
 and live-state lookup. Timeout, storage error, invalid upstream result and

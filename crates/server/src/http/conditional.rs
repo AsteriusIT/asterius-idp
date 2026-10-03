@@ -1626,6 +1626,12 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
                 .and_then(serde_json::Value::as_i64)
                 .ok_or_else(|| DomainError::invalid("id_token", "integer expiry required"))?;
             identity_claims["exp"] = serde_json::json!(expiry.min(issued.saturating_add(300)));
+            // The ordinary ID builder omits an empty managed-group release.
+            // Online review requires an explicit signed release so a group-less
+            // human can authenticate without gaining any group authority.
+            if identity_claims.get("group_ids").is_none() {
+                identity_claims["group_ids"] = serde_json::json!([]);
+            }
         }
         if let Some(identity) = &identity {
             if algorithm != Some(asterius_domain::SigningAlgorithm::Es256) {

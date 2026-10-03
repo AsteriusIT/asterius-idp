@@ -2849,10 +2849,13 @@ window. During controller outage native bindings may linger, but old JIT credent
 expire at their signed activation-capped deadline and newly ordinary credentials
 cannot match that identity. Offline revocation during outage retains only the bounded
 already issued JWT residual plus the independently verified successful-authentication
-cache and clock skew. The supported Kubernetes v1.35 profile has a ten-second
-success-cache ceiling; disposable acceptance measures old-token refusal after exp
-within that ceiling, instead of claiming immediate offline expiry. Baseline bindings
-and credentials remain independent.
+cache and clock skew. Kubernetes v1.35 retains a ten-second success cache, but
+its detached authenticator can complete an already-started lookup for thirty
+seconds. The pinned OIDC verifier checks expiry before awaited key resolution;
+a late positive can populate that cache. The conservative source-derived residual
+is expiry plus forty seconds and scheduling/clock margin. Healthy warm-key
+acceptance does not establish the worst-case delayed-key-resolution bound.
+Baseline bindings and credentials remain independent.
 
 ### Candidate Kubernetes online review boundary (`ast-dd1y.1.5`)
 
@@ -2904,14 +2907,20 @@ state. Human source CRUD retains existing exact-realm console role/session/CSRF
 admission and does not inherit machine tokens or deployment-wide shortcuts.
 
 Private original proofs transfer only from a winning interaction to its exact
-code digest. Refresh, ordinary local exchange and PDP require newly verified
+code digest, with a nonrenewable five-minute/certificate deadline. Refresh,
+ordinary local exchange and PDP require newly verified
 request possession and an exact current grant. Only early exchange may use an
 explicit verified parent's provisional child; final signing requires the
 persisted claimed child. No other session, strongest grant, caller device hint,
 public claim or stale source observation supplies missing authority. The same
 publication connection holds current source/enrollment/authority facts through
 decisions/signing, and original proof/source/certificate/grant deadlines bound
+<<<<<<< HEAD
 their release. Unknown management/compliance, removal, disable and expiry deny
+=======
+their release. Fresh clocks after awaited audit/cryptographic work re-evaluate
+those original deadlines. Unknown management/compliance, removal, disable and expiry deny
+>>>>>>> 08f36e6c
 active required-fact rules without a positive authority cache.
 
 Removal erases the leaf/user/application/posture association and private proof
@@ -2923,3 +2932,9 @@ and copied software keys remain usable. The controlled HTTPS/browser evidence
 uses disposable software PKI, seeded refresh/source inputs and real local user
 authentication; it claims neither live MDM verification nor hardware attestation.
 Human normative review remains pending before delivery of this candidate.
+<<<<<<< HEAD
+=======
+
+The shared private Tailscale bridge forwards no device certificate and cannot
+exercise this separately configured candidate device source.
+>>>>>>> 08f36e6c

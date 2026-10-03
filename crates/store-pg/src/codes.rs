@@ -73,7 +73,10 @@ impl PgCodeRepository {
         let digest = Self::digest_bytes(digest)?;
         if let Some(proof) = &binding.device_binding {
             proof.validate(now)?;
-            if proof.tenant() != &self.tenant || proof.client().as_str() != binding.client_id || proof.bound_grant_id().is_some() {
+            if proof.tenant() != &self.tenant
+                || proof.client().as_str() != binding.client_id
+                || proof.bound_grant_id().is_some()
+            {
                 return Err(DomainError::invalid(
                     "device",
                     "code proof binding mismatch",
@@ -177,7 +180,10 @@ impl PgCodeRepository {
                 .map_err(|_| DomainError::invalid("device", "invalid private proof"))?;
             if let Some(proof) = &device_binding {
                 proof.validate(now)?;
-                if proof.tenant() != &self.tenant || proof.client().as_str() != row.client_id || proof.bound_grant_id().is_some() {
+                if proof.tenant() != &self.tenant
+                    || proof.client().as_str() != row.client_id
+                    || proof.bound_grant_id().is_some()
+                {
                     return Err(DomainError::invalid(
                         "device",
                         "code proof binding mismatch",

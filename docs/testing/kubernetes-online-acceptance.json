@@ -1,0 +1,37 @@
+{
+  "status": "pass",
+  "controls": [
+    "owner_csrf_cas_and_reviewer_read_only",
+    "real_par_pkce_code_and_refresh_digest_registration",
+    "real_password_session_rotation_preserves_public_sid",
+    "route_audience_service_only_dpop_selected_reviewer_tenant_and_wire_authority",
+    "reviewer_exact_cc_receipt_revocation_and_independent_grant",
+    "review_is_read_only",
+    "real_mtls_and_exact_spki",
+    "actual_kube_exact_grant_revocation_and_other_grant_survival",
+    "signed_groups_intersect_current_membership_and_addition_cannot_widen",
+    "real_user_disable_live_review",
+    "real_browser_logout_live_review",
+    "complete_three_second_route_timeout_under_owned_table_lock",
+    "owned_primary_database_outage_uncached_native_fail_closed_and_recovery",
+    "all_adapter_outage_no_native_oidc_fallback",
+    "terminal_metadata_restore_and_revision_aba_denial"
+  ],
+  "measured_revoke_seconds": 10.289,
+  "limits": [
+    "seeded browser/session proofs; no new WebAuthn ceremony",
+    "warm-cache measurement only; delayed transport 40s source bound not injected",
+    "no delayed-JWKS or delayed-webhook transport injection; source worst-case timing only"
+  ],
+  "binary_sha256": "11f0d89427097dd2d4797311abea5e0fb26b973838fa3bebb70e531f453785ca",
+  "rust_source_commit": "372a51de",
+  "go_transport_commit": "0ae022c8",
+  "kubernetes_version": "1.35.0",
+  "adapter_count": 1,
+  "webhook_inner_cache_ttl_seconds": 0,
+  "outer_cache_ttl_seconds": 10,
+  "transport": "direct mTLS production adapter; no diagnostic relay",
+  "owned_cleanup": "no nonce DB/container/cluster/listener remains",
+  "human_delivery_review": "pending",
+  "ignored_pg_local_execution": false
+}
