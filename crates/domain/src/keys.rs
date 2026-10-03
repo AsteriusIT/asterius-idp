@@ -414,6 +414,19 @@ pub trait Signer: fmt::Debug + Send + Sync {
         claims: &serde_json::Value,
     ) -> Result<CompactJws, crate::DomainError>;
 
+    /// Signs an identity assertion with its exact authorized human grant.
+    /// Production decorators recheck temporary role authority at signing.
+    async fn sign_identity(
+        &self,
+        tenant: &TenantId,
+        _grant: &crate::Grant,
+        algorithm: Option<SigningAlgorithm>,
+        typ: &'static str,
+        claims: &serde_json::Value,
+    ) -> Result<CompactJws, crate::DomainError> {
+        self.sign(tenant, algorithm, typ, claims).await
+    }
+
     /// Signs an access token with its durable authorization lineage available
     /// to an issuance fence. Adapters without task enforcement retain signing
     /// behavior; the production composition installs the authoritative fence.

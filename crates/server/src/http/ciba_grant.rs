@@ -397,6 +397,7 @@ impl CibaGrant<'_> {
         // flow has no authorization request to have carried one.
         let id_token = if grant.scopes.contains("openid") {
             let parts = issuance::IdTokenParts {
+                grant: &grant,
                 require_ipsie_assurance: false,
                 rp_session_lifetime_seconds: None,
                 device_secret_hash: None,

@@ -57,7 +57,7 @@ interface Draft {
   approvers: string; requesterAcr: string; approverAcr: string;
   minutes: string; eligibilityDays: string;
 }
-const emptyDraft = (): Draft => ({ client: '', resource: '', role: '', permissions: '', approvers: '', requesterAcr: 'pwd', approverAcr: 'phr', minutes: '15', eligibilityDays: '1' });
+const emptyDraft = (): Draft => ({ client: '', resource: '', role: '', permissions: '', approvers: '', requesterAcr: 'urn:asterius:acr:pwd', approverAcr: 'phr', minutes: '15', eligibilityDays: '1' });
 const pathOf = (item: Entitlement): string => `temporary-entitlements/${encodeURIComponent(item.entitlement_id)}`;
 const failure = (error: unknown): string => error instanceof Error ? error.message : 'The change could not be saved. Try again.';
 

@@ -636,6 +636,7 @@ impl TokenExchange<'_> {
             tenant,
             client,
             issuance::IdTokenParts {
+                grant: &grant,
                 require_ipsie_assurance: false,
                 rp_session_lifetime_seconds: None,
                 acr_policy: self.acr_policy,

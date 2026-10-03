@@ -465,6 +465,18 @@ impl<'a> IdToken<'a> {
     // fuzz-target: id_token_claims
     pub fn build(self) -> Result<UnsignedToken, IssuanceError> {
         let lifetime = usable_lifetime(self.lifetime, Self::MAX_LIFETIME)?;
+        let temporary_deadline = self
+            .role_claims
+            .contains(&RoleClaim::ResourceAccess)
+            .then(|| self.roles.temporary_expiry_for(self.claimed.client()))
+            .flatten();
+        let expires_at = temporary_deadline.map_or(self.issued_at + lifetime, |deadline| {
+            deadline.min(self.issued_at + lifetime)
+        });
+        if expires_at.unix_timestamp() <= self.issued_at.unix_timestamp() {
+            return Err(IssuanceError::Lifetime);
+        }
+
         let subject = self.claimed.subject().ok_or(IssuanceError::NoSubject)?;
         // Present and empty is its own failure. OIDC Core §2 makes `sub`
         // REQUIRED, and §3.1.3.7 has the client compare it to the one it
@@ -504,10 +516,7 @@ impl<'a> IdToken<'a> {
         // carrying "additional audiences not trusted by the Client", and the
         // only audience an ID token has is the client that asked for it.
         claims.insert("aud".to_owned(), Value::String(client_id.to_owned()));
-        claims.insert(
-            "exp".to_owned(),
-            Value::from((self.issued_at + lifetime).unix_timestamp()),
-        );
+        claims.insert("exp".to_owned(), Value::from(expires_at.unix_timestamp()));
         claims.insert(
             "iat".to_owned(),
             Value::from(self.issued_at.unix_timestamp()),
@@ -1327,6 +1336,49 @@ mod tests {
                 .collect(),
         );
         held
+    }
+
+    #[test]
+    fn temporary_roles_cap_only_id_assertions_that_release_client_authority() {
+        let grant = grant_with(Some(SubjectId::new("SUBJECT-1")));
+        let claimed = grant.claim(now()).expect("live grant");
+        let mut held = held();
+        let deadline = now() + Duration::seconds(10);
+        held.temporary_deadlines.insert(
+            ClientId::new("billing"),
+            [(
+                asterius_domain::RoleName::parse("refund").expect("role"),
+                deadline,
+            )]
+            .into_iter()
+            .collect(),
+        );
+        for release in [true, false] {
+            let role_claims = if release {
+                [RoleClaim::ResourceAccess].into_iter().collect()
+            } else {
+                BTreeSet::new()
+            };
+            let token = IdToken::new(
+                &issuer(),
+                &claimed,
+                SigningAlgorithm::Es256,
+                authentication(),
+                ACCESS_TOKEN,
+                now(),
+            )
+            .with_roles(&held, &role_claims)
+            .for_lifetime(IdToken::MAX_LIFETIME)
+            .build()
+            .expect("identity assertion");
+            if release {
+                assert_eq!(token.claims()["exp"], deadline.unix_timestamp());
+            } else {
+                assert!(
+                    token.claims()["exp"].as_i64().expect("expiry") > deadline.unix_timestamp()
+                );
+            }
+        }
     }
 
     fn built_with_roles(claims: &BTreeSet<RoleClaim>) -> Value {
