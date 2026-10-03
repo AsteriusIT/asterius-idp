@@ -135,6 +135,29 @@ impl OutboundScimCredentials for ScopedCredentialRegistry {
     }
 }
 
+impl asterius_domain::outbound_scim::OutboundScimCredentialCatalogue for ScopedCredentialRegistry {
+    fn available(&self, binding: &CredentialBinding) -> bool {
+        self.contains(binding)
+    }
+    fn descriptors(
+        &self,
+        tenant: &asterius_domain::TenantId,
+    ) -> Vec<asterius_domain::outbound_scim::CredentialDescriptor> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.binding.source_tenant == *tenant)
+            .map(
+                |entry| asterius_domain::outbound_scim::CredentialDescriptor {
+                    reference: entry.binding.reference.clone(),
+                    generation: entry.binding.generation,
+                    target_issuer: entry.binding.target_issuer.clone(),
+                    target_client: entry.binding.target_client.as_str().to_owned(),
+                },
+            )
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,28 +226,5 @@ mod tests {
         );
         assert_eq!(claims["iss"], binding.target_client.as_str());
         assert!(!format!("{registry:?}").contains("target.example"));
-    }
-}
-
-impl asterius_domain::outbound_scim::OutboundScimCredentialCatalogue for ScopedCredentialRegistry {
-    fn available(&self, binding: &CredentialBinding) -> bool {
-        self.contains(binding)
-    }
-    fn descriptors(
-        &self,
-        tenant: &asterius_domain::TenantId,
-    ) -> Vec<asterius_domain::outbound_scim::CredentialDescriptor> {
-        self.entries
-            .iter()
-            .filter(|entry| entry.binding.source_tenant == *tenant)
-            .map(
-                |entry| asterius_domain::outbound_scim::CredentialDescriptor {
-                    reference: entry.binding.reference.clone(),
-                    generation: entry.binding.generation,
-                    target_issuer: entry.binding.target_issuer.clone(),
-                    target_client: entry.binding.target_client.as_str().to_owned(),
-                },
-            )
-            .collect()
     }
 }

@@ -105,6 +105,8 @@ impl std::fmt::Debug for PostResponse {
             .field("content_type_present", &self.content_type.is_some())
             .field("cache_control_present", &self.cache_control.is_some())
             .field("truncated", &self.truncated)
+            .field("etag_present", &self.etag.is_some())
+            .field("dpop_nonce_present", &self.dpop_nonce.is_some())
             .finish()
     }
 }
@@ -526,30 +528,13 @@ impl HttpsPoster {
     }
 }
 
-/// Sends the request and reads just enough of the answer to know the verdict.
-async fn exchange(
+/// Construct bounded protocol headers without exposing credential values.
+fn build_request(
     target: &Target,
     request: PostRequest<'_>,
     body: &[u8],
     method: hyper::Method,
-    stream: tokio_rustls::client::TlsStream<tokio::net::TcpStream>,
-    response_bound: usize,
-) -> Result<PostResponse, PostError> {
-    let failed = || {
-        PostError::Reach(FetchError::Http {
-            host: target.host.clone(),
-        })
-    };
-
-    let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
-        .await
-        .map_err(|_| failed())?;
-    // Drives the socket while the request is in flight; it ends with the
-    // response or when the timeout above drops the sender.
-    let pump = tokio::spawn(async move {
-        let _ = connection.await;
-    });
-
+) -> Result<hyper::Request<Full<Bytes>>, PostError> {
     let mut builder = hyper::Request::builder()
         .method(method.clone())
         .uri(&target.request_target)
@@ -593,9 +578,40 @@ async fn exchange(
             builder = builder.header(header, value);
         }
     }
-    let request = builder
+    builder
         .body(Full::<Bytes>::new(Bytes::copy_from_slice(body)))
+        .map_err(|_| {
+            PostError::Reach(FetchError::Http {
+                host: target.host.clone(),
+            })
+        })
+}
+
+/// Sends the request and reads just enough of the answer to know the verdict.
+async fn exchange(
+    target: &Target,
+    request: PostRequest<'_>,
+    body: &[u8],
+    method: hyper::Method,
+    stream: tokio_rustls::client::TlsStream<tokio::net::TcpStream>,
+    response_bound: usize,
+) -> Result<PostResponse, PostError> {
+    let failed = || {
+        PostError::Reach(FetchError::Http {
+            host: target.host.clone(),
+        })
+    };
+
+    let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+        .await
         .map_err(|_| failed())?;
+    // Drives the socket while the request is in flight; it ends with the
+    // response or when the timeout above drops the sender.
+    let pump = tokio::spawn(async move {
+        let _ = connection.await;
+    });
+
+    let request = build_request(target, request, body, method)?;
 
     let response = sender.send_request(request).await.map_err(|_| failed())?;
     let status = response.status();
