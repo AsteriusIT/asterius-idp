@@ -92,6 +92,9 @@ const INVALID_GRANT: &str = "the refresh token cannot be redeemed";
 /// fields are facts about *this* request — the instant it arrived and the DPoP
 /// key it proved — and [`GrantHandler::handle`] receives neither.
 pub struct RefreshToken<'a> {
+    /// This request's verified device transport; never inherited from a token.
+    pub device_request: Option<crate::managed_devices::DeviceIssuanceContext<'a>>,
+
     /// Client IDs whose issued access tokens must target only this OP.
     pub ipsie_identity_only_clients: Option<&'a std::collections::BTreeSet<String>>,
     pub ipsie_rp_session_lifetimes: Option<&'a std::collections::HashMap<String, u32>>,
@@ -177,6 +180,7 @@ impl<'a> RefreshToken<'a> {
         audit: &'a dyn AuditSink,
     ) -> Self {
         Self {
+            device_request: code.device_request,
             ipsie_identity_only_clients: code.ipsie_identity_only_clients,
             ipsie_rp_session_lifetimes: code.ipsie_rp_session_lifetimes,
             tokens: code.refresh_tokens,
@@ -557,6 +561,10 @@ impl RefreshToken<'_> {
         // refresh reads it afresh every time on purpose (`ast-095`): a token
         // refreshed after a role was withdrawn must not still assert it.
         let role_grant = issuance::role_grant(&narrowed, &targeting);
+        let device_binding = match self.device_request {
+            Some(context) => context.bind(&tenant.id,&role_grant,self.now).await?,
+            None => None,
+        };
         let held = issuance::held_roles(self.roles, &role_grant).await?;
 
         let access_lifetime = self
@@ -596,7 +604,7 @@ impl RefreshToken<'_> {
             .sign_access(
                 &tenant.id,
                 asterius_domain::keys::AccessIssuance {
-                    device_binding: None,
+                    device_binding: device_binding.as_ref(),
                     implicit_resources: &issuance::implicit_resources(
                         tenant,
                         issuance::ImplicitResources {
@@ -620,7 +628,7 @@ impl RefreshToken<'_> {
         // code applies, it is the only thing it can produce.
         let id_token = if effective.contains("openid") {
             let parts = issuance::IdTokenParts {
-                device_binding: None,
+                device_binding: device_binding.as_ref(),
                 grant: &role_grant,
                 require_ipsie_assurance: self
                     .ipsie_identity_only_clients

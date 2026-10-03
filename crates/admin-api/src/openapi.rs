@@ -207,6 +207,7 @@ fn operation_object(operation: &Operation) -> Value {
     temporary_entitlement_documentation(operation, &mut object);
     temporary_kubernetes_documentation(operation, &mut object);
     kubernetes_online_documentation(operation, &mut object);
+    managed_device_documentation(operation, &mut object);
     invitation_documentation(operation, &mut object);
     agent_task_documentation(operation, &mut object);
     theme_documentation(operation, &mut object);
@@ -1153,6 +1154,42 @@ fn temporary_entitlement_documentation(operation: &Operation, object: &mut Value
     }
     object["requestBody"] =
         json!({"required":true,"content":{"application/json":{"schema":schema}}});
+}
+
+fn managed_device_documentation(operation: &Operation, object: &mut Value) {
+    let id = operation.id();
+    if !matches!(id, crate::DEVICE_SOURCES_LIST_ID | crate::DEVICE_SOURCE_CREATE_ID | crate::DEVICE_SOURCE_UPDATE_ID | crate::DEVICES_LIST_ID | crate::DEVICE_REMOVE_ID | crate::DEVICE_ENROLL_ID | crate::DEVICE_POSTURE_ID) { return; }
+    object["description"] = json!("Managed-device-relay/v1. Device possession uses an independently authenticated pinned proxy TLS hop and dedicated tenant device CA; this is distinct from OAuth client mTLS. No arbitrary browser field, public token device claim, session proof or another grant can establish device authority. Latest posture is bounded to 300 seconds and rechecked under the publication fence through final signing. Source/enrollment generations fence disable, renewal and removal; removal erases identifying attributes. Software PKI is not hardware attestation.");
+    object["responses"]["400"] = error_response("Closed bounded device input validation failed.");
+    object["responses"]["404"] = error_response("No current matching record/relay authority in the exact routed tenant.");
+    object["responses"]["409"] = error_response("Exact revision or monotonic observation sequence conflict.");
+    let uuid = json!({"type":"string","format":"uuid"});
+    let client = json!({"type":"string","minLength":1,"maxLength":256});
+    let schema = match id {
+        crate::DEVICE_SOURCE_CREATE_ID | crate::DEVICE_SOURCE_UPDATE_ID => json!({"type":"object","additionalProperties":false,"required":["client_id"],"properties":{
+            "client_id":client,"enabled":{"type":"boolean","default":false},"expected_revision":{"type":["string","null"],"format":"uuid","description":"Required for update; absent/null for creation. Every update changes source generation."}
+        }}),
+        crate::DEVICE_REMOVE_ID => json!({"type":"object","additionalProperties":false,"required":["expected_revision"],"properties":{"expected_revision":uuid}}),
+        crate::DEVICE_ENROLL_ID => {
+            object["security"] = json!([{"adminToken":[asterius_domain::managed_devices::ENROLLMENT_SCOPE]}]);
+            json!({"type":"object","additionalProperties":false,"required":["user_id","leaf_sha256","allowed_client_ids"],"properties":{
+                "user_id":uuid,"leaf_sha256":{"type":"string","pattern":"^[a-f0-9]{64}$","writeOnly":true},
+                "allowed_client_ids":{"type":"array","maxItems":64,"uniqueItems":true,"items":client}
+            },"description":"The current exact source client needs a private successful client-credentials issuance receipt. User/task/workload/delegated tokens and deployment-wide authority are refused; caller cannot choose a device UUID or generation."})
+        }
+        crate::DEVICE_POSTURE_ID => {
+            object["security"] = json!([{"adminToken":[asterius_domain::managed_devices::POSTURE_SCOPE]}]);
+            json!({"type":"object","additionalProperties":false,"required":["profile","source_generation","observations"],"properties":{
+                "profile":{"const":asterius_domain::managed_devices::PROFILE},"source_generation":{"type":"integer","minimum":1},
+                "observations":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"object","additionalProperties":false,"required":["device_id","enrollment_generation","sequence","observed_at","expires_at","posture"],"properties":{
+                    "device_id":uuid,"enrollment_generation":{"type":"integer","minimum":1},"sequence":{"type":"integer","minimum":0},"observed_at":{"type":"integer"},"expires_at":{"type":"integer"},
+                    "posture":{"type":"object","additionalProperties":false,"properties":{"managed":{"type":["boolean","null"]},"compliant":{"type":["boolean","null"]},"disk_encrypted":{"type":["boolean","null"]},"risk":{"type":["string","null"],"enum":["low","medium","high","unknown",null]}}}
+                }}}
+            },"description":"At most 8192 bytes, 32 distinct device UUIDs; all generations/sequences must be current. Whole batch commits atomically. Observations older than 300 seconds or over five seconds ahead are refused; expiry and authority are rechecked after lock waits."})
+        }
+        _ => return,
+    };
+    object["requestBody"] = json!({"required":true,"content":{"application/json":{"schema":schema}},"description":"At most 8192 bytes (1024 for removal). Private credentials/certificates are never returned."});
 }
 
 fn kubernetes_online_documentation(operation: &Operation, object: &mut Value) {

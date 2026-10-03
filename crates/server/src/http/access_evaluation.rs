@@ -233,6 +233,9 @@ pub trait PdpTokenStatus: std::fmt::Debug + Send + Sync {
 
 /// What the endpoint needs.
 pub struct AccessEvaluationContext<'a> {
+    /// Verified possession from this exact request's protected TLS hop.
+    pub device_certificate: Option<&'a asterius_domain::managed_devices::DeviceCertificateEvidence>,
+
     /// The tenant the request arrived at.
     pub tenant: &'a Tenant,
     /// The PDP (`ast-pj0.4`).
@@ -1024,6 +1027,7 @@ pub(crate) async fn authorize(
         _ => None,
     };
     super::conditional::bind_pdp(super::conditional::PdpAuthority {
+        device_certificate: context.device_certificate.cloned(),
         tenant: context.tenant.id.clone(),
         client: client.clone(),
         grant: own_grant,

@@ -1,10 +1,14 @@
 # Managed device runtime preparation
 
-This is source preparation for ast-dd1y.4.5. Human normative review of
-[the selected trust contract](adr/managed-device-posture-source.md) remains
-pending. The draft domain module is not exported, no device profile is enabled,
-no endpoint is mounted, and its draft tests have not run. No interoperability or
-hardware-attestation result is claimed.
+This is a candidate implementation for ast-dd1y.4.5 in its isolated branch.
+Human normative review of [the selected trust contract](adr/managed-device-posture-source.md)
+remains pending before delivery to main. The candidate exports typed ports,
+mounts bounded management/relay and owner inspection routes, implements private
+interaction/code proof transfer, and configures a dedicated authenticated proxy
+TLS listener. Sources remain disabled by default. Source checkpoints composed by
+the parent passed workspace checks/strict lint; the latest owned request-bound
+candidate has not yet been checked or exercised. No runtime interoperability,
+live MDM, hardware-attestation or completed acceptance result is claimed.
 
 The initial management API will separate `admin.device_sources:read/write` and
 `admin.devices:read/write` from relay-only `device.enrollments:write` and
@@ -29,8 +33,8 @@ enrolls, changes ownership or changes a certificate/application allow-list.
 The source client, user and each allowed application must be current in the same
 tenant. Enrollment stores only a lower-case SHA-256 leaf digest, never DER, a
 private key, names, serials, vendor inventory or browser fingerprints. Renewing
-a credential requires an explicit enrollment-generation replacement and clears
-its observation sequence/posture. Ownership is pinned; transferring to another
+a credential requires removal followed by fresh enrollment with a new UUID and
+generation; the prior observation sequence/posture is erased. Ownership is pinned; transferring to another
 user requires removal and a fresh server-generated UUID. Removed UUIDs cannot
 be resurrected. Source disable/client replacement advances source generation;
 re-enabling does not reactivate older associations automatically. Removed
@@ -255,3 +259,65 @@ proxy CA bundle and sorted proxy pins. The verified leaf deadline is capped by
 both device and proxy certificate expiry; certificate renewal or trust changes
 cannot retain an old proof through a stale revision. The candidate is still
 uncompiled and has no real handshake/edge fixture evidence yet.
+
+## Candidate route and authority map
+
+The routed tenant prefix precedes these paths. Source configuration is readable
+under `admin.device_sources:read`; creation and revision-fenced update require
+`admin.device_sources:write`. Human console tenant/deployment administrators can
+write; an exact-tenant SecurityAuditor can read. Automation cannot manage trust.
+`/admin/api/v1/device-sources` lists or creates bounded source metadata;
+`/admin/api/v1/device-sources/{source_id}` updates a saved source and its enable
+state. Every update advances the source generation; re-enable requires fresh
+enrollment rather than reviving old associations.
+
+`/admin/api/v1/devices` returns keyset pages of at most 100 current/minimal removed
+records under `admin.devices:read`. Revision-fenced DELETE on
+`/admin/api/v1/devices/{device_id}` requires `admin.devices:write`.
+These responses omit the enrolled leaf digest, DER, private proof and receipt JTI.
+The owner-only `/account/devices` JSON endpoint derives its account from the
+usable browser session, never a query/body user. GET supplies a bounded page and
+page-specific CSRF token; POST requires that token, a fresh authentication and
+exact device revision before removal. It cannot inspect or remove another owner.
+
+The separate source endpoints `/admin/api/v1/device-sources/{source_id}/enrollments`
+and `/posture` accept only a same-tenant DPoP machine principal whose exact signed
+JTI has a private successful **client_credentials** issuance receipt. Source/client
+status, CC-only confidential registration, scopes, exact grant and receipt expiry
+are checked again after lifecycle locks. A public `sub == client_id` shape alone
+is insufficient. Independent private-key JWT or OAuth mTLS client authentication
+continues to issue these sender-constrained credentials; no device leaf replaces
+that authentication or enrolls a client.
+
+## Current request and delegation phase
+
+A refresh, ordinary OAuth exchange or PDP request receives a fresh server-owned
+request digest and its own verified TLS device certificate; previous code,
+session and grant possession are never copied. The private binding pins exact
+`bound_grant_id` and, for exchange, explicit `request_parent`. Final signing and
+PDP resolution require the authoritative claimed current exact grant under the
+same publication connection, with current tenant/client/user/subject and expiry.
+
+An ordinary local access-token exchange has a verified exact parent but its child
+is provisional before the policy decision. Its early evaluation uses a distinct
+preflight resolver that locks that explicit current parent and matches its user
+and subject to the target child, plus the current source/enrollment and request
+proof. This does not create or release issued authority. Final signing uses only
+the strict persisted-child resolver. No parent search or provisional fallback is
+permitted in a final decision. Specialized exchanges without this exact local
+parent context and PDP tokens without an exact verified grant remain unavailable
+for required device facts rather than borrowing another grant.
+
+Configuration requires explicit dedicated proxy-hop client CA and exact proxy
+leaf pins, a backend TLS certificate/key and trusted immediate proxy CIDRs. The
+edge must verify the device handshake, strip incoming caller certificate fields,
+and forward exactly the verified leaf over the authenticated pinned hop. Merely
+configuring `behind_proxy` or knowing an IP does not prove device possession.
+The current trust revision covers device CA plus proxy CA/pins, so removing an
+anchor or changing a pinned proxy rejects older proofs after restart.
+
+Active enrollment state is bounded per tenant. Expired interaction/code proof
+sidecars and relay receipts are swept in bounded batches; removal immediately
+erases user/leaf/app/posture attributes and deletes private proofs. Only minimal
+removed UUID/generation/revision/timestamps remain for at most 30 days. Source
+configuration is bounded trust state retained until explicit lifecycle removal.

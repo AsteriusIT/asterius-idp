@@ -1,0 +1,189 @@
+{
+  "ticket": "ast-dd1y.4.5",
+  "status": "prepared_not_executed",
+  "human_normative_review": "pending_existing_review_request",
+  "runtime_enabled": false,
+  "reserved_migration": "0164",
+  "fixture_kind": "controlled relay and PKI with real TLS key possession through a verifying proxy",
+  "limitations": [
+    "No live vendor adapter or hardware attestation claim.",
+    "No test result or source authentication is established by this plan.",
+    "No cryptographic verifier or production profile is delivered before human review."
+  ],
+  "cases": [
+    {
+      "id": "source_default_disabled",
+      "boundary": "source registry",
+      "required_observation": "an authenticated relay cannot ingest until its exact tenant source is enabled",
+      "status": "not_run"
+    },
+    {
+      "id": "independent_fapi_client_auth",
+      "boundary": "relay authentication",
+      "required_observation": "existing private_key_jwt or OAuth mTLS plus validated sender-constrained token and exact confidential client-credentials registration required",
+      "status": "not_run"
+    },
+    {
+      "id": "delegated_or_task_source_refused",
+      "boundary": "relay authentication",
+      "required_observation": "user-delegated, task/agent, workload, public or unrelated scoped clients cannot enroll or publish",
+      "status": "not_run"
+    },
+    {
+      "id": "cross_tenant_source_refused",
+      "boundary": "relay authentication",
+      "required_observation": "source UUID and source client in another tenant produce no write",
+      "status": "not_run"
+    },
+    {
+      "id": "bounded_closed_inputs",
+      "boundary": "relay parser",
+      "required_observation": "8193 bytes,33 observations,unknown fields,duplicate device IDs and invalid generation/sequence are refused",
+      "status": "not_run"
+    },
+    {
+      "id": "atomic_batch_failure",
+      "boundary": "relay transaction",
+      "required_observation": "one stale/replayed/wrong-generation observation rejects all writes",
+      "status": "not_run"
+    },
+    {
+      "id": "sequence_replay_refused",
+      "boundary": "relay transaction",
+      "required_observation": "duplicate/lower sequence and old enrollment/source generations fail under lock",
+      "status": "not_run"
+    },
+    {
+      "id": "valid_compliant_tls_device",
+      "boundary": "real TLS proxy",
+      "required_observation": "dedicated device CA, valid client-auth leaf, trusted proxy, exact enrolled user/client permit a required compliant-device clause",
+      "status": "not_run"
+    },
+    {
+      "id": "untrusted_proxy_header_refused",
+      "boundary": "real TLS proxy",
+      "required_observation": "same forwarded leaf from an untrusted peer cannot produce a device fact",
+      "status": "not_run"
+    },
+    {
+      "id": "caller_header_stripped",
+      "boundary": "real TLS proxy",
+      "required_observation": "trusted proxy replaces a caller-supplied leaf with its actually verified TLS leaf",
+      "status": "not_run"
+    },
+    {
+      "id": "duplicate_certificate_headers_refused",
+      "boundary": "real TLS proxy",
+      "required_observation": "ambiguous duplicate leaf headers yield no proof",
+      "status": "not_run"
+    },
+    {
+      "id": "wrong_tenant_ca_refused",
+      "boundary": "certificate chain",
+      "required_observation": "a leaf under another tenant CA or public/OAuth CA cannot establish device authority",
+      "status": "not_run"
+    },
+    {
+      "id": "expired_self_signed_server_leaf_refused",
+      "boundary": "certificate chain",
+      "required_observation": "expired,self-issued/self-signed and server-only leaves yield no fact",
+      "status": "not_run"
+    },
+    {
+      "id": "wrong_user_client_enrollment_refused",
+      "boundary": "enrollment binding",
+      "required_observation": "valid enrolled leaf does not satisfy another local user or application",
+      "status": "not_run"
+    },
+    {
+      "id": "future_observation_not_yet_known",
+      "boundary": "freshness",
+      "required_observation": "five-second ingestion tolerance does not create a known fact before observed_at",
+      "status": "not_run"
+    },
+    {
+      "id": "stale_missing_partial_posture_refused",
+      "boundary": "freshness",
+      "required_observation": "stale,missing or partially unknown managed/compliant values fail required-facts before not/any",
+      "status": "not_run"
+    },
+    {
+      "id": "original_proof_deadline_preserved",
+      "boundary": "interaction binding",
+      "required_observation": "later lookups never restart the original verification deadline",
+      "status": "not_run"
+    },
+    {
+      "id": "interaction_replacement_clears_proof",
+      "boundary": "interaction binding",
+      "required_observation": "new interaction hash under the same request_uri parent cannot inherit the first browser arrival proof",
+      "status": "not_run"
+    },
+    {
+      "id": "completion_single_winner_transfer",
+      "boundary": "authorization code",
+      "required_observation": "only the existing atomic interaction-spend winner writes the private proof with code insertion",
+      "status": "not_run"
+    },
+    {
+      "id": "two_codes_same_grant_no_borrowing",
+      "boundary": "authorization code",
+      "required_observation": "grant merge/replace codes keep distinct proof parents; a missing proof on one code cannot borrow another",
+      "status": "not_run"
+    },
+    {
+      "id": "code_redemption_private_transfer",
+      "boundary": "authorization code",
+      "required_observation": "code digest bound proof is returned only with that exact validated PKCE/redirect/client/DPoP redemption and carried through prepared signer",
+      "status": "not_run"
+    },
+    {
+      "id": "refresh_exchange_pdp_no_fallback",
+      "boundary": "other boundaries",
+      "required_observation": "absent matching current verified device evidence remains absent; no unrelated session/grant authority",
+      "status": "not_run"
+    },
+    {
+      "id": "anchor_generation_change_invalidates",
+      "boundary": "credential renewal",
+      "required_observation": "anchor bundle change/restart and explicit enrollment fingerprint replacement invalidate older private proofs",
+      "status": "not_run"
+    },
+    {
+      "id": "disable_remove_signing_race",
+      "boundary": "final signing fence",
+      "required_observation": "same source/enrollment/posture transaction blocks conflicting mutation through signature and rereads expiry after awaits",
+      "status": "not_run"
+    },
+    {
+      "id": "update_remove_race",
+      "boundary": "registry lifecycle",
+      "required_observation": "removal wins permanently or accepted update linearizes before it; no revival from posture ingestion",
+      "status": "not_run"
+    },
+    {
+      "id": "measured_online_removal",
+      "boundary": "registry lifecycle",
+      "required_observation": "next protected boundary refuses a removed device or disabled source, measured independently from existing offline JWT expiry",
+      "status": "not_run"
+    },
+    {
+      "id": "removal_privacy_retention",
+      "boundary": "retention",
+      "required_observation": "latest posture,user/certificate/application references are erased; minimal removed-generation tombstone swept after30 days",
+      "status": "not_run"
+    },
+    {
+      "id": "inspect_revoke_authorization",
+      "boundary": "management API",
+      "required_observation": "same-tenant administrator inspection/revoke and own-user removal only; unrelated user and tenant denied",
+      "status": "not_run"
+    },
+    {
+      "id": "same_transaction_no_pool_starvation",
+      "boundary": "signer composition",
+      "required_observation": "device reads share PolicyPublicationFence connection and preserve existing prepared signer admission; concurrent requests finish or time out boundedly",
+      "status": "not_run"
+    }
+  ]
+}

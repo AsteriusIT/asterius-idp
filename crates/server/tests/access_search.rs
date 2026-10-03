@@ -479,6 +479,7 @@ impl Fixture {
         dpop: &'a DpopEndpoint,
     ) -> AccessEvaluationContext<'a> {
         AccessEvaluationContext {
+            device_certificate: None,
             tenant,
             engine,
             subjects: &self.facts,

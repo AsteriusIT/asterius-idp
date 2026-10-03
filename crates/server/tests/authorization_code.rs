@@ -552,6 +552,7 @@ impl Fixture {
         let ida_frameworks = std::collections::BTreeSet::new();
         let task_audit = PgAuditSink::new(self.store.pool().clone());
         let handler = AuthorizationCode {
+            device_request: None,
             agent_policy: asterius_server::http::agent_issuance::AgentPolicy::unenforced(
                 &task_audit,
             ),

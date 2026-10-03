@@ -457,6 +457,7 @@ impl Fixture {
         let dpop = DpopEndpoint::new(Arc::new(FakeReplay), None);
         let engine = DeclarativeEngine::new(Arc::clone(&self.policies) as Arc<dyn PolicyStore>);
         let context = AccessEvaluationContext {
+            device_certificate: None,
             tenant: &tenant,
             engine: &engine,
             subjects: &self.facts,

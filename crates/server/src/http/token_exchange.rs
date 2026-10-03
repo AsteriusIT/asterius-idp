@@ -115,6 +115,9 @@ pub struct WorkloadContext<'a> {
 }
 
 pub struct TokenExchange<'a> {
+    /// This request's verified device transport; never inherited from a token.
+    pub device_request: Option<crate::managed_devices::DeviceIssuanceContext<'a>>,
+
     pub workloads: Option<WorkloadContext<'a>>,
     /// Operator-approved cross-domain relationships for this routed tenant.
     pub id_jag_approvals: &'a [crate::config::IdJagApproval],
@@ -186,6 +189,7 @@ impl<'a> TokenExchange<'a> {
         native_sso_approvals: &'a [crate::config::NativeSsoApproval],
     ) -> Self {
         Self {
+            device_request: code.device_request,
             workloads: None,
             id_jag_approvals,
             native_sso_approvals,
@@ -716,14 +720,20 @@ impl TokenExchange<'_> {
         client: &Client,
         grant: &Grant,
     ) -> Result<(), Failure> {
+        self.permitted_bound(tenant,client,grant,None).await
+    }
+    async fn permitted_bound(&self, tenant: &Tenant, client: &Client, grant: &Grant,
+        device_binding: Option<&asterius_domain::managed_devices::DeviceBinding>,
+    ) -> Result<(), Failure> {
         self.agent_policy
-            .permits(
+            .permits_bound(
                 tenant,
                 client,
                 grant,
                 &grant.resources.iter().cloned().collect(),
                 GrantType::TokenExchange,
                 self.now,
+                device_binding,
             )
             .await
             .map_err(|refusal| Failure::Client(refusal.code, refusal.description))
@@ -869,7 +879,11 @@ impl TokenExchange<'_> {
                 self.audit,
             )
             .await?;
-        self.permitted(tenant, client, &grant).await?;
+        let device_binding = match self.device_request {
+            Some(context) => context.bind(&tenant.id,&grant,self.now).await?,
+            None => None,
+        };
+        self.permitted_bound(tenant, client, &grant, device_binding.as_ref()).await?;
 
         let claimed = grant
             .claim(self.now)
@@ -899,7 +913,7 @@ impl TokenExchange<'_> {
             .sign_access(
                 &tenant.id,
                 asterius_domain::keys::AccessIssuance {
-                    device_binding: None,
+                    device_binding: device_binding.as_ref(),
                     implicit_resources: &issuance::implicit_resources(
                         tenant,
                         issuance::ImplicitResources {

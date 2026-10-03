@@ -308,6 +308,7 @@ impl Fixture {
         let claims_providers = asterius_server::claims_provider::ClaimsProviders::default();
         let ida_frameworks = std::collections::BTreeSet::new();
         let handler = RefreshToken {
+            device_request: None,
             ipsie_identity_only_clients: None,
             ipsie_rp_session_lifetimes: None,
             native_sso: &asterius_store_pg::PgNativeSso::new(
@@ -522,6 +523,7 @@ impl Fixture {
         let claims_providers = asterius_server::claims_provider::ClaimsProviders::default();
         let ida_frameworks = std::collections::BTreeSet::new();
         let handler = AuthorizationCode {
+            device_request: None,
             agent_policy: asterius_server::http::agent_issuance::AgentPolicy::unenforced(
                 self.audit.as_ref(),
             ),
@@ -600,6 +602,7 @@ impl Fixture {
         let claims_providers = asterius_server::claims_provider::ClaimsProviders::default();
         let ida_frameworks = std::collections::BTreeSet::new();
         let handler = RefreshToken {
+            device_request: None,
             ipsie_identity_only_clients: None,
             ipsie_rp_session_lifetimes: None,
             native_sso: &asterius_store_pg::PgNativeSso::new(

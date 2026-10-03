@@ -1,0 +1,205 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Prepared managed-device-relay/v1 inputs (runtime delivery pending human review)",
+  "description": "Documentation-only draft; structural schema does not authenticate a source or establish TLS key possession. Byte/time/generation/source-authority constraints require the future runtime transaction. No endpoint is mounted by this document.",
+  "x-max-json-bytes": 8192,
+  "$defs": {
+    "posture": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "managed": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "compliant": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "disk_encrypted": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "risk": {
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "unknown",
+            null
+          ]
+        }
+      },
+      "required": []
+    },
+    "posture_update": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "profile": {
+          "const": "managed-device-relay/v1"
+        },
+        "source_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9223372036854775807
+        },
+        "observations": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "device_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "enrollment_generation": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9223372036854775807
+              },
+              "sequence": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9223372036854775807
+              },
+              "observed_at": {
+                "type": "integer",
+                "minimum": -9223372036854775808,
+                "maximum": 9223372036854775807
+              },
+              "expires_at": {
+                "type": "integer",
+                "minimum": -9223372036854775808,
+                "maximum": 9223372036854775807
+              },
+              "posture": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "managed": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "compliant": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "disk_encrypted": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "risk": {
+                    "enum": [
+                      "low",
+                      "medium",
+                      "high",
+                      "unknown",
+                      null
+                    ]
+                  }
+                },
+                "required": []
+              }
+            },
+            "required": [
+              "device_id",
+              "enrollment_generation",
+              "sequence",
+              "observed_at",
+              "expires_at",
+              "posture"
+            ]
+          }
+        }
+      },
+      "required": [
+        "profile",
+        "source_generation",
+        "observations"
+      ]
+    },
+    "enrollment": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "user_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "leaf_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "allowed_client_ids": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+          }
+        }
+      },
+      "required": [
+        "user_id",
+        "leaf_sha256",
+        "allowed_client_ids"
+      ]
+    },
+    "source_change": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "client_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+        },
+        "expected_revision": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [
+        "client_id"
+      ]
+    }
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/posture_update"
+    },
+    {
+      "$ref": "#/$defs/enrollment"
+    },
+    {
+      "$ref": "#/$defs/source_change"
+    }
+  ]
+}

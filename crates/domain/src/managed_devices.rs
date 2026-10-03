@@ -2,8 +2,8 @@
 //! normative review of managed-device-posture-source.md remains pending.
 //! A parsed payload is not source authentication or proof of device possession.
 
-use crate::audit::Actor;
 use crate::{ClientId, DomainError, TenantId, UserId};
+use crate::audit::Actor;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use time::{Duration, OffsetDateTime};
@@ -28,6 +28,10 @@ pub struct DeviceBinding {
     user: UserId,
     client: ClientId,
     interaction_digest: String,
+    #[serde(default)]
+    bound_grant_id: Option<crate::GrantId>,
+    #[serde(default)]
+    request_parent: Option<crate::GrantId>,
     source: Uuid,
     source_generation: i64,
     device: Uuid,
@@ -84,15 +88,14 @@ impl std::fmt::Debug for VerifiedDeviceEvidence {
 impl DeviceBinding {
     /// Seal already-verified evidence with an original deadline of at most 300s.
     /// Current generation/posture checks remain mandatory at every policy fence.
-    pub fn from_verified(
-        evidence: VerifiedDeviceEvidence,
-        now: OffsetDateTime,
-    ) -> Result<Self, DomainError> {
+    pub fn from_verified(evidence: VerifiedDeviceEvidence, now: OffsetDateTime) -> Result<Self, DomainError> {
         let binding = Self {
             tenant: evidence.tenant,
             user: evidence.user,
             client: evidence.client,
             interaction_digest: evidence.interaction_digest,
+            bound_grant_id: None,
+            request_parent: None,
             source: evidence.source,
             source_generation: evidence.source_generation,
             device: evidence.device,
@@ -106,22 +109,35 @@ impl DeviceBinding {
         Ok(binding)
     }
 
+    /// A new credential/PDP request has its own verifier-owned possession and
+    /// server-generated digest, pinned to exactly the authenticated grant.
+    pub fn from_verified_request(evidence: VerifiedDeviceEvidence, grant: &crate::Grant, now: OffsetDateTime) -> Result<Self, DomainError> {
+        if evidence.tenant != grant.tenant || evidence.client != grant.client || Some(evidence.user) != grant.user { return Err(invalid()); }
+        let mut binding = Self::from_verified(evidence, now)?;
+        binding.bound_grant_id = Some(grant.id.clone());
+        binding.request_parent = grant.parent.clone();
+        binding.validate(now)?;
+        Ok(binding)
+    }
+    #[must_use]
+    pub fn bound_grant_id(&self) -> Option<&crate::GrantId> { self.bound_grant_id.as_ref() }
+    #[must_use]
+    pub fn request_parent(&self) -> Option<&crate::GrantId> { self.request_parent.as_ref() }
+
     /// Storage is private but may be corrupt; loading never skips these bounds.
     pub fn validate(&self, now: OffsetDateTime) -> Result<(), DomainError> {
         let latest = now.checked_add(MAX_FACT_AGE).ok_or_else(invalid)?;
-        if self.source_generation <= 0
-            || self.enrollment_generation <= 0
-            || self.source.is_nil()
-            || self.device.is_nil()
-            || self.client.as_str().is_empty()
-            || self.client.as_str().len() > 256
+        if self.source_generation <= 0 || self.enrollment_generation <= 0
+            || self.source.is_nil() || self.device.is_nil()
+            || self.client.as_str().is_empty() || self.client.as_str().len() > 256
             || self.client.as_str().chars().any(char::is_control)
-            || self.proof_expires_at <= now
-            || self.proof_expires_at > latest
+            || self.proof_expires_at <= now || self.proof_expires_at > latest
             || self.certificate_expires_at <= now
             || self.proof_expires_at > self.certificate_expires_at
-        {
-            return Err(invalid());
+        { return Err(invalid()); }
+        if let Some(grant) = &self.bound_grant_id {
+            let id = Uuid::parse_str(grant.as_str()).map_err(|_| invalid())?;
+            if id.is_nil() { return Err(invalid()); }
         }
         LeafFingerprint::parse(&self.interaction_digest)?;
         LeafFingerprint::parse(&self.leaf_sha256)?;
@@ -129,53 +145,29 @@ impl DeviceBinding {
         Ok(())
     }
     #[must_use]
-    pub fn tenant(&self) -> &TenantId {
-        &self.tenant
-    }
+    pub fn tenant(&self) -> &TenantId { &self.tenant }
     #[must_use]
-    pub const fn user(&self) -> &UserId {
-        &self.user
-    }
+    pub const fn user(&self) -> &UserId { &self.user }
     #[must_use]
-    pub fn client(&self) -> &ClientId {
-        &self.client
-    }
+    pub fn client(&self) -> &ClientId { &self.client }
     #[must_use]
-    pub fn interaction_digest(&self) -> &str {
-        &self.interaction_digest
-    }
+    pub fn interaction_digest(&self) -> &str { &self.interaction_digest }
     #[must_use]
-    pub const fn source(&self) -> Uuid {
-        self.source
-    }
+    pub const fn source(&self) -> Uuid { self.source }
     #[must_use]
-    pub const fn source_generation(&self) -> i64 {
-        self.source_generation
-    }
+    pub const fn source_generation(&self) -> i64 { self.source_generation }
     #[must_use]
-    pub const fn device(&self) -> Uuid {
-        self.device
-    }
+    pub const fn device(&self) -> Uuid { self.device }
     #[must_use]
-    pub const fn enrollment_generation(&self) -> i64 {
-        self.enrollment_generation
-    }
+    pub const fn enrollment_generation(&self) -> i64 { self.enrollment_generation }
     #[must_use]
-    pub fn leaf_sha256(&self) -> &str {
-        &self.leaf_sha256
-    }
+    pub fn leaf_sha256(&self) -> &str { &self.leaf_sha256 }
     #[must_use]
-    pub fn anchor_sha256(&self) -> &str {
-        &self.anchor_sha256
-    }
+    pub fn anchor_sha256(&self) -> &str { &self.anchor_sha256 }
     #[must_use]
-    pub const fn certificate_expires_at(&self) -> OffsetDateTime {
-        self.certificate_expires_at
-    }
+    pub const fn certificate_expires_at(&self) -> OffsetDateTime { self.certificate_expires_at }
     #[must_use]
-    pub const fn proof_expires_at(&self) -> OffsetDateTime {
-        self.proof_expires_at
-    }
+    pub const fn proof_expires_at(&self) -> OffsetDateTime { self.proof_expires_at }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -237,6 +229,7 @@ pub struct Update {
 impl Update {
     /// Structural/timestamp validation only. The adapter must atomically check
     /// source authority, active enrollment generation and strictly newer sequence.
+    // fuzz-target: managed_device_input
     pub fn parse(bytes: &[u8], now: OffsetDateTime) -> Result<Self, DomainError> {
         if bytes.len() > MAX_UPDATE_BYTES {
             return Err(invalid());
@@ -261,7 +254,7 @@ impl Update {
                 .map_err(|_| invalid())?;
             let expiry = OffsetDateTime::from_unix_timestamp(observation.expires_at)
                 .map_err(|_| invalid())?;
-            if !devices.insert(observation.device_id)
+            if observation.device_id.is_nil() || !devices.insert(observation.device_id)
                 || observation.enrollment_generation <= 0
                 || observation.sequence < 0
                 || observed < earliest
@@ -287,9 +280,7 @@ pub struct SourceChange {
 
 impl SourceChange {
     pub fn parse(bytes: &[u8]) -> Result<Self, DomainError> {
-        if bytes.len() > MAX_UPDATE_BYTES {
-            return Err(invalid());
-        }
+        if bytes.len() > MAX_UPDATE_BYTES { return Err(invalid()); }
         let change: Self = serde_json::from_slice(bytes).map_err(|_| invalid())?;
         change.validate()?;
         Ok(change)
@@ -316,9 +307,7 @@ impl std::fmt::Debug for LeafFingerprint {
 impl LeafFingerprint {
     pub fn parse(value: &str) -> Result<Self, DomainError> {
         if value.len() != 64
-            || !value
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            || !value.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         {
             return Err(invalid());
         }
@@ -339,24 +328,21 @@ pub struct EnrollmentRequest {
 }
 impl std::fmt::Debug for EnrollmentRequest {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("EnrollmentRequest")
+        formatter.debug_struct("EnrollmentRequest")
             .field("allowed_client_count", &self.allowed_client_ids.len())
             .finish_non_exhaustive()
     }
 }
 impl EnrollmentRequest {
     pub fn parse(bytes: &[u8]) -> Result<Self, DomainError> {
-        if bytes.len() > MAX_UPDATE_BYTES {
-            return Err(invalid());
-        }
+        if bytes.len() > MAX_UPDATE_BYTES { return Err(invalid()); }
         let request: Self = serde_json::from_slice(bytes).map_err(|_| invalid())?;
         request.validate()?;
         Ok(request)
     }
     pub fn validate(&self) -> Result<LeafFingerprint, DomainError> {
         let unique: BTreeSet<_> = self.allowed_client_ids.iter().collect();
-        if self.allowed_client_ids.len() > MAX_ALLOWED_CLIENTS
+        if self.user_id.as_uuid().is_nil() || self.allowed_client_ids.len() > MAX_ALLOWED_CLIENTS
             || unique.len() != self.allowed_client_ids.len()
             || self.allowed_client_ids.iter().any(|client| {
                 client.as_str().is_empty()
@@ -380,14 +366,9 @@ pub struct RelayCredential {
     client: ClientId,
     jti: crate::Secret<String>,
 }
-// This narrow verified metadata envelope may be copied by owned lifecycle
-// commands; each copy retains redaction and zeroizes its own JTI on drop.
 impl Clone for RelayCredential {
     fn clone(&self) -> Self {
-        Self {
-            client: self.client.clone(),
-            jti: crate::Secret::new(self.jti.expose().clone()),
-        }
+        Self { client: self.client.clone(), jti: crate::Secret::new(self.jti.expose().to_owned()) }
     }
 }
 impl RelayCredential {
@@ -395,19 +376,12 @@ impl RelayCredential {
         if jti.is_empty() || jti.len() > 256 || !jti.bytes().all(|byte| byte.is_ascii_graphic()) {
             return Err(invalid());
         }
-        Ok(Self {
-            client,
-            jti: crate::Secret::new(jti.to_owned()),
-        })
+        Ok(Self { client, jti: crate::Secret::new(jti.to_owned()) })
     }
     #[must_use]
-    pub fn client(&self) -> &ClientId {
-        &self.client
-    }
+    pub fn client(&self) -> &ClientId { &self.client }
     #[must_use]
-    pub fn jti(&self) -> &str {
-        self.jti.expose()
-    }
+    pub fn jti(&self) -> &str { self.jti.expose() }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -450,27 +424,15 @@ pub enum RemovalAuthority {
 pub trait Registry: std::fmt::Debug + Send + Sync {
     async fn sources(&self, tenant: &TenantId) -> Result<Vec<SourceSummary>, DomainError>;
     async fn save_source(
-        &self,
-        tenant: &TenantId,
-        id: Option<Uuid>,
-        change: &SourceChange,
-        actor: Actor,
-        now: OffsetDateTime,
+        &self, tenant: &TenantId, id: Option<Uuid>, change: &SourceChange,
+        actor: Actor, now: OffsetDateTime,
     ) -> Result<SourceSummary, DomainError>;
     async fn devices(
-        &self,
-        tenant: &TenantId,
-        owner: Option<UserId>,
-        after: Option<Uuid>,
-        limit: u16,
+        &self, tenant: &TenantId, owner: Option<UserId>, after: Option<Uuid>, limit: u16,
     ) -> Result<Vec<DeviceSummary>, DomainError>;
     async fn remove(
-        &self,
-        tenant: &TenantId,
-        id: Uuid,
-        expected: Uuid,
-        authority: RemovalAuthority,
-        now: OffsetDateTime,
+        &self, tenant: &TenantId, id: Uuid, expected: Uuid,
+        authority: RemovalAuthority, now: OffsetDateTime,
     ) -> Result<(), DomainError>;
 }
 
@@ -518,10 +480,7 @@ mod tests {
         let mut value = update(now);
         assert!(Update::parse(&serde_json::to_vec(&value).expect("fixture JSON"), now).is_ok());
         let first = value["observations"][0].clone();
-        value["observations"]
-            .as_array_mut()
-            .expect("fixture array")
-            .push(first);
+        value["observations"].as_array_mut().expect("fixture array").push(first);
         assert!(Update::parse(&serde_json::to_vec(&value).expect("fixture JSON"), now).is_err());
         assert!(Update::parse(&vec![b' '; MAX_UPDATE_BYTES + 1], now).is_err());
         let mut value = update(now);
@@ -531,24 +490,20 @@ mod tests {
     #[test]
     fn managed_device_binding_preserves_original_deadline_and_redacts_evidence() {
         let now = OffsetDateTime::UNIX_EPOCH + Duration::days(20000);
-        let proof = DeviceBinding::from_verified(
-            VerifiedDeviceEvidence {
-                tenant: TenantId::parse("tenant-a").expect("fixture tenant"),
-                user: UserId::new(Uuid::new_v4()),
-                client: ClientId::new("application-a"),
-                interaction_digest: "a".repeat(64),
-                source: Uuid::new_v4(),
-                source_generation: 1,
-                device: Uuid::new_v4(),
-                enrollment_generation: 1,
-                leaf_sha256: "b".repeat(64),
-                anchor_sha256: "c".repeat(64),
-                certificate_expires_at: now + Duration::hours(1),
-                proof_expires_at: now + MAX_FACT_AGE,
-            },
-            now,
-        )
-        .expect("verified fixture");
+        let proof = DeviceBinding::from_verified(VerifiedDeviceEvidence {
+            tenant: TenantId::parse("tenant-a").expect("fixture tenant"),
+            user: UserId::new(Uuid::new_v4()),
+            client: ClientId::new("application-a"),
+            interaction_digest: "a".repeat(64),
+            source: Uuid::new_v4(),
+            source_generation: 1,
+            device: Uuid::new_v4(),
+            enrollment_generation: 1,
+            leaf_sha256: "b".repeat(64),
+            anchor_sha256: "c".repeat(64),
+            certificate_expires_at: now + Duration::hours(1),
+            proof_expires_at: now + MAX_FACT_AGE,
+        }, now).expect("verified fixture");
         let stored = serde_json::to_value(&proof).expect("private storage");
         let restored: DeviceBinding = serde_json::from_value(stored).expect("private storage");
         assert_eq!(restored.proof_expires_at(), now + MAX_FACT_AGE);
@@ -557,20 +512,36 @@ mod tests {
     }
 
     #[test]
+    fn managed_device_request_binding_pins_exact_grant_and_parent() {
+        let now = OffsetDateTime::UNIX_EPOCH + Duration::days(20000);
+        let tenant = TenantId::parse("tenant-a").expect("fixture tenant");
+        let user = UserId::new(Uuid::new_v4());
+        let mut grant = crate::Grant::new(tenant.clone(),ClientId::new("application-a"),now);
+        grant.user=Some(user);
+        grant.parent=Some(crate::GrantId::new(Uuid::new_v4().to_string()));
+        let evidence = || VerifiedDeviceEvidence {
+            tenant: tenant.clone(),user,client:grant.client.clone(),interaction_digest:"a".repeat(64),
+            source:Uuid::new_v4(),source_generation:1,device:Uuid::new_v4(),enrollment_generation:1,
+            leaf_sha256:"b".repeat(64),anchor_sha256:"c".repeat(64),
+            certificate_expires_at:now+Duration::hours(1),proof_expires_at:now+Duration::seconds(300),
+        };
+        let proof=DeviceBinding::from_verified_request(evidence(),&grant,now).expect("verified request evidence");
+        assert_eq!(proof.bound_grant_id(),Some(&grant.id));
+        assert_eq!(proof.request_parent(),grant.parent.as_ref());
+        let original=DeviceBinding::from_verified(evidence(),now).expect("original interaction evidence");
+        assert!(original.bound_grant_id().is_none());
+        assert!(original.request_parent().is_none());
+        let mut wrong=grant.clone();
+        wrong.user=Some(UserId::new(Uuid::new_v4()));
+        assert!(DeviceBinding::from_verified_request(evidence(),&wrong,now).is_err());
+        assert!(proof.validate(now+Duration::seconds(301)).is_err());
+    }
+
+    #[test]
     fn managed_device_unknown_posture_is_not_compliance_authority() {
-        let posture = Posture {
-            managed: None,
-            compliant: Some(true),
-            disk_encrypted: None,
-            risk: None,
-        };
+        let posture = Posture { managed: None, compliant: Some(true), disk_encrypted: None, risk: None };
         assert_eq!(posture.compliance(), Compliance::Unknown);
-        let partial = Posture {
-            managed: Some(false),
-            compliant: None,
-            disk_encrypted: None,
-            risk: None,
-        };
+        let partial = Posture { managed: Some(false), compliant: None, disk_encrypted: None, risk: None };
         assert_eq!(partial.compliance(), Compliance::Unknown);
     }
 }
