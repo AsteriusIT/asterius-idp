@@ -322,6 +322,7 @@ dependencies = [
  "asterius-ssf",
  "async-trait",
  "hex",
+ "serde",
  "serde_json",
  "sha2",
  "sqlx",

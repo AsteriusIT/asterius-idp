@@ -33,6 +33,7 @@ pub mod saml_xmlsig;
 pub mod signing;
 pub mod ssf;
 pub mod ssf_upstream;
+pub mod temporary_entitlements;
 pub mod tenancy;
 pub mod tenant_settings;
 

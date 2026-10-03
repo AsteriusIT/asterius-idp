@@ -1,0 +1,52 @@
+{
+  "base_main": "585733ed",
+  "binary_sha256": "ef501bad2e1f51f8e34ac7c828ab372836e2cee596dfc5e4fae4dac4eee0da9c",
+  "console": {
+    "axe_serious_or_critical": 0,
+    "browser_scope": "real built bundle with deterministic API responses; backend authorization proven separately",
+    "keyboard_horizontal_scroll": "pass",
+    "mobile_width_pixels": 390,
+    "targeted_browser_tests": 3,
+    "targeted_node_tests": 5,
+    "typescript_build": "pass"
+  },
+  "fuzz": {
+    "clippy": "pass -D warnings",
+    "runtime_fuzzing": "not run locally; nightly CI owns instrumented fuzzing",
+    "target": "admin_policy_simulation"
+  },
+  "isolation": {
+    "cleanup": "server stopped; own DB and private fixture files removed; main and fuzz targets cleaned",
+    "database": "fresh fixture database created and dropped by runner",
+    "listener": "127.0.0.1:9461"
+  },
+  "recorded_at_utc": "2026-10-03T14:44:23.936517+00:00",
+  "runtime": {
+    "controls": [
+      "absent_transaction_and_current_directory_sources",
+      "activation_and_inspection_rbac_revision_tenant_guards",
+      "bounded_hypothetical_sources_and_missing_states",
+      "closed_authority_and_boundary_dialect",
+      "not_any_missing_evidence_guards",
+      "relative_age_and_exact_enforcement_boundary",
+      "report_only_never_grants_base_denial",
+      "classification_cas_and_hypothetical_isolation",
+      "policy_snapshot_and_unpublished_draft"
+    ],
+    "fixture": "real_https_fapi_dpop_administrative_simulation",
+    "status": "pass"
+  },
+  "rust_gate": {
+    "clippy": "pass -D warnings all-targets",
+    "filter": "test(simulation) or test(conditional) or test(policy_publication) or test(policy_revision) plus required source/secret audits",
+    "fmt": "pass",
+    "nextest_passed": 54,
+    "nextest_skipped": 4313
+  },
+  "source_commit": "3f651afeecb1a7dd67461639f8cb32191c32fd48",
+  "source_files_sha256": {
+    "crates/admin-api/src/policies.rs": "1a726dc67fabd241093953325be2b0fd8f43313fdebc54f4b86e4ead65ce6a5d",
+    "crates/admin-api/src/policies/conditional_simulation.rs": "ec618d73fe52e374d1d326c5f934fd3d846e1df5ba86352d6bdd8c56fe10517a",
+    "crates/server/src/admin.rs": "68c309bac9a5ecd5d6f9dc2364c3f2673f99d717e5c1db64213ce8810fd77fd6"
+  }
+}

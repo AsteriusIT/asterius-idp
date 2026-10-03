@@ -6062,6 +6062,9 @@ impl Flow {
         // session (CIBA Core 1.0 §8): the grant records the authentication
         // itself, which is what the ID token's `auth_time` is minted from.
         grant.authentication = Some(asterius_domain::GrantAuthentication {
+            assurance_authenticated_at: None,
+            assurance_policy_revision: None,
+            assurance_methods: Vec::new(),
             authenticated_at: now,
             acr: None,
             amr: Vec::new(),

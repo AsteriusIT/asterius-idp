@@ -352,6 +352,9 @@ impl RefreshToken<'_> {
         // own `revoked_at` catches the ordinary case — the revocation cascade
         // stamps both in one transaction — and this catches an expiry, which
         // is computed rather than stored and so reaches no row.
+        if !self.grants.task_grant_active(&grant.id).await? {
+            return Err(invalid_grant());
+        }
         if !matches!(grant.status(self.now), GrantStatus::Active) {
             return Err(invalid_grant());
         }
@@ -553,7 +556,8 @@ impl RefreshToken<'_> {
         // Read once for both tokens of this response; see the code grant. A
         // refresh reads it afresh every time on purpose (`ast-095`): a token
         // refreshed after a role was withdrawn must not still assert it.
-        let held = issuance::held_roles(self.roles, &narrowed).await?;
+        let role_grant = issuance::role_grant(&narrowed, &targeting);
+        let held = issuance::held_roles(self.roles, &role_grant).await?;
 
         let access_lifetime = self
             .grants
@@ -615,6 +619,7 @@ impl RefreshToken<'_> {
         // code applies, it is the only thing it can produce.
         let id_token = if effective.contains("openid") {
             let parts = issuance::IdTokenParts {
+                grant: &role_grant,
                 require_ipsie_assurance: self
                     .ipsie_identity_only_clients
                     .is_some_and(|clients| clients.contains(client.id.as_str())),

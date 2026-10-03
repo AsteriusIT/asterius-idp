@@ -1545,6 +1545,19 @@ pub trait SessionRepository: Debug + Send + Sync {
         now: OffsetDateTime,
     ) -> Result<(), DomainError>;
 
+    /// Rotates with separately verified class provenance. Legacy adapters retain
+    /// their existing rotation; missing stored provenance never authorizes freshness.
+    async fn rotate_verified(
+        &self,
+        old_digest: &str,
+        new_digest: &str,
+        proof: crate::entities::session::VerifiedSessionRotation<'_>,
+        now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        self.rotate(old_digest, new_digest, proof.methods, proof.acr, now)
+            .await
+    }
+
     /// Ends one session.
     ///
     /// # Errors
@@ -2166,6 +2179,19 @@ pub trait ApplicationRoleDirectory: Debug + Send + Sync {
     /// skipped: a token minted with a *subset* of somebody's roles is an
     /// authorization decision taken by a parse failure.
     async fn held_by(&self, tenant: &TenantId, user: UserId) -> Result<HeldRoles, DomainError>;
+
+    /// Current roles bound to this exact human grant's resource and permissions.
+    /// The default preserves standing-only repositories and fixture adapters.
+    ///
+    /// # Errors
+    ///
+    /// Returns a domain error if current role authority cannot be read.
+    async fn held_by_grant(&self, grant: &Grant) -> Result<HeldRoles, DomainError> {
+        match grant.user {
+            Some(user) => self.held_by(&grant.tenant, user).await,
+            None => Ok(HeldRoles::empty()),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

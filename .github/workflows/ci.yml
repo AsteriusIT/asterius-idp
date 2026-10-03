@@ -108,7 +108,16 @@ jobs:
           ASTERIUS_ACCEPTANCE_DB_CONTAINER: ${{ job.services.postgres.id }}
         run: |
           bash scripts/conditional-access-acceptance.sh
+          bash scripts/conditional-simulation-acceptance.sh
           python3 scripts/conditional/browser_acceptance.py
+          python3 scripts/session-rotation-acceptance.py
+          python3 scripts/conditional/assurance_schema_acceptance.py
+          python3 scripts/conditional/assurance_acceptance.py
+      - name: temporary privileges lifecycle, token bounds and real console
+        env:
+          ASTERIUS_BIN: ${{ github.workspace }}/target/debug/asterius
+          ASTERIUS_TEMPORARY_BROWSER_SCRIPT: ${{ github.workspace }}/scripts/temporary-entitlements/browser_acceptance.mjs
+        run: bash scripts/temporary-entitlements-acceptance.sh
       - name: real structural schemas and namespace admission
         run: bash scripts/kubernetes-crd-tests.sh
       - name: real operator reconciliation and tenant isolation
@@ -267,7 +276,7 @@ jobs:
       # These database/race regressions stay ignored in local worker runs;
       # explicitly select them here so the persistence contracts are exercised.
       - name: Managed groups and session policy PostgreSQL regressions
-        run: cargo nextest run --workspace --all-features --run-ignored only -E 'binary(groups) or test(session_policy) or binary(authorization_diagnostics) or binary(conditional_access) or test(disabled_and_locked_accounts_refuse) or test(scim_disable_then_reactivate)' --no-fail-fast
+        run: cargo nextest run --workspace --all-features --run-ignored only -E 'binary(groups) or test(session_policy) or binary(authorization_diagnostics) or binary(conditional_access) or test(disabled_and_locked_accounts_refuse) or test(scim_disable_then_reactivate) or binary(temporary_entitlements) or test(assurance_proof_rotates_atomically)' --no-fail-fast
 
       # Same reason: `cargo test` aborts after the first failing doctest
       # binary otherwise.

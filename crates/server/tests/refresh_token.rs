@@ -406,6 +406,9 @@ impl Fixture {
             // What the authorization copied off the session (`ast-dlk`), which
             // is what a refresh reads once the session row is gone.
             authentication: Some(asterius_domain::GrantAuthentication {
+                assurance_authenticated_at: None,
+                assurance_policy_revision: None,
+                assurance_methods: Vec::new(),
                 authenticated_at: session.authenticated_at,
                 acr: session.acr.clone(),
                 amr: session.amr.clone(),

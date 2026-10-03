@@ -353,7 +353,8 @@ impl DeviceCode<'_> {
             .await
             .map_err(|refusal| Failure::Client(refusal.code, refusal.description))?;
         // Read once for both tokens of this response; see the code grant.
-        let held = issuance::held_roles(self.roles, &grant).await?;
+        let role_grant = issuance::role_grant(&grant, &targeting);
+        let held = issuance::held_roles(self.roles, &role_grant).await?;
 
         let access = AccessToken::new(
             &tenant.issuer,
@@ -402,6 +403,7 @@ impl DeviceCode<'_> {
         // carried one — the device never spoke to a browser.
         let id_token = if grant.scopes.contains("openid") {
             let parts = issuance::IdTokenParts {
+                grant: &role_grant,
                 require_ipsie_assurance: false,
                 rp_session_lifetime_seconds: None,
                 device_secret_hash: None,

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { SESSION_EXPIRED, ApiError, endSession, loadSession, type Session } from './api';
 import { AuditExplorer } from './audit';
+import { TemporaryEntitlements } from './temporary-entitlements';
 import { Branding } from './branding';
 import { AuthorizationDetailsTypes } from './authorizationDetailsTypes';
 import { Roles } from './appRoles';
@@ -225,6 +226,7 @@ function RouteScreen({
   if (route === 'mail') {
     return <MailStatus session={session} />;
   }
+  if (route === 'temporary-privileges') return <TemporaryEntitlements session={session} />;
   if (route === 'audit') {
     return <AuditExplorer session={session} />;
   }

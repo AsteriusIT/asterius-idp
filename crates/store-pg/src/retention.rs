@@ -105,6 +105,12 @@ pub const MAX_BATCHES: usize = 100;
 /// Kept in the schema's own order so that reading this next to
 /// `0001_baseline.sql` is a straight comparison.
 pub const POLICY: &[Retention] = &[
+    Retention { table: "temporary_entitlements", rule: Rule::Kept("durable independent-approval history and terminal replay outcomes; live authority always checks current versions and exclusive expiry; cascades with tenant/user/catalogue ownership") },
+    Retention { table: "temporary_entitlement_approvers", rule: Rule::Kept("durable independent-approval history and terminal replay outcomes; live authority always checks current versions and exclusive expiry; cascades with tenant/user/catalogue ownership") },
+    Retention { table: "temporary_entitlement_eligibility", rule: Rule::Kept("durable independent-approval history and terminal replay outcomes; live authority always checks current versions and exclusive expiry; cascades with tenant/user/catalogue ownership") },
+    Retention { table: "temporary_entitlement_requests", rule: Rule::Kept("durable independent-approval history and terminal replay outcomes; live authority always checks current versions and exclusive expiry; cascades with tenant/user/catalogue ownership") },
+    Retention { table: "temporary_entitlement_activations", rule: Rule::Kept("durable independent-approval history and terminal replay outcomes; live authority always checks current versions and exclusive expiry; cascades with tenant/user/catalogue ownership") },
+    Retention { table: "temporary_entitlement_replays", rule: Rule::Kept("durable independent-approval history and terminal replay outcomes; live authority always checks current versions and exclusive expiry; cascades with tenant/user/catalogue ownership") },
     Retention {
         table: "authorization_diagnostics",
         rule: Rule::Sweep {
@@ -113,7 +119,10 @@ pub const POLICY: &[Retention] = &[
             grace: Duration::ZERO,
         },
     },
+    Retention { table: "session_assurance_proofs", rule: Rule::Kept("verified class provenance cascades with its browser session") },
+    Retention { table: "grant_assurance_proofs", rule: Rule::Kept("original assurance clock survives session cleanup and cascades with its grant") },
     Retention { table: "conditional_client_settings", rule: Rule::Kept("administrative application classification; removed with its registered client") },
+    Retention { table: "agent_task_withdrawals", rule: Rule::Kept("durable bounded descendant withdrawal cursor and terminal evidence; cascade with task/grant") },
     Retention { table: "agent_task_clients", rule: Rule::Kept("persistent task obligation survives client recreation; removed only with tenant") },
     Retention { table: "agent_tasks", rule: Rule::Kept("immutable approval and terminal root fence; retain while descendant credentials may live") },
     Retention { table: "agent_task_grants", rule: Rule::Kept("durable task lineage for authoritative online checks; removed only with grant") },
@@ -1090,7 +1099,11 @@ impl PgRetention {
         tenant: &TenantId,
         now: OffsetDateTime,
     ) -> Result<Sweep, DomainError> {
-        let mut sweep = Sweep::default();
+        let mut sweep = Sweep {
+            more_to_do: crate::agent_task_lifecycle::cleanup_withdrawals(connection, tenant)
+                .await?,
+            ..Sweep::default()
+        };
 
         for entry in POLICY {
             let Rule::Sweep { statement, grace } = entry.rule else {

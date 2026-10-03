@@ -10,12 +10,13 @@
 
 use crate::error::to_domain_error;
 use asterius_domain::entities::session::SessionPolicy;
+use asterius_domain::entities::session::VerifiedSessionRotation;
 use asterius_domain::ports::TenantSettingsRepository as _;
 use asterius_domain::{
     AuthenticationMethod, ClientId, DomainError, Participant, Session, SessionRepository,
     SessionRevocation, TenantId,
 };
-use sqlx::postgres::PgPool;
+use sqlx::postgres::{PgConnection, PgPool};
 use time::{Duration, OffsetDateTime};
 
 /// [`SessionRepository`] over PostgreSQL, scoped to one tenant.
@@ -57,6 +58,42 @@ impl PgSessionRepository {
         .await
         .map_err(to_domain_error)?;
         Ok(result.rows_affected())
+    }
+
+    async fn store_proof(
+        connection: &mut PgConnection,
+        tenant: &TenantId,
+        digest: &str,
+        proof: VerifiedSessionRotation<'_>,
+        now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        sqlx::query("delete from session_assurance_proofs where tenant_id=$1 and session_id=$2")
+            .bind(tenant.as_str())
+            .bind(digest)
+            .execute(&mut *connection)
+            .await
+            .map_err(to_domain_error)?;
+        let (Some(at), Some(revision)) = (
+            proof.assurance_authenticated_at,
+            proof.assurance_policy_revision,
+        ) else {
+            return Ok(());
+        };
+        if at > now || proof.assurance_methods.is_empty() {
+            return Err(DomainError::invalid(
+                "assurance_proof",
+                "verified class provenance unavailable",
+            ));
+        }
+        let methods: Vec<_> = proof
+            .assurance_methods
+            .iter()
+            .map(|method| method.as_str())
+            .collect();
+        sqlx::query("insert into session_assurance_proofs(tenant_id,session_id,acr,assurance_authenticated_at,assurance_policy_revision,assurance_methods) values($1,$2,$3,$4,$5,$6)")
+            .bind(tenant.as_str()).bind(digest).bind(proof.acr).bind(at).bind(revision).bind(methods)
+            .execute(connection).await.map_err(to_domain_error)?;
+        Ok(())
     }
 
     fn methods(stored: &[String]) -> Vec<AuthenticationMethod> {
@@ -194,6 +231,7 @@ impl SessionRepository for PgSessionRepository {
                 (session.last_seen_at + policy.lifetimes().idle).min(session.expires_at);
         }
         let amr: Vec<String> = session.amr.iter().map(|m| m.as_str().to_owned()).collect();
+        let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
         sqlx::query!(
             "insert into sessions
                  (tenant_id, session_id, public_sid, user_id, created_at,
@@ -212,7 +250,7 @@ impl SessionRepository for PgSessionRepository {
             session.acr.as_deref(),
             &amr,
         )
-        .execute(&self.pool)
+        .execute(&mut *transaction)
         .await
         .map_err(|error| match &error {
             sqlx::Error::Database(db) if db.is_unique_violation() => {
@@ -220,6 +258,21 @@ impl SessionRepository for PgSessionRepository {
             }
             _ => to_domain_error(error),
         })?;
+        Self::store_proof(
+            &mut transaction,
+            &self.tenant,
+            &session.id_digest,
+            VerifiedSessionRotation {
+                methods: &session.amr,
+                acr: session.acr.as_deref(),
+                assurance_authenticated_at: session.assurance_authenticated_at,
+                assurance_policy_revision: session.assurance_policy_revision.as_deref(),
+                assurance_methods: &session.assurance_methods,
+            },
+            session.authenticated_at,
+        )
+        .await?;
+        transaction.commit().await.map_err(to_domain_error)?;
         Ok(())
     }
 
@@ -247,6 +300,9 @@ impl SessionRepository for PgSessionRepository {
             user: row.user_id,
             created_at: row.created_at,
             authenticated_at: row.authenticated_at,
+            assurance_authenticated_at: None,
+            assurance_policy_revision: None,
+            assurance_methods: Vec::new(),
             last_seen_at: row.last_seen_at,
             expires_at: row.expires_at,
             idle_expires_at: row.idle_expires_at,
@@ -265,6 +321,20 @@ impl SessionRepository for PgSessionRepository {
                 )
             }),
         };
+        let proof = sqlx::query_as::<_, (OffsetDateTime, String, Vec<String>)>(
+            "select assurance_authenticated_at,assurance_policy_revision,assurance_methods from session_assurance_proofs where tenant_id=$1 and session_id=$2 and acr is not distinct from $3 and assurance_authenticated_at<=$4",
+        ).bind(self.tenant.as_str()).bind(&session.id_digest).bind(session.acr.as_deref()).bind(session.authenticated_at)
+            .fetch_optional(&self.pool).await.map_err(to_domain_error)?;
+        if let Some((at, revision, methods)) = proof
+            && let Some(methods) = methods
+                .iter()
+                .map(|method| AuthenticationMethod::parse(method))
+                .collect::<Option<Vec<_>>>()
+        {
+            session.assurance_authenticated_at = Some(at);
+            session.assurance_policy_revision = Some(revision);
+            session.assurance_methods = methods;
+        }
         if let Some(policy) = self.policy().await? {
             policy.constrain(&mut session);
         }
@@ -297,16 +367,43 @@ impl SessionRepository for PgSessionRepository {
         acr: Option<&str>,
         now: OffsetDateTime,
     ) -> Result<(), DomainError> {
+        self.rotate_verified(
+            old_digest,
+            new_digest,
+            VerifiedSessionRotation {
+                methods,
+                acr,
+                assurance_authenticated_at: None,
+                assurance_policy_revision: None,
+                assurance_methods: &[],
+            },
+            now,
+        )
+        .await
+    }
+
+    async fn rotate_verified(
+        &self,
+        old_digest: &str,
+        new_digest: &str,
+        proof: VerifiedSessionRotation<'_>,
+        now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
         let session = self.find(old_digest).await?.ok_or(DomainError::NotFound)?;
         if !session.status(now).is_usable() {
             return Err(DomainError::NotFound);
         }
-        let amr: Vec<String> = methods.iter().map(|m| m.as_str().to_owned()).collect();
+        let amr: Vec<String> = proof
+            .methods
+            .iter()
+            .map(|m| m.as_str().to_owned())
+            .collect();
 
         // One statement. The old id stops resolving at the same instant the new
         // one starts, which is what makes this a fixation defence rather than a
         // window. The `where` also refuses to rotate something already revoked
         // or expired — a rotation is not a way to revive a session.
+        let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
         let updated = sqlx::query!(
             "update sessions
                 set session_id = $3,
@@ -324,13 +421,15 @@ impl SessionRepository for PgSessionRepository {
             new_digest,
             now,
             &amr,
-            acr,
+            proof.acr,
         )
-        .execute(&self.pool)
+        .execute(&mut *transaction)
         .await
         .map_err(to_domain_error)?;
 
         if updated.rows_affected() == 1 {
+            Self::store_proof(&mut transaction, &self.tenant, new_digest, proof, now).await?;
+            transaction.commit().await.map_err(to_domain_error)?;
             Ok(())
         } else {
             Err(DomainError::NotFound)

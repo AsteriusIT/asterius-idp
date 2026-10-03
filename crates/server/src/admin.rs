@@ -234,6 +234,18 @@ impl AdminTokens for AutomationTokens {
             return Ok(None);
         }
 
+        let Ok(task_query) =
+            asterius_domain::agent_tasks::TokenQuery::from_claims(&verified.claims)
+        else {
+            return Ok(None);
+        };
+        if !self
+            .status
+            .task_token_active(&issuer.id, &task_query)
+            .await?
+        {
+            return Ok(None);
+        }
         if self.status.is_denylisted(&issuer.id, jti).await? {
             return Ok(None);
         }
@@ -270,6 +282,14 @@ impl AdminTokens for AutomationTokens {
 
 #[async_trait::async_trait]
 trait AutomationTokenStatus: std::fmt::Debug + Send + Sync {
+    async fn task_token_active(
+        &self,
+        _tenant: &TenantId,
+        query: &asterius_domain::agent_tasks::TokenQuery,
+    ) -> Result<bool, DomainError> {
+        Ok(query.approval.is_none())
+    }
+
     async fn is_denylisted(&self, tenant: &TenantId, jti: &str) -> Result<bool, DomainError>;
 
     async fn revoked_before(
@@ -287,6 +307,18 @@ struct PgAutomationTokenStatus {
 
 #[async_trait::async_trait]
 impl AutomationTokenStatus for PgAutomationTokenStatus {
+    async fn task_token_active(
+        &self,
+        tenant: &TenantId,
+        query: &asterius_domain::agent_tasks::TokenQuery,
+    ) -> Result<bool, DomainError> {
+        self.store
+            .scope(tenant.clone())
+            .grants()
+            .task_token_active(query)
+            .await
+    }
+
     async fn is_denylisted(&self, tenant: &TenantId, jti: &str) -> Result<bool, DomainError> {
         self.store
             .scope(tenant.clone())
@@ -550,6 +582,62 @@ impl std::fmt::Debug for DeploymentPolicyTrial {
     }
 }
 
+fn simulation_policy(
+    simulation: &asterius_admin_api::policies::Simulation,
+    current: Option<&asterius_domain::policy::StoredPolicy>,
+) -> Option<asterius_domain::policy::StoredPolicy> {
+    simulation.policy.as_ref().map_or_else(
+        || current.cloned(),
+        |rules| {
+            Some(asterius_domain::policy::StoredPolicy {
+                rules: rules.clone(),
+                updated_at: current
+                    .map_or(time::OffsetDateTime::UNIX_EPOCH, |policy| policy.updated_at),
+            })
+        },
+    )
+}
+
+impl DeploymentPolicyTrial {
+    async fn simulation_trusted(
+        &self,
+        tenant: &TenantId,
+        simulation: &asterius_admin_api::policies::Simulation,
+        client: &asterius_domain::Client,
+        request: &asterius_domain::policy::EvaluationRequest,
+        revision: Option<&str>,
+        acr: &asterius_domain::AcrPolicy,
+    ) -> Result<asterius_domain::policy::conditional::TrustedAccessContext, DomainError> {
+        use asterius_domain::policy::conditional::{ConditionalSettings, TrustedAccessContext};
+        let classification =
+            asterius_store_pg::PgConditionalSettings::new(self.store.pool().clone())
+                .read(tenant, &simulation.client)
+                .await?;
+        let now = time::OffsetDateTime::now_utc();
+        Ok(TrustedAccessContext {
+            tenant: tenant.clone(),
+            subject: Some(request.subject.id().to_owned()),
+            client: simulation.client.clone(),
+            action: simulation.enforcement_action.clone(),
+            evaluated_at: now,
+            policy_revision: revision.unwrap_or("absent").to_owned(),
+            acr_revision: asterius_domain::sha256_hex(acr.to_json().to_string().as_bytes()),
+            client_revision: asterius_domain::sha256_hex(
+                format!(
+                    "{}:{:?}",
+                    client.updated_at.unix_timestamp_nanos(),
+                    classification.as_ref().map(|value| value.revision)
+                )
+                .as_bytes(),
+            ),
+            facts: asterius_admin_api::policies::conditional_simulation::current_facts(
+                classification.as_ref(),
+                now,
+            ),
+        })
+    }
+}
+
 #[async_trait::async_trait]
 impl asterius_admin_api::backend::PolicyTrial for DeploymentPolicyTrial {
     async fn simulate(
@@ -559,9 +647,7 @@ impl asterius_admin_api::backend::PolicyTrial for DeploymentPolicyTrial {
     ) -> Result<asterius_admin_api::policies::SimulationOutcome, DomainError> {
         use asterius_admin_api::policies::SimulationOutcome;
         use asterius_domain::policy::explanation;
-        use asterius_domain::policy::{
-            EvaluationRequest, Properties, Resource, StoredPolicy, Subject,
-        };
+        use asterius_domain::policy::{EvaluationRequest, Properties, Resource, Subject};
         use asterius_domain::ports::{
             ApplicationRoleDirectory, GrantRepository, GroupDirectory, PolicyStore,
             ResourceServerRepository,
@@ -631,22 +717,29 @@ impl asterius_admin_api::backend::PolicyTrial for DeploymentPolicyTrial {
             request,
             &facts,
         )?;
-        let evaluated = simulation.policy.as_ref().map_or_else(
-            || current.clone(),
-            |rules| {
-                Some(StoredPolicy {
-                    rules: rules.clone(),
-                    updated_at: current
-                        .as_ref()
-                        .map_or(time::OffsetDateTime::UNIX_EPOCH, |policy| policy.updated_at),
-                })
-            },
-        );
-        let decision =
-            explanation::evaluate(evaluated.as_ref(), &request, "admin_policy_simulation");
+        let evaluated = simulation_policy(simulation, current.as_ref());
+        let trusted = self
+            .simulation_trusted(
+                tenant,
+                simulation,
+                &client,
+                &request,
+                current_revision.as_deref(),
+                settings.acr_policy(),
+            )
+            .await?;
+        let (decision, conditional) =
+            asterius_admin_api::policies::conditional_simulation::evaluate(
+                evaluated.as_ref(),
+                &request,
+                trusted,
+                simulation.trusted_examples.as_ref(),
+                settings.acr_policy(),
+            );
         Ok(SimulationOutcome::Decided {
             decision: Box::new(decision),
             current_revision,
+            conditional,
         })
     }
 
@@ -2546,6 +2639,19 @@ impl asterius_domain::UserAdministration for DeploymentUsers {
             .await
     }
 
+    async fn grant_owned(
+        &self,
+        tenant: &TenantId,
+        user: UserId,
+        grant: &GrantId,
+    ) -> Result<bool, DomainError> {
+        self.store
+            .scope(tenant.clone())
+            .grants()
+            .owned_by(grant, &user)
+            .await
+    }
+
     async fn revoke_grant(
         &self,
         tenant: &TenantId,
@@ -2560,15 +2666,17 @@ impl asterius_domain::UserAdministration for DeploymentUsers {
         // No live access tokens are named, for the reason
         // `ClientEndpoints::revoke` gives: this caller holds none of the
         // grant's tokens, and what withdraws them is the cutoff.
+        let audit = crate::http::request_id::audit(PgAuditSink::new(self.store.pool().clone()));
         match self
             .store
             .scope(tenant.clone())
             .grants()
-            .revoke(
+            .revoke_with_audit(
                 grant,
                 asterius_domain::RevocationReason::AdminRevoked,
                 &[],
                 now,
+                audit.as_ref(),
             )
             .await
         {
@@ -2855,8 +2963,61 @@ impl DeploymentUsers {
     }
 }
 
+#[derive(Debug)]
+struct DeploymentTaskViews {
+    store: Store,
+    tenants: Arc<dyn asterius_domain::ports::TenantRepository>,
+    capabilities: Capabilities,
+}
+#[async_trait::async_trait]
+impl asterius_domain::agent_task_views::Administration for DeploymentTaskViews {
+    async fn list(
+        &self,
+        tenant: &TenantId,
+        query: &asterius_domain::agent_task_views::Query,
+    ) -> Result<asterius_domain::agent_task_views::Page, DomainError> {
+        asterius_store_pg::PgAgentTaskViews::new(self.store.pool().clone())
+            .list(tenant, query)
+            .await
+    }
+    async fn read(
+        &self,
+        tenant: &TenantId,
+        task: uuid::Uuid,
+        query: &asterius_domain::agent_task_views::Query,
+    ) -> Result<asterius_domain::agent_task_views::Snapshot, DomainError> {
+        let entity = self
+            .tenants
+            .find_by_id(tenant)
+            .await?
+            .ok_or(DomainError::NotFound)?;
+        let implicit = crate::http::issuance::implicit_resources(
+            &entity,
+            crate::http::issuance::ImplicitResources {
+                grant_management: self
+                    .capabilities
+                    .is_enabled(asterius_domain::Feature::GrantManagement),
+                // Task approvals are human-delegated. SSF management is
+                // exclusively a client_credentials authority (SSF 1.0 §8).
+                ssf: false,
+            },
+        );
+        asterius_store_pg::PgAgentTaskViews::new(self.store.pool().clone())
+            .snapshot(tenant, task, query, &implicit)
+            .await
+    }
+}
+
 #[async_trait::async_trait]
 impl AdminBackend for Deployment {
+    fn agent_tasks(&self) -> Option<Arc<dyn asterius_domain::agent_task_views::Administration>> {
+        Some(Arc::new(DeploymentTaskViews {
+            store: self.store.clone(),
+            tenants: Arc::clone(&self.tenants),
+            capabilities: self.capabilities,
+        }))
+    }
+
     fn conditional_settings(
         &self,
     ) -> Option<Arc<dyn asterius_domain::policy::conditional::ConditionalSettings>> {
@@ -3546,6 +3707,14 @@ impl AdminBackend for Deployment {
             store: self.store.clone(),
             kek: Arc::clone(&self.kek),
         }))
+    }
+
+    fn temporary_entitlements(
+        &self,
+    ) -> Option<Arc<dyn asterius_domain::temporary_entitlements::TemporaryEntitlements>> {
+        Some(Arc::new(asterius_store_pg::PgTemporaryEntitlements::new(
+            self.store.pool().clone(),
+        )))
     }
 
     fn application_roles(&self) -> Arc<dyn asterius_domain::ApplicationRoleDirectory> {

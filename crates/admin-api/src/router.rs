@@ -284,14 +284,18 @@ async fn handle(
             .and_then(|value| value.to_str().ok())
             .ok_or(AdminError::IdempotencyKeyMissing)?;
         let key = IdempotencyKey::parse(key)?;
-        idempotency::claim(
-            backend.replay().as_ref(),
-            &tenant.id,
-            &principal.audit_actor(),
-            &key,
-            now,
-        )
-        .await?;
+        // Temporary revocation commits its canonical body UUID and response
+        // atomically. A generic one-shot claim would reject lost-response retries.
+        if operation.id() != crate::TEMPORARY_ENTITLEMENT_REVOKE_ID {
+            idempotency::claim(
+                backend.replay().as_ref(),
+                &tenant.id,
+                &principal.audit_actor(),
+                &key,
+                now,
+            )
+            .await?;
+        }
     }
 
     let context = Handling {
@@ -322,6 +326,10 @@ async fn route(
     body: axum::body::Body,
 ) -> Result<Response, AdminError> {
     if id.starts_with("governance.") { return context.governance(id,body).await; }
+
+    if id.starts_with("temporary_entitlements.") {
+        return context.temporary_entitlement(id, body).await;
+    }
     if crate::declarative::is_route(id) {
         return context.management(id, body).await;
     }
@@ -491,6 +499,8 @@ async fn route_standard(
         crate::USER_SESSION_REVOKE_ID => context.revoke_session().await,
         crate::USER_GRANTS_LIST_ID => context.list_grants().await,
         crate::USER_GRANT_REVOKE_ID => context.revoke_grant().await,
+        crate::AGENT_TASKS_LIST_ID => context.list_agent_tasks().await,
+        crate::AGENT_TASK_READ_ID => context.read_agent_task().await,
         crate::USER_ROLES_READ_ID => context.read_roles().await,
         crate::USER_ROLES_UPDATE_ID => context.update_roles(body).await,
         crate::APP_ROLES_LIST_ID => context.list_roles(RoleOwner::Tenant).await,
@@ -3305,9 +3315,15 @@ impl Handling<'_> {
             policies::SimulationOutcome::Decided {
                 decision,
                 current_revision,
+                conditional,
             } => Ok(json_no_store(
                 StatusCode::OK,
-                &policies::simulation_response(&simulation, &decision, current_revision.as_deref()),
+                &policies::simulation_response(
+                    &simulation,
+                    &decision,
+                    current_revision.as_deref(),
+                    &conditional,
+                ),
             )),
         }
     }
@@ -6920,6 +6936,50 @@ impl Handling<'_> {
     ///
     /// Grant Management ID1 §6.5's semantics, through the same transaction the
     /// client-facing endpoint uses.
+    async fn list_agent_tasks(&self) -> Result<Response, AdminError> {
+        let query = asterius_domain::agent_task_views::Query::parse(Some(&self.query))
+            .map_err(|_| AdminError::Invalid("invalid bounded task query".to_owned()))?;
+        let port = self
+            .state
+            .backend
+            .agent_tasks()
+            .ok_or(AdminError::NotFound)?;
+        let page = port
+            .list(&self.tenant.id, &query)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::AGENT_TASKS_LIST_ID, &error))?;
+        Ok(json_no_store(StatusCode::OK, &serde_json::json!(page)))
+    }
+    async fn read_agent_task(&self) -> Result<Response, AdminError> {
+        let mut segments = self.path.split('/');
+        let id = segments
+            .find(|segment| *segment == "tasks")
+            .and_then(|_| segments.next())
+            .ok_or(AdminError::NotFound)?;
+        let id = asterius_domain::agent_task_views::identity(id)
+            .map_err(|_| AdminError::Invalid("invalid task identity".to_owned()))?;
+        let query = asterius_domain::agent_task_views::Query::parse(Some(&self.query))
+            .map_err(|_| AdminError::Invalid("invalid bounded task query".to_owned()))?;
+        if query.owner.is_some() || query.agent.is_some() {
+            return Err(AdminError::Invalid(
+                "filters apply only to task listing".to_owned(),
+            ));
+        }
+        let port = self
+            .state
+            .backend
+            .agent_tasks()
+            .ok_or(AdminError::NotFound)?;
+        let snapshot =
+            port.read(&self.tenant.id, id, &query)
+                .await
+                .map_err(|error| match error {
+                    DomainError::NotFound => AdminError::NotFound,
+                    error => AdminError::from_storage(crate::AGENT_TASK_READ_ID, &error),
+                })?;
+        Ok(json_no_store(StatusCode::OK, &serde_json::json!(snapshot)))
+    }
+
     async fn revoke_grant(&self) -> Result<Response, AdminError> {
         let named = self
             .path
@@ -6937,6 +6997,17 @@ impl Handling<'_> {
         let grant = asterius_domain::GrantId::new(named.clone());
         let id = self.user_in_path()?;
         let user = self.load_user(id, crate::USER_GRANT_REVOKE_ID).await?;
+
+        if !self
+            .state
+            .backend
+            .users()
+            .grant_owned(&self.tenant.id, user.id, &grant)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::USER_GRANT_REVOKE_ID, &error))?
+        {
+            return Err(AdminError::NotFound);
+        }
 
         let revoked = self
             .state
@@ -8652,6 +8723,176 @@ impl Handling<'_> {
     }
 }
 
+impl Handling<'_> {
+    async fn temporary_entitlement(
+        &self,
+        operation: &str,
+        body: axum::body::Body,
+    ) -> Result<Response, AdminError> {
+        use asterius_domain::temporary_entitlements::{EntitlementConfiguration, RevokeActivation};
+        let Principal::Console {
+            tenant: realm,
+            user,
+            ..
+        } = &self.principal
+        else {
+            return Err(AdminError::Forbidden);
+        };
+        // Deployment administration does not make a reserved-realm account
+        // the target tenant's human resource owner, even for equal UUIDs.
+        if realm != &self.tenant.id {
+            return Err(AdminError::Forbidden);
+        }
+        let port = self
+            .state
+            .backend
+            .temporary_entitlements()
+            .ok_or(AdminError::Unavailable)?;
+        let (id, nested) = self.temporary_entitlement_path()?;
+        let error = |e| group_error(crate::TEMPORARY_ENTITLEMENT_CREATE_ID, e);
+        let tenant = &self.tenant.id;
+        match operation {
+            crate::TEMPORARY_ENTITLEMENT_LIST_ID => Ok(json_no_store(
+                StatusCode::OK,
+                &serde_json::json!({"items":port.list(tenant,user).await.map_err(error)?}),
+            )),
+            crate::TEMPORARY_ENTITLEMENT_CREATE_ID => {
+                let c: EntitlementConfiguration = self.parse_body(body).await?;
+                let result = port
+                    .configure(tenant, user, None, None, c)
+                    .await
+                    .map_err(error)?;
+                Ok(json_no_store(
+                    StatusCode::CREATED,
+                    &serde_json::json!(result),
+                ))
+            }
+            crate::TEMPORARY_ENTITLEMENT_READ_ID => {
+                let id = id.ok_or(AdminError::NotFound)?;
+                let result = port.get(tenant, user, id).await.map_err(error)?;
+                Ok(json_no_store(StatusCode::OK, &serde_json::json!(result)))
+            }
+            crate::TEMPORARY_ENTITLEMENT_UPDATE_ID => {
+                let c = crate::temporary_entitlements::ReplaceConfiguration::parse(
+                    self.parse_body(body).await?,
+                )?;
+                let result = port
+                    .configure(tenant, user, id, Some(c.expected_revision), c.configuration)
+                    .await
+                    .map_err(error)?;
+                Ok(json_no_store(StatusCode::OK, &serde_json::json!(result)))
+            }
+            crate::TEMPORARY_ENTITLEMENT_ELIGIBILITIES_ID => Ok(json_no_store(
+                StatusCode::OK,
+                &serde_json::json!({"items":port.eligibilities(tenant,user,id.ok_or(AdminError::NotFound)?).await.map_err(error)?}),
+            )),
+            crate::TEMPORARY_ENTITLEMENT_ELIGIBILITY_SET_ID
+            | crate::TEMPORARY_ENTITLEMENT_ELIGIBILITY_REMOVE_ID => {
+                self.temporary_entitlement_eligibility(
+                    port.as_ref(),
+                    user,
+                    (id, nested),
+                    operation,
+                    body,
+                )
+                .await
+            }
+            crate::TEMPORARY_ENTITLEMENT_REQUESTS_ID => Ok(json_no_store(
+                StatusCode::OK,
+                &serde_json::json!({"items":port.owner_requests(tenant,user,id.ok_or(AdminError::NotFound)?).await.map_err(error)?}),
+            )),
+            crate::TEMPORARY_ENTITLEMENT_ACTIVATIONS_ID => Ok(json_no_store(
+                StatusCode::OK,
+                &serde_json::json!({"items":port.owner_activations(tenant,user,id.ok_or(AdminError::NotFound)?).await.map_err(error)?}),
+            )),
+            crate::TEMPORARY_ENTITLEMENT_REVOKE_ID => {
+                let activation = nested.ok_or(AdminError::NotFound)?;
+                let c: RevokeActivation = self.parse_body(body).await?;
+                if c.activation_id != activation {
+                    return Err(AdminError::Invalid(
+                        "activation_id differs from addressed activation".into(),
+                    ));
+                }
+                let result = port
+                    .owner_revoke(tenant, user, id.ok_or(AdminError::NotFound)?, c)
+                    .await
+                    .map_err(error)?;
+                Ok(json_no_store(StatusCode::OK, &serde_json::json!(result)))
+            }
+            _ => Err(AdminError::NotFound),
+        }
+    }
+    async fn temporary_entitlement_eligibility(
+        &self,
+        port: &dyn asterius_domain::temporary_entitlements::TemporaryEntitlements,
+        user: &asterius_domain::UserId,
+        addressed: (Option<uuid::Uuid>, Option<uuid::Uuid>),
+        operation: &str,
+        body: axum::body::Body,
+    ) -> Result<Response, AdminError> {
+        use asterius_domain::temporary_entitlements::EligibilityChange;
+        let (id, nested) = addressed;
+        let tenant = &self.tenant.id;
+        let error = |e| group_error(crate::TEMPORARY_ENTITLEMENT_CREATE_ID, e);
+        match operation {
+            crate::TEMPORARY_ENTITLEMENT_ELIGIBILITY_SET_ID => {
+                let value: serde_json::Value = self.parse_body(body).await?;
+                if !value
+                    .as_object()
+                    .is_some_and(|o| o.contains_key("expected_revision"))
+                {
+                    return Err(AdminError::Invalid(
+                        "expected_revision must be explicitly null or UUID".into(),
+                    ));
+                }
+                let c: EligibilityChange = serde_json::from_value(value)
+                    .map_err(|_| AdminError::Invalid("invalid eligibility document".into()))?;
+                let result = port
+                    .set_eligibility(tenant, user, id.ok_or(AdminError::NotFound)?, c)
+                    .await
+                    .map_err(error)?;
+                Ok(json_no_store(StatusCode::OK, &serde_json::json!(result)))
+            }
+            crate::TEMPORARY_ENTITLEMENT_ELIGIBILITY_REMOVE_ID => {
+                let eligibility = nested.ok_or(AdminError::NotFound)?;
+                let c: crate::temporary_entitlements::RemoveEligibility =
+                    self.parse_body(body).await?;
+                port.remove_eligibility(
+                    tenant,
+                    user,
+                    id.ok_or(AdminError::NotFound)?,
+                    eligibility,
+                    c.expected_revision,
+                )
+                .await
+                .map_err(error)?;
+                Ok(json_no_store(
+                    StatusCode::OK,
+                    &serde_json::json!({"removed":true}),
+                ))
+            }
+            _ => Err(AdminError::NotFound),
+        }
+    }
+    fn temporary_entitlement_path(
+        &self,
+    ) -> Result<(Option<uuid::Uuid>, Option<uuid::Uuid>), AdminError> {
+        let segments: Vec<_> = self.path.split('/').filter(|s| !s.is_empty()).collect();
+        let marker = segments
+            .iter()
+            .position(|s| *s == "temporary-entitlements")
+            .ok_or(AdminError::NotFound)?;
+        let id = segments
+            .get(marker + 1)
+            .map(|s| uuid::Uuid::parse_str(s).map_err(|_| AdminError::NotFound))
+            .transpose()?;
+        let nested = segments
+            .get(marker + 3)
+            .and_then(|s| uuid::Uuid::parse_str(s).ok());
+        Ok((id, nested))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -9377,13 +9618,29 @@ mod tests {
                         .map_or(OffsetDateTime::UNIX_EPOCH, |policy| policy.updated_at),
                 })
                 .or(current);
+            let now = OffsetDateTime::UNIX_EPOCH;
+            let trusted = asterius_domain::policy::conditional::TrustedAccessContext {
+                tenant: tenant.clone(),
+                subject: Some("resolved-subject".to_owned()),
+                client: simulation.client.clone(),
+                action: simulation.enforcement_action.clone(),
+                evaluated_at: now,
+                policy_revision: revision.clone().unwrap_or_else(|| "absent".to_owned()),
+                acr_revision: "fixture-acr".to_owned(),
+                client_revision: "fixture-client".to_owned(),
+                facts: policies::conditional_simulation::current_facts(None, now),
+            };
+            let (decision, conditional) = policies::conditional_simulation::evaluate(
+                snapshot.as_ref(),
+                &request,
+                trusted,
+                simulation.trusted_examples.as_ref(),
+                &asterius_domain::AcrPolicy::default(),
+            );
             Ok(policies::SimulationOutcome::Decided {
-                decision: Box::new(asterius_domain::policy::explanation::evaluate(
-                    snapshot.as_ref(),
-                    &request,
-                    "admin_policy_simulation",
-                )),
+                decision: Box::new(decision),
                 current_revision: revision,
+                conditional,
             })
         }
 
@@ -11033,8 +11290,72 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct FakeAgentTaskViews;
+    #[async_trait::async_trait]
+    impl asterius_domain::agent_task_views::Administration for FakeAgentTaskViews {
+        async fn list(
+            &self,
+            _tenant: &TenantId,
+            _query: &asterius_domain::agent_task_views::Query,
+        ) -> Result<asterius_domain::agent_task_views::Page, DomainError> {
+            Ok(asterius_domain::agent_task_views::Page {
+                items: Vec::new(),
+                next_cursor: None,
+                observed_at: "2026-10-03T00:00:00Z".to_owned(),
+            })
+        }
+        async fn read(
+            &self,
+            _tenant: &TenantId,
+            task: uuid::Uuid,
+            _query: &asterius_domain::agent_task_views::Query,
+        ) -> Result<asterius_domain::agent_task_views::Snapshot, DomainError> {
+            use asterius_domain::agent_task_views::{Ceiling, Snapshot, State, Task};
+            if task.to_string() != SEEDED_INVITATION_ID {
+                return Err(DomainError::NotFound);
+            }
+            let ceiling = Ceiling {
+                scopes: std::collections::BTreeSet::new(),
+                resources: std::collections::BTreeSet::new(),
+                actions: Vec::new(),
+                resource_ceilings: Vec::new(),
+                max_delegation_depth: 2,
+            };
+            Ok(Snapshot {
+                task: Task {
+                    task_id: task,
+                    root_grant_id: uuid::Uuid::parse_str(SEEDED_GRANT_ID)
+                        .expect("fixed grant UUID"),
+                    owner_user_id: uuid::Uuid::parse_str(SEEDED_USER_ID).expect("fixed user UUID"),
+                    initiating_client_id: asterius_domain::ClientId::new(SEEDED_CLIENT_ID),
+                    approval_revision: 1,
+                    label: "Seeded task".to_owned(),
+                    approved_at: "2026-10-03T00:00:00Z".to_owned(),
+                    expires_at: "2026-10-03T00:10:00Z".to_owned(),
+                    revoked_at: None,
+                    state: State::Active,
+                },
+                approved_ceiling: ceiling.clone(),
+                current_issuance_ceiling: ceiling,
+                current_grant_types: std::collections::BTreeSet::new(),
+                maximum_new_token_ttl_seconds: 0,
+                observed_at: "2026-10-03T00:00:00Z".to_owned(),
+                lineage: Vec::new(),
+                next_cursor: None,
+                conditional_decision: "not_evaluated",
+            })
+        }
+    }
+
     #[async_trait::async_trait]
     impl AdminBackend for Handle {
+        fn agent_tasks(
+            &self,
+        ) -> Option<Arc<dyn asterius_domain::agent_task_views::Administration>> {
+            Some(Arc::new(FakeAgentTaskViews))
+        }
+
         fn oidc_providers(&self) -> Option<Arc<dyn crate::oidc_providers::ProviderAdministration>> {
             Some(Arc::new(FakeOidcProviders))
         }
@@ -12259,6 +12580,8 @@ mod tests {
             .replace("{sid}", SEEDED_SID)
             .replace("{credential_id}", SEEDED_CREDENTIAL_ID)
             .replace("{grant_id}", SEEDED_GRANT_ID)
+            .replace("{task_id}", SEEDED_INVITATION_ID)
+            .replace("{trust_id}", "inventory")
             .replace("{stream_id}", SEEDED_STREAM_ID)
             .replace(
                 "{outbox_id}",
@@ -12293,6 +12616,27 @@ mod tests {
             .header("origin", ORIGIN)
     }
 
+    fn registry_workload_trust_body() -> serde_json::Value {
+        serde_json::json!({"expected_version":null,"config":{
+            "issuer":"https://cluster.example","audience":"urn:asterius:workload:asterius-admin:inventory",
+            "subject":"system:serviceaccount:apps:inventory","provider":"kubernetes","principal":"workload:inventory",
+            "clients":[SEEDED_CLIENT_ID],"scopes":["inventory:read"],"resources":["https://api.example/"],"actions":["read"],
+            "required_claims":{"/kubernetes.io/namespace":"apps","/kubernetes.io/serviceaccount/name":"inventory","/kubernetes.io/serviceaccount/uid":"sa-uid"},
+            "algorithms":["EdDSA"],"keys":{"kind":"inline","jwks":{"keys":[]}},"enabled":false
+        }})
+    }
+
+    fn test_logo_body() -> Body {
+        let mut bytes = Vec::new();
+        image::DynamicImage::new_rgba8(2, 2)
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .expect("fixed test image encodes");
+        Body::from(bytes)
+    }
+
     /// A body each mutating route will accept.
     ///
     /// Keyed on the `operationId` rather than on the verb, because the table
@@ -12301,16 +12645,17 @@ mod tests {
     /// would fail those tests for the wrong reason and hide a real refusal.
     fn body_for(operation: &Operation) -> Body {
         if operation.id() == crate::THEME_LOGO_UPLOAD_ID {
-            let mut bytes = Vec::new();
-            image::DynamicImage::new_rgba8(2, 2)
-                .write_to(
-                    &mut std::io::Cursor::new(&mut bytes),
-                    image::ImageFormat::Png,
-                )
-                .expect("fixed test image encodes");
-            return Body::from(bytes);
+            return test_logo_body();
         }
         let document = match operation.id() {
+            crate::WORKLOAD_TRUST_PUT_ID => registry_workload_trust_body(),
+            crate::WORKLOAD_TRUST_DELETE_ID => serde_json::json!({"expected_version":1}),
+            crate::KUBERNETES_PROFILE_UPDATE_ID => {
+                serde_json::json!({"cluster_id":"registry-fixture","namespace":"default","group_ids":[],"revision":0})
+            }
+            crate::CONDITIONAL_SETTINGS_UPDATE_ID => {
+                serde_json::json!({"sensitivity":"standard","expected_revision":null})
+            }
             crate::TENANT_CREATE_ID => serde_json::json!({
                 "tenant_id": "brand-new",
                 "issuer": format!("{ORIGIN}/t/brand-new"),
@@ -14423,6 +14768,61 @@ mod tests {
         )
     }
 
+    fn assert_registered_status(operation: &Operation, status: StatusCode) {
+        // Assert
+        assert_ne!(
+            status,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "{} is mounted with no handler",
+            operation.id()
+        );
+        if operation.authority().reach() == Reach::AutomationTenant || operation.service_only() {
+            assert_eq!(status, StatusCode::FORBIDDEN);
+        } else if matches!(
+            operation.id(),
+            crate::CONDITIONAL_SETTINGS_READ_ID
+                | crate::CONDITIONAL_SETTINGS_UPDATE_ID
+                | crate::WORKLOAD_TRUSTS_LIST_ID
+                | crate::WORKLOAD_TRUST_READ_ID
+                | crate::WORKLOAD_TRUST_PUT_ID
+                | crate::WORKLOAD_TRUST_DELETE_ID
+        ) {
+            // This fixture intentionally supplies neither settings nor trust ports;
+            // valid requests must reach that precise unavailable boundary.
+            assert_eq!(status, StatusCode::NOT_FOUND);
+        } else if operation.id() == crate::KUBERNETES_PROFILE_READ_ID {
+            // This fixture has no cluster profile persisted.
+            assert_eq!(status, StatusCode::NOT_FOUND);
+        } else if operation.id() == crate::KUBERNETES_PROFILE_UPDATE_ID {
+            // Its existing FAPI registration is deliberately incompatible
+            // with the separate human Kubernetes OIDC client profile.
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+        } else if operation.id() == crate::POLICY_SIMULATE_ID {
+            // The earlier resource withdrawal removed this walk's target;
+            // simulation must refuse that exact missing resource.
+            assert_eq!(status, StatusCode::NOT_FOUND);
+        } else if registry_accepts_client_refusal(operation.id()) {
+            // This registry walk does not seed SAML keys or SP trusts,
+            // supply upstream peer, subject binding, or OIDC provider
+            // documents, or step up the IDA session.
+            // Those endpoints have dedicated behavior tests; here a
+            // client refusal still proves the registered handler ran.
+            assert!(
+                status.is_success() || status.is_client_error(),
+                "{} answered {} for a deployment admin",
+                operation.id(),
+                status
+            );
+        } else {
+            assert!(
+                status.is_success(),
+                "{} answered {} for a deployment admin",
+                operation.id(),
+                status
+            );
+        }
+    }
+
     /// Every mounted route has a handler. Without this the `match` in
     /// [`handle`] would answer 503 for a route somebody registered and forgot
     /// to wire, which looks like an outage rather than a mistake.
@@ -14494,36 +14894,7 @@ mod tests {
                 )
                 .await;
 
-            // Assert
-            assert_ne!(
-                response.status(),
-                StatusCode::SERVICE_UNAVAILABLE,
-                "{} is mounted with no handler",
-                operation.id()
-            );
-            if operation.authority().reach() == Reach::AutomationTenant || operation.service_only()
-            {
-                assert_eq!(response.status(), StatusCode::FORBIDDEN);
-            } else if registry_accepts_client_refusal(operation.id()) {
-                // This registry walk does not seed SAML keys or SP trusts,
-                // supply upstream peer, subject binding, or OIDC provider
-                // documents, or step up the IDA session.
-                // Those endpoints have dedicated behavior tests; here a
-                // client refusal still proves the registered handler ran.
-                assert!(
-                    response.status().is_success() || response.status().is_client_error(),
-                    "{} answered {} for a deployment admin",
-                    operation.id(),
-                    response.status()
-                );
-            } else {
-                assert!(
-                    response.status().is_success(),
-                    "{} answered {} for a deployment admin",
-                    operation.id(),
-                    response.status()
-                );
-            }
+            assert_registered_status(operation, response.status());
         }
     }
 
@@ -15862,6 +16233,30 @@ mod tests {
 
         // Assert
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn temporary_entitlement_owner_refuses_cross_realm_even_with_equal_user_uuid() {
+        let world = World::new().routed_at("acme");
+        let deployment =
+            world.sign_in_as("asterius-admin", seeded_user_id(), &[Role::DeploymentAdmin]);
+        assert_eq!(
+            world
+                .get(&crate::TEMPORARY_ENTITLEMENT_LIST, &deployment)
+                .await
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+        // The same UUID in the correct realm reaches the missing fixture port,
+        // proving the refusal above came before any owner persistence lookup.
+        let local = world.sign_in_as("acme", seeded_user_id(), &[Role::TenantAdmin]);
+        assert_eq!(
+            world
+                .get(&crate::TEMPORARY_ENTITLEMENT_LIST, &local)
+                .await
+                .status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
     }
 
     /// The two tenant identities a cross-tenant console needs stay distinct:
@@ -19286,6 +19681,116 @@ mod tests {
         // Assert
         assert_eq!(first.status(), StatusCode::OK);
         assert_eq!(second.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn agent_task_viewer_bounds_are_enforced_before_storage() {
+        let (world, cookie) = console_over_the_seeded_account();
+        for suffix in [
+            "?limit=0",
+            "?limit=51",
+            "?limit=25&limit=25",
+            "?token=secret",
+        ] {
+            let response = world
+                .send(
+                    as_console(&crate::AGENT_TASKS_LIST, &cookie)
+                        .uri(format!("{}{}", crate::AGENT_TASKS_LIST.full_path(), suffix))
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
+        let response = world
+            .send(
+                as_console(&crate::AGENT_TASKS_LIST, &cookie)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["cache-control"], "no-store");
+    }
+
+    #[tokio::test]
+    async fn agent_task_view_unknown_identity_is_not_found_not_an_outage() {
+        let (world, cookie) = console_over_the_seeded_account();
+        let response = world
+            .send(
+                as_console(&crate::AGENT_TASK_READ, &cookie)
+                    .uri(format!(
+                        "{}/{}",
+                        crate::AGENT_TASKS_LIST.full_path(),
+                        uuid::Uuid::new_v4()
+                    ))
+                    .body(Body::empty())
+                    .expect("fixed request"),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response.headers()["cache-control"], "no-store");
+    }
+
+    #[tokio::test]
+    async fn agent_task_admin_revoke_cannot_substitute_another_users_grant() {
+        let (world, cookie) = console_over_the_seeded_account();
+        let other_id = UserId::new(uuid::Uuid::new_v4());
+        let mut other = seeded_user("acme");
+        other.id = other_id;
+        world
+            .handle
+            .0
+            .accounts
+            .lock()
+            .expect("uncontended fixture")
+            .push(other);
+        let id = {
+            let mut grants = world
+                .handle
+                .0
+                .account_grants
+                .lock()
+                .expect("uncontended fixture");
+            let grant = grants
+                .iter_mut()
+                .find(|grant| grant.tenant.as_str() == "acme")
+                .expect("seeded grant");
+            grant.user = Some(other_id);
+            grant.id.clone()
+        };
+        let response = world
+            .send(
+                as_console(&crate::USER_GRANT_REVOKE, &cookie)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let grants = world
+            .handle
+            .0
+            .account_grants
+            .lock()
+            .expect("uncontended fixture");
+        assert!(
+            grants
+                .iter()
+                .find(|grant| grant.tenant.as_str() == "acme" && grant.id == id)
+                .expect("foreign owned grant remains")
+                .revoked_at
+                .is_none()
+        );
+        assert!(
+            !world
+                .handle
+                .0
+                .events
+                .lock()
+                .expect("uncontended fixture")
+                .iter()
+                .any(|event| event.event_type == EventType::GRANT_REVOKED)
+        );
     }
 
     /// The grants tab renders what an operator needs to decide and nothing

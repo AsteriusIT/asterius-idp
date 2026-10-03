@@ -25,7 +25,7 @@ pub struct Approval<'a> {
 
 #[derive(Debug, Clone)]
 pub struct PgAgentTasks {
-    pool: PgPool,
+    pub(crate) pool: PgPool,
 }
 
 impl PgAgentTasks {
@@ -175,6 +175,17 @@ impl PgAgentTasks {
             .fetch_one(&mut *tx).await.map_err(to_domain_error)?;
         sqlx::query("insert into agent_task_grants(tenant_id,grant_id,task_id,root_grant_id,approval_revision) values($1,$2,$3,$2,$4)")
             .bind(tenant.as_str()).bind(grant_uuid(root)?).bind(task).bind(revision).execute(&mut *tx).await.map_err(to_domain_error)?;
+        // Existing delegations cannot remain a legacy refresh/exchange route
+        // when their human root enters an explicitly approved task.
+        sqlx::query(r"with recursive descendants as (
+                select grant_id,array[grant_id] as path from grants where tenant_id=$1 and grant_id=$2
+                union all select g.grant_id,d.path||g.grant_id from descendants d
+                join grants g on g.tenant_id=$1 and g.parent_grant_id=d.grant_id
+                where cardinality(d.path)<10 and not g.grant_id=any(d.path)
+            ) insert into agent_task_grants(tenant_id,grant_id,task_id,root_grant_id,approval_revision)
+              select $1,grant_id,$3,$2,$4 from descendants on conflict(tenant_id,grant_id) do nothing")
+            .bind(tenant.as_str()).bind(grant_uuid(root)?).bind(task).bind(revision)
+            .execute(&mut *tx).await.map_err(to_domain_error)?;
         sqlx::query("insert into agent_task_clients(tenant_id,client_id) values($1,$2) on conflict do nothing")
             .bind(tenant.as_str()).bind(root.client.as_str()).execute(&mut *tx).await.map_err(to_domain_error)?;
         crate::audit::append(
@@ -216,9 +227,8 @@ impl PgAgentTasks {
         task: Uuid,
         revision: i64,
     ) -> Result<Option<asterius_domain::GrantId>, DomainError> {
-        let id:Option<Uuid>=sqlx::query_scalar("select x.grant_id from agent_task_tokens x join agent_task_grants b using(tenant_id,grant_id) join agent_tasks t using(tenant_id,task_id,root_grant_id,approval_revision) where x.tenant_id=$1 and x.jti=$2 and t.task_id=$3 and t.approval_revision=$4 and x.expires_at>clock_timestamp() and t.expires_at>clock_timestamp() and t.revoked_at is null")
-            .bind(tenant.as_str()).bind(jti).bind(task).bind(revision).fetch_optional(&self.pool).await.map_err(to_domain_error)?;
-        Ok(id.map(|id| asterius_domain::GrantId::new(id.to_string())))
+        self.active_link(tenant, jti, None, task, revision, None)
+            .await
     }
 
     async fn rejected(&self, grant: &Grant, audit: &dyn AuditSink) -> Result<(), DomainError> {
@@ -584,6 +594,30 @@ impl Signer for TaskSigner<'_> {
         self.sign_checked(tenant, algorithm, typ, claims).await
     }
 
+    async fn sign_identity(
+        &self,
+        tenant: &TenantId,
+        grant: &Grant,
+        algorithm: Option<asterius_domain::SigningAlgorithm>,
+        typ: &'static str,
+        claims: &serde_json::Value,
+    ) -> Result<asterius_domain::CompactJws, DomainError> {
+        if !matches!(typ, "JWT" | "dpop+id_token") {
+            return Err(DomainError::invalid(
+                "id_token",
+                "identity assertion type required",
+            ));
+        }
+        if let Some(prepared) = self.prepare(tenant, algorithm).await? {
+            return prepared
+                .sign_identity(tenant, grant, algorithm, typ, claims)
+                .await;
+        }
+        self.inner
+            .sign_identity(tenant, grant, algorithm, typ, claims)
+            .await
+    }
+
     async fn sign_access(
         &self,
         tenant: &TenantId,
@@ -753,7 +787,7 @@ impl TaskSigner<'_> {
         let ancestors=sqlx::query("with recursive lineage as (select grant_id,parent_grant_id,revoked_at,expires_at,scopes,resources,authorization_details,array[grant_id] as path,false as cycle from grants where tenant_id=$1 and grant_id=$2 union all select g.grant_id,g.parent_grant_id,g.revoked_at,g.expires_at,g.scopes,g.resources,g.authorization_details,l.path||g.grant_id,g.grant_id=any(l.path) from grants g join lineage l on g.grant_id=l.parent_grant_id where g.tenant_id=$1 and not l.cycle and cardinality(l.path)<=9) select * from lineage")
             .bind(tenant.as_str()).bind(lineage_start).fetch_all(&mut *tx).await.map_err(to_domain_error)?;
         if ancestors.is_empty()
-            || ancestors.len() > 9
+            || ancestors.len() > 10
             || !ancestors
                 .iter()
                 .any(|row| row.get::<Uuid, _>("grant_id") == root)
@@ -981,6 +1015,25 @@ impl Signer for PreparedTaskSigner<'_> {
         .sign_checked(tenant, algorithm, typ, claims)
         .await
     }
+    async fn sign_identity(
+        &self,
+        tenant: &TenantId,
+        grant: &Grant,
+        algorithm: Option<asterius_domain::SigningAlgorithm>,
+        typ: &'static str,
+        claims: &serde_json::Value,
+    ) -> Result<asterius_domain::CompactJws, DomainError> {
+        if !matches!(typ, "JWT" | "dpop+id_token") {
+            return Err(DomainError::invalid(
+                "id_token",
+                "identity assertion type required",
+            ));
+        }
+        self.inner
+            .sign_identity(tenant, grant, algorithm, typ, claims)
+            .await
+    }
+
     async fn sign_access(
         &self,
         tenant: &TenantId,

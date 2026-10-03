@@ -77,6 +77,15 @@ pub const JWT_CONTENT_TYPE: &str = "application/jwt";
 /// UserInfo writes nothing.
 #[async_trait::async_trait]
 pub trait UserInfoSource: std::fmt::Debug + Send + Sync {
+    /// Uncached task/ancestor state after JWT and sender verification.
+    /// Compatibility implementations refuse every task-linked credential.
+    async fn task_token_active(
+        &self,
+        query: &asterius_domain::agent_tasks::TokenQuery,
+    ) -> Result<bool, DomainError> {
+        Ok(query.approval.is_none())
+    }
+
     /// The grant a token names.
     ///
     /// # Errors
@@ -124,6 +133,22 @@ pub trait UserInfoSource: std::fmt::Debug + Send + Sync {
     /// unavailable store: a response asserting *fewer* roles than the person
     /// holds is an authorization decision taken by an outage.
     async fn roles(&self, user: UserId) -> Result<asterius_domain::HeldRoles, DomainError>;
+
+    /// Current authority for the verified token's exact grant and bounds.
+    /// Older adapters retain their standing-role behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns a domain error if current role authority cannot be read.
+    async fn roles_for_grant(
+        &self,
+        grant: &Grant,
+    ) -> Result<asterius_domain::HeldRoles, DomainError> {
+        match grant.user {
+            Some(user) => self.roles(user).await,
+            None => Ok(asterius_domain::HeldRoles::default()),
+        }
+    }
 
     /// Current, tenant-approved verified identity attributes for this grant.
     /// Sources without Identity Assurance support release nothing.
@@ -330,6 +355,11 @@ async fn answer(
     let jti = verified
         .claim_str("jti")
         .ok_or(UserInfoError::InvalidToken)?;
+    let task_query = asterius_domain::agent_tasks::TokenQuery::from_claims(&verified.claims)
+        .map_err(|_| UserInfoError::InvalidToken)?;
+    if !context.source.task_token_active(&task_query).await? {
+        return Err(UserInfoError::InvalidToken.into());
+    }
     if context.source.is_denylisted(jti).await? {
         return Err(UserInfoError::InvalidToken.into());
     }
@@ -379,7 +409,8 @@ async fn answer(
             "a UserInfo request reached a grant with no user",
         ))
     })?;
-    let held = context.source.roles(user).await?;
+    let role_grant = token_role_grant(&grant, &verified);
+    let held = context.source.roles_for_grant(&role_grant).await?;
     let body = userinfo::with_roles(body, grant.client.as_str(), &held);
     let groups = context
         .source
@@ -387,6 +418,28 @@ async fn answer(
         .await?;
     let body = userinfo::with_managed_groups(body, groups);
     render(context, &grant, body).await
+}
+
+// A verified access token may carry narrower bounds than its durable grant.
+// Never let UserInfo recover a temporary role through the wider original row.
+fn token_role_grant(grant: &Grant, verified: &Verified) -> Grant {
+    let mut exact = grant.clone();
+    exact.scopes = verified
+        .claim_str("scope")
+        .unwrap_or_default()
+        .split_ascii_whitespace()
+        .map(str::to_owned)
+        .collect();
+    exact.resources = match verified.claims.get("aud") {
+        Some(Value::String(resource)) => std::iter::once(resource.clone()).collect(),
+        Some(Value::Array(resources)) => resources
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect(),
+        _ => std::collections::BTreeSet::default(),
+    };
+    exact
 }
 
 /// Verifies the access token (RFC 9068 §4).
@@ -794,4 +847,40 @@ fn no_store(mut response: Response) -> Response {
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     headers.insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
     response
+}
+
+#[cfg(test)]
+mod temporary_role_tests {
+    use super::*;
+
+    #[test]
+    fn temporary_roles_follow_verified_token_bounds_instead_of_the_wider_grant() {
+        let mut grant = Grant::new(
+            asterius_domain::TenantId::new("demo"),
+            asterius_domain::ClientId::new("app"),
+            OffsetDateTime::UNIX_EPOCH,
+        );
+        grant.scopes = ["openid", "read", "write"].map(str::to_owned).into();
+        grant.resources = ["https://first.test", "https://second.test"]
+            .map(str::to_owned)
+            .into();
+        let mut verified = Verified {
+            claims: json!({"scope":"openid read", "aud":"https://first.test"}),
+            kid: None,
+            algorithm: asterius_domain::keys::SigningAlgorithm::Es256,
+        };
+        let exact = token_role_grant(&grant, &verified);
+        assert_eq!(exact.id, grant.id);
+        assert_eq!(exact.scopes, ["openid", "read"].map(str::to_owned).into());
+        assert_eq!(exact.resources, ["https://first.test".to_owned()].into());
+        verified.claims = json!({"scope":"openid", "aud":["https://second.test"]});
+        assert_eq!(
+            token_role_grant(&grant, &verified).resources,
+            ["https://second.test".to_owned()].into()
+        );
+        verified.claims = json!({});
+        let absent = token_role_grant(&grant, &verified);
+        assert!(absent.scopes.is_empty());
+        assert!(absent.resources.is_empty());
+    }
 }

@@ -405,7 +405,8 @@ impl AuthorizationCode<'_> {
         // One read for both tokens of this response (`ast-mqt`): two reads
         // could disagree, and the disagreement would be a role withdrawn
         // between them.
-        let held = issuance::held_roles(self.roles, &grant).await?;
+        let role_grant = issuance::role_grant(&grant, &targeting);
+        let held = issuance::held_roles(self.roles, &role_grant).await?;
 
         let access_lifetime = self
             .grants
@@ -480,6 +481,7 @@ impl AuthorizationCode<'_> {
         // than on the request, because the scope was settled at consent.
         let id_token = if grant.scopes.contains("openid") {
             let parts = issuance::IdTokenParts {
+                grant: &role_grant,
                 require_ipsie_assurance: self
                     .ipsie_identity_only_clients
                     .is_some_and(|clients| clients.contains(client.id.as_str())),

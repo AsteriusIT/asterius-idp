@@ -458,6 +458,38 @@ impl ApplicationRoleDirectory for PgApplicationRoles {
             .collect())
     }
 
+    async fn held_by_grant(
+        &self,
+        grant: &asterius_domain::Grant,
+    ) -> Result<HeldRoles, DomainError> {
+        use asterius_domain::temporary_entitlements::TemporaryEntitlements as _;
+        let Some(user) = grant.user else {
+            return Ok(HeldRoles::empty());
+        };
+        let mut held = self.held_by(&grant.tenant, user).await?;
+        let snapshot = crate::PgTemporaryEntitlements::new(self.pool.clone())
+            .resolve_for_grant(&grant.tenant, grant)
+            .await?;
+        for activation in snapshot.roles {
+            let roles = held.clients.entry(activation.client.clone()).or_default();
+            if roles.insert(activation.role.clone()) {
+                held.temporary_deadlines
+                    .entry(activation.client)
+                    .or_default()
+                    .insert(activation.role, activation.expires_at);
+            } else if let Some(deadline) = held
+                .temporary_deadlines
+                .get_mut(&activation.client)
+                .and_then(|deadlines| deadlines.get_mut(&activation.role))
+            {
+                // Independent standing authority has no marker. Multiple
+                // temporary sources may supply the same role until the last ends.
+                *deadline = (*deadline).max(activation.expires_at);
+            }
+        }
+        Ok(held)
+    }
+
     async fn held_by(&self, tenant: &TenantId, user: UserId) -> Result<HeldRoles, DomainError> {
         let mut held = HeldRoles::default();
         for role in self.effective_roles(tenant, user).await? {

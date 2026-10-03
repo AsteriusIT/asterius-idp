@@ -687,6 +687,7 @@ fn mount_features(
     let router = router.merge(approvals_pages(Arc::clone(&endpoints)));
     let router = router.merge(grants_pages(Arc::clone(&endpoints)));
     let router = router.merge(account_pages(Arc::clone(&endpoints)));
+    let router = router.merge(entitlement_pages(Arc::clone(&endpoints)));
     router.merge(device_pages(endpoints))
 }
 
@@ -970,6 +971,10 @@ fn grants_pages(endpoints: Arc<ClientEndpoints>) -> Router {
         .route(
             account_grants::TASK_APPROVE_PATH,
             post(agent_task_approve).with_state(Arc::clone(&endpoints)),
+        )
+        .route(
+            account_grants::TASK_REVOKE_PATH,
+            post(agent_task_revoke).with_state(Arc::clone(&endpoints)),
         )
         .route(
             account_grants::SIGN_IN_PATH,
@@ -2133,6 +2138,7 @@ async fn grant_query(
     let scope = endpoints.store.scope(tenant.id.clone());
     let store = StoredGrants {
         grants: scope.grants(),
+        audit: endpoints.audit.clone(),
     };
     grant_management::query(
         grant_management_context(
@@ -2160,6 +2166,7 @@ async fn grant_revoke(
     let scope = endpoints.store.scope(tenant.id.clone());
     let store = StoredGrants {
         grants: scope.grants(),
+        audit: endpoints.audit.clone(),
     };
     grant_management::revoke(
         grant_management_context(
@@ -2200,10 +2207,18 @@ fn grant_management_context<'a>(
 #[derive(Debug)]
 struct StoredGrants {
     grants: asterius_store_pg::PgGrantRepository,
+    audit: Arc<dyn asterius_domain::AuditSink>,
 }
 
 #[async_trait::async_trait]
 impl grant_management::GrantManagementStore for StoredGrants {
+    async fn task_token_active(
+        &self,
+        query: &asterius_domain::agent_tasks::TokenQuery,
+    ) -> Result<bool, DomainError> {
+        self.grants.task_token_active(query).await
+    }
+
     async fn grant(
         &self,
         id: &asterius_domain::GrantId,
@@ -2245,7 +2260,13 @@ impl grant_management::GrantManagementStore for StoredGrants {
     ) -> Result<bool, asterius_domain::DomainError> {
         match self
             .grants
-            .revoke(id, asterius_domain::RevocationReason::UserRevoked, &[], now)
+            .revoke_with_audit(
+                id,
+                asterius_domain::RevocationReason::UserRevoked,
+                &[],
+                now,
+                self.audit.as_ref(),
+            )
             .await
         {
             Ok(_) => Ok(true),
@@ -2732,6 +2753,13 @@ impl crate::http::ssf_management::SsfManagementStore for StoredManagement {
 
 #[async_trait::async_trait]
 impl crate::http::ssf::SsfTokenStatus for StoredManagement {
+    async fn task_token_active(
+        &self,
+        query: &asterius_domain::agent_tasks::TokenQuery,
+    ) -> Result<bool, DomainError> {
+        self.grants.task_token_active(query).await
+    }
+
     async fn is_denylisted(&self, jti: &str) -> Result<bool, DomainError> {
         self.grants.is_denylisted(jti).await
     }
@@ -3226,6 +3254,13 @@ struct StoredPdpTokens {
 
 #[async_trait::async_trait]
 impl crate::http::access_evaluation::PdpTokenStatus for StoredPdpTokens {
+    async fn task_token_active(
+        &self,
+        query: &asterius_domain::agent_tasks::TokenQuery,
+    ) -> Result<bool, DomainError> {
+        self.grants.task_token_active(query).await
+    }
+
     async fn is_denylisted(&self, jti: &str) -> Result<bool, DomainError> {
         self.grants.is_denylisted(jti).await
     }
@@ -3306,6 +3341,13 @@ impl crate::http::ssf_poll::SsfPollStore for StoredPoll {
 
 #[async_trait::async_trait]
 impl crate::http::ssf::SsfTokenStatus for StoredPoll {
+    async fn task_token_active(
+        &self,
+        query: &asterius_domain::agent_tasks::TokenQuery,
+    ) -> Result<bool, DomainError> {
+        self.grants.task_token_active(query).await
+    }
+
     async fn is_denylisted(&self, jti: &str) -> Result<bool, DomainError> {
         self.grants.is_denylisted(jti).await
     }
@@ -3375,6 +3417,13 @@ impl crate::http::ssf::SsfStreamStore for StoredStreams {
 
 #[async_trait::async_trait]
 impl crate::http::ssf::SsfTokenStatus for StoredStreams {
+    async fn task_token_active(
+        &self,
+        query: &asterius_domain::agent_tasks::TokenQuery,
+    ) -> Result<bool, DomainError> {
+        self.grants.task_token_active(query).await
+    }
+
     async fn is_denylisted(&self, jti: &str) -> Result<bool, DomainError> {
         self.grants.is_denylisted(jti).await
     }
@@ -3511,6 +3560,20 @@ struct StoredIntrospection {
 
 #[async_trait::async_trait]
 impl introspection::IntrospectionSource for StoredIntrospection {
+    async fn task_grant_active(
+        &self,
+        grant: &asterius_domain::GrantId,
+    ) -> Result<bool, DomainError> {
+        self.grants.task_grant_active(grant).await
+    }
+
+    async fn task_token_active(
+        &self,
+        query: &asterius_domain::agent_tasks::TokenQuery,
+    ) -> Result<bool, DomainError> {
+        self.grants.task_token_active(query).await
+    }
+
     async fn is_denylisted(&self, jti: &str) -> Result<bool, DomainError> {
         self.grants.is_denylisted(jti).await
     }
@@ -3714,6 +3777,13 @@ struct StoredClaims {
 
 #[async_trait::async_trait]
 impl userinfo::UserInfoSource for StoredClaims {
+    async fn task_token_active(
+        &self,
+        query: &asterius_domain::agent_tasks::TokenQuery,
+    ) -> Result<bool, DomainError> {
+        self.grants.task_token_active(query).await
+    }
+
     async fn aggregated_claims(
         &self,
         tenant: &asterius_domain::Tenant,
@@ -3755,6 +3825,14 @@ impl userinfo::UserInfoSource for StoredClaims {
     ) -> Result<asterius_domain::HeldRoles, asterius_domain::DomainError> {
         use asterius_domain::ports::ApplicationRoleDirectory;
         self.roles.held_by(&self.tenant, user).await
+    }
+
+    async fn roles_for_grant(
+        &self,
+        grant: &asterius_domain::Grant,
+    ) -> Result<asterius_domain::HeldRoles, asterius_domain::DomainError> {
+        use asterius_domain::ports::ApplicationRoleDirectory;
+        self.roles.held_by_grant(grant).await
     }
 
     async fn verified_claims(
@@ -7378,6 +7456,39 @@ async fn agent_task_approve(
     .await
 }
 
+async fn agent_task_revoke(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let parts = match grants_parts(&endpoints, &tenant).await {
+        Ok(parts) => parts,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    account_grants::task_revoke(
+        &grants_context(
+            &tenant,
+            &parts,
+            &text,
+            endpoints.audit.as_ref(),
+            &nonce,
+            mount,
+        ),
+        &headers,
+        &body,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
 /// `GET /account/grants/sign-in` — authenticate again, and come back.
 async fn grants_sign_in(
     State(endpoints): State<Arc<ClientEndpoints>>,
@@ -8210,6 +8321,103 @@ fn device_context<'a>(
         audit: endpoints.audit.as_ref(),
         mount: mount_of(mount),
     }
+}
+
+fn entitlement_pages(endpoints: Arc<ClientEndpoints>) -> Router {
+    use crate::http::entitlements;
+    Router::new()
+        .route(entitlements::PAGE_PATH, get(account_entitlements_page))
+        .route(
+            entitlements::SIGN_IN_PATH,
+            get(account_entitlements_sign_in),
+        )
+        .route(
+            "/account/entitlements/{action}",
+            post(account_entitlements_command),
+        )
+        .layer(axum::extract::DefaultBodyLimit::max(
+            crate::http::account::MAX_BODY,
+        ))
+        .with_state(endpoints)
+}
+async fn account_entitlements_page(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let parts = match account_parts(&endpoints, &tenant).await {
+        Ok(parts) => parts,
+        Err(error) => {
+            tracing::error!(%error,"cannot read entitlement account settings");
+            return unavailable();
+        }
+    };
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    let store = asterius_store_pg::PgTemporaryEntitlements::new(endpoints.store.pool().clone());
+    let limits = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
+    let context = crate::http::entitlements::EntitlementsContext {
+        account: account_context(&tenant, &parts, &text, &nonce, mount),
+        store: &store,
+        limits: &limits,
+    };
+    crate::http::entitlements::page(&context, &headers, "", time::OffsetDateTime::now_utc()).await
+}
+async fn account_entitlements_sign_in(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let Ok(parts) = account_parts(&endpoints, &tenant).await else {
+        return unavailable();
+    };
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    let store = asterius_store_pg::PgTemporaryEntitlements::new(endpoints.store.pool().clone());
+    let limits = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
+    let context = crate::http::entitlements::EntitlementsContext {
+        account: account_context(&tenant, &parts, &text, &nonce, mount),
+        store: &store,
+        limits: &limits,
+    };
+    crate::http::entitlements::sign_in(&context, time::OffsetDateTime::now_utc()).await
+}
+async fn account_entitlements_command(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    Path(action): Path<String>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    if !matches!(action.as_str(), "request" | "decide" | "cancel" | "revoke") {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let Ok(parts) = account_parts(&endpoints, &tenant).await else {
+        return unavailable();
+    };
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    let store = asterius_store_pg::PgTemporaryEntitlements::new(endpoints.store.pool().clone());
+    let limits = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
+    let context = crate::http::entitlements::EntitlementsContext {
+        account: account_context(&tenant, &parts, &text, &nonce, mount),
+        store: &store,
+        limits: &limits,
+    };
+    crate::http::entitlements::command(
+        &context,
+        &action,
+        &headers,
+        &body,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
 }
 
 #[cfg(test)]

@@ -341,6 +341,12 @@ pub enum GrantError {
 pub struct GrantAuthentication {
     /// OIDC Core §2's `auth_time`: when the person authenticated.
     pub authenticated_at: OffsetDateTime,
+    /// Frozen provenance copied from the verified session; never renewed by refresh.
+    pub assurance_authenticated_at: Option<OffsetDateTime>,
+    /// Exact assurance ladder revision that the frozen proof satisfied.
+    pub assurance_policy_revision: Option<String>,
+    /// Verified assurance methods, separate from cumulative historical AMR.
+    pub assurance_methods: Vec<AuthenticationMethod>,
     /// The authentication context class the sign-in reached, if the tenant's
     /// ladder has a rung for it.
     pub acr: Option<String>,
@@ -777,6 +783,9 @@ impl GrantRecord {
         // cannot be read as either "no authentication" or "this one".
         let authentication = match self.authenticated_at {
             Some(authenticated_at) => Some(GrantAuthentication {
+                assurance_authenticated_at: None,
+                assurance_policy_revision: None,
+                assurance_methods: Vec::new(),
                 authenticated_at,
                 acr: self.acr,
                 // An unrecognised `amr` is dropped rather than failing the
@@ -1413,6 +1422,9 @@ mod tests {
         assert_eq!(
             grant.authentication,
             Some(GrantAuthentication {
+                assurance_authenticated_at: None,
+                assurance_policy_revision: None,
+                assurance_methods: Vec::new(),
                 authenticated_at: epoch(),
                 acr: Some("urn:asterius:acr:passkey-uv".to_owned()),
                 amr: vec![AuthenticationMethod::Passkey],

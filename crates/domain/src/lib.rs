@@ -8,6 +8,7 @@
 
 pub mod access_reviews;
 pub mod administration;
+pub mod agent_task_views;
 pub mod agent_tasks;
 pub mod audit;
 pub mod capabilities;
@@ -31,6 +32,7 @@ pub mod ports;
 pub mod rate_limit;
 pub mod secret;
 mod secret_audit;
+pub mod temporary_entitlements;
 pub mod tenant_rate_limits;
 pub mod totp;
 

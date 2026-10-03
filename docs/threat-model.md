@@ -2675,6 +2675,116 @@ expiry/online-revocation limits. No instant withdrawal or device attestation
 claim is made. See [the operator guide](conditional-access.md) for exact sources,
 limits and deployment capacity.
 
+### Assurance freshness provenance
+
+Cumulative AMR is historical evidence, not a fresh proof of every listed
+factor. Session rotation keeps a server-owned assurance timestamp, exact ladder
+digest and verified factor set separate from public `auth_time`. Proving only
+a password cannot renew a class that depends on an older passkey. Combining
+known factors retains the earliest proof timestamp; only a complete fresh
+class proof starts a new interval. A changed ladder cannot promote historical
+AMR into current freshness. Legacy rows have no inferred marker.
+
+Session rotation and its proof replace atomically; proof rows cascade with
+session identity rotation and deletion. Grants capture only the exact session
+or exact parent authentication tuple in their creation transaction. Their proof
+survives session cleanup, while changed original tuples discard it. Refresh
+claims never renew its clock. Conditional trusted facts consume this frozen
+provenance; unavailable or malformed provenance cannot satisfy a scoped guard.
+
+### Conditional access simulation and rollout
+
+Administrative examples use a closed bounded dialect separate from PEP properties
+and production adapters. Only assurance, relative authentication age, sensitivity,
+network zones and device state can be hypothetical; directory facts, sources and
+expiry cannot be supplied. No selected transaction means trusted assurance/age/network
+are absent. Tenant records and four read authorities resolve before inspection.
+Responses expose availability/source and condition paths, without directory values
+or predicate literals. Active scopes only restrict; report-only cannot grant a base
+denial. Console publication/history restoration use the reviewed revision and explicit
+confirmation; the atomic store guard protects conditional changes outside the console.
+Sensitivity updates compare the reviewed UUID. Conflicts preserve drafts and never
+retry automatically against newer state. See [operator controls](conditional-access-operations.md).
+### Task descendant withdrawal and historical lineage
+
+A task-root or intermediate-grant tombstone denies all bound descendants at the
+next authoritative uncached token/grant read, independent of cleanup or PDP
+allow-cache entries. Private JTI linkage, signed task/revision and exact issued
+client must agree; public grant claims and subject-based grant searches cannot
+replace them. Owner/client removal or disable is terminal. An intermediate
+withdrawal leaves siblings and independent tasks active.
+
+First approval backfills existing stored descendants and serializes child
+insertion plus legacy signing with its root fence. This prevents an ordinary
+recipient from racing activation to create an unbound renewable descendant.
+Historical pre-task JWTs cannot be retroactively identified when public grant
+and private JTI linkage were absent; their original legacy expiry guarantee is
+preserved explicitly. Every subsequent bound mint receives durable linkage.
+
+Physical withdrawal follows a durable bounded cursor while online validity
+continues to inspect ancestor tombstones. Task/lineage/cleanup evidence stays
+with its tenant. A stale introspection response is useful only until its five
+second cache cap or token expiry; offline JWTs retain the maximum 300 second task
+expiry plus configured leeway. Neither SSF hints nor cleanup completion claims
+instant global revocation or undo an already authorized action.
+
+### Task permission viewer
+
+The administrative task viewer reads tenant-local public provenance under the existing `admin.audit:read` scope. It exposes immutable owner UUIDs, client/task/grant identifiers and the task's operator-provided label, and omits user names, email fields, credentials, private token JTIs and session data. Labels and identifiers remain escaped text in the console. Guessing another tenant's task UUID must return no metadata, even when the caller can read its own audit trail.
+
+A recorded audit chain or historical grant constraint cannot authorize a current request. Current ceilings are independently computed in one read-only repeatable-read snapshot, bounded to fifty rows and ten ancestry nodes per path, intersecting approval, ancestor/principal state and current tenant/client/resource policy. Per-resource scope and lifetime ceilings remain explicit; a union of scope names conveys no permission across all audiences. The snapshot's observation time and a stale indication prevent presenting an old display as an active grant. Conditional/PDP decisions are explicitly not evaluated in this administrative read.
+
+Withdrawal remains an authenticated, CSRF-protected mutation under `admin.grants:write`, using the exact immutable owner and root grant. The console requires explicit confirmation and describes the offline JWT expiry limit. Neither a task UUID nor the viewer's read scope supplies mutation authority. Approval expiry is immutable; reducing authority means withdrawal and a fresh approval rather than rewriting signed history.
+
+## Temporary privilege boundaries
+
+Eligibility permits a request and never grants a role. Each immutable approval
+names one human, client role, registered resource and exact resource permissions.
+Independent configured approvers cannot approve an elevation enabled by their
+own policy or eligibility edit. First-party owner commands require the exact
+tenant console session, CSRF and administrative role; administrative OAuth
+scopes alone cannot exercise those commands. Ordinary account commands reload
+the server-owned actor and frozen local authentication proof. Freshness is 120
+seconds, measured from the oldest proof required by the configured ACR class;
+cumulative step-up cannot refresh an earlier proof or extend an activation.
+
+Tenant publication fences serialize authority mutation with final access and
+role-bearing ID-token signing. Current exact-grant roles and deadlines are
+rechecked before signing, and temporary-only roles cap the issued expiry.
+Catalogue tombstones, UUID revisions and eligibility generations prevent
+disable/re-enable and delete/recreate from restoring an old activation. Live
+checks use database time even before the bounded expiration worker runs.
+Extra resource permissions, delegated agents and unrelated grants supply no
+temporary role. Independent standing role authority retains its own semantics.
+
+UserInfo narrows role resolution to verified token audiences and scopes. An
+active conditional PDP boundary can resolve current temporary authority only
+from the exact verified human grant; caller-provided role attributes cannot
+supply it. An unguarded PDP continues to resolve standing roles. A revoked
+self-contained JWT can remain usable offline until its capped expiry, so an
+immediate-withdrawal resource must enforce the supported online decision on
+each privileged operation. See [operator guidance](temporary-privileges.md)
+and [versioned acceptance evidence](testing/temporary-entitlements-evidence.json).
+
+## Native application recipe boundaries
+
+The [application catalogue](integrations/applications.md) uses explicit per-client
+standard OIDC permission and confidential Basic authentication with S256; the
+FAPI default and SCIM/management DPoP requirements retain their authority.
+Bearer UserInfo is part of the explicitly selected unbound OIDC profile.
+Native product signing/token/session storage remains sensitive and must not be
+exported through debug logging or reusable generated configuration.
+
+The bounded mappings authorize an exact verified issuer subject as Grafana
+Viewer, Argo CD observer of one project, or a manually assigned Harbor
+private-project Guest. Email/local UUIDs/caller headers are not authority for
+those assignments. No group scope or administrator-group mapping is configured.
+Product session authority is separate from source login authority; source logout
+alone is not immediate native product revocation. Versioned native allow/deny,
+role, spoofing and logout evidence must accompany each advertised recipe.
+Acceptance creates only disposable owned databases, products and clusters; Argo
+CD reconciliation is disabled and Harbor publishes no registry artifacts.
+
 ## Standing-access review authority
 
 Governance snapshots explain direct and managed-group application-role sources,

@@ -93,6 +93,7 @@ pub mod device;
 pub mod device_authorization;
 pub mod device_code;
 pub mod dpop;
+pub mod entitlements;
 pub mod forwarded;
 pub mod grant_management;
 pub mod i18n;

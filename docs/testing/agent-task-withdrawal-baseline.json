@@ -1,0 +1,32 @@
+{
+  "ticket": "ast-dd1y.8.3",
+  "result": "expected_baseline_failure",
+  "binary_sha256": "a3edb0be2be8c4b7bb97cd71ce5f7d6cc01505cb062b00abb7427c685897a455",
+  "timestamp_utc": "2026-10-03T14:17:18.858796+00:00",
+  "controlled_fixture": true,
+  "live_human_login": false,
+  "boundary": {
+    "method": "DELETE",
+    "route": "/users/{foreign_user}/grants/{another_users_grant}",
+    "caller": "independently authenticated admin.grants:write service client",
+    "authentication": "private_key_jwt",
+    "sender_constraint": "DPoP",
+    "expected_http_status": 404,
+    "baseline_http_status": 200
+  },
+  "prior_controls_passed": [
+    "fresh controlled owner approval and immutable ceilings",
+    "real FAPI+DPoP CC issuance and local JWT signature verification",
+    "Task descendant exchange",
+    "ordinary recipient refresh and descendant exchange",
+    "protected service SCIM access",
+    "independent Task approval and issuance"
+  ],
+  "limits": [
+    "Baseline binary predates ast-dd1y.8.3; this evidence does not assert corrected behavior",
+    "Human authorization roots and owner sessions are controlled seeded inputs",
+    "Opaque initial recipient refresh credential is controlled seeded input",
+    "Random fixture DB/server cleaned and9453 listener released",
+    "No ignored test or full Rust suite executed"
+  ]
+}

@@ -1021,6 +1021,15 @@ fn spawn_workers(
         Arc::clone(kek),
     ));
 
+    let temporary = asterius_server::temporary_entitlements::TemporaryEntitlementSweep::new(
+        Arc::new(asterius_store_pg::PgTemporaryEntitlements::new(
+            store.pool().clone(),
+        )),
+        Arc::new(PgTenantRepository::new(
+            store.pool().clone(),
+            Arc::clone(kek),
+        )),
+    );
     let rotation = RotationSweep::new(keys, tenants_for_rotation, Arc::clone(&clock));
     let retention = RetentionSweep::new(retention, tenants_for_retention, Arc::clone(&clock));
     let delivery = outbox_worker(
@@ -1041,6 +1050,7 @@ fn spawn_workers(
     let handles = vec![
         tokio::spawn(rotation.run(stopped(stopping.clone()))),
         tokio::spawn(retention.run(stopped(stopping.clone()))),
+        tokio::spawn(temporary.run(stopped(stopping.clone()))),
         tokio::spawn(delivery.run(stopped(stopping))),
     ];
     Ok(Workers { stop, handles })

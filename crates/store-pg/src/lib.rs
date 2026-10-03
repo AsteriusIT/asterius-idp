@@ -9,7 +9,10 @@
 
 mod access_reviews;
 mod admin_seed;
+mod agent_task_lifecycle;
+mod agent_task_views;
 pub mod agent_tasks;
+pub use agent_task_views::PgAgentTaskViews;
 mod aggregated_claims;
 mod application_roles;
 mod architecture_flows;
@@ -71,10 +74,12 @@ mod ssf_streams;
 mod ssf_subjects;
 mod ssf_upstream_streams;
 mod store;
+mod temporary_entitlements;
 mod tenant_settings;
 mod tenants;
 mod themes;
 mod totp;
+pub use temporary_entitlements::PgTemporaryEntitlements;
 mod users;
 mod verified_claims;
 

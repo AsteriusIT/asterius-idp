@@ -1,0 +1,77 @@
+import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
+import {chromium} from '../../e2e/node_modules/playwright-core/index.mjs';
+import AxeBuilder from '../../e2e/node_modules/@axe-core/playwright/dist/index.mjs';
+// Only the input file contains controlled disposable credentials; never log it.
+const input=JSON.parse(await readFile(process.argv[2],'utf8'));
+const browser=await chromium.launch({headless:true,args:['--no-sandbox','--host-resolver-rules=MAP localhost 127.0.0.1']});
+const checks=[];
+let stage='open real console';
+let currentPage;
+try {
+ const context=await browser.newContext({ignoreHTTPSErrors:true,viewport:{width:1280,height:900}});
+ await context.addCookies([{name:'__Host-asterius_session',value:input.owner_session??input.owner_cookie,url:input.origin,secure:true,httpOnly:true,sameSite:'Lax'}]);
+ const page=await context.newPage();currentPage=page;page.setDefaultTimeout(15000);
+ await page.goto(input.issuer+'/admin/#temporary-privileges');
+ stage='temporary privilege screen heading';
+ await page.getByRole('heading',{name:'Temporary privileges',exact:true}).waitFor();
+ stage='existing entitlement row';
+ await page.getByRole('button',{name:input.role_name,exact:true}).first().click();
+ stage='entitlement details';
+ await page.getByRole('button',{name:'Refresh details',exact:true}).waitFor();
+ assert(await page.getByText('Permissions: '+input.permissions.join(' '),{exact:true}).isVisible());
+ assert(await page.getByText('Resource: '+input.resource,{exact:true}).isVisible());
+ stage='activation records table';
+ await page.getByRole('region',{name:'Activations',exact:true}).waitFor();
+ checks.push('real_console_fixed_resource_permissions_and_activation_deadlines');
+ stage='accessible current details';
+ const accessibility=await new AxeBuilder({page}).withTags(['wcag2a','wcag2aa','wcag21aa']).analyze();
+ assert.deepEqual(accessibility.violations.map(item=>item.id),[]);
+ checks.push('real_console_wcag_aa_details');
+ stage='disabled creation and discard';
+ await page.getByRole('button',{name:'Create entitlement',exact:true}).click();
+ const editor=page.getByRole('dialog');
+ await editor.getByRole('heading',{name:'Create temporary entitlement',exact:true}).waitFor();
+ assert(await editor.getByRole('button',{name:'Create disabled entitlement',exact:true}).isVisible());
+ await editor.getByLabel('Independent approver usernames',{exact:true}).fill('approver@fixture.example');
+ await editor.getByRole('button',{name:'Cancel',exact:true}).click();
+ await page.getByRole('button',{name:'Keep editing',exact:true}).click();
+ assert.equal(await editor.getByLabel('Independent approver usernames',{exact:true}).inputValue(),'approver@fixture.example');
+ await editor.getByRole('button',{name:'Cancel',exact:true}).click();
+ await page.getByRole('button',{name:'Discard changes',exact:true}).click();
+ await editor.waitFor({state:'hidden'});
+ checks.push('creation_starts_disabled_and_preserves_unsaved_draft');
+ stage='owner withdrawal confirmation';
+ const toggle=page.getByRole('button',{name:/^(Disable|Enable) entitlement$/});
+ await toggle.click();
+ await page.getByRole('alertdialog').waitFor();
+ await page.getByRole('alertdialog').getByRole('button',{name:'Cancel',exact:true}).click();
+ await page.getByRole('alertdialog').waitFor({state:'hidden'});
+ checks.push('owner_policy_change_requires_confirmation_cancel_is_safe');
+ stage='small viewport and keyboard';
+ await page.setViewportSize({width:390,height:844});
+ assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
+ await page.getByRole('button',{name:'Refresh details',exact:true}).focus();
+ await page.keyboard.press('Tab');
+ assert(await page.evaluate(()=>document.activeElement!==document.body));
+ if(input.screenshot_path) await page.screenshot({path:input.screenshot_path,fullPage:true});
+ checks.push('390px_no_page_overflow_and_keyboard_focus');
+ await context.close();
+ if(input.reader_session) {
+  stage='real auditor read-only console';
+  const reader=await browser.newContext({ignoreHTTPSErrors:true,viewport:{width:390,height:844}});
+  await reader.addCookies([{name:'__Host-asterius_session',value:input.reader_session,url:input.origin,secure:true,httpOnly:true,sameSite:'Lax'}]);
+  const readonly=await reader.newPage();
+  await readonly.goto(input.issuer+'/admin/#temporary-privileges');
+  await readonly.getByRole('heading',{name:'Temporary privileges',exact:true}).waitFor();
+  assert.equal(await readonly.getByRole('button',{name:'Create entitlement',exact:true}).count(),0);
+  assert.equal(await readonly.getByRole('button',{name:'Grant eligibility',exact:true}).count(),0);
+  checks.push('real_auditor_console_has_no_privilege_mutation_actions');
+  await reader.close();
+ }
+ console.log(JSON.stringify({fixture:'real_chromium_temporary_privileges',status:'pass',checks}));
+} catch(error) {
+ if(currentPage && input.screenshot_path) await currentPage.screenshot({path:input.screenshot_path,fullPage:true}).catch(()=>{});
+ console.error('TEMPORARY_CONSOLE_STAGE='+stage+' error='+error.constructor.name);
+ process.exitCode=1;
+} finally {await browser.close();}

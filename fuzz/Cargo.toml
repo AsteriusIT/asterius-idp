@@ -169,6 +169,27 @@ doc = false
 bench = false
 
 [[bin]]
+name = "agent_task_token_linkage"
+path = "fuzz_targets/agent_task_token_linkage.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "agent_task_view_query"
+path = "fuzz_targets/agent_task_view_query.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "agent_task_withdrawal_form"
+path = "fuzz_targets/agent_task_withdrawal_form.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "approval_decision"
 path = "fuzz_targets/approval_decision.rs"
 test = false
@@ -710,6 +731,20 @@ bench = false
 [[bin]]
 name = "ssf_verification_state"
 path = "fuzz_targets/ssf_verification_state.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "temporary_entitlement_command"
+path = "fuzz_targets/temporary_entitlement_command.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "temporary_entitlement_configuration"
+path = "fuzz_targets/temporary_entitlement_configuration.rs"
 test = false
 doc = false
 bench = false

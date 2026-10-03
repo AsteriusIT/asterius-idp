@@ -204,7 +204,9 @@ fn operation_object(operation: &Operation) -> Value {
     client_resources_documentation(operation, &mut object);
     kubernetes_documentation(operation, &mut object);
     conditional_documentation(operation, &mut object);
+    temporary_entitlement_documentation(operation, &mut object);
     invitation_documentation(operation, &mut object);
+    agent_task_documentation(operation, &mut object);
     theme_documentation(operation, &mut object);
     if let Some(request_body) = group_request_body(operation) {
         object["requestBody"] = request_body;
@@ -253,9 +255,11 @@ fn simulation_documentation(operation: &Operation, object: &mut Value) {
                 "resource_type": {"type": "string", "minLength": 1, "maxLength": 256},
                 "action": {"type": "string", "minLength": 1, "maxLength": 256},
                 "expected_policy_revision": {"type": ["string", "null"], "description": "SHA-256 revision from GET /policies; null requires no stored policy."},
+                "enforcement_action": {"type":"string","enum": crate::policies::conditional_simulation::ACTIONS,"default":"access_evaluation","description":"Server enforcement boundary, separate from resource action."},
+                "hypothetical_trusted_context": trusted_examples_schema(),
                 "hypothetical_policy": {"type": "object"}, "hypothetical_context": {"type": "object"}
             },
-            "description": "Bounded 128 KiB inspection. All references must exist in the routed tenant. Only policy and context properties may be hypothetical. Audited before lookup; never grants access or issues a token."
+            "description": "Bounded 128 KiB inspection. All references must exist in the routed tenant. Policy, descriptive context and explicitly labelled trusted examples may be hypothetical; directory facts remain server resolved. No selected user transaction means assurance, authentication age and network evidence are absent. Audited before lookup; never grants access or issues a token."
         }}}});
         object["responses"]["409"] =
             error_response("Stored policy revision changed; refresh the snapshot.");
@@ -266,14 +270,38 @@ fn simulation_documentation(operation: &Operation, object: &mut Value) {
         schema["required"] = json!(["decision", "simulation"]);
         schema["properties"]["simulation"] = json!({"type": "object", "required": ["enforced", "current_policy_revision", "provenance"], "properties": {
             "enforced": {"const": false}, "current_policy_revision": {"type": ["string", "null"]},
+            "conditional": conditional_simulation_schema(),
             "provenance": {"type": "object", "properties": {
                 "subject": {"const": "tenant_user_and_client"}, "resource": {"const": "tenant_resource_registry"},
-                "groups_roles_grants_acr": {"const": "server_resolved"},
+                "groups_roles_grants": {"const": "server_resolved"},
+                "trusted_transaction_evidence": {"const": "explicit_fact_sources"},
                 "policy": {"enum": ["stored", "hypothetical"]}, "context_properties": {"enum": ["absent", "hypothetical"]}
             }}
         }});
         object["responses"]["200"]["content"]["application/json"]["schema"] = schema;
     }
+}
+
+fn trusted_examples_schema() -> Value {
+    let missing = json!({"type":"object","additionalProperties":false,"required":["availability"],"properties":{"availability":{"enum":["absent","stale","unavailable","invalid"]}}});
+    let fact = |value: Value| json!({"oneOf":[missing,{"type":"object","additionalProperties":false,"required":["availability","value"],"properties":{"availability":{"const":"known"},"value":value}}]});
+    json!({"type":"object","additionalProperties":false,"maxProperties":5,"description":"Administrative what-if examples only. Cannot override groups, roles or grants or assert a production source. Missing states never carry a value.","properties":{
+        "assurance":fact(json!({"type":"string","minLength":1,"maxLength":256,"description":"An attainable level in this tenant's current ACR ladder; unsupported values are invalid evidence."})),
+        "authentication_age":fact(json!({"type":"integer","minimum":0,"maximum":604_800})),
+        "application_sensitivity":fact(json!({"enum":["standard","sensitive","critical"]})),
+        "device_compliance":fact(json!({"enum":["compliant","non_compliant","unknown"]})),
+        "network_zone":fact(json!({"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9_.-]+$"}}))
+    }})
+}
+
+fn conditional_simulation_schema() -> Value {
+    json!({"type":"object","description":"Inspection only: reports active restrictions and report-only results, without returning fact values, policy literals or directory contents.","properties":{
+        "enforcement_action":{"enum":crate::policies::conditional_simulation::ACTIONS},
+        "legacy_would_permit":{"type":"boolean"},"active_would_permit":{"type":"boolean"},
+        "policy_revision":{"type":"string"},"evaluated_policy_revision":{"type":["string","null"]},"acr_revision":{"type":"string"},"client_revision":{"type":"string"},
+        "facts":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["name","availability","source","hypothetical"],"properties":{"name":{"type":"string"},"availability":{"enum":["known","absent","stale","unavailable","invalid"]},"source":{"type":"string"},"hypothetical":{"type":"boolean"}}}},
+        "scopes":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"mode":{"enum":["active","report_only"]},"would_decision":{"type":"boolean"},"required_facts":{"type":"array","items":{"type":"string"}},"missing_required_evidence":{"type":"boolean"},"assurance_remedy":{"type":["string","null"]},"conditions":{"type":"array"}}}}
+    }})
 }
 
 fn operation_parameters(operation: &Operation) -> Vec<Value> {
@@ -306,6 +334,8 @@ fn operation_parameters(operation: &Operation) -> Vec<Value> {
         parameters.push(json!({"name":"after","in":"query","required":false,"schema":{"type":"string","format":"uuid"},"description":"Exact last row UUID from the previous page; rows are ordered by UUID within this tenant."}));
         parameters.push(json!({"name":"limit","in":"query","required":false,"schema":{"type":"integer","minimum":1,"maximum":100,"default":50},"description":"Rows per page; values outside one to one hundred are refused."}));
     }
+
+    task_view_parameters(operation, &mut parameters);
     if operation.is_paginated() {
         parameters.push(json!({ "$ref": "#/components/parameters/cursor" }));
         parameters.push(json!({ "$ref": "#/components/parameters/limit" }));
@@ -406,6 +436,60 @@ fn conditional_documentation(operation: &Operation, object: &mut Value) {
             "Policy revision changed, or conditional publication lacks an exact precondition.",
         );
     }
+}
+
+fn task_ceiling_schema() -> Value {
+    json!({"type":"object","additionalProperties":false,
+        "required":["scopes","resources","actions","resource_ceilings","max_delegation_depth"],
+        "properties":{
+            "scopes":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"string"}},
+            "resources":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"string","format":"uri"}},
+            "actions":{"type":"array","maxItems":32,"items":{"type":"object","additionalProperties":false,"required":["resource","actions"],"properties":{"resource":{"type":"string","format":"uri"},"actions":{"type":"array","uniqueItems":true,"items":{"type":"string"}}}}},
+            "resource_ceilings":{"type":"array","maxItems":64,"items":{"type":"object","additionalProperties":false,"required":["resource","scopes","maximum_token_ttl_seconds"],"properties":{"resource":{"type":"string","format":"uri"},"scopes":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"string"}},"maximum_token_ttl_seconds":{"type":"integer","minimum":0,"maximum":300}}}},
+            "max_delegation_depth":{"type":"integer","minimum":1,"maximum":8}
+        },"description":"A ceiling, never a request-specific authorization. Resource-specific scope/TTL bounds apply separately; unknown, expired or withdrawn authority yields empty permissions."})
+}
+
+fn agent_task_documentation(operation: &Operation, object: &mut Value) {
+    if !matches!(
+        operation.id(),
+        crate::AGENT_TASKS_LIST_ID | crate::AGENT_TASK_READ_ID
+    ) {
+        return;
+    }
+    let task = json!({"type":"object","additionalProperties":false,
+    "required":["task_id","root_grant_id","owner_user_id","initiating_client_id","approval_revision","label","approved_at","expires_at","revoked_at","state"],
+    "properties":{
+        "task_id":{"type":"string","format":"uuid"},"root_grant_id":{"type":"string","format":"uuid"},"owner_user_id":{"type":"string","format":"uuid"},
+        "initiating_client_id":{"type":"string"},"approval_revision":{"type":"integer","minimum":1},"label":{"type":"string"},
+        "approved_at":{"type":"string","format":"date-time"},"expires_at":{"type":"string","format":"date-time"},"revoked_at":{"type":["string","null"],"format":"date-time"},
+        "state":{"type":"string","enum":["active","expired","withdrawn","principal_unavailable","ancestor_unavailable"]}
+    }});
+    let schema = if operation.id() == crate::AGENT_TASKS_LIST_ID {
+        json!({"type":"object","additionalProperties":false,"required":["items","next_cursor","observed_at"],"properties":{
+            "items":{"type":"array","maxItems":50,"items":task},"next_cursor":{"type":["string","null"],"format":"uuid"},"observed_at":{"type":"string","format":"date-time"}}})
+    } else {
+        json!({"type":"object","additionalProperties":false,"required":["task","approved_ceiling","current_issuance_ceiling","current_grant_types","maximum_new_token_ttl_seconds","observed_at","lineage","next_cursor","conditional_decision"],"properties":{
+        "task":task,"approved_ceiling":task_ceiling_schema(),"current_issuance_ceiling":task_ceiling_schema(),
+        "current_grant_types":{"type":"array","items":{"type":"string"}},"maximum_new_token_ttl_seconds":{"type":"integer","minimum":0,"maximum":300},
+        "observed_at":{"type":"string","format":"date-time"},"next_cursor":{"type":["string","null"],"format":"uuid"},
+        "conditional_decision":{"const":"not_evaluated"},"lineage":{"type":"array","maxItems":50,"items":{
+            "type":"object","additionalProperties":false,
+            "required":["grant_id","parent_grant_id","client_id","depth","ancestry","expires_at","revoked_at","state","recorded_ceiling","current_issuance_ceiling"],
+            "properties":{
+                "grant_id":{"type":"string","format":"uuid"},"parent_grant_id":{"type":["string","null"],"format":"uuid"},
+                "client_id":{"type":"string"},"depth":{"type":"integer","minimum":0,"maximum":9},
+                "ancestry":{"type":"array","maxItems":10,"items":{"type":"string","format":"uuid"}},
+                "expires_at":{"type":["string","null"],"format":"date-time"},"revoked_at":{"type":["string","null"],"format":"date-time"},
+                "state":{"type":"string","enum":["active","expired","withdrawn","principal_unavailable","ancestor_unavailable"]},
+                "recorded_ceiling":task_ceiling_schema(),"current_issuance_ceiling":task_ceiling_schema()
+            }
+        }}}})
+    };
+    object["responses"]["200"]["content"]["application/json"]["schema"] = schema;
+    object["description"] = json!(
+        "Tenant-local public identifiers only, no user names, emails, raw credentials or private JTIs. No-store current read-only snapshot independent of recorded audit. Withdrawal uses the existing owner-bound grant endpoint and admin.grants:write, with offline signed-expiry limits."
+    );
 }
 
 fn invitation_documentation(operation: &Operation, object: &mut Value) {
@@ -933,6 +1017,86 @@ fn declarative_documentation(operation: &Operation, object: &mut Value) {
         }
         object["requestBody"] = json!({"required":true,"content":{"application/json":{"schema":{"type":"object","additionalProperties":false,"required":required,"properties":properties}}}});
     }
+}
+
+fn task_view_parameters(operation: &Operation, parameters: &mut Vec<Value>) {
+    if matches!(
+        operation.id(),
+        crate::AGENT_TASKS_LIST_ID | crate::AGENT_TASK_READ_ID
+    ) {
+        parameters.push(json!({"name":"cursor","in":"query","required":false,
+            "schema":{"type":"string","format":"uuid"},
+            "description":"Canonical UUID keyset cursor from the previous bounded page"}));
+        parameters.push(json!({"name":"limit","in":"query","required":false,
+            "schema":{"type":"integer","minimum":1,"maximum":50,"default":25},
+            "description":"Out-of-range values, duplicates and unknown query names fail"}));
+        if operation.id() == crate::AGENT_TASKS_LIST_ID {
+            parameters.push(json!({"name":"owner","in":"query","required":false,"schema":{"type":"string","format":"uuid"}}));
+            parameters.push(json!({"name":"agent","in":"query","required":false,"schema":{"type":"string","minLength":1,"maxLength":256}}));
+        }
+    }
+}
+
+fn temporary_entitlement_documentation(operation: &Operation, object: &mut Value) {
+    if !operation.id().starts_with("temporary_entitlements.") {
+        return;
+    }
+    object["security"] = json!([{"consoleSession":[]}]);
+    object["description"] = json!(
+        "Console-only, exact resource owner server user. Existing admin.app_roles scope remains mandatory. Posted editor/actor/authentication evidence is refused. Configuration binding is immutable; UUID CAS revisions invalidate old requests and activations. Timestamps are authoritative Unix seconds. Ordinary account request/approval routes use their own session and CSRF token, never these admin credentials."
+    );
+    object["responses"]["409"] =
+        error_response("Configuration/eligibility CAS or immutable idempotency payload conflicts.");
+    let mut schema = json!({"type":"object","additionalProperties":false});
+    match operation.id() {
+        crate::TEMPORARY_ENTITLEMENT_CREATE_ID | crate::TEMPORARY_ENTITLEMENT_UPDATE_ID => {
+            schema["properties"] = json!({
+                "owner_user_id":{"type":"string","format":"uuid","description":"Must equal verified Console user; binding immutable."},
+                "client_id":{"type":"string","minLength":1,"maxLength":2048},"resource":{"type":"string","format":"uri"},"role_name":{"type":"string","minLength":1,"maxLength":64},
+                "permissions":{"type":"array","minItems":1,"maxItems":64,"uniqueItems":true,"items":{"type":"string"}},
+                "approver_user_ids":{"type":"array","minItems":1,"maxItems":16,"uniqueItems":true,"items":{"type":"string","format":"uuid"}},
+                "requester_acr":{"type":"string","minLength":1,"maxLength":256},"approver_acr":{"type":"string","minLength":1,"maxLength":256},
+                "max_duration_seconds":{"type":"integer","minimum":1,"maximum":3600,"default":900},"max_eligibility_seconds":{"type":"integer","minimum":1,"maximum":2_592_000,"default":86400},"enabled":{"type":"boolean"}
+            });
+            schema["required"] = json!([
+                "owner_user_id",
+                "client_id",
+                "resource",
+                "role_name",
+                "permissions",
+                "approver_user_ids",
+                "requester_acr",
+                "approver_acr",
+                "max_duration_seconds",
+                "max_eligibility_seconds",
+                "enabled"
+            ]);
+            if operation.id() == crate::TEMPORARY_ENTITLEMENT_UPDATE_ID {
+                schema["properties"]["expected_revision"] =
+                    json!({"type":"string","format":"uuid"});
+                schema["required"]
+                    .as_array_mut()
+                    .expect("required is the array constructed above")
+                    .push(json!("expected_revision"));
+            }
+        }
+        crate::TEMPORARY_ENTITLEMENT_ELIGIBILITY_SET_ID => {
+            schema["properties"] = json!({"user_id":{"type":"string","format":"uuid"},"not_before":{"type":"integer"},"expires_at":{"type":"integer"},"expected_revision":{"type":["string","null"],"format":"uuid"}});
+            schema["required"] =
+                json!(["user_id", "not_before", "expires_at", "expected_revision"]);
+        }
+        crate::TEMPORARY_ENTITLEMENT_ELIGIBILITY_REMOVE_ID => {
+            schema["properties"] = json!({"expected_revision":{"type":"string","format":"uuid"}});
+            schema["required"] = json!(["expected_revision"]);
+        }
+        crate::TEMPORARY_ENTITLEMENT_REVOKE_ID => {
+            schema["properties"] = json!({"activation_id":{"type":"string","format":"uuid","description":"Must equal addressed activation."},"reason":{"type":"string","minLength":1,"maxLength":1024,"description":"UTF-8 byte bound; control characters refused."},"idempotency_key":{"type":"string","format":"uuid","description":"Authoritative lifecycle replay key, atomically bound to actor/operation/exact payload and original response. Generic admin header is validated, never consumed before this transaction."}});
+            schema["required"] = json!(["activation_id", "reason", "idempotency_key"]);
+        }
+        _ => return,
+    }
+    object["requestBody"] =
+        json!({"required":true,"content":{"application/json":{"schema":schema}}});
 }
 
 #[cfg(test)]
