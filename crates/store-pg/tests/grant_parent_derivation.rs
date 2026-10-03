@@ -197,7 +197,7 @@ async fn grant_parent_derivation_source_client_disable_blocks_different_sector_c
         "different client/sector remains valid with unchanged receipt"
     );
     sqlx::query(
-        "update clients set status='inactive' where tenant_id='parent' and client_id='client'",
+        "update clients set status='disabled' where tenant_id='parent' and client_id='client'",
     )
     .execute(&f.pool)
     .await
