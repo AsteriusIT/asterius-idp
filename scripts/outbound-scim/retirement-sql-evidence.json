@@ -1,0 +1,22 @@
+{
+  "ticket": "ast-dd1y.6.3",
+  "status": "isolated_sql_retirement_controls_passed",
+  "observed_at": "2026-10-03T23:28:55Z",
+  "source_checkpoint": "5ee285c5",
+  "production_update_sha256": "b62a168ba8972aecb4ae110c5cb498ceed0d152128f96ef7414e2c3fd2d63b7e",
+  "reserved_parser_sha256": "176a39519df17069c042ceb2cd8b619ae4641b0a929b3afca88f3cfa299da924",
+  "fixture": "Disposable database with exact production UPDATE, migration0169 reserved parser and baseline users_by_email unique index; no runtime request claimed",
+  "checks": [
+    "exact_update_prepared_and_executed",
+    "ordinary_delete_retains_email",
+    "malformed_reserved_prefix_retains_email",
+    "wrong_client_retains_email",
+    "reserved_disable_retains_email",
+    "reserved_delete_clears_email_and_verification",
+    "all_controls_preserve_administrator_lock",
+    "fresh_generation_same_email_insert_succeeds"
+  ],
+  "owned_database_cleaned": true,
+  "normative_contract_review": "pending",
+  "full_runtime_acceptance": "awaiting_corrected_composed_binary"
+}
