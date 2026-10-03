@@ -26,6 +26,8 @@
 //!
 //! [ADR-0011]: https://github.com/AsteriusIT/asterius-idp/blob/main/docs/adr/0011-a-declarative-rule-model-for-the-built-in-pdp.md
 
+pub mod conditional_simulation;
+
 use asterius_domain::policy::{Decision, EvaluationRequest, RuleSet, StoredPolicy};
 use serde_json::{Value, json};
 use time::format_description::well_known::Rfc3339;
@@ -45,6 +47,8 @@ pub struct Simulation {
     pub policy: Option<RuleSet>,
     pub context: asterius_domain::policy::Context,
     pub context_supplied: bool,
+    pub enforcement_action: String,
+    pub trusted_examples: Option<conditional_simulation::TrustedExamples>,
 }
 
 /// A stale snapshot is a conflict, rather than a simulation over new rules.
@@ -54,6 +58,7 @@ pub enum SimulationOutcome {
     Decided {
         decision: Box<Decision>,
         current_revision: Option<String>,
+        conditional: Value,
     },
 }
 
@@ -98,6 +103,8 @@ pub fn parse_simulation(body: &[u8]) -> Result<Simulation, AdminError> {
         expected_policy_revision: Option<String>,
         hypothetical_policy: Option<Value>,
         hypothetical_context: Option<Value>,
+        enforcement_action: Option<String>,
+        hypothetical_trusted_context: Option<Value>,
     }
     let invalid = || AdminError::Invalid("invalid policy simulation request".to_owned());
     if body.len() > MAX_BODY_BYTES * 2 {
@@ -144,6 +151,17 @@ pub fn parse_simulation(body: &[u8]) -> Result<Simulation, AdminError> {
         }
         None => Context::default(),
     };
+    let enforcement_action = parsed
+        .enforcement_action
+        .unwrap_or_else(|| "access_evaluation".to_owned());
+    if !conditional_simulation::ACTIONS.contains(&enforcement_action.as_str()) {
+        return Err(invalid());
+    }
+    let trusted_examples = parsed
+        .hypothetical_trusted_context
+        .as_ref()
+        .map(conditional_simulation::TrustedExamples::parse)
+        .transpose()?;
     let policy = parsed
         .hypothetical_policy
         .map(|value| RuleSet::parse(&value.to_string()).map_err(|_| invalid()))
@@ -158,6 +176,8 @@ pub fn parse_simulation(body: &[u8]) -> Result<Simulation, AdminError> {
         policy,
         context,
         context_supplied,
+        enforcement_action,
+        trusted_examples,
     })
 }
 
@@ -167,15 +187,18 @@ pub fn simulation_response(
     simulation: &Simulation,
     decision: &Decision,
     revision: Option<&str>,
+    conditional: &Value,
 ) -> Value {
     let mut response = trial_response(decision);
     response["simulation"] = json!({
         "enforced": false,
+        "conditional": conditional,
         "current_policy_revision": revision,
         "provenance": {
             "subject": "tenant_user_and_client",
             "resource": "tenant_resource_registry",
-            "groups_roles_grants_acr": "server_resolved",
+            "groups_roles_grants": "server_resolved",
+            "trusted_transaction_evidence": "explicit_fact_sources",
             "policy": if simulation.policy.is_some() {"hypothetical"} else {"stored"},
             "context_properties": if simulation.context_supplied {"hypothetical"} else {"absent"}
         }
@@ -334,6 +357,27 @@ mod tests {
             .expect("object")
             .remove("expected_policy_revision");
         assert!(parse_simulation(&serde_json::to_vec(&missing).expect("fixture")).is_err());
+    }
+
+    #[test]
+    fn simulation_enforcement_boundary_is_closed_and_separate_from_resource_action() {
+        let mut body = simulation_body();
+        assert_eq!(
+            parse_simulation(&serde_json::to_vec(&body).expect("body"))
+                .expect("request")
+                .enforcement_action,
+            "access_evaluation"
+        );
+        for boundary in conditional_simulation::ACTIONS {
+            body["enforcement_action"] = json!(boundary);
+            assert!(parse_simulation(&serde_json::to_vec(&body).expect("body")).is_ok());
+        }
+        body["enforcement_action"] = json!("read");
+        assert!(parse_simulation(&serde_json::to_vec(&body).expect("body")).is_err());
+        body["enforcement_action"] = json!("refresh_token");
+        body["hypothetical_trusted_context"] =
+            json!({"groups":{"availability":"known","value":["secret"]}});
+        assert!(parse_simulation(&serde_json::to_vec(&body).expect("body")).is_err());
     }
 
     #[test]

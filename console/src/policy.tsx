@@ -1,3 +1,5 @@
+import { ConditionalPolicy } from './conditional-policy';
+import { hasConditionalScopes } from './conditional-policy-model';
 import { PolicySimulation } from './policy-simulation';
 import { PolicyHistory } from './policy-history';
 import { useUnsavedChanges } from './navigation-guard';
@@ -36,7 +38,7 @@ import { useUnsavedChanges } from './navigation-guard';
  */
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
-import { mutate, probe, read, type Session } from './api';
+import { ApiError, mutate, probe, read, replacePolicy, type Session } from './api';
 import { JsonValue } from './components/json-view';
 import { toast } from './components/ui/toast';
 import {
@@ -97,6 +99,7 @@ export interface DecisionDocument {
     readonly error?: unknown;
   };
   readonly simulation?: {
+    readonly conditional?: { readonly enforcement_action: string; readonly legacy_would_permit: boolean; readonly active_would_permit: boolean; readonly facts: readonly { readonly name: string; readonly availability: string; readonly source: string; readonly hypothetical: boolean }[]; readonly scopes: readonly { readonly id: string; readonly mode: string; readonly would_decision: boolean; readonly required_facts: readonly string[]; readonly missing_required_evidence: boolean; readonly assurance_remedy: string | null }[] };
     readonly enforced: false;
     readonly current_policy_revision: string | null;
     readonly provenance: { readonly policy: 'stored' | 'hypothetical'; readonly context_properties: 'absent' | 'hypothetical' };
@@ -280,10 +283,13 @@ export function Policy({ session }: Readonly<{ session: Session }>): JSX.Element
   const [editing, setEditing] = useState(false);
   // The question in front of the one irreversible act on this screen.
   const [removing, setRemoving] = useState(false);
+  const [stale, setStale] = useState(false);
+  const [publishing, setPublishing] = useState<{ document: unknown; revision: string | null } | null>(null);
   const mayWrite = session.scopes.includes('admin.policies:write');
 
   const refresh = useCallback(() => {
     setLoad({ kind: 'loading' });
+    setStale(false);
     read('policies').then(
       (value) => {
         const policy = value as PolicyDocument;
@@ -321,7 +327,9 @@ export function Policy({ session }: Readonly<{ session: Session }>): JSX.Element
       },
       (error: unknown) => {
         setBusy(false);
-        const message = error instanceof Error ? error.message : 'the change was refused';
+        const conflict = error instanceof ApiError && (error.status === 409 || error.status === 412);
+        if (conflict) setStale(true);
+        const message = conflict ? 'Another operator changed the policy. Keep a copy of your draft, reload the current policy and review the differences before publishing.' : error instanceof Error ? error.message : 'the change was refused';
         setRefusal(message);
         // The toast says *that* it was refused; the panel above says why, with
         // the path and the line, which is the part an operator has to act on
@@ -332,6 +340,7 @@ export function Policy({ session }: Readonly<{ session: Session }>): JSX.Element
   };
 
   const save = (): void => {
+    if (!mayWrite || busy || stale || load.kind !== 'ready') return;
     let document: unknown;
     try {
       document = JSON.parse(draft);
@@ -344,8 +353,9 @@ export function Policy({ session }: Readonly<{ session: Session }>): JSX.Element
       toast.error('The policy was not sent');
       return;
     }
+    if (hasConditionalScopes(baseline) || hasConditionalScopes(draft)) { setPublishing({ document, revision: load.policy.revision }); return; }
     run(
-      () => mutate('policies', 'PUT', session, document),
+      () => replacePolicy(session, document, load.kind === 'ready' ? load.policy.revision : null),
       'The policy was replaced.',
       'Policy saved',
     );
@@ -413,6 +423,8 @@ export function Policy({ session }: Readonly<{ session: Session }>): JSX.Element
         </div>
       )}
 
+      <ConditionalPolicy draft={draft} revision={load.policy.revision} mayWrite={mayWrite} busy={busy}
+        onStage={text => { setDraft(text); setEditing(true); setRefusal(null); }} />
       <Panel title="Rules">
       {preview === null ? (
         <p className="muted">The draft below is not JSON yet, so there is nothing to summarise.</p>
@@ -492,7 +504,7 @@ export function Policy({ session }: Readonly<{ session: Session }>): JSX.Element
             <Button disabled={busy} onClick={refresh}>
               Discard changes
             </Button>
-            <Button variant="primary" disabled={busy} onClick={save}>
+            <Button variant="primary" disabled={busy || stale} onClick={save}>
               Save policy
             </Button>
           </Actions>
@@ -505,10 +517,14 @@ export function Policy({ session }: Readonly<{ session: Session }>): JSX.Element
         <Button onClick={() => { setDraft(baseline); setEditing(false); }} disabled={busy}>Cancel editing</Button></>}
       </Panel>
 
-      <PolicyHistory session={session} dirty={busy || draft !== baseline} onRestored={refresh} />
+      <PolicyHistory revision={load.policy.revision} session={session} dirty={busy || draft !== baseline} onRestored={refresh} />
       <TestBench session={session} />
       {load.kind === 'ready' && <PolicySimulation session={session} revision={load.policy.revision} draft={draft} />}
 
+      {publishing !== null && <ConfirmDialog title="Publish conditional access changes?"
+        body={<><p>This replaces the policy in {session.workspace} at the revision shown above. Active scopes immediately enforce their restrictions; report-only results do not grant access. Removing or relaxing a scope can change who is denied.</p><p>Preview and simulation are hypothetical. Publishing is audited.</p></>}
+        confirmLabel="Publish reviewed policy" busy={busy} onCancel={() => setPublishing(null)}
+        onConfirm={() => { const {document,revision} = publishing; setPublishing(null); run(() => replacePolicy(session, document, revision), 'The reviewed policy was published.', 'Policy published'); }} />}
       {removing && (
         <ConfirmDialog
           title="Remove the policy?"

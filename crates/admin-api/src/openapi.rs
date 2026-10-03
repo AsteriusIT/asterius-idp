@@ -252,9 +252,11 @@ fn simulation_documentation(operation: &Operation, object: &mut Value) {
                 "resource_type": {"type": "string", "minLength": 1, "maxLength": 256},
                 "action": {"type": "string", "minLength": 1, "maxLength": 256},
                 "expected_policy_revision": {"type": ["string", "null"], "description": "SHA-256 revision from GET /policies; null requires no stored policy."},
+                "enforcement_action": {"type":"string","enum": crate::policies::conditional_simulation::ACTIONS,"default":"access_evaluation","description":"Server enforcement boundary, separate from resource action."},
+                "hypothetical_trusted_context": trusted_examples_schema(),
                 "hypothetical_policy": {"type": "object"}, "hypothetical_context": {"type": "object"}
             },
-            "description": "Bounded 128 KiB inspection. All references must exist in the routed tenant. Only policy and context properties may be hypothetical. Audited before lookup; never grants access or issues a token."
+            "description": "Bounded 128 KiB inspection. All references must exist in the routed tenant. Policy, descriptive context and explicitly labelled trusted examples may be hypothetical; directory facts remain server resolved. No selected user transaction means assurance, authentication age and network evidence are absent. Audited before lookup; never grants access or issues a token."
         }}}});
         object["responses"]["409"] =
             error_response("Stored policy revision changed; refresh the snapshot.");
@@ -265,14 +267,38 @@ fn simulation_documentation(operation: &Operation, object: &mut Value) {
         schema["required"] = json!(["decision", "simulation"]);
         schema["properties"]["simulation"] = json!({"type": "object", "required": ["enforced", "current_policy_revision", "provenance"], "properties": {
             "enforced": {"const": false}, "current_policy_revision": {"type": ["string", "null"]},
+            "conditional": conditional_simulation_schema(),
             "provenance": {"type": "object", "properties": {
                 "subject": {"const": "tenant_user_and_client"}, "resource": {"const": "tenant_resource_registry"},
-                "groups_roles_grants_acr": {"const": "server_resolved"},
+                "groups_roles_grants": {"const": "server_resolved"},
+                "trusted_transaction_evidence": {"const": "explicit_fact_sources"},
                 "policy": {"enum": ["stored", "hypothetical"]}, "context_properties": {"enum": ["absent", "hypothetical"]}
             }}
         }});
         object["responses"]["200"]["content"]["application/json"]["schema"] = schema;
     }
+}
+
+fn trusted_examples_schema() -> Value {
+    let missing = json!({"type":"object","additionalProperties":false,"required":["availability"],"properties":{"availability":{"enum":["absent","stale","unavailable","invalid"]}}});
+    let fact = |value: Value| json!({"oneOf":[missing,{"type":"object","additionalProperties":false,"required":["availability","value"],"properties":{"availability":{"const":"known"},"value":value}}]});
+    json!({"type":"object","additionalProperties":false,"maxProperties":5,"description":"Administrative what-if examples only. Cannot override groups, roles or grants or assert a production source. Missing states never carry a value.","properties":{
+        "assurance":fact(json!({"type":"string","minLength":1,"maxLength":256,"description":"An attainable level in this tenant's current ACR ladder; unsupported values are invalid evidence."})),
+        "authentication_age":fact(json!({"type":"integer","minimum":0,"maximum":604800})),
+        "application_sensitivity":fact(json!({"enum":["standard","sensitive","critical"]})),
+        "device_compliance":fact(json!({"enum":["compliant","non_compliant","unknown"]})),
+        "network_zone":fact(json!({"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9_.-]+$"}}))
+    }})
+}
+
+fn conditional_simulation_schema() -> Value {
+    json!({"type":"object","description":"Inspection only: reports active restrictions and report-only results, without returning fact values, policy literals or directory contents.","properties":{
+        "enforcement_action":{"enum":crate::policies::conditional_simulation::ACTIONS},
+        "legacy_would_permit":{"type":"boolean"},"active_would_permit":{"type":"boolean"},
+        "policy_revision":{"type":"string"},"acr_revision":{"type":"string"},"client_revision":{"type":"string"},
+        "facts":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["name","availability","source","hypothetical"],"properties":{"name":{"type":"string"},"availability":{"enum":["known","absent","stale","unavailable","invalid"]},"source":{"type":"string"},"hypothetical":{"type":"boolean"}}}},
+        "scopes":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"mode":{"enum":["active","report_only"]},"would_decision":{"type":"boolean"},"required_facts":{"type":"array","items":{"type":"string"}},"missing_required_evidence":{"type":"boolean"},"assurance_remedy":{"type":["string","null"]},"conditions":{"type":"array"}}}}
+    }})
 }
 
 fn operation_parameters(operation: &Operation) -> Vec<Value> {
@@ -366,11 +392,15 @@ fn operation_parameters(operation: &Operation) -> Vec<Value> {
 }
 
 fn conditional_documentation(operation: &Operation, object: &mut Value) {
-    if matches!(operation.id(), crate::CONDITIONAL_SETTINGS_READ_ID | crate::CONDITIONAL_SETTINGS_UPDATE_ID) {
+    if matches!(
+        operation.id(),
+        crate::CONDITIONAL_SETTINGS_READ_ID | crate::CONDITIONAL_SETTINGS_UPDATE_ID
+    ) {
         object["responses"]["200"]["content"]["application/json"]["schema"] = json!({"type":"object","required":["sensitivity","revision"],"additionalProperties":false,"properties":{"sensitivity":{"enum":[null,"standard","sensitive","critical"]},"revision":{"type":["string","null"],"format":"uuid"}}});
         if operation.id() == crate::CONDITIONAL_SETTINGS_UPDATE_ID {
             object["requestBody"] = json!({"required":true,"content":{"application/json":{"schema":{"type":"object","additionalProperties":false,"required":["sensitivity","expected_revision"],"properties":{"sensitivity":{"enum":[null,"standard","sensitive","critical"]},"expected_revision":{"type":["string","null"],"format":"uuid"}},"description":"Administrative application classification. Both keys required; null revision expects no saved settings. Exact UUID CAS; stale updates are 409. This source is independent of dynamic client registration and PEP attributes."}}}});
-            object["responses"]["409"] = error_response("The saved classification revision changed.");
+            object["responses"]["409"] =
+                error_response("The saved classification revision changed.");
         }
     }
     if operation.id() == crate::POLICY_UPDATE_ID {
@@ -393,7 +423,9 @@ fn conditional_documentation(operation: &Operation, object: &mut Value) {
             },
             "description":"64 KiB whole policy; at most 128 rules across base and conditional scopes. Conditional selectors reference registered clients and supported server enforcement actions, with no overlap. Every referenced trusted fact is mandatory before ANY/NOT. New predicates are closed and available only inside conditional scopes: application_sensitivity, network_zone, authentication_age_at_most (60..86400 seconds), device_compliance. Unknown/stale sources deny active scopes; report_only emits diagnostics. Named zones must be defined; assurance remedies must be configured attainable ACR levels. Never derives trusted facts from PEP properties."
         }}}});
-        object["responses"]["409"] = error_response("Policy revision changed, or conditional publication lacks an exact precondition.");
+        object["responses"]["409"] = error_response(
+            "Policy revision changed, or conditional publication lacks an exact precondition.",
+        );
     }
 }
 

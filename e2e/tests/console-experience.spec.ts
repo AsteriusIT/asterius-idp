@@ -850,3 +850,76 @@ test('account menu has clear account navigation and quiet pointer states with ke
   expect(await health.evaluate(element => getComputedStyle(element).outlineStyle)).toBe('none');
   expect(errors).toEqual([]);
 });
+
+test('conditional rollout stages locally and stale publication preserves the reviewed draft', async ({ page }) => {
+  const revision = `sha256:${'a'.repeat(64)}`;
+  const document = { version: 1, rules: [{ id: 'base', effect: 'permit' }], conditional_scopes: [{ id: 'guard', mode: 'report_only', clients: ['app'], actions: ['refresh_token'], rules: [{ id: 'device', effect: 'permit', when: { device_compliance: 'compliant' } }] }] };
+  const writes: { revision: string | undefined; body: unknown }[] = [];
+  const errors = await prepare(page, (path, route) => {
+    if (path === 'session') return { body: { ...session, scopes: [...session.scopes, 'admin.policies:read', 'admin.policies:write'] } };
+    if (path === 'policies' && route.request().method() === 'PUT') {
+      writes.push({ revision: route.request().headers()['if-match'], body: route.request().postDataJSON() });
+      return { status: 409, body: { error: { message: 'Policy revision changed.' } } };
+    }
+    if (path === 'policies') return { body: { document, revision, updated_at: null } };
+    return undefined;
+  });
+  await page.goto(`${entry}#/policy`);
+  await page.getByRole('button', { name: 'Stage active enforcement', exact: true }).click();
+  expect(writes).toHaveLength(0);
+  await expect(page.getByLabel('The rule document, as the evaluator reads it')).toContainText('"active"');
+  await page.getByRole('button', { name: 'Save policy', exact: true }).click();
+  expect(writes).toHaveLength(0);
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Publish reviewed policy' }).click();
+  await expect(page.getByRole('button', { name: 'Save policy', exact: true })).toBeDisabled();
+  expect(writes).toHaveLength(1);
+  expect(writes[0]!.revision).toBe(`"${revision}"`);
+  expect((writes[0]!.body as typeof document).conditional_scopes[0]!.mode).toBe('active');
+  await expect(page.getByLabel('The rule document, as the evaluator reads it')).toContainText('"active"');
+  expect(errors).toEqual([]);
+});
+
+test('conditional simulation labels hypothetical evidence and missing report-only facts accessibly', async ({ page }) => {
+  let requested: Record<string, unknown> | null = null;
+  const errors = await prepare(page, (path, route) => {
+    if (path === 'session') return { body: { ...session, scopes: [...session.scopes, 'admin.policies:read'] } };
+    if (path === 'policies') return { body: { document: { version: 1, rules: [] }, revision: null, updated_at: null } };
+    if (path === 'clients') return { body: { items: [{ client_id: 'app', client_name: 'App' }], next_cursor: null } };
+    if (path === 'policies/simulate') {
+      requested = route.request().postDataJSON() as Record<string, unknown>;
+      return { body: { decision: false, simulation: { enforced: false, current_policy_revision: null, provenance: { policy: 'stored', context_properties: 'hypothetical' }, conditional: { enforcement_action: 'refresh_token', legacy_would_permit: false, active_would_permit: false, facts: [{ name: 'device_compliance', availability: 'stale', source: 'hypothetical_operator_example', hypothetical: true }], scopes: [{ id: 'guard', mode: 'report_only', would_decision: false, required_facts: ['device_compliance'], missing_required_evidence: true, assurance_remedy: null }] } } } };
+    }
+    return undefined;
+  });
+  await page.goto(`${entry}#/policy`);
+  await page.getByLabel('Tenant user', { exact: true }).selectOption('alex');
+  await page.getByLabel('Application', { exact: true }).selectOption('app');
+  await page.getByLabel('Registered resource', { exact: true }).selectOption('https://api.example.test');
+  await page.getByLabel('Enforcement boundary', { exact: true }).selectOption('refresh_token');
+  await page.getByLabel('Supply hypothetical evidence examples').check();
+  await page.getByLabel('Device compliance availability').selectOption('stale');
+  await page.getByRole('button', { name: 'Simulate', exact: true }).click();
+  await expect(page.getByText('Hypothetical example', { exact: true })).toBeVisible();
+  await expect(page.getByText('Required evidence is missing, stale, invalid or unavailable.')).toBeVisible();
+  expect(requested).toMatchObject({ action: 'read', enforcement_action: 'refresh_token', hypothetical_trusted_context: { device_compliance: { availability: 'stale' } } });
+  const audit = await new AxeBuilder({ page }).analyze();
+  expect(audit.violations.filter(v => v.impact === 'critical' || v.impact === 'serious')).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
+test('conditional access read-only preview exposes no activation controls', async ({ page }) => {
+  let writes = 0;
+  const errors = await prepare(page, (path, route) => {
+    if (route.request().method() !== 'GET') writes++;
+    if (path === 'session') return { body: { ...session, scopes: [...session.scopes.filter(scope => !scope.endsWith(':write')), 'admin.policies:read'] } };
+    if (path === 'policies') return { body: { document: { version: 1, rules: [], conditional_scopes: [{ id: 'guard', mode: 'report_only', clients: ['app'], actions: ['refresh_token'], rules: [] }] }, revision: `sha256:${'a'.repeat(64)}`, updated_at: null } };
+    return undefined;
+  });
+  await page.goto(`${entry}#/policy`);
+  await expect(page.getByRole('heading', { name: 'Conditional access rollout' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Stage active enforcement', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Edit policy', exact: true })).toHaveCount(0);
+  await expect(page.getByText('Read only', { exact: true })).toBeVisible();
+  expect(writes).toBe(0);
+  expect(errors).toEqual([]);
+});
