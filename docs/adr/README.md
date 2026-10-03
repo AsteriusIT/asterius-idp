@@ -36,3 +36,7 @@ The modern IDP decisions use descriptive filenames to avoid concurrent numbering
 | [Declarative management v1](declarative-management-contract.md) | Accepted architecture; runtime implementation tracked in ast-dd1y.3.2 |
 | [Kubernetes human access](kubernetes-human-access.md) | Proposed; normative review and interoperability pending |
 | [External workload trust](external-workload-trust.md) | Provisional; human normative review and credentialless bootstrap remain open |
+
+[Task-bound agent grants](task-bound-agent-grants.md) defines the accepted task,
+approval and descendant revocation architecture under ast-dd1y.8.1; runtime
+enforcement remains tracked by ast-dd1y.8.2 and ast-dd1y.8.3.
