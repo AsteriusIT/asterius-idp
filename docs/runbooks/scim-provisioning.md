@@ -23,7 +23,9 @@ ETag; `PUT`, `PATCH`, and `DELETE` require that ETag in `If-Match`.
 tokens and previously minted access tokens. DELETE additionally tombstones the
 client's SCIM resource, removes managed-group memberships, and advances
 affected Group ETags, so later reads return 404 and reactivation cannot inherit
-old group access. A SCIM client cannot unlock a security-locked account.
+old group access. A SCIM client cannot unlock a security-locked account, including by first
+setting active=false and then active=true. Deactivation/delete preserve Locked;
+only the separate administrator unlock authority can clear it.
 Passwords, passkeys, roles, and grants remain under their existing account and
 administration policies.
 
