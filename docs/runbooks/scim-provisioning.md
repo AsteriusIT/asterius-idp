@@ -45,3 +45,9 @@ memberships. SCIM-owned groups cannot carry application role assignments, so
 SCIM membership changes cannot grant application roles indirectly. Tenant
 policies may still reference a managed group by its stable identifier; those
 policies deliberately apply when the provisioning client changes membership.
+
+Native Entra provisioning is currently incompatible with this DPoP-only surface.
+The [versioned Entra compatibility matrix and real acceptance evidence](../integrations/entra-scim-compatibility.md)
+record the native authentication refusal, independent DPoP control lifecycle,
+conditional-write and bounded mapping constraints, plus a disposable reproduction
+runner. No successful native Entra lifecycle is advertised.
