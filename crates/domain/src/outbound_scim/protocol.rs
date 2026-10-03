@@ -161,6 +161,7 @@ mod tests {
 
     fn projection() -> Projection {
         Projection::User(UserProjection {
+            source_exists: true,
             immutable_alias: "immutable".into(),
             external_id: "owned".into(),
             work_email: None,

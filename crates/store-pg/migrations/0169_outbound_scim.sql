@@ -17,6 +17,21 @@ create table outbound_scim_connectors (
     check (removed_at is null or not enabled)
 );
 
+-- A successful read-only peer preview authorizes enabling only this exact
+-- configuration revision and credential generation, for five minutes.
+create table outbound_scim_previews (
+    tenant_id text not null,
+    connector_id uuid not null,
+    connector_revision uuid not null,
+    credential_generation uuid not null,
+    previewed_by uuid not null,
+    previewed_at timestamptz not null,
+    expires_at timestamptz not null,
+    primary key (tenant_id,connector_id,connector_revision,credential_generation),
+    foreign key (tenant_id,connector_id) references outbound_scim_connectors(tenant_id,connector_id) on delete cascade,
+    check (expires_at>previewed_at and expires_at<=previewed_at+interval '5 minutes')
+);
+
 create table outbound_scim_assignments (
     tenant_id text not null,
     connector_id uuid not null,
@@ -196,7 +211,7 @@ begin
             (a.kind=p_kind and a.source_id=p_source) or
             (p_kind='user' and a.kind='group' and exists (
               select 1 from group_memberships m where m.tenant_id=p_tenant
-                and m.group_id=a.source_id and m.user_id=p_source))))
+                and m.group_id=a.source_id and m.user_id=p_source)))
       ) order by c.connector_id for update
     loop
       for item in select a.assignment_id from outbound_scim_assignments a
@@ -205,7 +220,7 @@ begin
             (a.kind=p_kind and a.source_id=p_source) or
             (p_kind='user' and a.kind='group' and exists (
               select 1 from group_memberships m where m.tenant_id=p_tenant
-                and m.group_id=a.source_id and m.user_id=p_source))))
+                and m.group_id=a.source_id and m.user_id=p_source)))
         order by a.assignment_id
       loop
         perform outbound_scim_enqueue_assignment(p_tenant,item);
@@ -246,3 +261,40 @@ create trigger outbound_scim_group_changed after insert or update or delete on m
   for each row execute function outbound_scim_source_changed();
 create trigger outbound_scim_membership_changed after insert or update or delete on group_memberships
   for each row execute function outbound_scim_source_changed();
+
+-- Generic tenant cascade must not discard authority to deprovision remote objects.
+-- Connector and assignment creation take tenant FOR SHARE, serializing this guard.
+create function outbound_scim_tenant_delete_guard() returns trigger language plpgsql as $$
+begin
+    if exists (select 1 from outbound_scim_assignments
+      where tenant_id=old.tenant_id and retired_at is null) then
+      raise exception 'outbound assignments require explicit deprovision and archive'
+        using errcode='23514', constraint='outbound_scim_tenant_live_assignments';
+    end if;
+    return old;
+end;
+$$;
+create trigger outbound_scim_tenant_delete_guard before delete on tenants
+  for each row execute function outbound_scim_tenant_delete_guard();
+
+create function outbound_scim_source_authority_changed() returns trigger language plpgsql as $$
+declare source_kind text; source_id uuid; source_tenant text;
+begin
+    source_kind := case when tg_table_name='scim_user_external_ids' then 'user' else 'group' end;
+    if tg_op in ('DELETE','UPDATE') then
+      source_tenant := old.tenant_id;
+      source_id := (to_jsonb(old)->>(case when source_kind='user' then 'user_id' else 'group_id' end))::uuid;
+      perform outbound_scim_dirty_source(source_tenant,source_kind,source_id);
+    end if;
+    if tg_op in ('INSERT','UPDATE') then
+      source_tenant := new.tenant_id;
+      source_id := (to_jsonb(new)->>(case when source_kind='user' then 'user_id' else 'group_id' end))::uuid;
+      perform outbound_scim_dirty_source(source_tenant,source_kind,source_id);
+    end if;
+    return null;
+end;
+$$;
+create trigger outbound_scim_user_authority_changed after insert or update or delete on scim_user_external_ids
+  for each row execute function outbound_scim_source_authority_changed();
+create trigger outbound_scim_group_authority_changed after insert or update or delete on scim_group_owners
+  for each row execute function outbound_scim_source_authority_changed();

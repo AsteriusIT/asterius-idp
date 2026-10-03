@@ -24,11 +24,16 @@ impl PgOutboundScimJobs {
     }
 }
 
-async fn load(
+pub(super) async fn load(
     connection: &mut PgConnection,
     tenant: &TenantId,
     assignment_id: Uuid,
 ) -> Result<(Connector, Assignment), DomainError> {
+    sqlx::query("select tenant_id from tenants where tenant_id=$1 for share")
+        .bind(tenant.as_str())
+        .fetch_one(&mut *connection)
+        .await
+        .map_err(to_domain_error)?;
     // Locate first without locking the child; every mutation locks its parent
     // before the assignment, including source-side transactional producers.
     let connector_id: Uuid = sqlx::query_scalar("select connector_id from outbound_scim_assignments where tenant_id=$1 and assignment_id=$2")
@@ -37,6 +42,14 @@ async fn load(
         .bind(tenant.as_str()).bind(connector_id).fetch_one(&mut *connection).await.map_err(to_domain_error)?;
     let target_issuer: String = row.try_get("target_issuer").map_err(to_domain_error)?;
     let issuer = canonical_issuer(&target_issuer)?;
+    let source_issuer: String = sqlx::query_scalar("select issuer from tenants where tenant_id=$1")
+        .bind(tenant.as_str())
+        .fetch_one(&mut *connection)
+        .await
+        .map_err(to_domain_error)?;
+    if source_issuer == target_issuer {
+        return Err(DomainError::Conflict("source_projection_invalid".into()));
+    }
     let target_client = ClientId::new(
         row.try_get::<String, _>("target_client")
             .map_err(to_domain_error)?,
@@ -113,7 +126,7 @@ async fn lease_on(
     Ok((now, lease))
 }
 
-async fn projection_on(
+pub(super) async fn projection_on(
     connection: &mut PgConnection,
     tenant: &TenantId,
     assignment: &Assignment,
@@ -132,6 +145,7 @@ async fn projection_on(
                     .fetch_optional(&mut *connection)
                     .await
                     .map_err(to_domain_error)?;
+            let source_exists = row.is_some();
             let (work_email, active) = if let Some(row) = row {
                 (
                     row.try_get("email").map_err(to_domain_error)?,
@@ -145,6 +159,7 @@ async fn projection_on(
                 (None, false)
             };
             Ok(Projection::User(UserProjection {
+                source_exists,
                 immutable_alias: assignment.immutable_alias.clone(),
                 external_id: assignment.external_id.clone(),
                 work_email,
@@ -163,6 +178,14 @@ async fn projection_on(
             if protected {
                 return Err(DomainError::Conflict("source_protected".into()));
             }
+            let source_exists: bool = sqlx::query_scalar(
+                "select exists(select 1 from managed_groups where tenant_id=$1 and group_id=$2)",
+            )
+            .bind(tenant.as_str())
+            .bind(assignment.source)
+            .fetch_one(&mut *connection)
+            .await
+            .map_err(to_domain_error)?;
             let rows = sqlx::query("select a.target_id from group_memberships m join users u using(tenant_id,user_id) join outbound_scim_assignments a on a.tenant_id=m.tenant_id and a.source_id=m.user_id and a.kind='user' and a.connector_id=$3 and a.selected and a.retired_at is null where m.tenant_id=$1 and m.group_id=$2 and u.status='active' and $4 order by m.user_id limit 101")
                 .bind(tenant.as_str()).bind(assignment.source).bind(assignment.connector).bind(assignment.selected)
                 .fetch_all(&mut *connection).await.map_err(to_domain_error)?;
@@ -178,6 +201,7 @@ async fn projection_on(
                     })?);
             }
             Ok(Projection::Group(GroupProjection {
+                source_exists,
                 immutable_alias: assignment.immutable_alias.clone(),
                 external_id: assignment.external_id.clone(),
                 target_members,
@@ -205,7 +229,6 @@ impl OutboundScimJobs for PgOutboundScimJobs {
         if lease - now < Duration::seconds(5) {
             return Err(DomainError::Conflict("lease_superseded".into()));
         }
-        let projection = projection_on(&mut transaction, tenant, &assignment).await?;
         let fence = DeliveryFence {
             outbox_id,
             attempt,
@@ -215,6 +238,41 @@ impl OutboundScimJobs for PgOutboundScimJobs {
             desired_revision: assignment.desired_revision,
             deadline: lease.min(now + Duration::seconds(45)),
         };
+        let projection = match projection_on(&mut transaction, tenant, &assignment).await {
+            Ok(projection) => projection,
+            Err(DomainError::Conflict(code)) if code == "user_dependencies_pending" => {
+                let dependencies = sqlx::query_scalar::<_,Uuid>("select a.assignment_id from group_memberships m join users u using(tenant_id,user_id) join outbound_scim_assignments a on a.tenant_id=m.tenant_id and a.source_id=m.user_id and a.kind='user' and a.connector_id=$3 and a.selected and a.retired_at is null where m.tenant_id=$1 and m.group_id=$2 and u.status='active' and a.target_id is null order by a.assignment_id limit 101")
+                    .bind(tenant.as_str()).bind(assignment.source).bind(assignment.connector)
+                    .fetch_all(&mut *transaction).await.map_err(to_domain_error)?;
+                if dependencies.len() > 100 {
+                    return Err(DomainError::Conflict("snapshot_bound_exceeded".into()));
+                }
+                for dependency in dependencies {
+                    sqlx::query("select outbound_scim_enqueue_assignment($1,$2)")
+                        .bind(tenant.as_str())
+                        .bind(dependency)
+                        .execute(&mut *transaction)
+                        .await
+                        .map_err(to_domain_error)?;
+                }
+                sqlx::query("update outbound_scim_assignments set state='waiting_dependencies',failure_code='user_dependencies_pending',dirty=true where tenant_id=$1 and assignment_id=$2")
+                    .bind(tenant.as_str()).bind(assignment_id).execute(&mut *transaction).await.map_err(to_domain_error)?;
+                audit_delivery(
+                    &mut transaction,
+                    tenant,
+                    assignment_id,
+                    now,
+                    EventType::OUTBOUND_SCIM_REFUSED,
+                    "user_dependencies_pending",
+                )
+                .await?;
+                recheck_deadline(&mut transaction, &fence).await?;
+                transaction.commit().await.map_err(to_domain_error)?;
+                return Err(DomainError::Conflict(code));
+            }
+            Err(error) => return Err(error),
+        };
+        recheck_deadline(&mut transaction, &fence).await?;
         transaction.commit().await.map_err(to_domain_error)?;
         Ok(PreparedDelivery {
             connector,
@@ -222,6 +280,36 @@ impl OutboundScimJobs for PgOutboundScimJobs {
             fence,
             projection,
         })
+    }
+
+    async fn admit(
+        &self,
+        tenant: &TenantId,
+        assignment_id: Uuid,
+        fence: &DeliveryFence,
+    ) -> Result<(), DomainError> {
+        let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
+        let (connector, assignment) = load(&mut transaction, tenant, assignment_id).await?;
+        let (now, _) = lease_on(
+            &mut transaction,
+            tenant,
+            fence.outbox_id,
+            fence.attempt,
+            &assignment,
+        )
+        .await?;
+        check_fence(&connector, &assignment, fence, now)?;
+        if assignment.desired_revision != fence.desired_revision {
+            return Err(DomainError::Conflict("lease_superseded".into()));
+        }
+        // Revalidate protected provenance as well as the producer revision.
+        projection_on(&mut transaction, tenant, &assignment).await?;
+        let now: OffsetDateTime = sqlx::query_scalar("select clock_timestamp()")
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(to_domain_error)?;
+        check_fence(&connector, &assignment, fence, now)?;
+        transaction.commit().await.map_err(to_domain_error)
     }
 
     async fn complete(
@@ -244,11 +332,34 @@ impl OutboundScimJobs for PgOutboundScimJobs {
         check_fence(&connector, &assignment, fence, now)?;
         if assignment
             .target
-            .is_some_and(|target| target != receipt.target)
+            .is_some_and(|target| Some(target) != receipt.target)
         {
             return Err(DomainError::Conflict("ownership_mismatch".into()));
         }
-        if receipt.etag.is_empty() || receipt.etag.len() > 128 {
+        if receipt.target.is_some() != receipt.etag.is_some() {
+            return Err(DomainError::invalid(
+                "receipt",
+                "target and version must agree",
+            ));
+        }
+        if let Some(etag) = &receipt.etag {
+            asterius_domain::outbound_scim::target_etag(etag)?;
+        }
+        if receipt.target.is_none() {
+            let current = projection_on(&mut transaction, tenant, &assignment).await?;
+            let source_exists = match current {
+                Projection::User(user) => user.source_exists,
+                Projection::Group(group) => group.source_exists,
+            };
+            if assignment.selected && source_exists {
+                return Err(DomainError::Conflict("source_projection_invalid".into()));
+            }
+        }
+        if receipt
+            .etag
+            .as_ref()
+            .is_some_and(|etag| etag.is_empty() || etag.len() > 128)
+        {
             return Err(DomainError::invalid(
                 "etag",
                 "invalid bounded target version",
@@ -263,7 +374,11 @@ impl OutboundScimJobs for PgOutboundScimJobs {
             assignment_id,
             now,
             EventType::OUTBOUND_SCIM_DELIVERED,
-            "applied",
+            if receipt.target.is_some() {
+                "applied"
+            } else {
+                "absent"
+            },
         )
         .await?;
         recheck_deadline(&mut transaction, fence).await?;

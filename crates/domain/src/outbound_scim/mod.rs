@@ -1,5 +1,6 @@
 //! Candidate outbound SCIM contract; connector activation defaults to disabled.
 
+mod administration;
 mod model;
 mod ports;
 mod protocol;
@@ -15,4 +16,10 @@ pub use validation::{canonical_issuer, canonical_uuid, resource_identity};
 
 pub use protocol::{
     GROUP_SCHEMA, MAX_RESPONSE_BYTES, RemoteDocument, USER_SCHEMA, parse_document, target_etag,
+};
+
+pub use administration::{
+    AssignmentView, ConfigureConnector, ConnectorView, CredentialDescriptor,
+    OutboundScimAdministration, OutboundScimCredentialCatalogue, PreviewSelection, SelectSources,
+    parse_configure, parse_selection,
 };

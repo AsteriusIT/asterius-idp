@@ -141,6 +141,7 @@ The 113 targets below cover 147 declared entry points. Generated from the
 | `cose_key` | `parse` | `crates/webauthn/src/cose.rs` |
 | `csp_form_action` | `FormActionOrigin::parse` | `crates/web/src/csp.rs` |
 | `declarative_import_id` | `Identity::parse` | `crates/domain/src/declarative.rs` |
+| `outbound_scim_commands` | `parse_configure`, `parse_selection` | `crates/domain/src/outbound_scim/administration.rs` |
 | `outbound_scim_document` | `parse_document` | `crates/domain/src/outbound_scim/protocol.rs` |
 | `outbound_scim_identity` | `canonical_issuer`, `canonical_uuid` | `crates/domain/src/outbound_scim/validation.rs` |
 | `device_authorization_request` | `validate` | `crates/oidc/src/device.rs` |

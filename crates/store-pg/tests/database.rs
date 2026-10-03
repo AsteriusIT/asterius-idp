@@ -14619,6 +14619,7 @@ mod outbox {
     db_test! {
         /// A late response from the previous claimant cannot complete the new
         /// attempt or write an attempt trail claiming it delivered the event.
+        #[ignore = "slow PostgreSQL lease fencing; run in CI"]
         async fn superseded_outbox_ack_preserves_current_claim(db) {
             seed_tenant(&db.pool, "ob-fenced").await;
             let now = OffsetDateTime::now_utc();

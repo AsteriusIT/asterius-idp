@@ -11,6 +11,7 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 /// Configuration owns the path; API callers can name only its scoped reference.
+#[derive(Clone)]
 pub struct OperatorCredential {
     pub binding: CredentialBinding,
     pub key_file: PathBuf,
@@ -202,5 +203,28 @@ mod tests {
         );
         assert_eq!(claims["iss"], binding.target_client.as_str());
         assert!(!format!("{registry:?}").contains("target.example"));
+    }
+}
+
+impl asterius_domain::outbound_scim::OutboundScimCredentialCatalogue for ScopedCredentialRegistry {
+    fn available(&self, binding: &CredentialBinding) -> bool {
+        self.contains(binding)
+    }
+    fn descriptors(
+        &self,
+        tenant: &asterius_domain::TenantId,
+    ) -> Vec<asterius_domain::outbound_scim::CredentialDescriptor> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.binding.source_tenant == *tenant)
+            .map(
+                |entry| asterius_domain::outbound_scim::CredentialDescriptor {
+                    reference: entry.binding.reference.clone(),
+                    generation: entry.binding.generation,
+                    target_issuer: entry.binding.target_issuer.clone(),
+                    target_client: entry.binding.target_client.as_str().to_owned(),
+                },
+            )
+            .collect()
     }
 }

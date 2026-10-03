@@ -17,6 +17,15 @@ pub trait OutboundScimJobs: std::fmt::Debug + Send + Sync {
         assignment: Uuid,
     ) -> Result<PreparedDelivery, DomainError>;
 
+    /// Authorize one new network dispatch against the current source revision.
+    /// Already admitted remote effects cannot be cancelled by a later pause.
+    async fn admit(
+        &self,
+        tenant: &TenantId,
+        assignment: Uuid,
+        fence: &DeliveryFence,
+    ) -> Result<(), DomainError>;
+
     /// Compare every context pin and current lease before advancing a receipt.
     /// A different existing target UUID is always an ownership conflict.
     async fn complete(

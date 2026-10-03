@@ -4,6 +4,7 @@ use asterius_domain::outbound_scim::{Projection, UserProjection, parse_document,
 use libfuzzer_sys::fuzz_target;
 fuzz_target!(|data: &[u8]| {
     let projection = Projection::User(UserProjection {
+        source_exists: true,
         immutable_alias: "ast-fixed-incarnation".into(),
         external_id: "urn:asterius:fixed".into(),
         work_email: None,

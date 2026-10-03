@@ -126,6 +126,7 @@ impl FailureCode {
 /// Personal source attributes are read just before delivery and never queued.
 #[derive(Clone, PartialEq, Eq)]
 pub struct UserProjection {
+    pub source_exists: bool,
     pub immutable_alias: String,
     pub external_id: String,
     pub work_email: Option<String>,
@@ -145,6 +146,7 @@ impl std::fmt::Debug for UserProjection {
 /// Complete direct member projections contain only previously verified UUIDs.
 #[derive(Clone, PartialEq, Eq)]
 pub struct GroupProjection {
+    pub source_exists: bool,
     pub immutable_alias: String,
     pub external_id: String,
     pub target_members: Vec<Uuid>,
@@ -162,8 +164,8 @@ impl std::fmt::Debug for GroupProjection {
 /// A mapping receipt follows ownership verification, never an arbitrary Location.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MappingReceipt {
-    pub target: Uuid,
-    pub etag: String,
+    pub target: Option<Uuid>,
+    pub etag: Option<String>,
     pub observed_at: OffsetDateTime,
 }
 
