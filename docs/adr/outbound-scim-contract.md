@@ -90,9 +90,13 @@ source passwords, credentials, account status, groups, consent or grants.
 
 Store an opaque credential reference and rotation generation, never private key
 material, access tokens or DPoP keys in connector rows/outbox/audit/API responses.
-The reference must resolve through a deployment-configured allow-list of external
-signing-key references, each pinned to its allowed target issuer and client ID.
-A connector must match that credential binding before any signing or network call.
+The reference must resolve through a deployment-configured signing registry.
+Each entry is pinned to its allowed source tenant, exact target issuer and client
+ID, the exact target admin resource (`<issuer>/admin/api/v1`) and the derived SCIM
+origin. Registry lookup takes this complete validated scope; it is never a generic
+SecretRef/path/environment/network resolver. A connector must match every binding
+before any signing or network call. Knowing another tenant's reference does not
+authorize its use, even if the target principal or hostname happens to match.
 A tenant cannot choose a filesystem path, environment name,
 URL, KMS identity or arbitrary secret. Missing/revoked references fail closed.
 Rotation switches the allowed reference/generation for the same target client,
