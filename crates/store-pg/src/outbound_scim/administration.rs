@@ -33,13 +33,13 @@ fn page(limit: u16) -> Result<i64, DomainError> {
     }
     Ok(i64::from(limit))
 }
-async fn clock(connection: &mut PgConnection) -> Result<OffsetDateTime, DomainError> {
+pub(super) async fn clock(connection: &mut PgConnection) -> Result<OffsetDateTime, DomainError> {
     sqlx::query_scalar("select clock_timestamp()")
         .fetch_one(connection)
         .await
         .map_err(to_domain_error)
 }
-async fn actor_on(
+pub(super) async fn actor_on(
     connection: &mut PgConnection,
     tenant: &TenantId,
     actor: UserId,
@@ -53,7 +53,7 @@ async fn actor_on(
     }
     Ok(())
 }
-async fn evidence(
+pub(super) async fn evidence(
     connection: &mut PgConnection,
     tenant: &TenantId,
     actor: UserId,
@@ -145,6 +145,11 @@ fn assignment_view(row: &sqlx::postgres::PgRow) -> Result<AssignmentView, Domain
         generation: row.try_get("generation").map_err(to_domain_error)?,
         selected: row.try_get("selected").map_err(to_domain_error)?,
         target: row.try_get("target_id").map_err(to_domain_error)?,
+        observed_etag: row.try_get("observed_etag").map_err(to_domain_error)?,
+        retired: row
+            .try_get::<Option<OffsetDateTime>, _>("retired_at")
+            .map_err(to_domain_error)?
+            .is_some(),
         state: row.try_get("delivery_state").map_err(to_domain_error)?,
         failure_code: row
             .try_get("delivery_failure_code")
@@ -152,7 +157,7 @@ fn assignment_view(row: &sqlx::postgres::PgRow) -> Result<AssignmentView, Domain
         dirty: row.try_get("dirty").map_err(to_domain_error)?,
     })
 }
-async fn queue_user_groups(
+pub(super) async fn queue_user_groups(
     connection: &mut PgConnection,
     tenant: &TenantId,
     connector: Uuid,
@@ -192,7 +197,7 @@ async fn advance(
         .bind(tenant.as_str()).bind(id).execute(connection).await.map_err(to_domain_error)?;
     Ok(())
 }
-async fn queue(
+pub(super) async fn queue(
     connection: &mut PgConnection,
     tenant: &TenantId,
     assignment: Uuid,
@@ -531,7 +536,7 @@ impl OutboundScimAdministration for PgOutboundScimAdministration {
             return Err(DomainError::Conflict("credential_binding_mismatch".into()));
         }
         let now = clock(&mut transaction).await?;
-        sqlx::query("insert into outbound_scim_previews(tenant_id,connector_id,connector_revision,credential_generation,previewed_by,previewed_at,expires_at) values($1,$2,$3,$4,$5,$6,$6+interval '5 minutes') on conflict(tenant_id,connector_id,connector_revision,credential_generation) do update set previewed_by=excluded.previewed_by,previewed_at=excluded.previewed_at,expires_at=excluded.expires_at")
+        sqlx::query("insert into outbound_scim_previews(tenant_id,connector_id,connector_revision,credential_generation,previewed_by,previewed_at,expires_at) values($1,$2,$3,$4,$5,$6,$6::timestamptz+interval '5 minutes') on conflict(tenant_id,connector_id,connector_revision,credential_generation) do update set previewed_by=excluded.previewed_by,previewed_at=excluded.previewed_at,expires_at=excluded.expires_at")
             .bind(tenant.as_str()).bind(connector).bind(revision).bind(current.credential.generation).bind(actor.as_uuid()).bind(now).execute(&mut *transaction).await.map_err(to_domain_error)?;
         evidence(
             &mut transaction,

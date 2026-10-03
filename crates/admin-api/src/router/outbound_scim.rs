@@ -1,7 +1,9 @@
 //! Same-realm human administration; posted IDs never confer credential authority.
 
 use super::{AdminError, Handling, Principal, Response, StatusCode, json_no_store};
-use asterius_domain::outbound_scim::{ConfigureConnector, canonical_uuid, parse_selection};
+use asterius_domain::outbound_scim::{
+    ConfigureConnector, canonical_uuid, parse_lifecycle, parse_selection,
+};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -76,7 +78,8 @@ impl Handling<'_> {
             .ok_or(AdminError::Unavailable)?;
         let write = !matches!(
             operation,
-            "outbound_scim.list"
+            "outbound_scim.lifecycle_read"
+                | "outbound_scim.list"
                 | "outbound_scim.read"
                 | "outbound_scim.credentials"
                 | "outbound_scim.assignments"
@@ -158,6 +161,70 @@ impl Handling<'_> {
             "outbound_scim.select" => {
                 let command = parse_selection(&self.body_bytes(body).await?).map_err(error)?;
                 serde_json::json!({"items":catalogue.select(&self.tenant.id,*user,connector()?,command).await.map_err(error)?})
+            }
+            "outbound_scim.lifecycle_read" => {
+                let assignment = segments
+                    .iter()
+                    .position(|part| *part == "assignments")
+                    .and_then(|offset| segments.get(offset + 1))
+                    .ok_or(AdminError::NotFound)
+                    .and_then(|value| id(value))?;
+                let lifecycle = self
+                    .state
+                    .backend
+                    .outbound_scim_lifecycle()
+                    .ok_or(AdminError::Unavailable)?;
+                serde_json::json!({"items":lifecycle.recent(&self.tenant.id,connector()?,assignment).await.map_err(error)?})
+            }
+            "outbound_scim.lifecycle" => {
+                let command = parse_lifecycle(&self.body_bytes(body).await?).map_err(error)?;
+                let assignment = segments
+                    .iter()
+                    .position(|part| *part == "assignments")
+                    .and_then(|offset| segments.get(offset + 1))
+                    .ok_or(AdminError::NotFound)
+                    .and_then(|value| id(value))?;
+                let lifecycle = self
+                    .state
+                    .backend
+                    .outbound_scim_lifecycle()
+                    .ok_or(AdminError::Unavailable)?;
+                serde_json::json!(
+                    lifecycle
+                        .enqueue(&self.tenant.id, *user, connector()?, assignment, command)
+                        .await
+                        .map_err(error)?
+                )
+            }
+            "outbound_scim.dry_run" => {
+                let bytes = self.body_bytes(body).await?;
+                if bytes.len() > 1024 {
+                    return Err(AdminError::Invalid("command too large".into()));
+                }
+                let command: RevisionBody = serde_json::from_slice(&bytes)
+                    .map_err(|_| AdminError::Invalid("invalid dry-run command".into()))?;
+                let assignment = segments
+                    .iter()
+                    .position(|part| *part == "assignments")
+                    .and_then(|offset| segments.get(offset + 1))
+                    .ok_or(AdminError::NotFound)
+                    .and_then(|value| id(value))?;
+                let inspection = self
+                    .state
+                    .backend
+                    .outbound_scim_inspection()
+                    .ok_or(AdminError::Unavailable)?;
+                serde_json::json!(
+                    inspection
+                        .dry_run(
+                            &self.tenant.id,
+                            connector()?,
+                            assignment,
+                            command.expected_revision
+                        )
+                        .await
+                        .map_err(error)?
+                )
             }
             "outbound_scim.preview" => {
                 let bytes = self.body_bytes(body).await?;

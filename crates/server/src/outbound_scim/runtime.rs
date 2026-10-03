@@ -3,7 +3,9 @@
 use super::{OutboundScimClient, OutboundScimDeliverer, ScopedCredentialRegistry};
 use crate::outbound::HttpsPoster;
 use asterius_domain::outbound_scim::{OutboundScimAdministration, OutboundScimCredentialCatalogue};
-use asterius_store_pg::{PgOutboundScimAdministration, PgOutboundScimJobs, Store};
+use asterius_store_pg::{
+    PgOutboundScimAdministration, PgOutboundScimJobs, PgOutboundScimLifecycle, Store,
+};
 use std::sync::Arc;
 
 #[derive(Debug)]
@@ -12,6 +14,7 @@ pub struct OutboundScimRuntime {
     pub(super) credentials: Arc<ScopedCredentialRegistry>,
     pub(super) client: Arc<OutboundScimClient>,
     jobs: Arc<PgOutboundScimJobs>,
+    lifecycle: Arc<PgOutboundScimLifecycle>,
 }
 impl OutboundScimRuntime {
     #[must_use]
@@ -32,6 +35,7 @@ impl OutboundScimRuntime {
             )),
             credentials,
             jobs: Arc::new(PgOutboundScimJobs::new(store.pool().clone())),
+            lifecycle: Arc::new(PgOutboundScimLifecycle::new(store.pool().clone())),
         }
     }
 
@@ -46,16 +50,98 @@ impl OutboundScimRuntime {
     }
 
     #[must_use]
+    pub fn lifecycle(&self) -> Arc<dyn asterius_domain::outbound_scim::OutboundScimLifecycle> {
+        self.lifecycle.clone()
+    }
+
+    #[must_use]
     pub fn deliverer(&self) -> Arc<OutboundScimDeliverer> {
         Arc::new(OutboundScimDeliverer::new(
             self.jobs.clone(),
             Arc::clone(&self.client),
+            self.lifecycle.clone(),
         ))
     }
 }
 
 #[async_trait::async_trait]
 impl asterius_domain::outbound_scim::OutboundScimInspection for OutboundScimRuntime {
+    async fn dry_run(
+        &self,
+        tenant: &asterius_domain::TenantId,
+        connector_id: uuid::Uuid,
+        assignment_id: uuid::Uuid,
+        expected_revision: uuid::Uuid,
+    ) -> Result<asterius_domain::outbound_scim::AssignmentPreview, asterius_domain::DomainError>
+    {
+        use super::client::RequestAdmission;
+        use super::inspection::OwnerReader;
+        use asterius_domain::{DomainError, outbound_scim::Projection};
+        let selection = self
+            .catalogue
+            .preview_selection(tenant, connector_id, assignment_id, expected_revision)
+            .await?;
+        let reader = OwnerReader {
+            client: &self.client,
+            credential: &selection.connector.credential,
+            kind: selection.assignment.kind,
+            projection: &selection.projection,
+            admission: RequestAdmission::Preview {
+                catalogue: self.catalogue.as_ref(),
+                connector: &selection.connector,
+            },
+        };
+        let inspect = async {
+            match selection.assignment.target {
+                Some(target) => reader.fetch(target).await.map(Some),
+                None => reader.locate().await,
+            }
+        };
+        let remote = tokio::time::timeout(std::time::Duration::from_secs(30), inspect)
+            .await
+            .map_err(|_| DomainError::Conflict("target_unavailable".into()))?
+            .map_err(|code| DomainError::Conflict(code.as_str().into()))?;
+        let source_exists = match &selection.projection {
+            Projection::User(user) => user.source_exists,
+            Projection::Group(group) => group.source_exists,
+        };
+        let action = match &remote {
+            None if selection.assignment.creation_admitted
+                && (!selection.assignment.selected || !source_exists) =>
+            {
+                "recover_deprovision"
+            }
+            None if !selection.assignment.selected || !source_exists => "unchanged_absent",
+            None => "create",
+            Some(remote) if super::worker::equal(remote, &selection.projection) => "unchanged",
+            Some(_) => match &selection.projection {
+                Projection::User(user) if !user.active => "disable",
+                Projection::Group(group) if group.target_members.is_empty() => "empty_group",
+                _ => "update",
+            },
+        };
+        let current = self
+            .catalogue
+            .preview_selection(tenant, connector_id, assignment_id, expected_revision)
+            .await?;
+        if current.assignment.generation != selection.assignment.generation
+            || current.assignment.desired_revision != selection.assignment.desired_revision
+            || current.projection != selection.projection
+        {
+            return Err(DomainError::Conflict(
+                "source changed during dry run".into(),
+            ));
+        }
+        Ok(asterius_domain::outbound_scim::AssignmentPreview {
+            assignment: assignment_id,
+            generation: selection.assignment.generation,
+            desired_revision: selection.assignment.desired_revision,
+            action: action.into(),
+            target: remote.as_ref().map(|remote| remote.target),
+            target_version: remote.as_ref().map(|remote| remote.etag.clone()),
+        })
+    }
+
     async fn preview(
         &self,
         tenant: &asterius_domain::TenantId,

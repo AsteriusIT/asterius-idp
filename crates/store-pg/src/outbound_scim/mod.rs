@@ -6,3 +6,6 @@ mod jobs;
 pub use jobs::PgOutboundScimJobs;
 
 pub use administration::PgOutboundScimAdministration;
+
+mod lifecycle;
+pub use lifecycle::PgOutboundScimLifecycle;

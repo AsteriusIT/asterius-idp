@@ -132,6 +132,12 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
         None
     }
 
+    fn outbound_scim_lifecycle(
+        &self,
+    ) -> Option<Arc<dyn asterius_domain::outbound_scim::OutboundScimLifecycle>> {
+        None
+    }
+
     fn outbound_scim_inspection(
         &self,
     ) -> Option<Arc<dyn asterius_domain::outbound_scim::OutboundScimInspection>> {

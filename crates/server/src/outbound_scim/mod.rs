@@ -2,6 +2,8 @@
 
 mod client;
 mod credentials;
+mod inspection;
+mod lifecycle;
 mod proof;
 mod runtime;
 mod worker;

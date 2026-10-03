@@ -1,6 +1,7 @@
 //! Candidate outbound SCIM contract; connector activation defaults to disabled.
 
 mod administration;
+mod lifecycle;
 mod model;
 mod peer;
 mod ports;
@@ -20,9 +21,16 @@ pub use protocol::{
 };
 
 pub use administration::{
-    AssignmentView, ConfigureConnector, ConnectorPreview, ConnectorView, CredentialDescriptor,
-    OutboundScimAdministration, OutboundScimCredentialCatalogue, OutboundScimInspection,
-    PreviewSelection, SelectSources, parse_configure, parse_selection,
+    AssignmentPreview, AssignmentView, ConfigureConnector, ConnectorPreview, ConnectorView,
+    CredentialDescriptor, OutboundScimAdministration, OutboundScimCredentialCatalogue,
+    OutboundScimInspection, PreviewSelection, SelectSources, parse_configure, parse_selection,
 };
 
-pub use peer::{PeerToken, parse_peer_capabilities, parse_peer_token};
+pub use peer::{
+    INCARNATION_PROTECTION_SCHEMA, PeerToken, parse_peer_capabilities, parse_peer_token,
+};
+
+pub use lifecycle::{
+    LifecycleCommand, LifecycleKind, LifecyclePreparation, LifecycleReceipt, LifecycleRequest,
+    LifecycleView, OutboundScimLifecycle, PreparedLifecycle, parse_lifecycle,
+};

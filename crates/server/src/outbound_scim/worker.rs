@@ -21,11 +21,23 @@ use uuid::Uuid;
 pub struct OutboundScimDeliverer {
     jobs: Arc<dyn OutboundScimJobs>,
     client: Arc<OutboundScimClient>,
+    lifecycle: super::lifecycle::LifecycleDeliverer,
 }
 impl OutboundScimDeliverer {
     #[must_use]
-    pub fn new(jobs: Arc<dyn OutboundScimJobs>, client: Arc<OutboundScimClient>) -> Self {
-        Self { jobs, client }
+    pub fn new(
+        jobs: Arc<dyn OutboundScimJobs>,
+        client: Arc<OutboundScimClient>,
+        lifecycle: Arc<dyn asterius_domain::outbound_scim::OutboundScimLifecycle>,
+    ) -> Self {
+        Self {
+            jobs,
+            lifecycle: super::lifecycle::LifecycleDeliverer {
+                jobs: lifecycle,
+                client: Arc::clone(&client),
+            },
+            client,
+        }
     }
 }
 #[derive(Deserialize)]
@@ -35,7 +47,7 @@ struct Locator {
     generation: String,
 }
 
-fn refused(code: FailureCode) -> Undelivered {
+pub(super) fn refused(code: FailureCode) -> Undelivered {
     Undelivered {
         detail: code.as_str().to_owned(),
         permanent: !matches!(
@@ -47,7 +59,7 @@ fn refused(code: FailureCode) -> Undelivered {
         ),
     }
 }
-fn domain_code(error: &DomainError) -> FailureCode {
+pub(super) fn domain_code(error: &DomainError) -> FailureCode {
     match error {
         DomainError::Conflict(code) => match code.as_str() {
             "paused" => FailureCode::Paused,
@@ -63,7 +75,7 @@ fn domain_code(error: &DomainError) -> FailureCode {
         _ => FailureCode::SourceProjectionInvalid,
     }
 }
-fn status(response: &PostResponse) -> Result<(), FailureCode> {
+pub(super) fn status(response: &PostResponse) -> Result<(), FailureCode> {
     match response.status {
         200..=299 if !response.truncated => Ok(()),
         401 | 403 => Err(FailureCode::AuthenticationRefused),
@@ -73,7 +85,10 @@ fn status(response: &PostResponse) -> Result<(), FailureCode> {
         _ => Err(FailureCode::SourceProjectionInvalid),
     }
 }
-fn parsed(response: &PostResponse, projection: &Projection) -> Result<RemoteDocument, FailureCode> {
+pub(super) fn parsed(
+    response: &PostResponse,
+    projection: &Projection,
+) -> Result<RemoteDocument, FailureCode> {
     status(response)?;
     if !response.content_type.as_deref().is_some_and(|media| {
         media
@@ -93,13 +108,13 @@ fn parsed(response: &PostResponse, projection: &Projection) -> Result<RemoteDocu
     )
     .map_err(|_| FailureCode::OwnershipMismatch)
 }
-fn collection(kind: ResourceKind) -> &'static str {
+pub(super) fn collection(kind: ResourceKind) -> &'static str {
     match kind {
         ResourceKind::User => "Users",
         ResourceKind::Group => "Groups",
     }
 }
-fn desired(projection: &Projection, id: Option<Uuid>) -> Value {
+pub(super) fn desired(projection: &Projection, id: Option<Uuid>) -> Value {
     let mut document = match projection {
         Projection::User(user) => {
             json!({"schemas":[USER_SCHEMA],"userName":user.immutable_alias,"externalId":user.external_id,"active":user.active,"emails":user.work_email.as_ref().map_or_else(Vec::new,|email| vec![json!({"value":email,"type":"work","primary":true})])})
@@ -113,7 +128,7 @@ fn desired(projection: &Projection, id: Option<Uuid>) -> Value {
     }
     document
 }
-fn equal(remote: &RemoteDocument, projection: &Projection) -> bool {
+pub(super) fn equal(remote: &RemoteDocument, projection: &Projection) -> bool {
     match projection {
         Projection::User(user) => {
             remote.active == Some(user.active) && remote.work_email == user.work_email
@@ -127,99 +142,17 @@ fn equal(remote: &RemoteDocument, projection: &Projection) -> bool {
 }
 
 impl OutboundScimDeliverer {
-    async fn fetch(
-        &self,
-        prepared: &PreparedDelivery,
-        id: Uuid,
-    ) -> Result<RemoteDocument, FailureCode> {
-        let path = format!("{}/{}", collection(prepared.assignment.kind), id);
-        let response = self
-            .client
-            .request(
-                &prepared.connector.credential,
-                ScimRequest {
-                    method: Method::GET,
-                    path: &path,
-                    query: None,
-                    etag: None,
-                    body: &[],
-                    admission: RequestAdmission::Delivery(DeliveryAdmission {
-                        jobs: self.jobs.as_ref(),
-                        prepared,
-                    }),
-                },
-            )
-            .await?;
-        let remote = parsed(&response, &prepared.projection)?;
-        if remote.target != id {
-            return Err(FailureCode::OwnershipMismatch);
+    fn reader<'a>(&'a self, prepared: &'a PreparedDelivery) -> super::inspection::OwnerReader<'a> {
+        super::inspection::OwnerReader {
+            client: &self.client,
+            credential: &prepared.connector.credential,
+            kind: prepared.assignment.kind,
+            projection: &prepared.projection,
+            admission: RequestAdmission::Delivery(DeliveryAdmission {
+                jobs: self.jobs.as_ref(),
+                prepared,
+            }),
         }
-        Ok(remote)
-    }
-
-    /// Recover an uncertain POST by exact immutable alias, then GET only the
-    /// canonical returned UUID. List Location/$ref values never influence URLs.
-    async fn locate(
-        &self,
-        prepared: &PreparedDelivery,
-    ) -> Result<Option<RemoteDocument>, FailureCode> {
-        let (attribute, alias) = match &prepared.projection {
-            Projection::User(user) => ("userName", &user.immutable_alias),
-            Projection::Group(group) => ("displayName", &group.immutable_alias),
-        };
-        let literal =
-            serde_json::to_string(alias).map_err(|_| FailureCode::SourceProjectionInvalid)?;
-        let filter = format!("{attribute} eq {literal}");
-        let response = self
-            .client
-            .request(
-                &prepared.connector.credential,
-                ScimRequest {
-                    method: Method::GET,
-                    path: collection(prepared.assignment.kind),
-                    query: Some(("filter", &filter)),
-                    etag: None,
-                    body: &[],
-                    admission: RequestAdmission::Delivery(DeliveryAdmission {
-                        jobs: self.jobs.as_ref(),
-                        prepared,
-                    }),
-                },
-            )
-            .await?;
-        status(&response)?;
-        let document: Value = serde_json::from_slice(&response.body)
-            .map_err(|_| FailureCode::SourceProjectionInvalid)?;
-        if document.get("schemas")
-            != Some(&json!([
-                "urn:ietf:params:scim:api:messages:2.0:ListResponse"
-            ]))
-        {
-            return Err(FailureCode::SourceProjectionInvalid);
-        }
-        let total = document
-            .get("totalResults")
-            .and_then(Value::as_u64)
-            .ok_or(FailureCode::SourceProjectionInvalid)?;
-        let resources = document
-            .get("Resources")
-            .and_then(Value::as_array)
-            .ok_or(FailureCode::SourceProjectionInvalid)?;
-        if total > 1 || resources.len() > 1 || total != resources.len() as u64 {
-            return Err(FailureCode::OwnershipMismatch);
-        }
-        let Some(resource) = resources.first() else {
-            return Ok(None);
-        };
-        let etag = resource
-            .pointer("/meta/version")
-            .and_then(Value::as_str)
-            .ok_or(FailureCode::OwnershipMismatch)?;
-        let bytes =
-            serde_json::to_vec(resource).map_err(|_| FailureCode::SourceProjectionInvalid)?;
-        let located = parse_document(&bytes, etag, &prepared.projection)
-            .map_err(|_| FailureCode::OwnershipMismatch)?;
-        self.fetch(prepared, located.target).await.map(Some)
     }
 
     async fn apply_existing(
@@ -262,9 +195,9 @@ impl OutboundScimDeliverer {
         prepared: &PreparedDelivery,
     ) -> Result<Option<RemoteDocument>, FailureCode> {
         let remote = if let Some(target) = prepared.assignment.target {
-            Some(self.fetch(prepared, target).await?)
+            Some(self.reader(prepared).fetch(target).await?)
         } else {
-            self.locate(prepared).await?
+            self.reader(prepared).locate().await?
         };
         if let Some(remote) = remote {
             return self.apply_existing(prepared, remote).await.map(Some);
@@ -303,7 +236,8 @@ impl OutboundScimDeliverer {
             .await?;
         if response.status == 409 {
             let remote = self
-                .locate(prepared)
+                .reader(prepared)
+                .locate()
                 .await?
                 .ok_or(FailureCode::OwnershipMismatch)?;
             return self.apply_existing(prepared, remote).await.map(Some);
@@ -322,6 +256,9 @@ impl Deliverer for OutboundScimDeliverer {
         "outbound_scim"
     }
     async fn deliver(&self, event: &OutboxEvent) -> Result<Delivered, Undelivered> {
+        if event.kind == "outbound_scim.lifecycle" {
+            return self.lifecycle.deliver(event).await;
+        }
         if event.kind != "outbound_scim.reconcile" {
             return Err(refused(FailureCode::SourceProjectionInvalid));
         }

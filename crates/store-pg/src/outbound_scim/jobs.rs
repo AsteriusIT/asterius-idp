@@ -29,6 +29,15 @@ pub(super) async fn load(
     tenant: &TenantId,
     assignment_id: Uuid,
 ) -> Result<(Connector, Assignment), DomainError> {
+    load_history(connection, tenant, assignment_id, false).await
+}
+
+pub(super) async fn load_history(
+    connection: &mut PgConnection,
+    tenant: &TenantId,
+    assignment_id: Uuid,
+    historical: bool,
+) -> Result<(Connector, Assignment), DomainError> {
     sqlx::query("select tenant_id from tenants where tenant_id=$1 for share")
         .bind(tenant.as_str())
         .fetch_one(&mut *connection)
@@ -76,8 +85,8 @@ pub(super) async fn load(
             scim_origin: issuer.origin().ascii_serialization(),
         },
     };
-    let row = sqlx::query("select * from outbound_scim_assignments where tenant_id=$1 and assignment_id=$2 and retired_at is null and state<>'deleted' for update")
-        .bind(tenant.as_str()).bind(assignment_id).fetch_one(&mut *connection).await.map_err(to_domain_error)?;
+    let row = sqlx::query("select * from outbound_scim_assignments where tenant_id=$1 and assignment_id=$2 and ($3 or (retired_at is null and state<>'deleted')) for update")
+        .bind(tenant.as_str()).bind(assignment_id).bind(historical).fetch_one(&mut *connection).await.map_err(to_domain_error)?;
     let kind: String = row.try_get("kind").map_err(to_domain_error)?;
     let kind = match kind.as_str() {
         "user" => ResourceKind::User,
@@ -102,16 +111,17 @@ pub(super) async fn load(
     Ok((connector, assignment))
 }
 
-async fn lease_on(
+pub(super) async fn lease_on(
     connection: &mut PgConnection,
     tenant: &TenantId,
     outbox_id: i64,
     attempt: u32,
     assignment: &Assignment,
+    kind: &str,
 ) -> Result<(OffsetDateTime, OffsetDateTime), DomainError> {
-    let row = sqlx::query("select claim_expires_at from outbox where tenant_id=$1 and outbox_id=$2 and attempts::bigint=$3 and status='claimed' and kind='outbound_scim.reconcile' and destination=$4 and payload->>'assignment'=$5 and payload->>'generation'=$6 for share")
+    let row = sqlx::query("select claim_expires_at from outbox where tenant_id=$1 and outbox_id=$2 and attempts::bigint=$3 and status='claimed' and kind=$7 and destination=$4 and payload->>'assignment'=$5 and payload->>'generation'=$6 for share")
         .bind(tenant.as_str()).bind(outbox_id).bind(i64::from(attempt))
-        .bind(assignment.connector.to_string()).bind(assignment.id.to_string()).bind(assignment.generation.to_string())
+        .bind(assignment.connector.to_string()).bind(assignment.id.to_string()).bind(assignment.generation.to_string()).bind(kind)
         .fetch_optional(&mut *connection).await.map_err(to_domain_error)?
         .ok_or_else(|| DomainError::Conflict("lease_superseded".into()))?;
     let lease: Option<OffsetDateTime> = row.try_get("claim_expires_at").map_err(to_domain_error)?;
@@ -225,8 +235,15 @@ impl OutboundScimJobs for PgOutboundScimJobs {
         if !connector.enabled {
             return Err(DomainError::Conflict("paused".into()));
         }
-        let (now, lease) =
-            lease_on(&mut transaction, tenant, outbox_id, attempt, &assignment).await?;
+        let (now, lease) = lease_on(
+            &mut transaction,
+            tenant,
+            outbox_id,
+            attempt,
+            &assignment,
+            "outbound_scim.reconcile",
+        )
+        .await?;
         if lease - now < Duration::seconds(5) {
             return Err(DomainError::Conflict("lease_superseded".into()));
         }
@@ -298,6 +315,7 @@ impl OutboundScimJobs for PgOutboundScimJobs {
             fence.outbox_id,
             fence.attempt,
             &assignment,
+            "outbound_scim.reconcile",
         )
         .await?;
         check_fence(&connector, &assignment, fence, now)?;
@@ -333,6 +351,7 @@ impl OutboundScimJobs for PgOutboundScimJobs {
             fence.outbox_id,
             fence.attempt,
             &assignment,
+            "outbound_scim.reconcile",
         )
         .await?;
         check_fence(&connector, &assignment, fence, now)?;
@@ -409,6 +428,7 @@ impl OutboundScimJobs for PgOutboundScimJobs {
             fence.outbox_id,
             fence.attempt,
             &assignment,
+            "outbound_scim.reconcile",
         )
         .await?;
         check_fence(&connector, &assignment, fence, now)?;
@@ -429,7 +449,7 @@ impl OutboundScimJobs for PgOutboundScimJobs {
     }
 }
 
-async fn recheck_deadline(
+pub(super) async fn recheck_deadline(
     connection: &mut PgConnection,
     fence: &DeliveryFence,
 ) -> Result<(), DomainError> {
@@ -443,7 +463,7 @@ async fn recheck_deadline(
     Ok(())
 }
 
-async fn audit_delivery(
+pub(super) async fn audit_delivery(
     connection: &mut PgConnection,
     tenant: &TenantId,
     assignment: Uuid,
@@ -466,7 +486,7 @@ async fn audit_delivery(
     .await
 }
 
-fn check_fence(
+pub(super) fn check_fence(
     connector: &Connector,
     assignment: &Assignment,
     fence: &DeliveryFence,

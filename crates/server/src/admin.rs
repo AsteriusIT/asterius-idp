@@ -3672,6 +3672,14 @@ impl AdminBackend for Deployment {
             .map(|runtime| runtime.administration())
     }
 
+    fn outbound_scim_lifecycle(
+        &self,
+    ) -> Option<Arc<dyn asterius_domain::outbound_scim::OutboundScimLifecycle>> {
+        self.outbound_scim
+            .as_ref()
+            .map(|runtime| runtime.lifecycle())
+    }
+
     fn outbound_scim_inspection(
         &self,
     ) -> Option<Arc<dyn asterius_domain::outbound_scim::OutboundScimInspection>> {

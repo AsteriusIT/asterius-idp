@@ -2822,3 +2822,42 @@ No scheduler silently revokes access and no notification transport is enabled.
 The console-only governance reports recheck current same-tenant administrator or security-auditor read authority in a repeatable-read, read-only transaction. Closed query fields and tenant/section-bound keyset cursors cannot select another tenant or arbitrary SQL. Each request inspects at most 100 records and returns at most 50 findings; an empty scan may still expose continuation. Evidence includes bounded public source identifiers, never credentials, session handles or vendor external identifiers.
 
 A retained session is incomplete activity history, not evidence that an upstream account was deleted. Missing SCIM registrations and LDAP source configuration are distinct from explicit SCIM tombstones and complete LDAP snapshot absence; no report asserts network reachability. Local administrative accounts remain possible recovery accounts. Managed group evidence preserves SCIM, LDAP, builder and controller provenance and proposes review through the existing owner lifecycle. Historical campaign coverage requires matching current assignment generation, ownership revision and the complete account/group/catalogue/client context, including updates that prevent status ABA. Oversized contexts remain uncertain. Temporary entitlement configuration and built-in administrative roles are reported separately from standing campaign coverage. Reports provide no mutation, notification or automatic cleanup port.
+
+
+### Outbound SCIM candidate (normative review pending)
+
+The isolated outbound candidate uses an operator signing catalogue keyed by the
+complete source tenant and destination issuer/client/resource/origin/generation.
+Reference knowledge cannot borrow another tenant's key, and the admin API never
+resolves a path or stores credentials. The sole HTTPS transport repeats DNS
+address validation on every request, connects to the vetted address, verifies
+TLS and refuses redirects. Internally derived token/SCIM paths and canonical
+UUIDs constrain egress; response Location/$ref values grant no authority.
+
+Each dispatch checks database-clock lease, connector and credential revisions,
+assignment generation and source revision after acquiring current locks. A
+request already transmitted may finish after pause, but its local receipt cannot
+cross a changed fence. SCIM source ownership is refused and audited; no password,
+role, grant, authenticator or key is projected. Remote mappings require exact
+immutable alias/externalId, canonical UUID and a bounded weak ETag. PUT and DELETE
+keep If-Match; conflicts cannot strip the condition or adopt another UUID.
+
+Explicit five-minute human lifecycle approvals are durably ordered with normal
+assignment work. Archive advances the owned inactive/empty target's version to
+fence prior PUTs before retiring local authority. Reviewed deletion additionally
+requires separately enabled policy and a saved same-incarnation UUID/version;
+durable DELETE admission permits404 recovery only for that saved UUID. A missing
+ordinary mapping never authorizes recreation. Fresh generation is a separate
+confirmed lifecycle and preserves prior history. Source tenant deletion is
+refused while current assignments remain. Target incarnation tombstones cover
+only the closed outbound externalId namespace and are verified by an explicit
+SCIM configuration capability. Their per-client/kind bound is 10,000; capacity
+refuses retirement rather than expiring keys that could permit late POSTs.
+Ordinary SCIM delete/recreate semantics remain unchanged.
+
+Diagnostics persist closed codes and IDs; assertions, access tokens, DPoP keys,
+response bodies and source attributes are excluded from logs/outbox/audit.
+Source and peer snapshots are bounded; dry run uses authenticated GETs only and
+cannot establish a mapping or target mutation. These candidate boundaries still
+require the proposed contract review and real source-to-target acceptance before
+delivery or shared enablement.

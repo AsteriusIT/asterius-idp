@@ -2244,7 +2244,34 @@ pub const OUTBOUND_SCIM_READ: Operation = Operation::read(
     "Reads the current configuration revision of one source-tenant connector",
 );
 
+pub const OUTBOUND_SCIM_DRY_RUN: Operation = Operation::mutation(
+    "outbound_scim.dry_run",
+    "/outbound-scim/connectors/{connector_id}/assignments/{assignment_id}/dry-run",
+    M::Post,
+    A::new(R::ConsoleTenant, "admin.outbound_scim:write"),
+    "Reads current source and owned target drift with authentication but no SCIM mutation or mapping write",
+);
+
+pub const OUTBOUND_SCIM_LIFECYCLE_READ: Operation = Operation::read(
+    "outbound_scim.lifecycle_read",
+    "/outbound-scim/connectors/{connector_id}/assignments/{assignment_id}/lifecycle",
+    S::Get,
+    A::new(R::ConsoleTenant, "admin.outbound_scim:read"),
+    "Reads the latest 25 explicit lifecycle approvals and retained completion receipts",
+);
+
+pub const OUTBOUND_SCIM_LIFECYCLE: Operation = Operation::mutation(
+    "outbound_scim.lifecycle",
+    "/outbound-scim/connectors/{connector_id}/assignments/{assignment_id}/lifecycle",
+    M::Post,
+    A::new(R::ConsoleTenant, "admin.outbound_scim:write"),
+    "Queues an explicitly confirmed archive, recreate or separately enabled reviewed DELETE for the exact saved target incarnation and version",
+);
+
 static REGISTRY: &[Operation] = &[
+    OUTBOUND_SCIM_LIFECYCLE_READ,
+    OUTBOUND_SCIM_LIFECYCLE,
+    OUTBOUND_SCIM_DRY_RUN,
     OUTBOUND_SCIM_READ,
     OUTBOUND_SCIM_PREVIEW,
     OUTBOUND_SCIM_LIST,

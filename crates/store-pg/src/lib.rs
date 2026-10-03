@@ -51,7 +51,9 @@ mod oidc_providers;
 mod oidc_upstream_pending;
 mod outbound_scim;
 mod outbox;
-pub use outbound_scim::{PgOutboundScimAdministration, PgOutboundScimJobs};
+pub use outbound_scim::{
+    PgOutboundScimAdministration, PgOutboundScimJobs, PgOutboundScimLifecycle,
+};
 mod overview;
 mod passkeys;
 mod passwords;

@@ -3,8 +3,9 @@
 use super::proof::proof;
 use crate::outbound::{HttpsPoster, PostRequest, PostResponse};
 use asterius_domain::outbound_scim::{
-    Connector, CredentialBinding, FailureCode, OutboundScimAdministration, OutboundScimCredentials,
-    OutboundScimJobs, PreparedDelivery, canonical_issuer, parse_peer_token,
+    Connector, CredentialBinding, FailureCode, LifecycleKind, OutboundScimAdministration,
+    OutboundScimCredentials, OutboundScimJobs, OutboundScimLifecycle, PreparedDelivery,
+    PreparedLifecycle, canonical_issuer, parse_peer_token,
 };
 use asterius_domain::{Secret, SigningAlgorithm};
 use asterius_jose::SigningKey;
@@ -14,6 +15,7 @@ use time::{Duration, OffsetDateTime};
 use tokio::sync::Mutex;
 use zeroize::Zeroizing;
 
+#[derive(Clone, Copy)]
 pub(super) struct DeliveryAdmission<'a> {
     pub jobs: &'a dyn OutboundScimJobs,
     pub prepared: &'a PreparedDelivery,
@@ -32,16 +34,36 @@ impl DeliveryAdmission<'_> {
     }
 }
 
+#[derive(Clone, Copy)]
 pub(super) enum RequestAdmission<'a> {
     Delivery(DeliveryAdmission<'a>),
+    Lifecycle {
+        jobs: &'a dyn OutboundScimLifecycle,
+        prepared: &'a PreparedLifecycle,
+    },
     Preview {
         catalogue: &'a dyn OutboundScimAdministration,
         connector: &'a Connector,
     },
 }
 impl RequestAdmission<'_> {
-    async fn check(&self, creating: bool) -> Result<(), FailureCode> {
+    async fn check(
+        &self,
+        creating: bool,
+        mutating: bool,
+        deleting: bool,
+    ) -> Result<(), FailureCode> {
         match self {
+            Self::Lifecycle { jobs, prepared } => jobs
+                .admit(
+                    &prepared.delivery.connector.tenant,
+                    prepared.request.id,
+                    &prepared.delivery.fence,
+                    mutating,
+                    deleting,
+                )
+                .await
+                .map_err(|_| FailureCode::LeaseSuperseded),
             Self::Delivery(delivery) => delivery.check(creating).await,
             Self::Preview {
                 catalogue,
@@ -62,12 +84,23 @@ impl RequestAdmission<'_> {
     fn credential(&self) -> &CredentialBinding {
         match self {
             Self::Delivery(delivery) => &delivery.prepared.connector.credential,
+            Self::Lifecycle { prepared, .. } => &prepared.delivery.connector.credential,
             Self::Preview { connector, .. } => &connector.credential,
         }
     }
 
     fn permits(&self, method: &Method) -> bool {
-        !matches!(self, Self::Preview { .. }) || *method == Method::GET
+        match self {
+            Self::Preview { .. } => *method == Method::GET,
+            Self::Lifecycle { prepared, .. } => {
+                *method == Method::GET
+                    || match prepared.request.kind {
+                        LifecycleKind::Delete => *method == Method::DELETE,
+                        LifecycleKind::Archive | LifecycleKind::Recreate => *method == Method::PUT,
+                    }
+            }
+            Self::Delivery(_) => matches!(*method, Method::GET | Method::POST | Method::PUT),
+        }
     }
 }
 
@@ -191,7 +224,7 @@ impl OutboundScimClient {
                     .append_pair("resource", &bound.binding.target_admin_resource);
                 Zeroizing::new(form.finish())
             };
-            admission.check(false).await?;
+            admission.check(false, false, false).await?;
             let response = self
                 .poster
                 .authenticated_response(
@@ -286,7 +319,11 @@ impl OutboundScimClient {
                 session.resource_nonce.as_deref(),
             )?;
             admission
-                .check(method == Method::POST && matches!(path, "Users" | "Groups"))
+                .check(
+                    method == Method::POST && matches!(path, "Users" | "Groups"),
+                    method != Method::GET,
+                    method == Method::DELETE,
+                )
                 .await?;
             let response = self
                 .poster

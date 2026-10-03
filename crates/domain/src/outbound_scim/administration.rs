@@ -29,8 +29,27 @@ pub struct ConnectorPreview {
     pub etag_supported: bool,
 }
 
+#[derive(Debug, Serialize)]
+pub struct AssignmentPreview {
+    pub assignment: Uuid,
+    pub generation: Uuid,
+    pub desired_revision: Uuid,
+    pub action: String,
+    pub target: Option<Uuid>,
+    pub target_version: Option<String>,
+}
+
 #[async_trait::async_trait]
 pub trait OutboundScimInspection: std::fmt::Debug + Send + Sync {
+    /// Reports observed ownership/drift; never accepts a target mapping or write.
+    async fn dry_run(
+        &self,
+        tenant: &TenantId,
+        connector: Uuid,
+        assignment: Uuid,
+        expected_revision: Uuid,
+    ) -> Result<AssignmentPreview, DomainError>;
+
     /// Token authentication and SCIM GET only; no target mapping is accepted.
     async fn preview(
         &self,
@@ -151,6 +170,8 @@ pub struct AssignmentView {
     pub generation: Uuid,
     pub selected: bool,
     pub target: Option<Uuid>,
+    pub observed_etag: Option<String>,
+    pub retired: bool,
     pub state: String,
     pub failure_code: Option<String>,
     pub dirty: bool,

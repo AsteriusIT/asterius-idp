@@ -61,6 +61,9 @@ pub fn parse_peer_token(bytes: &[u8]) -> Result<PeerToken, FailureCode> {
     })
 }
 
+pub const INCARNATION_PROTECTION_SCHEMA: &str =
+    "urn:asterius:params:scim:schemas:extension:OutboundIncarnations:2.0:ServiceProviderConfig";
+
 // fuzz-target: outbound_scim_peer
 pub fn parse_peer_capabilities(bytes: &[u8]) -> Result<(), FailureCode> {
     if bytes.len() > MAX_RESPONSE_BYTES {
@@ -68,14 +71,22 @@ pub fn parse_peer_capabilities(bytes: &[u8]) -> Result<(), FailureCode> {
     }
     let document: serde_json::Value =
         serde_json::from_slice(bytes).map_err(|_| FailureCode::SourceProjectionInvalid)?;
-    if document.get("schemas")
-        != Some(&serde_json::json!([
-            "urn:ietf:params:scim:schemas:core:2.0:ServiceProviderConfig"
-        ]))
-        || document
-            .pointer("/filter/supported")
-            .and_then(serde_json::Value::as_bool)
-            != Some(true)
+    let schemas = document
+        .get("schemas")
+        .and_then(serde_json::Value::as_array);
+    if schemas.is_none_or(|schemas| {
+        schemas.len() != 2
+            || !schemas.iter().any(|schema| {
+                schema.as_str()
+                    == Some("urn:ietf:params:scim:schemas:core:2.0:ServiceProviderConfig")
+            })
+            || !schemas
+                .iter()
+                .any(|schema| schema.as_str() == Some(INCARNATION_PROTECTION_SCHEMA))
+    }) || document
+        .pointer("/filter/supported")
+        .and_then(serde_json::Value::as_bool)
+        != Some(true)
         || document
             .pointer("/filter/maxResults")
             .and_then(serde_json::Value::as_u64)
@@ -84,6 +95,10 @@ pub fn parse_peer_capabilities(bytes: &[u8]) -> Result<(), FailureCode> {
             .pointer("/etag/supported")
             .and_then(serde_json::Value::as_bool)
             != Some(true)
+        || document.get(INCARNATION_PROTECTION_SCHEMA)
+            != Some(&serde_json::json!({
+                "supported":true,"namespace":"urn:asterius:outbound:","maxRetiredPerClientKind":10000,"automaticExpiry":false
+            }))
     {
         return Err(FailureCode::SourceProjectionInvalid);
     }
@@ -109,11 +124,20 @@ mod tests {
     }
     #[test]
     fn discovery_without_versioned_writes_or_exact_scim_schema_cannot_enable_peer() {
-        let good = serde_json::json!({"schemas":["urn:ietf:params:scim:schemas:core:2.0:ServiceProviderConfig"],"filter":{"supported":true,"maxResults":200},"etag":{"supported":true}});
+        let good = serde_json::json!({"schemas":["urn:ietf:params:scim:schemas:core:2.0:ServiceProviderConfig", INCARNATION_PROTECTION_SCHEMA],"filter":{"supported":true,"maxResults":200},"etag":{"supported":true},INCARNATION_PROTECTION_SCHEMA:{"supported":true,"namespace":"urn:asterius:outbound:","maxRetiredPerClientKind":10000,"automaticExpiry":false}});
         assert!(parse_peer_capabilities(&serde_json::to_vec(&good).unwrap()).is_ok());
         let mut bad = good.clone();
         bad["etag"]["supported"] = serde_json::json!(false);
         assert!(parse_peer_capabilities(&serde_json::to_vec(&bad).unwrap()).is_err());
+        let mut reordered = good.clone();
+        reordered["schemas"].as_array_mut().unwrap().reverse();
+        assert!(parse_peer_capabilities(&serde_json::to_vec(&reordered).unwrap()).is_ok());
+        let mut absent = good.clone();
+        absent
+            .as_object_mut()
+            .unwrap()
+            .remove(INCARNATION_PROTECTION_SCHEMA);
+        assert!(parse_peer_capabilities(&serde_json::to_vec(&absent).unwrap()).is_err());
         let mut bad = good;
         bad["schemas"] = serde_json::json!([]);
         assert!(parse_peer_capabilities(&serde_json::to_vec(&bad).unwrap()).is_err());
