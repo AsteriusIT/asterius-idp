@@ -18,6 +18,14 @@ Publish the **public** half of a distinct P-256 client-authentication key in tha
 client's registered JWKS. Keep its private half only at the broker. Provision a
 matching ES256 tenant signing key. FAPI clients/defaults are unchanged.
 
+For the approved contract, explicitly set `tenant.refresh.bind_to_dpop_key = true`
+for this tenant. The confidential-client default is `false`: client authentication
+already constrains refresh under RFC 9449 §5. This additional tenant hardening
+pins the original DPoP key and affects every client in that tenant; assess clients
+that roll their proof keys before enabling it. The broker retains its per-session
+DPoP key and supports both stable and explicitly rotated OP refresh policies. See
+[the setting and compatibility effect](../../docs/configuration.md).
+
 Set the sole exact redirect URI to:
 
 ```text
@@ -162,7 +170,10 @@ operator RoleBinding removal is a separate authorization control.
 [openapi.json](openapi.json) specifies this external broker's API; it does not
 add routes to the Asterius IdP OpenAPI. Browser pages require HttpOnly Secure
 SameSite cookies and explicit same-origin confirmation. Every response is
-`no-store`, with no-referrer, no-sniff and restrictive CSP headers.
+`no-store`, with origin-only referrers, no-sniff and restrictive CSP headers.
+`strict-origin` omits paths/query credentials while preserving the browser
+Origin header required by same-origin form confirmation; `no-referrer` would
+turn this navigation Origin into `null` and fail the CSRF check.
 
 ```sh
 cd tools/kubernetes-login
@@ -184,3 +195,11 @@ Protocol basis: [OIDC Core ID-token/refresh validation](https://openid.net/specs
 and [Node SQLite](https://nodejs.org/api/sqlite.html). The human-reviewed ADR
 covers this implementation contract; a deployed integration remains separate
 evidence.
+
+Real OP/browser/OS-store/kubectl acceptance and CI reproduction are described in
+[the interoperability guide](../../docs/testing/kubernetes-interoperability.md).
+
+Use staged ES256 rotation for normal operations. The native Kubernetes v1.35
+verifier honors Asterius's five-minute JWKS cache lifetime; **Rotate and sign
+immediately** can therefore cause temporary new-token authentication failures.
+The interoperability guide measures this emergency propagation boundary.

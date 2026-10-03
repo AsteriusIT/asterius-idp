@@ -1227,6 +1227,58 @@ db_test! {
 
 // ---- Revocation and the two deadlines -------------------------------------
 
+async fn disabled_accounts_cannot_refresh(fixture: Fixture) {
+    let client = fixture.client(CLIENT).await;
+    let jkt = thumbprint(1);
+    let users = PgUserRepository::new(
+        fixture.store.pool().clone(),
+        fixture.tenant.id.clone(),
+        Arc::clone(&fixture.kek),
+    );
+    for status in [UserStatus::Disabled, UserStatus::Locked] {
+        let (grant, _) = fixture.grant(&["openid", "offline_access"]).await;
+        let credential = fixture
+            .issue(&grant, &jkt, &["openid", "offline_access"])
+            .await;
+        let mut user = users
+            .find(grant.user.expect("a user grant"))
+            .await
+            .expect("load user")
+            .expect("the stored user");
+        user.status = status;
+        users.upsert(&user).await.expect("change account status");
+        let (response, body) = fixture.present(&client, &credential, &jkt).await;
+        assert_eq!(response, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"], "invalid_grant");
+        assert!(body.get("access_token").is_none());
+        assert!(body.get("id_token").is_none());
+        assert!(body.get("refresh_token").is_none());
+        // A denial must not rotate away a credential before a restored account
+        // can use it. This assertion exercises both stable and migration modes.
+        user.status = UserStatus::Active;
+        users.upsert(&user).await.expect("restore active account");
+        let (response, _) = fixture.present(&client, &credential, &jkt).await;
+        assert_eq!(response, StatusCode::OK);
+    }
+    fixture.tear_down().await;
+}
+
+db_test! {
+    /// A disabled or locked account cannot mint fresh tokens from a live grant.
+    #[ignore = "requires PostgreSQL; CI integration coverage"]
+    async fn disabled_and_locked_accounts_refuse_stable_refresh(fixture) {
+        disabled_accounts_cannot_refresh(fixture).await;
+    }
+}
+
+db_test! {
+    /// Refusal happens before rotating a migration refresh credential.
+    #[ignore = "requires PostgreSQL; CI integration coverage"]
+    async fn disabled_and_locked_accounts_refuse_migrating_refresh(fixture, migrating()) {
+        disabled_accounts_cannot_refresh(fixture).await;
+    }
+}
+
 db_test! {
     /// The whole point of a grant-bound refresh token: revoking the grant
     /// revokes it, and the endpoint says `invalid_grant` rather than issuing.
