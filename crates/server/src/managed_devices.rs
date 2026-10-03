@@ -277,3 +277,17 @@ impl DeviceRequestEvidence {
     #[must_use]
     pub fn certificate(&self) -> &asterius_domain::managed_devices::DeviceCertificateEvidence { &self.certificate }
 }
+
+/// Shared explicit request input for grant handlers; cloning borrows preserves
+/// this request's original possession deadline and nonce.
+#[derive(Debug, Clone, Copy)]
+pub struct DeviceIssuanceContext<'a> {
+    pub store: &'a asterius_store_pg::Store,
+    pub request: &'a DeviceRequestEvidence,
+}
+impl DeviceIssuanceContext<'_> {
+    pub async fn bind(&self, tenant: &asterius_domain::TenantId, grant: &asterius_domain::Grant, now: OffsetDateTime)
+        -> Result<Option<asterius_domain::managed_devices::DeviceBinding>, asterius_domain::DomainError> {
+        self.request.bind(self.store,tenant,grant,now).await
+    }
+}

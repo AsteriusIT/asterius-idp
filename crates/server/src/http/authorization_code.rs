@@ -73,6 +73,9 @@ const INVALID_GRANT: &str = "the authorization code cannot be redeemed";
 /// with it. [`crate::http::protocol`] constructs it inside the token endpoint,
 /// where both are already in hand.
 pub struct AuthorizationCode<'a> {
+    /// This request's verified device transport; never inherited from a token.
+    pub device_request: Option<crate::managed_devices::DeviceIssuanceContext<'a>>,
+
     /// Current issuance policy and correlated audit adapter.
     pub agent_policy: crate::http::agent_issuance::AgentPolicy<'a>,
     /// Client IDs whose issued access tokens must target only this OP.

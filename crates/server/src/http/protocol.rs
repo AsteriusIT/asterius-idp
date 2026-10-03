@@ -2846,6 +2846,7 @@ async fn access_evaluation_endpoint(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
     certificate: Option<Extension<Arc<crate::mtls::PresentedCertificate>>>,
+    device_leaf: Option<Extension<Arc<crate::managed_devices::VerifiedDeviceLeaf>>>,
     client: Option<Extension<crate::http::forwarded::ClientAddr>>,
     method: axum::http::Method,
     headers: axum::http::HeaderMap,
@@ -2855,6 +2856,7 @@ async fn access_evaluation_endpoint(
         &endpoints,
         &tenant,
         certificate.as_deref().map(|presented| &**presented),
+        device_leaf.as_ref().map(|Extension(leaf)|leaf.as_ref()),
         client.as_deref(),
         &method,
         &headers,
@@ -2876,6 +2878,7 @@ async fn access_evaluations_endpoint(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
     certificate: Option<Extension<Arc<crate::mtls::PresentedCertificate>>>,
+    device_leaf: Option<Extension<Arc<crate::managed_devices::VerifiedDeviceLeaf>>>,
     client: Option<Extension<crate::http::forwarded::ClientAddr>>,
     method: axum::http::Method,
     headers: axum::http::HeaderMap,
@@ -2885,6 +2888,7 @@ async fn access_evaluations_endpoint(
         &endpoints,
         &tenant,
         certificate.as_deref().map(|presented| &**presented),
+        device_leaf.as_ref().map(|Extension(leaf)|leaf.as_ref()),
         client.as_deref(),
         &method,
         &headers,
@@ -3030,6 +3034,7 @@ async fn access_search_dispatch(
 
     let context = crate::http::access_search::AccessSearchContext {
         pdp: AccessEvaluationContext {
+            device_certificate: None,
             tenant,
             engine: &engine,
             subjects: &subjects,
@@ -3107,6 +3112,7 @@ async fn access_evaluation_dispatch(
     endpoints: &Arc<ClientEndpoints>,
     tenant: &Tenant,
     certificate: Option<&crate::mtls::PresentedCertificate>,
+    device_leaf: Option<&crate::managed_devices::VerifiedDeviceLeaf>,
     client: Option<&crate::http::forwarded::ClientAddr>,
     method: &axum::http::Method,
     headers: &axum::http::HeaderMap,
@@ -3145,7 +3151,9 @@ async fn access_evaluation_dispatch(
         grants: scope.grants(),
     };
 
+    let device_request = device_leaf.map(crate::managed_devices::VerifiedDeviceLeaf::request_evidence);
     let context = AccessEvaluationContext {
+            device_certificate: device_request.as_ref().map(crate::managed_devices::DeviceRequestEvidence::certificate),
         tenant,
         engine: &engine,
         subjects: &subjects,
@@ -3939,6 +3947,7 @@ async fn token_endpoint(
     Extension(tenant): Extension<Arc<Tenant>>,
     client: Option<Extension<crate::http::forwarded::ClientAddr>>,
     certificate: Option<Extension<Arc<crate::mtls::PresentedCertificate>>>,
+    device_leaf: Option<Extension<Arc<crate::managed_devices::VerifiedDeviceLeaf>>>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
@@ -3956,7 +3965,7 @@ async fn token_endpoint(
         &limits,
         asterius_domain::LimitedEndpoint::Token,
         claimed.as_deref(),
-        async || token_endpoint_inner(&endpoints, &tenant, &headers, &body, certificate).await,
+        async || token_endpoint_inner(&endpoints, &tenant, &headers, &body, certificate, device_leaf.as_ref().map(|Extension(leaf)|leaf.as_ref())).await,
     )
     .await
 }
@@ -3968,6 +3977,7 @@ async fn token_endpoint_inner(
     headers: &axum::http::HeaderMap,
     body: &axum::body::Bytes,
     certificate: Option<&asterius_oidc::mtls::ClientCertificate>,
+    device_leaf: Option<&crate::managed_devices::VerifiedDeviceLeaf>,
 ) -> Response {
     let scope = endpoints.store.scope(tenant.id.clone());
 
@@ -3996,12 +4006,14 @@ async fn token_endpoint_inner(
             }
         };
 
+    let device_request = device_leaf.map(crate::managed_devices::VerifiedDeviceLeaf::request_evidence);
     dispatch_grants(
         endpoints,
         tenant,
         &scope,
         issuing,
         Dispatching {
+            device_request: device_request.as_ref(),
             certificate,
             headers,
             body,
@@ -4019,6 +4031,7 @@ async fn token_endpoint_inner(
 /// signature matched by position is one in which the headers and the body can
 /// be swapped.
 struct Dispatching<'a> {
+    device_request: Option<&'a crate::managed_devices::DeviceRequestEvidence>,
     certificate: Option<&'a asterius_oidc::mtls::ClientCertificate>,
     headers: &'a axum::http::HeaderMap,
     body: &'a axum::body::Bytes,
@@ -4187,6 +4200,7 @@ async fn dispatch_grants(
     };
     let agent_policy = agent_policy(endpoints, &acr_policy, &tenant.id, now);
     let authorization_code = AuthorizationCode {
+            device_request: request.device_request.map(|request|crate::managed_devices::DeviceIssuanceContext {store:&endpoints.store,request}),
         agent_policy: agent_policy.clone(),
         ipsie_identity_only_clients: endpoints
             .ipsie_identity_only_clients
