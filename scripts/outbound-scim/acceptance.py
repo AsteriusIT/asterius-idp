@@ -151,7 +151,25 @@ algorithm = "ES256"
                 'tls_key': str(owned['root'] / 'key.pem'), 'tls_certificate': str(owned['root'] / 'cert.pem'),
                 'fault_file': str(owned['root'] / 'fault.json'), 'relay_evidence': str(owned['root'] / 'relay.jsonl'),
                 'cookie_file': str(owned['root'] / 'verified-session.json'), 'operator_key': str(owned['root'] / 'operator.der')}))
-            result = command(['node', str(Path(__file__).with_name('acceptance.mjs')), str(payload)], timeout=300)
+            try:
+                result = command(['node', str(Path(__file__).with_name('acceptance.mjs')), str(payload)], timeout=300)
+            except RuntimeError:
+                if os.environ.get('ASTERIUS_OUTBOUND_DIAGNOSTIC_HOLD') == '1':
+                    # Explicit controlled diagnosis only; no private values enter stdout.
+                    metadata = Path('/tmp/asterius-outbound-diagnostic-owner.json')
+                    metadata.write_text(json.dumps({'root': str(owned['root']), 'source_container': source,
+                        'target_container': target, 'source_database': source_db, 'target_database': target_db,
+                        'db_container': DB_CONTAINER, 'binary_sha256': owned['binary_sha256']}))
+                    metadata.chmod(0o600)
+                    print('OWNED_DIAGNOSTIC_HOLD_READY', flush=True)
+                    release = owned['root'] / 'diagnostic-release'
+                    deadline = time.monotonic() + 600
+                    try:
+                        while not release.exists() and time.monotonic() < deadline:
+                            time.sleep(0.2)
+                    finally:
+                        metadata.unlink(missing_ok=True)
+                raise
             evidence = json.loads(result)
             evidence.update({'binary_sha256': owned['binary_sha256'], 'certificate_sha256': owned['certificate_sha256'],
                              'owned_namespace_only': True, 'internet_reachability_claimed': False,

@@ -58,3 +58,11 @@ pending/failed outbound jobs' retry time to make backoff scenarios bounded.
 namespace preflight are preparation evidence, not proof that these lifecycle
 cases passed. Record actual executed controls and exact binary/certificate
 hashes after the composed candidate runtime is available.
+
+For an explicitly requested diagnosis only, `ASTERIUS_OUTBOUND_DIAGNOSTIC_HOLD=1`
+retains the failing owned fixture for at most ten minutes. Its container/database
+locators are written to owner-only `/tmp/asterius-outbound-diagnostic-owner.json`;
+no credential values are printed. Inspect only those disposable resources and
+create `diagnostic-release` in the recorded owned root to resume cleanup. The
+metadata file is removed before the normal container/database cleanup proceeds.
+The default runner never holds failed fixtures.
