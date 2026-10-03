@@ -8,13 +8,18 @@ repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 : "${ASTERIUS_ACCEPTANCE_DB_CONTAINER:?Set the disposable PostgreSQL container name}"
 port=${ASTERIUS_ACCEPTANCE_PORT:-9451}
 db_port=${ASTERIUS_ACCEPTANCE_DB_PORT:-5433}
- : "${ASTERIUS_ENTRA_ACCEPTANCE:?Explicit cloud authorization flag required}"
-: "${ASTERIUS_ENTRA_TENANT:?Pin the authorized Azure tenant}"
-: "${ASTERIUS_ENTRA_MANIFEST:?Recovery manifest outside temporary fixture directory}"
-: "${ASTERIUS_CLOUDFLARED:?Path to verified official cloudflared binary}"
-for command in docker openssl python3 curl az "$ASTERIUS_CLOUDFLARED"; do
+for command in docker openssl python3 curl; do
   command -v "$command" >/dev/null || { printf 'Missing fixture dependency: %s\n' "$command" >&2; exit 1; }
 done
+if [ "${ASTERIUS_SCIM_CONTROL_ONLY:-0}" != 1 ]; then
+  : "${ASTERIUS_ENTRA_ACCEPTANCE:?Explicit cloud authorization flag required}"
+  : "${ASTERIUS_ENTRA_TENANT:?Pin the authorized Azure tenant}"
+  : "${ASTERIUS_ENTRA_MANIFEST:?Recovery manifest outside temporary fixture directory}"
+  : "${ASTERIUS_CLOUDFLARED:?Path to verified official cloudflared binary}"
+  for command in az "$ASTERIUS_CLOUDFLARED"; do
+    command -v "$command" >/dev/null || { printf 'Missing fixture dependency: %s\n' "$command" >&2; exit 1; }
+  done
+fi
 python3 -c 'import cryptography' >/dev/null
 run_dir=$(mktemp -d /tmp/asterius-scim-acceptance.XXXXXXXX)
 db_name="ast_scim_$(python3 -c 'import uuid; print(uuid.uuid4().hex)')"
@@ -99,7 +104,11 @@ export ASTERIUS_SCIM_SIGNING_KEY_ID=scim-controller-1
 export ASTERIUS_SCIM_CA_FILE="$run_dir/ca.pem"
 export ASTERIUS_SCIM_LOCK_COMMAND="$run_dir/lock-user"
 python3 "$repo_root/scripts/scim/control_lifecycle.py" > "$run_dir/control.json"
-python3 "$repo_root/scripts/scim/entra_acceptance.py" > "$run_dir/native.json"
+if [ "${ASTERIUS_SCIM_CONTROL_ONLY:-0}" = 1 ]; then
+  printf '%s\n' '{"native_validation":"not executed in SCIM control-only mode"}' > "$run_dir/native.json"
+else
+  python3 "$repo_root/scripts/scim/entra_acceptance.py" > "$run_dir/native.json"
+fi
 python3 - "$run_dir" <<'PYEVIDENCE'
 import json, pathlib, sys
 root=pathlib.Path(sys.argv[1])
