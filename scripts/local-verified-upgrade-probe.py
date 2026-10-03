@@ -7,16 +7,18 @@ output stay in a private backup directory; stdout contains only public evidence.
 """
 import argparse,atexit,subprocess,json,base64,hashlib,os,time,urllib.request,urllib.parse,uuid,re
 parser=argparse.ArgumentParser(description="Back up and probe a validated local image; never roll out automatically")
+parser.add_argument("--task", default="ast-hb5b")
 parser.add_argument("--binary", required=True)
 parser.add_argument("--sha256", required=True)
 parser.add_argument("--source-commit", required=True)
 parser.add_argument("--expected-migrations", type=int, default=110)
 options=parser.parse_args()
+assert re.fullmatch(r"ast-[a-z0-9]+", options.task)
 assert re.fullmatch(r"[0-9a-f]{64}", options.sha256)
 assert re.fullmatch(r"[0-9a-f]{8,40}", options.source_commit)
 from pathlib import Path
 os.umask(0o077)
-private=Path.home()/('.local/share/asterius/backups/ast-hb5b-'+time.strftime('%Y%m%dT%H%M%SZ',time.gmtime())+'-'+uuid.uuid4().hex[:8])
+private=Path.home()/('.local/share/asterius/backups/'+options.task+'-'+time.strftime('%Y%m%dT%H%M%SZ',time.gmtime())+'-'+uuid.uuid4().hex[:8])
 private.mkdir(parents=True,exist_ok=True,mode=0o700)
 def seal_backup():
  for saved in private.rglob('*'):
@@ -38,7 +40,7 @@ for fmt,name in [('custom','asterius.dump'),('plain','asterius.sql')]:
 q="select 'users',count(*),md5(coalesce(string_agg(to_jsonb(t)::text,',' order by to_jsonb(t)::text),'')) from users t union all select 'credentials',count(*),md5(coalesce(string_agg(to_jsonb(t)::text,',' order by to_jsonb(t)::text),'')) from credentials t union all select 'totp_credentials',count(*),md5(coalesce(string_agg(to_jsonb(t)::text,',' order by to_jsonb(t)::text),'')) from totp_credentials t"
 baseline=run(pg+['psql','-U','postgres','-d','asterius','-Atc',q])
 (private/'identity-baseline.txt').write_bytes(baseline)
-image='asterius-idp:local-ast-hb5b-'+options.sha256[:12]
+image='asterius-idp:local-'+options.task+'-'+options.sha256[:12]
 staging=private/'image'
 staging.mkdir(exist_ok=True)
 bin=Path(options.binary).read_bytes()
@@ -57,8 +59,8 @@ for field in ['kek','admin-password']:
 config=cm['data']['asterius.toml'].replace('0.0.0.0:9443','127.0.0.1:9474')
 (private/'probe.toml').write_text(config)
 (private/'probe.toml').chmod(0o444)
-db='ast_hb5b_restore_'+uuid.uuid4().hex[:12]
-container='asterius-hb5b-restore-'+db.rsplit('_',1)[-1]
+db=options.task.replace('-','_')+'_restore_'+uuid.uuid4().hex[:12]
+container='asterius-'+options.task+'-restore-'+db.rsplit('_',1)[-1]
 local=['docker','exec','asterius-idp-ast-dd1y71-db-1']
 run(local+['createdb','-U','asterius',db])
 try:
@@ -96,7 +98,7 @@ try:
     location=response.headers['Location']
     resolved=urllib.parse.urljoin('https://desktop-cpbptqn-1.tailacbb15.ts.net/t/'+tenant+'/'+suffix,location)
     assert resolved.startswith('https://desktop-cpbptqn-1.tailacbb15.ts.net/t/'+tenant+'/'), 'Noncanonical protected redirect'
- evidence={'task':'ast-hb5b','source_commit':options.source_commit,'binary_sha256':hashlib.sha256(bin).hexdigest(),'image':image,'image_id':imageid,'isolated_restore':'pass','restricted_image_readiness':'pass','isolated_canonical_discovery':'pass','isolated_protected_entrypoint_redirects':'pass','exact_account_credential_totp_equality':True,'successful_migrations':int(migrations),'new_migrations':[163,165],'private_backup':'~/.local/share/asterius/backups/'+private.name,'private_backup_mode':'0700/0600'}
+ evidence={'task':options.task,'source_commit':options.source_commit,'binary_sha256':hashlib.sha256(bin).hexdigest(),'image':image,'image_id':imageid,'isolated_restore':'pass','restricted_image_readiness':'pass','isolated_canonical_discovery':'pass','isolated_protected_entrypoint_redirects':'pass','exact_account_credential_totp_equality':True,'successful_migrations':int(migrations),'required_migrations':[163,165],'private_backup':'~/.local/share/asterius/backups/'+private.name,'private_backup_mode':'0700/0600'}
  (private/'probe-evidence.json').write_text(json.dumps(evidence,indent=2)+'\n')
  print(json.dumps(evidence))
 finally:
