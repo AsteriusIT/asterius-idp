@@ -533,7 +533,7 @@ fn build_request(
     target: &Target,
     request: PostRequest<'_>,
     body: &[u8],
-    method: hyper::Method,
+    method: &hyper::Method,
 ) -> Result<hyper::Request<Full<Bytes>>, PostError> {
     let mut builder = hyper::Request::builder()
         .method(method.clone())
@@ -543,7 +543,7 @@ fn build_request(
         // One request per connection, as in `super::jwks`: nothing here reuses
         // it, and saying so lets the receiver close rather than hold a socket.
         .header(hyper::header::CONNECTION, "close");
-    if method == hyper::Method::POST || method == hyper::Method::PUT {
+    if *method == hyper::Method::POST || *method == hyper::Method::PUT {
         builder = builder.header(CONTENT_TYPE, request.content_type);
     }
     if let Some(accept) = request.accept {
@@ -611,7 +611,7 @@ async fn exchange(
         let _ = connection.await;
     });
 
-    let request = build_request(target, request, body, method)?;
+    let request = build_request(target, request, body, &method)?;
 
     let response = sender.send_request(request).await.map_err(|_| failed())?;
     let status = response.status();

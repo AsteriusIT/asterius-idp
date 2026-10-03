@@ -192,7 +192,10 @@ async fn grant_issuance_fence_waiter_rechecks_database_clock_and_ancestry() {
     assert!(repository.create(&cyclic).await.is_err());
     let mut current = f.grant.clone();
     current.id = asterius_domain::GrantId::new(Uuid::new_v4().to_string());
-    repository.create(&current).await.expect("healthy separate authority");
+    repository
+        .create(&current)
+        .await
+        .expect("healthy separate authority");
     // A caller cannot reinterpret this stored root as a different lineage.
     current.parent = Some(current.id.clone());
     let mut signing = PgPolicies::new(f.pool.clone())
@@ -202,7 +205,11 @@ async fn grant_issuance_fence_waiter_rechecks_database_clock_and_ancestry() {
     assert!(
         tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            PgGrantRepository::lock_issuance_authority_on(signing.connection(), &f.tenant, &current)
+            PgGrantRepository::lock_issuance_authority_on(
+                signing.connection(),
+                &f.tenant,
+                &current
+            )
         )
         .await
         .expect("bounded changed-parent refusal")
