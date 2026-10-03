@@ -400,6 +400,9 @@ impl EventType {
     /// put every attribute name a tenant reasons about into the one table this
     /// deployment keeps forever.
     pub const POLICY_UPDATED: Self = Self("policy.updated");
+    /// An administrator inspected resolved subject facts in a simulation.
+    /// No access was granted and no hypothetical input value is retained.
+    pub const POLICY_SIMULATED: Self = Self("policy.simulated");
     /// A policy enforcement point asked for a decision (`ast-pj0.1`).
     ///
     /// One type for permit and for deny, told apart by [`Outcome`], because
@@ -597,7 +600,7 @@ impl EventType {
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 97] = [
+    pub const ALL: [Self; 98] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -660,6 +663,7 @@ impl EventType {
         Self::APP_ROLE_ASSIGNED,
         Self::APP_ROLE_WITHDRAWN,
         Self::POLICY_UPDATED,
+        Self::POLICY_SIMULATED,
         Self::ACCESS_EVALUATED,
         Self::ACCESS_SEARCHED,
         Self::AUDIT_PURGED,

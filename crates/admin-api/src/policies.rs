@@ -32,6 +32,157 @@ use time::format_description::well_known::Rfc3339;
 
 use crate::error::AdminError;
 
+/// A simulation references real tenant-owned accounts, clients and resources.
+/// Only the context properties and draft policy may be hypothetical.
+#[derive(Debug, Clone)]
+pub struct Simulation {
+    pub user: asterius_domain::UserId,
+    pub client: asterius_domain::ClientId,
+    pub resource: String,
+    pub action: asterius_domain::policy::Action,
+    pub resource_type: String,
+    pub expected_revision: Option<String>,
+    pub policy: Option<RuleSet>,
+    pub context: asterius_domain::policy::Context,
+    pub context_supplied: bool,
+}
+
+/// A stale snapshot is a conflict, rather than a simulation over new rules.
+#[derive(Debug, Clone)]
+pub enum SimulationOutcome {
+    Stale,
+    Decided {
+        decision: Box<Decision>,
+        current_revision: Option<String>,
+    },
+}
+
+/// Sensitive subject inspection requires every referenced catalogue's scope.
+pub(crate) fn authorize_simulation(
+    held: &crate::rbac::Held,
+    tenant: &asterius_domain::TenantId,
+) -> Result<(), AdminError> {
+    let scopes = [
+        "admin.policies:read",
+        "admin.users:read",
+        "admin.clients:read",
+        "admin.resource_servers:read",
+    ];
+    if scopes.iter().all(|scope| {
+        held.satisfies(
+            crate::rbac::Authority::new(crate::rbac::Reach::Tenant, scope),
+            tenant,
+        )
+    }) {
+        Ok(())
+    } else {
+        Err(AdminError::Forbidden)
+    }
+}
+
+/// Parse the bounded administrative simulation dialect.
+///
+/// # Errors
+/// Returns a non-value-bearing validation refusal for malformed input.
+// fuzz-target: admin_policy_simulation
+pub fn parse_simulation(body: &[u8]) -> Result<Simulation, AdminError> {
+    use asterius_domain::policy::{Action, Context, Properties, Resource};
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Body {
+        user_id: uuid::Uuid,
+        client_id: String,
+        resource_id: String,
+        resource_type: String,
+        action: String,
+        expected_policy_revision: Option<String>,
+        hypothetical_policy: Option<Value>,
+        hypothetical_context: Option<Value>,
+    }
+    let invalid = || AdminError::Invalid("invalid policy simulation request".to_owned());
+    if body.len() > MAX_BODY_BYTES * 2 {
+        return Err(invalid());
+    }
+    let raw: Value = serde_json::from_slice(body).map_err(|_| invalid())?;
+    if !raw
+        .as_object()
+        .is_some_and(|o| o.contains_key("expected_policy_revision"))
+    {
+        return Err(invalid());
+    }
+    let parsed: Body = serde_json::from_value(raw).map_err(|_| invalid())?;
+    if parsed.client_id.is_empty()
+        || parsed.client_id.len() > 256
+        || parsed.client_id.chars().any(char::is_control)
+    {
+        return Err(invalid());
+    }
+    if let Some(revision) = &parsed.expected_policy_revision
+        && !(revision.len() == 71
+            && revision.starts_with("sha256:")
+            && revision[7..]
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()))
+    {
+        return Err(invalid());
+    }
+    let resource = Resource::new(
+        &parsed.resource_type,
+        &parsed.resource_id,
+        Properties::empty(),
+    )
+    .map_err(|_| invalid())?;
+    let action = Action::new(&parsed.action, Properties::empty()).map_err(|_| invalid())?;
+    let context_supplied = parsed.hypothetical_context.is_some();
+    let context = match parsed.hypothetical_context {
+        Some(value) => {
+            let object = value.as_object().ok_or_else(invalid)?;
+            Context::new(
+                Properties::new(object.iter().map(|(k, v)| (k.clone(), v.clone())))
+                    .map_err(|_| invalid())?,
+            )
+        }
+        None => Context::default(),
+    };
+    let policy = parsed
+        .hypothetical_policy
+        .map(|value| RuleSet::parse(&value.to_string()).map_err(|_| invalid()))
+        .transpose()?;
+    Ok(Simulation {
+        user: asterius_domain::UserId::new(parsed.user_id),
+        client: asterius_domain::ClientId::new(parsed.client_id),
+        resource: resource.id().to_owned(),
+        resource_type: resource.kind().to_owned(),
+        action,
+        expected_revision: parsed.expected_policy_revision,
+        policy,
+        context,
+        context_supplied,
+    })
+}
+
+/// A visibly synthetic answer, separate from public and historical decisions.
+#[must_use]
+pub fn simulation_response(
+    simulation: &Simulation,
+    decision: &Decision,
+    revision: Option<&str>,
+) -> Value {
+    let mut response = trial_response(decision);
+    response["simulation"] = json!({
+        "enforced": false,
+        "current_policy_revision": revision,
+        "provenance": {
+            "subject": "tenant_user_and_client",
+            "resource": "tenant_resource_registry",
+            "groups_roles_grants_acr": "server_resolved",
+            "policy": if simulation.policy.is_some() {"hypothetical"} else {"stored"},
+            "context_properties": if simulation.context_supplied {"hypothetical"} else {"absent"}
+        }
+    });
+    response
+}
+
 /// The largest policy document this API reads, before the shared body limit.
 ///
 /// The same bound the parser applies to a stored row
@@ -66,6 +217,7 @@ pub fn parse_document(body: &[u8]) -> Result<RuleSet, AdminError> {
 pub fn document(policy: Option<&StoredPolicy>) -> Value {
     match policy {
         Some(policy) => json!({
+            "revision": asterius_domain::policy::explanation::revision(&policy.rules),
             "document": policy.rules.to_json(),
             "rule_count": policy.rules.rules().len(),
             "updated_at": policy
@@ -77,6 +229,7 @@ pub fn document(policy: Option<&StoredPolicy>) -> Value {
         // rather than `null`, so that the editor opens on something valid and
         // a `PUT` of what was fetched is a no-op rather than a 400.
         None => json!({
+            "revision": Value::Null,
             "document": RuleSet::deny_all().to_json(),
             "rule_count": 0,
             "updated_at": Value::Null,
@@ -129,6 +282,81 @@ pub fn trial_response(decision: &Decision) -> Value {
 mod tests {
     use super::*;
     use time::OffsetDateTime;
+
+    #[test]
+    fn simulation_authority_requires_every_scope_and_tenant_match() {
+        let tenant = asterius_domain::TenantId::new("acme");
+        let scopes = [
+            "admin.policies:read",
+            "admin.users:read",
+            "admin.clients:read",
+            "admin.resource_servers:read",
+        ];
+        for omitted in 0..scopes.len() {
+            let held = crate::rbac::Held::Scopes {
+                tenant: Some(tenant.clone()),
+                scopes: scopes
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| *index != omitted)
+                    .map(|(_, scope)| (*scope).to_owned())
+                    .collect(),
+            };
+            assert!(authorize_simulation(&held, &tenant).is_err());
+        }
+        let held = crate::rbac::Held::Scopes {
+            tenant: Some(tenant.clone()),
+            scopes: scopes.iter().map(|scope| (*scope).to_owned()).collect(),
+        };
+        assert!(authorize_simulation(&held, &tenant).is_ok());
+        assert!(authorize_simulation(&held, &asterius_domain::TenantId::new("other")).is_err());
+    }
+
+    fn simulation_body() -> Value {
+        json!({"user_id": "00000000-0000-0000-0000-000000000001", "client_id": "app", "resource_id": "https://api.example", "resource_type": "api", "action": "read", "expected_policy_revision": null})
+    }
+
+    #[test]
+    fn simulation_requires_a_snapshot_and_closed_trusted_fact_boundary() {
+        let valid = simulation_body();
+        assert!(parse_simulation(&serde_json::to_vec(&valid).expect("fixture")).is_ok());
+        for field in ["groups", "roles", "grants", "acr", "tenant_id", "subject"] {
+            let mut invalid = valid.clone();
+            invalid[field] = json!(["forged"]);
+            assert!(
+                parse_simulation(&serde_json::to_vec(&invalid).expect("fixture")).is_err(),
+                "{field}"
+            );
+        }
+        let mut missing = valid;
+        missing
+            .as_object_mut()
+            .expect("object")
+            .remove("expected_policy_revision");
+        assert!(parse_simulation(&serde_json::to_vec(&missing).expect("fixture")).is_err());
+    }
+
+    #[test]
+    fn simulation_bounds_inputs_and_accepts_only_canonical_revisions() {
+        for revision in ["sha256:no", "SHA256:0000", "private-value"] {
+            let mut body = simulation_body();
+            body["expected_policy_revision"] = json!(revision);
+            let error = parse_simulation(&serde_json::to_vec(&body).expect("fixture"))
+                .expect_err("invalid revision");
+            assert!(!error.to_string().contains(revision));
+        }
+        let mut body = simulation_body();
+        body["expected_policy_revision"] = json!(format!("sha256:{}", "0".repeat(64)));
+        body["hypothetical_context"] = json!({"network": "trusted"});
+        body["hypothetical_policy"] =
+            json!({"version": 1, "rules": [{"id": "hypothesis", "effect": "permit"}]});
+        let parsed =
+            parse_simulation(&serde_json::to_vec(&body).expect("fixture")).expect("bounded draft");
+        assert!(parsed.context_supplied && parsed.policy.is_some());
+        body["hypothetical_context"] = json!(["not-an-object"]);
+        assert!(parse_simulation(&serde_json::to_vec(&body).expect("fixture")).is_err());
+        assert!(parse_simulation(&vec![b' '; MAX_BODY_BYTES * 2 + 1]).is_err());
+    }
 
     #[test]
     fn a_valid_document_is_accepted() {

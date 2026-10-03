@@ -416,6 +416,7 @@ async fn route_standard(
         crate::POLICY_UPDATE_ID => context.update_policy(body).await,
         crate::POLICY_DELETE_ID => context.delete_policy().await,
         crate::POLICY_TRY_ID => context.try_policy(body).await,
+        crate::POLICY_SIMULATE_ID => context.simulate_policy(body).await,
         crate::SSF_STREAMS_LIST_ID => context.list_streams().await,
         crate::SSF_STREAM_STATUS_UPDATE_ID => context.update_stream_status(body).await,
         crate::SSF_STREAM_VERIFY_ID => context.verify_stream(body).await,
@@ -3073,6 +3074,56 @@ impl Handling<'_> {
             StatusCode::OK,
             &policies::trial_response(&decision),
         ))
+    }
+
+    async fn simulate_policy(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        policies::authorize_simulation(self.principal.held(), &self.tenant.id)?;
+        let body = axum::body::to_bytes(body, policies::MAX_BODY_BYTES * 2)
+            .await
+            .map_err(|_| AdminError::Invalid("the simulation body is too large".into()))?;
+        let simulation = policies::parse_simulation(&body)?;
+        // Record inspection intent before resolving private subject facts.
+        // Unlike a mutation, no irreversible act has occurred: if the trail
+        // cannot accept the record, return an outage and disclose no facts.
+        let event = AuditEvent::new(
+            self.tenant.id.clone(),
+            EventType::POLICY_SIMULATED,
+            Outcome::Success,
+            Actor::Admin(self.principal.audit_actor()),
+            self.now,
+        )
+        .subject(simulation.user.to_string())
+        .client(simulation.client.clone())
+        .detail(
+            Detail::new()
+                .label("operation", crate::POLICY_SIMULATE_ID)
+                .label("phase", "inspection_requested"),
+        );
+        self.state
+            .backend
+            .audit()
+            .record(event)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::POLICY_SIMULATE_ID, &error))?;
+        match self
+            .state
+            .backend
+            .policy_trial()
+            .simulate(&self.tenant.id, &simulation)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::POLICY_SIMULATE_ID, &error))?
+        {
+            policies::SimulationOutcome::Stale => Err(AdminError::Conflict(
+                "the policy revision changed; refresh before simulating".into(),
+            )),
+            policies::SimulationOutcome::Decided {
+                decision,
+                current_revision,
+            } => Ok(json_no_store(
+                StatusCode::OK,
+                &policies::simulation_response(&simulation, &decision, current_revision.as_deref()),
+            )),
+        }
     }
 
     /// The `{stream_id}` in this request's path: the segment after
@@ -8100,6 +8151,7 @@ mod tests {
         /// (`ast-895`).
         passkeys: Mutex<std::collections::BTreeSet<String>>,
         events: Mutex<Vec<AuditEvent>>,
+        audit_fail: Mutex<bool>,
         counters: Mutex<BTreeMap<String, u32>>,
         claimed: Mutex<std::collections::BTreeSet<String>>,
         invalidations: Mutex<usize>,
@@ -8681,6 +8733,93 @@ mod tests {
     /// body can neither state that nor take it away.
     #[async_trait::async_trait]
     impl crate::backend::PolicyTrial for Handle {
+        async fn simulate(
+            &self,
+            tenant: &TenantId,
+            simulation: &policies::Simulation,
+        ) -> Result<policies::SimulationOutcome, DomainError> {
+            use asterius_domain::policy::{EvaluationRequest, Properties, Resource, Subject};
+            let current = asterius_domain::ports::PolicyStore::load(self, tenant).await?;
+            let revision = current
+                .as_ref()
+                .map(|policy| asterius_domain::policy::explanation::revision(&policy.rules));
+            if revision != simulation.expected_revision {
+                return Ok(policies::SimulationOutcome::Stale);
+            }
+            let exists = self
+                .0
+                .accounts
+                .lock()
+                .expect("fixture lock")
+                .iter()
+                .any(|user| &user.tenant == tenant && user.id == simulation.user);
+            let client_exists = self
+                .0
+                .clients
+                .lock()
+                .expect("fixture lock")
+                .iter()
+                .any(|client| &client.tenant == tenant && client.id == simulation.client);
+            let resource_exists = self
+                .0
+                .resource_servers
+                .lock()
+                .expect("fixture lock")
+                .iter()
+                .any(|(owner, resource)| {
+                    owner == tenant && resource.identifier.as_str() == simulation.resource
+                });
+            if !(exists && client_exists && resource_exists) {
+                return Err(DomainError::NotFound);
+            }
+            self.0
+                .trials
+                .lock()
+                .expect("fixture lock")
+                .push(simulation.user.to_string());
+            let groups = self
+                .0
+                .group_memberships
+                .lock()
+                .expect("fixture lock")
+                .iter()
+                .filter(|(owner, _, user)| owner == tenant && user == &simulation.user)
+                .map(|_| "engineering".to_owned())
+                .collect::<Vec<_>>();
+            let subject = Subject::new("user", "resolved-subject", Properties::empty())
+                .expect("fixture subject")
+                .with_groups(groups);
+            let request = EvaluationRequest::new(
+                subject,
+                simulation.action.clone(),
+                Resource::new(
+                    &simulation.resource_type,
+                    &simulation.resource,
+                    Properties::empty(),
+                )
+                .expect("validated reference"),
+                simulation.context.clone(),
+            );
+            let snapshot = simulation
+                .policy
+                .as_ref()
+                .map(|rules| asterius_domain::policy::StoredPolicy {
+                    rules: rules.clone(),
+                    updated_at: current
+                        .as_ref()
+                        .map_or(OffsetDateTime::UNIX_EPOCH, |policy| policy.updated_at),
+                })
+                .or(current);
+            Ok(policies::SimulationOutcome::Decided {
+                decision: Box::new(asterius_domain::policy::explanation::evaluate(
+                    snapshot.as_ref(),
+                    &request,
+                    "admin_policy_simulation",
+                )),
+                current_revision: revision,
+            })
+        }
+
         async fn decide(
             &self,
             tenant: &TenantId,
@@ -8989,6 +9128,11 @@ mod tests {
     #[async_trait::async_trait]
     impl AuditSink for Handle {
         async fn record(&self, event: AuditEvent) -> Result<(), DomainError> {
+            if *self.0.audit_fail.lock().expect("fixture lock") {
+                return Err(DomainError::Storage(Box::new(std::io::Error::other(
+                    "audit unavailable",
+                ))));
+            }
             self.0
                 .events
                 .lock()
@@ -11690,6 +11834,7 @@ mod tests {
             // One Authorization API §6.1 request: the bench refuses a body
             // that does not name a subject, an action and a resource, so the
             // table walk has to send one that does (`ast-f7m.9`).
+            crate::POLICY_SIMULATE_ID => simulation_request(),
             crate::POLICY_TRY_ID => serde_json::json!({
                 "subject": {"type": "user", "id": "walked"},
                 "action": {"name": "read"},
@@ -12483,6 +12628,135 @@ mod tests {
 
         // Assert
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    fn simulation_request() -> serde_json::Value {
+        serde_json::json!({"user_id": seeded_user_id().as_uuid(), "client_id": SEEDED_CLIENT_ID,
+            "resource_id": SEEDED_RESOURCE, "resource_type": "api", "action": "read", "expected_policy_revision": null})
+    }
+
+    #[tokio::test]
+    async fn simulation_is_hypothetical_audited_and_never_saves_its_draft() {
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+        let mut body = simulation_request();
+        body["hypothetical_policy"] = serde_json::json!({"version": 1, "rules": [{"id": "draft", "effect": "permit", "when": {"group": "engineering"}}]});
+        let response = edit_policy(&world, &crate::POLICY_SIMULATE, &cookie, body).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        let result = body_of(response).await;
+        assert_eq!(result["decision"], true);
+        assert_eq!(result["simulation"]["enforced"], false);
+        assert_eq!(result["simulation"]["provenance"]["policy"], "hypothetical");
+        assert!(
+            world
+                .handle
+                .0
+                .policies
+                .lock()
+                .expect("fixture lock")
+                .is_empty()
+        );
+        let events = world.handle.0.events.lock().expect("fixture lock");
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_type == EventType::POLICY_SIMULATED)
+        );
+    }
+
+    #[tokio::test]
+    async fn simulation_does_not_resolve_facts_when_inspection_audit_fails() {
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+        *world.handle.0.audit_fail.lock().expect("fixture lock") = true;
+        assert_eq!(
+            edit_policy(
+                &world,
+                &crate::POLICY_SIMULATE,
+                &cookie,
+                simulation_request()
+            )
+            .await
+            .status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert!(
+            world
+                .handle
+                .0
+                .trials
+                .lock()
+                .expect("fixture lock")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn simulation_refuses_stale_snapshots_and_foreign_references() {
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+        let mut stale = simulation_request();
+        stale["expected_policy_revision"] = serde_json::json!(format!("sha256:{}", "0".repeat(64)));
+        assert_eq!(
+            edit_policy(&world, &crate::POLICY_SIMULATE, &cookie, stale)
+                .await
+                .status(),
+            StatusCode::CONFLICT
+        );
+        let mut unknown = simulation_request();
+        unknown["user_id"] = serde_json::json!(UserId::generate().as_uuid());
+        assert_eq!(
+            edit_policy(&world, &crate::POLICY_SIMULATE, &cookie, unknown)
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+        assert!(
+            world
+                .handle
+                .0
+                .trials
+                .lock()
+                .expect("fixture lock")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn simulation_requires_all_reference_read_scopes_before_inspection() {
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::UserSupport]);
+        assert_eq!(
+            edit_policy(
+                &world,
+                &crate::POLICY_SIMULATE,
+                &cookie,
+                simulation_request()
+            )
+            .await
+            .status(),
+            StatusCode::FORBIDDEN
+        );
+        assert!(
+            world
+                .handle
+                .0
+                .trials
+                .lock()
+                .expect("fixture lock")
+                .is_empty()
+        );
+        assert!(
+            !world
+                .handle
+                .0
+                .events
+                .lock()
+                .expect("fixture lock")
+                .iter()
+                .any(|event| event.event_type == EventType::POLICY_SIMULATED)
+        );
     }
 
     // ---- the dead-letter screen (`ast-0ju.9`) -----------------------------

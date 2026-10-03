@@ -13,6 +13,30 @@ use super::{Condition, EvaluationRequest, StoredPolicy};
 /// Across all rules, not per rule. Truncation never changes the decision.
 pub const MAX_TRACE_NODES: usize = 256;
 
+/// The canonical content revision, independent of wall-clock precision.
+#[must_use]
+pub fn revision(rules: &super::RuleSet) -> String {
+    format!(
+        "sha256:{}",
+        hex::encode(Sha256::digest(rules.to_json().to_string().as_bytes()))
+    )
+}
+
+/// Evaluate a snapshot only for an already-authorized administrative caller.
+/// This produces diagnostics, never an access credential or persisted grant.
+#[must_use]
+pub fn evaluate(
+    policy: Option<&StoredPolicy>,
+    request: &EvaluationRequest,
+    enforcement_point: &'static str,
+) -> super::Decision {
+    let decision = policy.map_or_else(
+        || super::Decision::default_deny("this tenant has no policy document"),
+        |stored| stored.rules.evaluate(request),
+    );
+    decision.with_explanation(explain(policy, request, enforcement_point))
+}
+
 /// Identifies the exact document used, including a default-deny absence.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DecisionExplanation {
@@ -62,12 +86,7 @@ pub fn explain(
     };
     // RuleSet serialization uses canonical ordered maps and document order;
     // unlike timestamps, the digest identifies the actual evaluated content.
-    explanation.policy_revision = Some(format!(
-        "sha256:{}",
-        hex::encode(Sha256::digest(
-            policy.rules.to_json().to_string().as_bytes()
-        ))
-    ));
+    explanation.policy_revision = Some(revision(&policy.rules));
     explanation.policy_updated_at = Some(policy.updated_at.unix_timestamp_nanos().to_string());
     let mut remaining = MAX_TRACE_NODES;
     for rule in policy.rules.rules() {

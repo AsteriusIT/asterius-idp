@@ -95,6 +95,17 @@ use crate::clients::RegistrationGate;
 /// is an audited edit.
 #[async_trait::async_trait]
 pub trait PolicyTrial: std::fmt::Debug + Send + Sync {
+    /// Evaluate explicitly hypothetical inputs without issuing any authority.
+    /// Unsupported adapters fail closed; the deployment adapter checks actual
+    /// tenant references and the expected policy revision.
+    async fn simulate(
+        &self,
+        _tenant: &TenantId,
+        _simulation: &crate::policies::Simulation,
+    ) -> Result<crate::policies::SimulationOutcome, DomainError> {
+        Err(DomainError::NotFound)
+    }
+
     /// The decision this tenant's policy takes on `request`.
     ///
     /// # Errors

@@ -2330,3 +2330,21 @@ traversal is bounded by the existing 64 nodes/rule and depth 8. Responses use
 trail. The `admin_policy_trial` enforcement-point marker identifies a simulation
 that made no access change; it does not claim correlation with a prior live
 login or enforcement event.
+
+### Controlled policy simulation
+
+Simulation requires policy, user, application and resource catalogue read
+authority in the routed tenant. Real references are checked before facts are
+resolved, and extra caller-supplied trusted-fact fields are rejected. Only
+context properties and a bounded policy document may be hypothetical.
+A stale policy revision yields a conflict before subject inspection. The
+response identifies input provenance and explicitly marks the result as
+nonenforcing; the public authorization endpoint accepts its existing dialect.
+
+An inspection-intent audit write must succeed before subject lookup. It records
+account/client references without policy literals, context or results; it is
+not an enforcement event. Audit outages return an unavailable response and no
+facts. The read-only pairwise derivation cannot reserve identifiers or create
+grants. Policy uses one snapshot, while authorization facts remain separate
+repository reads and may change during the inspection. This diagnostic result
+must never substitute for a live enforcement decision.

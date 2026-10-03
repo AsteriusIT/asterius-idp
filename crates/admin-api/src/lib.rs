@@ -1695,6 +1695,7 @@ pub const POLICY_UPDATE_ID: &str = "policies.update";
 pub const POLICY_DELETE_ID: &str = "policies.delete";
 /// The `operationId` of [`POLICY_TRY`].
 pub const POLICY_TRY_ID: &str = "policies.try";
+pub const POLICY_SIMULATE_ID: &str = "policies.simulate";
 
 /// The tenant's shared role catalogue (`ast-095`).
 ///
@@ -1996,7 +1997,7 @@ pub const SCIM_BULK: Operation = Operation::mutation(
     "SCIM Bulk is unsupported by this service",
 );
 
-static REGISTRY: [Operation; 154] = [
+static REGISTRY: [Operation; 155] = [
     SESSION_READ,
     SESSION_END,
     OVERVIEW_USERS,
@@ -2151,6 +2152,7 @@ static REGISTRY: [Operation; 154] = [
     POLICY_UPDATE,
     POLICY_DELETE,
     POLICY_TRY,
+    POLICY_SIMULATE,
 ];
 
 /// The tenant's authorization policy, as the PDP evaluates it (`ast-pj0.4`).
@@ -2259,6 +2261,16 @@ pub const POLICY_TRY: Operation = Operation::probe(
     M::Post,
     A::new(R::Tenant, "admin.policies:read"),
     "Decides one Authorization API evaluation against the tenant's stored policy, without enforcing it",
+);
+
+/// This additionally requires user/client/resource read scopes before looking
+/// up subject information; simulation may not become an enforcement endpoint.
+pub const POLICY_SIMULATE: Operation = Operation::probe(
+    POLICY_SIMULATE_ID,
+    "/policies/simulate",
+    M::Post,
+    A::new(R::Tenant, "admin.policies:read"),
+    "Simulates a stored or hypothetical policy over actual tenant-owned user, client and resource references; additionally requires admin.users:read, admin.clients:read and admin.resource_servers:read",
 );
 
 /// The registry.

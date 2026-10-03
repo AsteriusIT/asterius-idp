@@ -537,6 +537,7 @@ impl std::fmt::Debug for DeploymentParts {
 /// [`asterius_domain::ports::PolicyStore`].
 #[derive(Clone)]
 struct DeploymentPolicyTrial {
+    capabilities: Capabilities,
     settings: crate::tenant_settings::SettingsDirectory,
     store: Store,
     kek: Arc<dyn asterius_jose::Kek>,
@@ -551,6 +552,104 @@ impl std::fmt::Debug for DeploymentPolicyTrial {
 
 #[async_trait::async_trait]
 impl asterius_admin_api::backend::PolicyTrial for DeploymentPolicyTrial {
+    async fn simulate(
+        &self,
+        tenant: &TenantId,
+        simulation: &asterius_admin_api::policies::Simulation,
+    ) -> Result<asterius_admin_api::policies::SimulationOutcome, DomainError> {
+        use asterius_admin_api::policies::SimulationOutcome;
+        use asterius_domain::policy::explanation;
+        use asterius_domain::policy::{
+            EvaluationRequest, Properties, Resource, StoredPolicy, Subject,
+        };
+        use asterius_domain::ports::{
+            ApplicationRoleDirectory, GrantRepository, GroupDirectory, PolicyStore,
+            ResourceServerRepository,
+        };
+
+        let policies = asterius_store_pg::PgPolicies::new(self.store.pool().clone());
+        let current = policies.load(tenant).await?;
+        let current_revision = current
+            .as_ref()
+            .map(|policy| explanation::revision(&policy.rules));
+        if current_revision != simulation.expected_revision {
+            return Ok(SimulationOutcome::Stale);
+        }
+        let scope = self.store.scope(tenant.clone());
+        let users = scope.users(Arc::clone(&self.kek));
+        users
+            .find(simulation.user)
+            .await?
+            .ok_or(DomainError::NotFound)?;
+        let client = scope
+            .clients(self.capabilities)
+            .find(&simulation.client)
+            .await?
+            .ok_or(DomainError::NotFound)?;
+        if !scope
+            .resource_servers()
+            .list()
+            .await?
+            .iter()
+            .any(|resource| resource.identifier.as_str() == simulation.resource)
+        {
+            return Err(DomainError::NotFound);
+        }
+        let sector = asterius_domain::SectorIdentifier::of_client(&client)
+            .map_err(|_| DomainError::NotFound)?;
+        // This read-only derivation never reserves an identifier or creates a
+        // grant. A first-use account can therefore be simulated safely.
+        let subject = users
+            .subject_for_notification(simulation.user, &sector)
+            .await?;
+        let facts = crate::http::access_evaluation::ResolvedSubject {
+            groups: asterius_store_pg::PgGroups::new(self.store.pool().clone())
+                .authorization_references_for_user(tenant, simulation.user)
+                .await?,
+            roles: scope
+                .application_roles()
+                .held_by(tenant, simulation.user)
+                .await?,
+            grants: scope.grants().for_subject(&subject).await?,
+        };
+        let settings = self.settings.for_tenant(tenant).await?;
+        let request = EvaluationRequest::new(
+            Subject::new("user", subject.as_str(), Properties::empty())
+                .map_err(|_| DomainError::NotFound)?,
+            simulation.action.clone(),
+            Resource::new(
+                &simulation.resource_type,
+                &simulation.resource,
+                Properties::empty(),
+            )
+            .map_err(|_| DomainError::NotFound)?,
+            simulation.context.clone(),
+        );
+        let request = crate::http::access_evaluation::attach(
+            settings.acr_policy(),
+            time::OffsetDateTime::now_utc(),
+            request,
+            &facts,
+        )?;
+        let evaluated = simulation.policy.as_ref().map_or_else(
+            || current.clone(),
+            |rules| {
+                Some(StoredPolicy {
+                    rules: rules.clone(),
+                    updated_at: current
+                        .as_ref()
+                        .map_or(time::OffsetDateTime::UNIX_EPOCH, |policy| policy.updated_at),
+                })
+            },
+        );
+        let decision =
+            explanation::evaluate(evaluated.as_ref(), &request, "admin_policy_simulation");
+        Ok(SimulationOutcome::Decided {
+            decision: Box::new(decision),
+            current_revision,
+        })
+    }
+
     /// What this tenant's stored rules decide about one request.
     ///
     /// Everything that makes the answer trustworthy lives in
@@ -3455,6 +3554,7 @@ impl AdminBackend for Deployment {
     /// about the subject a relying party would be asking about.
     fn policy_trial(&self) -> Arc<dyn asterius_admin_api::backend::PolicyTrial> {
         Arc::new(DeploymentPolicyTrial {
+            capabilities: self.capabilities,
             settings: self.settings.clone(),
             store: self.store.clone(),
             kek: Arc::clone(&self.kek),
