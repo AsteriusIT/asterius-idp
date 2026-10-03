@@ -2393,3 +2393,25 @@ in the existing trusted computing base. Availability/deadlock failures roll back
 require refresh/retry; no success is synthesized. Slow live store tests, parser fuzz
 coverage and the management OpenAPI describe this boundary; this change makes no new
 protocol-conformance or cryptographic-profile claim.
+
+### Terraform and OpenTofu service boundary
+
+The standalone [provider](../providers/terraform/README.md) uses the declarative
+API authority model. Operator-controlled HTTPS issuer/target URLs and additional
+trusted CA files are explicit trust inputs; redirects and certificate-verification
+bypasses are refused. An external PKCS8 signing-key path authenticates one
+separately provisioned service client. Runtime access tokens and the distinct
+process-local DPoP key never become Terraform attributes. Dedicated kind scopes
+and deployment reach still come from token verification; HCL cannot choose owner.
+
+Public desired JSON, canonical reads, policy literals and optional file paths are
+configuration records in state/saved plans, so those records still need access
+control. Private/symmetric JWK fields, reusable credential fields, private PEM
+material and duplicate JSON keys fail before state writes; response bodies and
+transport errors are never echoed into provider diagnostics. Terraform/OpenTofu
+trace logging can print operator-supplied configuration before the provider sees
+it, so public specs are not a channel for secrets. Import/data-source reads grant
+no adoption authority. Updates/deletes bind to refreshed revisions, ownership
+conflicts fail, and protection must be disabled in a separate apply. Acceptance
+uses a dedicated disposable database and actual TLS/DPoP client-credentials
+requests; no provider installation or acceptance run deploys production state.
