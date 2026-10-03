@@ -39,6 +39,55 @@ impl PgManagedDevices {
     #[must_use]
     pub fn new(pool: PgPool, audit: Arc<dyn AuditSink>) -> Self { Self { pool, audit } }
 
+    /// Preflight only; final policy reads still use the publication fence.
+    pub async fn bind_request_in(pool: &PgPool, tenant: &TenantId, grant: &Grant,
+        certificate: &asterius_domain::managed_devices::DeviceCertificateEvidence,
+        request_digest: &str, now: OffsetDateTime,
+    ) -> Result<Option<DeviceBinding>, DomainError> {
+        let mut transaction = pool.begin().await.map_err(to_domain_error)?;
+        let active: Option<String> = sqlx::query_scalar("select tenant_id from tenants where tenant_id=$1 and status='active' for share")
+            .bind(tenant.as_str()).fetch_optional(&mut *transaction).await.map_err(to_domain_error)?;
+        if active.is_none() { return Ok(None); }
+        let binding = Self::bind_request_on(&mut transaction, tenant, grant, certificate, request_digest, now).await?;
+        transaction.commit().await.map_err(to_domain_error)?;
+        Ok(binding)
+    }
+
+    /// Build fresh possession for an exact authenticated request/grant on the
+    /// caller's publication connection. Never read a previous code/session proof.
+    pub async fn bind_request_on(connection: &mut PgConnection, tenant: &TenantId, grant: &Grant,
+        certificate: &asterius_domain::managed_devices::DeviceCertificateEvidence,
+        request_digest: &str, now: OffsetDateTime,
+    ) -> Result<Option<DeviceBinding>, DomainError> {
+        use asterius_domain::managed_devices::VerifiedDeviceEvidence;
+        let Some(user) = grant.user.filter(|_| grant.tenant == *tenant) else { return Ok(None); };
+        LeafFingerprint::parse(request_digest)?;
+        let leaf = hex::decode(certificate.leaf.as_str()).map_err(|_| DomainError::NotFound)?;
+        let device: Option<(Uuid, Uuid, i64, i64, String)> = sqlx::query_as(
+            "select d.device_id,d.source_id,d.source_generation,d.enrollment_generation,s.client_id \
+             from managed_devices d join managed_device_sources s using(tenant_id,source_id) \
+             where d.tenant_id=$1 and d.leaf_sha256=$2 and d.user_id=$3 and $4=any(d.allowed_client_ids) \
+             and d.removed_at is null and s.enabled and s.generation=d.source_generation for share of d,s"
+        ).bind(tenant.as_str()).bind(leaf).bind(user.as_uuid()).bind(grant.client.as_str())
+            .fetch_optional(&mut *connection).await.map_err(to_domain_error)?;
+        let Some((device, source, source_generation, enrollment_generation, source_client)) = device else { return Ok(None); };
+        relay_client_on(connection, tenant, &ClientId::new(source_client)).await?;
+        let current_user: Option<Uuid> = sqlx::query_scalar("select user_id from users where tenant_id=$1 and user_id=$2 and status='active' for share")
+            .bind(tenant.as_str()).bind(user.as_uuid()).fetch_optional(&mut *connection).await.map_err(to_domain_error)?;
+        let current_client: Option<String> = sqlx::query_scalar("select client_id from clients where tenant_id=$1 and client_id=$2 and status='active' for share")
+            .bind(tenant.as_str()).bind(grant.client.as_str()).fetch_optional(&mut *connection).await.map_err(to_domain_error)?;
+        if current_user.is_none() || current_client.is_none() { return Ok(None); }
+        let current: OffsetDateTime = sqlx::query_scalar("select clock_timestamp()").fetch_one(connection).await.map_err(to_domain_error)?;
+        let expiry = (now + time::Duration::seconds(300)).min(certificate.expires_at);
+        if expiry <= current { return Ok(None); }
+        DeviceBinding::from_verified_request(VerifiedDeviceEvidence {
+            tenant: tenant.clone(), user, client: grant.client.clone(), interaction_digest: request_digest.to_owned(),
+            source, source_generation, device, enrollment_generation,
+            leaf_sha256: certificate.leaf.as_str().to_owned(), anchor_sha256: certificate.anchor.as_str().to_owned(),
+            certificate_expires_at: certificate.expires_at, proof_expires_at: expiry,
+        }, grant, current).map(Some)
+    }
+
     /// Resolve exact private issuance evidence on the caller's existing fence.
     /// The caller must hold the tenant publication fence until the final signature
     /// and recheck `Fact::at` after awaited cryptographic/audit operations.
@@ -52,6 +101,22 @@ impl PgManagedDevices {
         binding: Option<&DeviceBinding>,
         current_anchor: Option<&LeafFingerprint>,
     ) -> Result<Fact, DomainError> {
+        Self::resolve_on(connection,tenant,grant,binding,current_anchor,false).await
+    }
+
+    /// Early exchange evaluation only: exact verified parent authority plus a
+    /// provisional child. This is never the final issued-authority resolver.
+    pub async fn resolve_preflight_on(
+        connection: &mut PgConnection, tenant: &TenantId, grant: &Grant,
+        binding: Option<&DeviceBinding>, current_anchor: Option<&LeafFingerprint>,
+    ) -> Result<Fact, DomainError> {
+        Self::resolve_on(connection,tenant,grant,binding,current_anchor,true).await
+    }
+
+    async fn resolve_on(
+        connection: &mut PgConnection, tenant: &TenantId, grant: &Grant,
+        binding: Option<&DeviceBinding>, current_anchor: Option<&LeafFingerprint>, preflight: bool,
+    ) -> Result<Fact, DomainError> {
         let Some(binding) = binding else {
             return Ok(missing(Availability::Absent));
         };
@@ -61,8 +126,39 @@ impl PgManagedDevices {
         if grant.tenant != *tenant || binding.tenant() != tenant
             || binding.client() != &grant.client || grant.user.as_ref() != Some(binding.user())
             || anchor.as_str() != binding.anchor_sha256()
+            || binding.bound_grant_id().is_some_and(|id| id != &grant.id)
+            || (binding.bound_grant_id().is_some() && binding.request_parent()!=grant.parent.as_ref())
         {
             return Ok(missing(Availability::Invalid));
+        }
+        if preflight {
+            let Some(parent) = binding.request_parent().filter(|id| grant.parent.as_ref()==Some(id)) else {
+                return Ok(missing(Availability::Unavailable));
+            };
+            let parent = Uuid::parse_str(parent.as_str()).map_err(|_| DomainError::NotFound)?;
+            let row: Option<(Option<Uuid>, Option<String>)> = sqlx::query_as(
+                "select user_id,subject from grants where tenant_id=$1 and grant_id=$2 for share"
+            ).bind(tenant.as_str()).bind(parent).fetch_optional(&mut *connection).await.map_err(to_domain_error)?;
+            let Some((user,subject)) = row else { return Ok(missing(Availability::Invalid)); };
+            let current: bool = sqlx::query_scalar("select claimed_at is not null and revoked_at is null and (expires_at is null or expires_at>clock_timestamp()) from grants where tenant_id=$1 and grant_id=$2")
+                .bind(tenant.as_str()).bind(parent).fetch_one(&mut *connection).await.map_err(to_domain_error)?;
+            if !current || binding.bound_grant_id()!=Some(&grant.id) || user!=grant.user.map(|u|*u.as_uuid())
+                || subject.as_deref()!=grant.subject.as_ref().map(asterius_domain::SubjectId::as_str)
+            { return Ok(missing(Availability::Invalid)); }
+        }
+        if binding.bound_grant_id().is_some() && !preflight {
+            let id = Uuid::parse_str(grant.id.as_str()).map_err(|_| DomainError::NotFound)?;
+            let row: Option<(String, Option<Uuid>, Option<String>, bool)> = sqlx::query_as(
+                "select client_id,user_id,subject,claimed_at is not null and revoked_at is null \
+                 and (expires_at is null or expires_at>clock_timestamp()) from grants \
+                 where tenant_id=$1 and grant_id=$2 for share"
+            ).bind(tenant.as_str()).bind(id).fetch_optional(&mut *connection).await.map_err(to_domain_error)?;
+            let Some((client,user,subject,live)) = row else { return Ok(missing(Availability::Invalid)); };
+            let live_after_lock: bool = sqlx::query_scalar("select claimed_at is not null and revoked_at is null and (expires_at is null or expires_at>clock_timestamp()) from grants where tenant_id=$1 and grant_id=$2")
+                .bind(tenant.as_str()).bind(id).fetch_one(&mut *connection).await.map_err(to_domain_error)?;
+            if !live || !live_after_lock || client!=grant.client.as_str() || user!=grant.user.map(|user| *user.as_uuid())
+                || subject.as_deref()!=grant.subject.as_ref().map(asterius_domain::SubjectId::as_str)
+            { return Ok(missing(Availability::Invalid)); }
         }
         if !source_current_on(connection, tenant, binding).await? {
             return Ok(missing(Availability::Invalid));

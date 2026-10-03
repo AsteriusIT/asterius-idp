@@ -28,6 +28,10 @@ pub struct DeviceBinding {
     user: UserId,
     client: ClientId,
     interaction_digest: String,
+    #[serde(default)]
+    bound_grant_id: Option<crate::GrantId>,
+    #[serde(default)]
+    request_parent: Option<crate::GrantId>,
     source: Uuid,
     source_generation: i64,
     device: Uuid,
@@ -90,6 +94,8 @@ impl DeviceBinding {
             user: evidence.user,
             client: evidence.client,
             interaction_digest: evidence.interaction_digest,
+            bound_grant_id: None,
+            request_parent: None,
             source: evidence.source,
             source_generation: evidence.source_generation,
             device: evidence.device,
@@ -103,6 +109,21 @@ impl DeviceBinding {
         Ok(binding)
     }
 
+    /// A new credential/PDP request has its own verifier-owned possession and
+    /// server-generated digest, pinned to exactly the authenticated grant.
+    pub fn from_verified_request(evidence: VerifiedDeviceEvidence, grant: &crate::Grant, now: OffsetDateTime) -> Result<Self, DomainError> {
+        if evidence.tenant != grant.tenant || evidence.client != grant.client || Some(evidence.user) != grant.user { return Err(invalid()); }
+        let mut binding = Self::from_verified(evidence, now)?;
+        binding.bound_grant_id = Some(grant.id.clone());
+        binding.request_parent = grant.parent.clone();
+        binding.validate(now)?;
+        Ok(binding)
+    }
+    #[must_use]
+    pub fn bound_grant_id(&self) -> Option<&crate::GrantId> { self.bound_grant_id.as_ref() }
+    #[must_use]
+    pub fn request_parent(&self) -> Option<&crate::GrantId> { self.request_parent.as_ref() }
+
     /// Storage is private but may be corrupt; loading never skips these bounds.
     pub fn validate(&self, now: OffsetDateTime) -> Result<(), DomainError> {
         let latest = now.checked_add(MAX_FACT_AGE).ok_or_else(invalid)?;
@@ -114,6 +135,10 @@ impl DeviceBinding {
             || self.certificate_expires_at <= now
             || self.proof_expires_at > self.certificate_expires_at
         { return Err(invalid()); }
+        if let Some(grant) = &self.bound_grant_id {
+            let id = Uuid::parse_str(grant.as_str()).map_err(|_| invalid())?;
+            if id.is_nil() { return Err(invalid()); }
+        }
         LeafFingerprint::parse(&self.interaction_digest)?;
         LeafFingerprint::parse(&self.leaf_sha256)?;
         LeafFingerprint::parse(&self.anchor_sha256)?;
@@ -204,6 +229,7 @@ pub struct Update {
 impl Update {
     /// Structural/timestamp validation only. The adapter must atomically check
     /// source authority, active enrollment generation and strictly newer sequence.
+    // fuzz-target: managed_device_input
     pub fn parse(bytes: &[u8], now: OffsetDateTime) -> Result<Self, DomainError> {
         if bytes.len() > MAX_UPDATE_BYTES {
             return Err(invalid());
@@ -228,7 +254,7 @@ impl Update {
                 .map_err(|_| invalid())?;
             let expiry = OffsetDateTime::from_unix_timestamp(observation.expires_at)
                 .map_err(|_| invalid())?;
-            if !devices.insert(observation.device_id)
+            if observation.device_id.is_nil() || !devices.insert(observation.device_id)
                 || observation.enrollment_generation <= 0
                 || observation.sequence < 0
                 || observed < earliest
@@ -316,7 +342,7 @@ impl EnrollmentRequest {
     }
     pub fn validate(&self) -> Result<LeafFingerprint, DomainError> {
         let unique: BTreeSet<_> = self.allowed_client_ids.iter().collect();
-        if self.allowed_client_ids.len() > MAX_ALLOWED_CLIENTS
+        if self.user_id.as_uuid().is_nil() || self.allowed_client_ids.len() > MAX_ALLOWED_CLIENTS
             || unique.len() != self.allowed_client_ids.len()
             || self.allowed_client_ids.iter().any(|client| {
                 client.as_str().is_empty()

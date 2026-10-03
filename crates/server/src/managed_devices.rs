@@ -201,6 +201,17 @@ impl std::fmt::Debug for VerifiedDeviceLeaf {
     }
 }
 impl VerifiedDeviceLeaf {
+    /// Explicit fresh request carrier, created only from verified transport.
+    #[must_use]
+    pub fn request_evidence(&self) -> DeviceRequestEvidence {
+        DeviceRequestEvidence {
+            certificate: asterius_domain::managed_devices::DeviceCertificateEvidence {
+                leaf: self.leaf.clone(), anchor: self.anchor.clone(), expires_at: self.expires_at,
+            },
+            digest: asterius_domain::sha256_hex(uuid::Uuid::new_v4().as_bytes()),
+        }
+    }
+
     #[must_use]
     pub fn leaf(&self) -> &LeafFingerprint { &self.leaf }
     #[must_use]
@@ -250,4 +261,19 @@ impl TenantDeviceRoots {
     pub fn revisions(&self) -> Arc<BTreeMap<String, LeafFingerprint>> {
         Arc::new(self.0.iter().map(|(tenant, roots)| (tenant.as_str().to_owned(), roots.revision().clone())).collect())
     }
+}
+
+/// Never deserialized; this exact request's TLS evidence and server-owned nonce.
+#[derive(Debug, Clone)]
+pub struct DeviceRequestEvidence {
+    certificate: asterius_domain::managed_devices::DeviceCertificateEvidence,
+    digest: String,
+}
+impl DeviceRequestEvidence {
+    pub async fn bind(&self, store: &asterius_store_pg::Store, tenant: &asterius_domain::TenantId, grant: &asterius_domain::Grant, now: OffsetDateTime)
+        -> Result<Option<asterius_domain::managed_devices::DeviceBinding>, asterius_domain::DomainError> {
+        asterius_store_pg::PgManagedDevices::bind_request_in(store.pool(),tenant,grant,&self.certificate,&self.digest,now).await
+    }
+    #[must_use]
+    pub fn certificate(&self) -> &asterius_domain::managed_devices::DeviceCertificateEvidence { &self.certificate }
 }
