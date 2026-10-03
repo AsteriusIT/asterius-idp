@@ -226,6 +226,10 @@ impl AuditQuery for PgAuditSink {
             sql.push(" and grant_id = ");
             sql.push_bind(grant);
         }
+        if let Some(task) = filter.task {
+            sql.push(" and detail ? 'task_id' and detail ->> 'task_id' = ");
+            sql.push_bind(task.to_string());
+        }
         if let Some(request_id) = &filter.request_id {
             sql.push(" and request_id = ");
             sql.push_bind(request_id.clone());

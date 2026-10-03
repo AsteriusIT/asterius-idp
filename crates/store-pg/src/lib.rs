@@ -9,7 +9,9 @@
 
 mod admin_seed;
 mod agent_task_lifecycle;
+mod agent_task_views;
 pub mod agent_tasks;
+pub use agent_task_views::PgAgentTaskViews;
 mod aggregated_claims;
 mod application_roles;
 mod architecture_flows;

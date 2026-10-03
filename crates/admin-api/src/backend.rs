@@ -125,6 +125,11 @@ pub trait PolicyTrial: std::fmt::Debug + Send + Sync {
 /// What an admin API request needs from below the API.
 #[async_trait::async_trait]
 pub trait AdminBackend: std::fmt::Debug + Send + Sync {
+    /// Bounded current task provenance; absent adapters expose no snapshots.
+    fn agent_tasks(&self) -> Option<Arc<dyn asterius_domain::agent_task_views::Administration>> {
+        None
+    }
+
     fn conditional_settings(
         &self,
     ) -> Option<Arc<dyn asterius_domain::policy::conditional::ConditionalSettings>> {

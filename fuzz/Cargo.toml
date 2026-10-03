@@ -176,6 +176,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "agent_task_view_query"
+path = "fuzz_targets/agent_task_view_query.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "agent_task_withdrawal_form"
 path = "fuzz_targets/agent_task_withdrawal_form.rs"
 test = false

@@ -25,6 +25,7 @@
  * Nothing in this bundle decides which rows an operator sees.
  */
 import { useCallback, useEffect, useState } from 'react';
+import { AgentTaskViewer } from './agent-task-viewer';
 import type { JSX } from 'react';
 import { useRouteParameters, setRouteParameters } from './route-state';
 import { hrefOf } from './routes';
@@ -87,6 +88,7 @@ export interface Filters {
   readonly owner: string;
   readonly user: string;
   readonly grant: string;
+  readonly task?: string;
   readonly request_id?: string;
   readonly session?: string;
   readonly type: string;
@@ -99,6 +101,7 @@ export const EMPTY_FILTERS: Filters = {
   owner: '',
   user: '',
   grant: '',
+  task: '',
   request_id: '',
   session: '',
   type: '',
@@ -270,6 +273,7 @@ export function AuditExplorer({ session }: Readonly<{ session: Session }>): JSX.
         ) : undefined
       }
     >
+      <AgentTaskViewer session={session} onAudit={task => { const next = { ...EMPTY_FILTERS, task }; setDraft(next); setApplied(next); }} />
       <p className="muted">Times use UTC. The export includes records matching the applied filters, up to the server’s export limit.</p>
       <Actions>{[1, 24, 168].map(hours => <Button key={hours} small onClick={() => {
         const next = { ...draft, from: new Date(Date.now() - hours * 3600000).toISOString(), until: new Date().toISOString() };
@@ -288,6 +292,7 @@ export function AuditExplorer({ session }: Readonly<{ session: Session }>): JSX.
           {field('owner', 'Owner', 'subject the agent acts for')}
           {field('user', 'User', 'subject')}
           {field('grant', 'Grant ID', 'Paste a grant ID')}
+          {field('task', 'Task ID', 'Paste an immutable task ID')}
           {field('request_id', 'Support reference', '32 lowercase hexadecimal characters')}
           {field('session', 'Session reference', '64 lowercase hexadecimal characters')}
           {field('type', 'Event type', 'token.exchanged, session.revoked')}

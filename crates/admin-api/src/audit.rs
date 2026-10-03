@@ -79,6 +79,10 @@ pub const NDJSON: &str = "application/x-ndjson";
 /// person.
 pub const PARAMETERS: &[(&str, &str)] = &[
     (
+        "task",
+        "A canonical Task UUID. Recorded correlated evidence, not currently active permission.",
+    ),
+    (
         "agent",
         "A client_id. Records the agent caused, or took part in as a link of the RFC 8693 act chain.",
     ),
@@ -134,25 +138,7 @@ pub fn parse_filter(query: &str) -> Result<AuditFilter, AdminError> {
         if matches!(name, "cursor" | "limit") {
             continue;
         }
-        // The name is checked before anything that would put it in a
-        // message: every refusal below names a *documented* parameter, so
-        // none of them can echo what was typed.
-        if !PARAMETERS.iter().any(|(known, _)| *known == name) {
-            return Err(AdminError::Invalid(
-                "unknown filter parameter; see the OpenAPI document for the list".to_owned(),
-            ));
-        }
-        if raw.len() > MAX_VALUE_LEN {
-            return Err(AdminError::Invalid(format!(
-                "{name} is longer than {MAX_VALUE_LEN} bytes"
-            )));
-        }
-        let value = crate::clients::search_term(raw);
-        if value.is_empty() || value.chars().any(char::is_control) {
-            return Err(AdminError::Invalid(format!(
-                "{name} must be a non-empty value"
-            )));
-        }
+        let value = filter_value(name, raw)?;
 
         match name {
             "agent" => set_once(&mut filter.agent, ClientId::new(value), name)?,
@@ -185,6 +171,11 @@ pub fn parse_filter(query: &str) -> Result<AuditFilter, AdminError> {
                     asterius_domain::SessionId::new(value),
                     name,
                 )?;
+            }
+            "task" => {
+                let task = asterius_domain::agent_task_views::identity(&value)
+                    .map_err(|_| AdminError::Invalid("task must be a canonical UUID".to_owned()))?;
+                set_once(&mut filter.task, task, name)?;
             }
             "grant" => {
                 let uuid: uuid::Uuid = value
@@ -510,6 +501,30 @@ impl futures_core::Stream for Export {
             }
         }
     }
+}
+
+fn filter_value(name: &str, raw: &str) -> Result<String, AdminError> {
+    // The name is checked before anything that would put it in a
+    // message: every refusal below names a *documented* parameter, so
+    // none of them can echo what was typed.
+    if !PARAMETERS.iter().any(|(known, _)| *known == name) {
+        return Err(AdminError::Invalid(
+            "unknown filter parameter; see the OpenAPI document for the list".to_owned(),
+        ));
+    }
+    if raw.len() > MAX_VALUE_LEN {
+        return Err(AdminError::Invalid(format!(
+            "{name} is longer than {MAX_VALUE_LEN} bytes"
+        )));
+    }
+    let value = crate::clients::search_term(raw);
+    if value.is_empty() || value.chars().any(char::is_control) {
+        return Err(AdminError::Invalid(format!(
+            "{name} must be a non-empty value"
+        )));
+    }
+
+    Ok(value)
 }
 
 #[cfg(test)]

@@ -2963,8 +2963,61 @@ impl DeploymentUsers {
     }
 }
 
+#[derive(Debug)]
+struct DeploymentTaskViews {
+    store: Store,
+    tenants: Arc<dyn asterius_domain::ports::TenantRepository>,
+    capabilities: Capabilities,
+}
+#[async_trait::async_trait]
+impl asterius_domain::agent_task_views::Administration for DeploymentTaskViews {
+    async fn list(
+        &self,
+        tenant: &TenantId,
+        query: &asterius_domain::agent_task_views::Query,
+    ) -> Result<asterius_domain::agent_task_views::Page, DomainError> {
+        asterius_store_pg::PgAgentTaskViews::new(self.store.pool().clone())
+            .list(tenant, query)
+            .await
+    }
+    async fn read(
+        &self,
+        tenant: &TenantId,
+        task: uuid::Uuid,
+        query: &asterius_domain::agent_task_views::Query,
+    ) -> Result<asterius_domain::agent_task_views::Snapshot, DomainError> {
+        let entity = self
+            .tenants
+            .find_by_id(tenant)
+            .await?
+            .ok_or(DomainError::NotFound)?;
+        let implicit = crate::http::issuance::implicit_resources(
+            &entity,
+            crate::http::issuance::ImplicitResources {
+                grant_management: self
+                    .capabilities
+                    .is_enabled(asterius_domain::Feature::GrantManagement),
+                // Task approvals are human-delegated. SSF management is
+                // exclusively a client_credentials authority (SSF 1.0 §8).
+                ssf: false,
+            },
+        );
+        asterius_store_pg::PgAgentTaskViews::new(self.store.pool().clone())
+            .snapshot(tenant, task, query, &implicit)
+            .await
+    }
+}
+
 #[async_trait::async_trait]
 impl AdminBackend for Deployment {
+    fn agent_tasks(&self) -> Option<Arc<dyn asterius_domain::agent_task_views::Administration>> {
+        Some(Arc::new(DeploymentTaskViews {
+            store: self.store.clone(),
+            tenants: Arc::clone(&self.tenants),
+            capabilities: self.capabilities,
+        }))
+    }
+
     fn conditional_settings(
         &self,
     ) -> Option<Arc<dyn asterius_domain::policy::conditional::ConditionalSettings>> {
