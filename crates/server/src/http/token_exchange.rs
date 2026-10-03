@@ -238,6 +238,13 @@ impl From<DomainError> for Failure {
                 "invalid_grant",
                 "task authority is not active or does not cover this request",
             ),
+            DomainError::Invalid {
+                field: "conditional_access",
+                ..
+            } => Self::Client(
+                "access_denied",
+                "access policy does not permit this request",
+            ),
             other => Self::Server(other),
         }
     }
@@ -553,6 +560,7 @@ impl TokenExchange<'_> {
         {
             return Err(bad());
         }
+        self.permitted(tenant, client, &grant).await?;
         let claimed = grant.claim(self.now).map_err(|_| bad())?;
         let confirmation = self.constraint.confirmation(client).map_err(|_| bad())?;
         let audience = Audience::new([tenant.issuer.as_str()])
@@ -608,8 +616,13 @@ impl TokenExchange<'_> {
         }
         let access_token = self
             .signer
-            .sign(
+            .sign_access(
                 &tenant.id,
+                asterius_domain::keys::AccessIssuance {
+                    grant: &grant,
+                    kind: GrantType::TokenExchange,
+                    implicit_resources: &[],
+                },
                 access.required_algorithm(),
                 access.typ(),
                 access.claims(),
@@ -1728,6 +1741,15 @@ impl TokenExchange<'_> {
             .constraint
             .proof_key
             .ok_or(Failure::Dpop(dpop::Refusal::missing_proof()))?;
+        // An ID-JAG is a token-exchange output too. Conditional application
+        // gates run before minting it, without borrowing assurance from an
+        // unrelated live human grant behind the source ID token.
+        let mut conditional_grant = Grant::new(tenant.id.clone(), client.id.clone(), self.now);
+        conditional_grant.user = Some(user.id);
+        conditional_grant.subject = Some(subject.clone());
+        conditional_grant.scopes = scopes.iter().map(|scope| (*scope).to_owned()).collect();
+        conditional_grant.resources.insert(resource.to_owned());
+        self.permitted(tenant, client, &conditional_grant).await?;
         let mut claims = json!({
             "iss": tenant.issuer.as_str(),
             "sub": subject.as_str(),
@@ -1748,7 +1770,17 @@ impl TokenExchange<'_> {
         }
         let signed = self
             .signer
-            .sign(&tenant.id, None, "oauth-id-jag+jwt", &claims)
+            .sign_access(
+                &tenant.id,
+                asterius_domain::keys::AccessIssuance {
+                    grant: &conditional_grant,
+                    kind: GrantType::TokenExchange,
+                    implicit_resources: &[],
+                },
+                None,
+                "oauth-id-jag+jwt",
+                &claims,
+            )
             .await?;
         let response = (
             axum::http::StatusCode::OK,

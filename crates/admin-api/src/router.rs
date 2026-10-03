@@ -380,6 +380,8 @@ async fn route_standard(
         crate::CLIENTS_LIST_ID => context.list_clients().await,
         crate::CLIENT_READ_ID => context.read_client().await,
         crate::CLIENT_HEALTH_ID => context.check_client_health().await,
+        crate::CONDITIONAL_SETTINGS_READ_ID => context.read_conditional_settings().await,
+        crate::CONDITIONAL_SETTINGS_UPDATE_ID => context.update_conditional_settings(body).await,
         crate::KUBERNETES_PROFILE_READ_ID => context.read_kubernetes_profile().await,
         crate::KUBERNETES_PROFILE_UPDATE_ID => context.update_kubernetes_profile(body).await,
         crate::CLIENT_CREATE_ID => context.create_client(body).await,
@@ -2175,6 +2177,61 @@ impl Handling<'_> {
         Ok(json_no_store(StatusCode::OK, &clients::document(&client)))
     }
 
+    async fn read_conditional_settings(&self) -> Result<Response, AdminError> {
+        let id = self.client_in_path("/conditional-access")?;
+        self.load_client(&id, crate::CONDITIONAL_SETTINGS_READ_ID)
+            .await?;
+        let settings = self
+            .state
+            .backend
+            .conditional_settings()
+            .ok_or(AdminError::NotFound)?;
+        let settings = settings.read(&self.tenant.id, &id).await.map_err(|error| {
+            AdminError::from_storage(crate::CONDITIONAL_SETTINGS_READ_ID, &error)
+        })?;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &settings.map_or_else(
+                || serde_json::json!({"sensitivity":null,"revision":null}),
+                |settings| serde_json::json!(settings),
+            ),
+        ))
+    }
+
+    async fn update_conditional_settings(
+        &self,
+        body: axum::body::Body,
+    ) -> Result<Response, AdminError> {
+        let id = self.client_in_path("/conditional-access")?;
+        self.load_client(&id, crate::CONDITIONAL_SETTINGS_UPDATE_ID)
+            .await?;
+        let body: serde_json::Value = self.parse_body(body).await?;
+        let requested = crate::conditional::RequestedSettings::parse(&body)?;
+        let settings = self
+            .state
+            .backend
+            .conditional_settings()
+            .ok_or(AdminError::NotFound)?;
+        let settings = settings
+            .replace(
+                &self.tenant.id,
+                &id,
+                requested.sensitivity,
+                requested.expected_revision,
+            )
+            .await
+            .map_err(|error| group_error(crate::CONDITIONAL_SETTINGS_UPDATE_ID, error))?;
+        self.record(
+            EventType::ADMIN_CHANGED,
+            Detail::new()
+                .label("operation", crate::CONDITIONAL_SETTINGS_UPDATE_ID)
+                .text("client_id", id.as_str())
+                .text("revision", settings.revision.to_string()),
+        )
+        .await;
+        Ok(json_no_store(StatusCode::OK, &serde_json::json!(settings)))
+    }
+
     async fn read_kubernetes_profile(&self) -> Result<Response, AdminError> {
         let id = self.client_in_path("/kubernetes")?;
         let client = self
@@ -3055,12 +3112,48 @@ impl Handling<'_> {
             .map_err(|_| AdminError::Invalid("the request body is too large".to_owned()))?;
         let rules = policies::parse_document(&bytes)?;
 
-        self.state
-            .backend
-            .policies()
-            .replace(&self.tenant.id, &rules, self.now)
-            .await
-            .map_err(|error| AdminError::from_storage(crate::POLICY_UPDATE_ID, &error))?;
+        let policies = self.state.backend.policies();
+        let matches = self.headers.get_all(axum::http::header::IF_MATCH);
+        let absent = self.headers.get_all(axum::http::header::IF_NONE_MATCH);
+        let condition = if matches.iter().count() == 1 && absent.iter().count() == 0 {
+            let revision = matches
+                .iter()
+                .next()
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.strip_prefix('"'))
+                .and_then(|value| value.strip_suffix('"'))
+                .filter(|value| {
+                    value.starts_with("sha256:")
+                        && value.len() == 71
+                        && value[7..]
+                            .bytes()
+                            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+                })
+                .ok_or_else(|| {
+                    AdminError::Invalid("a canonical quoted policy revision is required".to_owned())
+                })?;
+            Some(Some(revision))
+        } else if absent.iter().count() == 1
+            && matches.iter().count() == 0
+            && absent.iter().next().is_some_and(|value| value == "*")
+        {
+            Some(None)
+        } else if matches.iter().count() == 0 && absent.iter().count() == 0 {
+            None
+        } else {
+            return Err(AdminError::Invalid(
+                "one policy publication precondition is required".to_owned(),
+            ));
+        };
+        match condition {
+            Some(expected) => {
+                policies
+                    .replace_if_revision(&self.tenant.id, &rules, expected, self.now)
+                    .await
+            }
+            None => policies.replace(&self.tenant.id, &rules, self.now).await,
+        }
+        .map_err(|error| group_error(crate::POLICY_UPDATE_ID, error))?;
 
         self.record(
             EventType::POLICY_UPDATED,

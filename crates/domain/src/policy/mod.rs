@@ -38,6 +38,7 @@
 //!
 //! [ADR-0011]: https://github.com/AsteriusIT/asterius-idp/blob/main/docs/adr/0011-a-declarative-rule-model-for-the-built-in-pdp.md
 
+pub mod conditional;
 pub mod document;
 pub mod engine;
 pub mod explanation;

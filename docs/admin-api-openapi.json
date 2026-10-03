@@ -2153,6 +2153,251 @@
         "x-asterius-scope": "admin.app_roles:write"
       }
     },
+    "/admin/api/v1/clients/{client_id}/conditional-access": {
+      "get": {
+        "operationId": "clients.conditional.read",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "client_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "revision": {
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "sensitivity": {
+                      "enum": [
+                        null,
+                        "standard",
+                        "sensitive",
+                        "critical"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "sensitivity",
+                    "revision"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.clients:read"
+            ]
+          }
+        ],
+        "summary": "Reads server-owned application sensitivity and classification revision",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.clients:read"
+      },
+      "put": {
+        "operationId": "clients.conditional.update",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "client_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "description": "Administrative application classification. Both keys required; null revision expects no saved settings. Exact UUID CAS; stale updates are 409. This source is independent of dynamic client registration and PEP attributes.",
+                "properties": {
+                  "expected_revision": {
+                    "format": "uuid",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "sensitivity": {
+                    "enum": [
+                      null,
+                      "standard",
+                      "sensitive",
+                      "critical"
+                    ]
+                  }
+                },
+                "required": [
+                  "sensitivity",
+                  "expected_revision"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "revision": {
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "sensitivity": {
+                      "enum": [
+                        null,
+                        "standard",
+                        "sensitive",
+                        "critical"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "sensitivity",
+                    "revision"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The saved classification revision changed."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.clients:write"
+            ]
+          }
+        ],
+        "summary": "Classifies an application with an exact saved revision",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.clients:write"
+      }
+    },
     "/admin/api/v1/clients/{client_id}/health": {
       "get": {
         "operationId": "clients.health",
@@ -8551,6 +8796,158 @@
       },
       "put": {
         "operationId": "policies.update",
+        "parameters": [
+          {
+            "description": "Quoted canonical sha256 revision from GET /policies. Required when adding, modifying or removing conditional scopes; use If-None-Match: * only for a first publication.",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Explicitly expects no existing policy. Mutually exclusive with If-Match.",
+            "in": "header",
+            "name": "If-None-Match",
+            "required": false,
+            "schema": {
+              "const": "*",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "description": "64 KiB whole policy; at most 128 rules across base and conditional scopes. Conditional selectors reference registered clients and supported server enforcement actions, with no overlap. Every referenced trusted fact is mandatory before ANY/NOT. New predicates are closed and available only inside conditional scopes: application_sensitivity, network_zone, authentication_age_at_most (60..86400 seconds), device_compliance. Unknown/stale sources deny active scopes; report_only emits diagnostics. Named zones must be defined; assurance remedies must be configured attainable ACR levels. Never derives trusted facts from PEP properties.",
+                "properties": {
+                  "conditional_scopes": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "actions": {
+                          "items": {
+                            "enum": [
+                              "authorize",
+                              "authorization_code",
+                              "refresh_token",
+                              "device_code",
+                              "ciba",
+                              "token_exchange",
+                              "client_credentials",
+                              "jwt_bearer",
+                              "access_evaluation"
+                            ]
+                          },
+                          "maxItems": 32,
+                          "minItems": 1,
+                          "type": "array",
+                          "uniqueItems": true
+                        },
+                        "assurance_remedy": {
+                          "maxLength": 256,
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "clients": {
+                          "items": {
+                            "maxLength": 256,
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "maxItems": 64,
+                          "minItems": 1,
+                          "type": "array",
+                          "uniqueItems": true
+                        },
+                        "id": {
+                          "maxLength": 128,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "mode": {
+                          "enum": [
+                            "active",
+                            "report_only"
+                          ]
+                        },
+                        "network_zones": {
+                          "additionalProperties": {
+                            "items": {
+                              "description": "Explicit IPv4 or IPv6 CIDR",
+                              "type": "string"
+                            },
+                            "maxItems": 16,
+                            "minItems": 1,
+                            "type": "array",
+                            "uniqueItems": true
+                          },
+                          "maxProperties": 64,
+                          "type": "object"
+                        },
+                        "required_facts": {
+                          "items": {
+                            "enum": [
+                              "assurance",
+                              "authentication_age",
+                              "application_sensitivity",
+                              "network_zone",
+                              "device_compliance",
+                              "groups",
+                              "roles",
+                              "grants"
+                            ]
+                          },
+                          "maxItems": 32,
+                          "type": "array",
+                          "uniqueItems": true
+                        },
+                        "rules": {
+                          "items": {
+                            "type": "object"
+                          },
+                          "maxItems": 128,
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "mode",
+                        "id",
+                        "clients",
+                        "actions",
+                        "rules"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 64,
+                    "type": "array"
+                  },
+                  "rules": {
+                    "items": {
+                      "type": "object"
+                    },
+                    "maxItems": 128,
+                    "type": "array"
+                  },
+                  "version": {
+                    "const": 1
+                  }
+                },
+                "required": [
+                  "version",
+                  "rules"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -8590,7 +8987,7 @@
                 }
               }
             },
-            "description": "The request conflicts with the current state, or its Idempotency-Key has already been used."
+            "description": "Policy revision changed, or conditional publication lacks an exact precondition."
           },
           "429": {
             "content": {

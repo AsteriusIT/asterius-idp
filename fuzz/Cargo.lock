@@ -172,6 +172,7 @@ dependencies = [
  "getrandom 0.3.4",
  "hex",
  "hmac",
+ "ipnet",
  "serde",
  "serde_json",
  "sha1",

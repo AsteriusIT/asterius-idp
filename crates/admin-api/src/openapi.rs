@@ -202,6 +202,7 @@ fn operation_object(operation: &Operation) -> Value {
     declarative_documentation(operation, &mut object);
     client_resources_documentation(operation, &mut object);
     kubernetes_documentation(operation, &mut object);
+    conditional_documentation(operation, &mut object);
     invitation_documentation(operation, &mut object);
     theme_documentation(operation, &mut object);
     if let Some(request_body) = group_request_body(operation) {
@@ -296,6 +297,10 @@ fn operation_parameters(operation: &Operation) -> Vec<Value> {
             parameters.push(json!({"name":"external_key","in":"query","required":true,"schema":{"type":"string","minLength":1,"maxLength":512}}));
         }
     }
+    if operation.id() == crate::POLICY_UPDATE_ID {
+        parameters.push(json!({"name":"If-Match","in":"header","required":false,"schema":{"type":"string"},"description":"Quoted canonical sha256 revision from GET /policies. Required when adding, modifying or removing conditional scopes; use If-None-Match: * only for a first publication."}));
+        parameters.push(json!({"name":"If-None-Match","in":"header","required":false,"schema":{"type":"string","const":"*"},"description":"Explicitly expects no existing policy. Mutually exclusive with If-Match."}));
+    }
     if operation.is_paginated() {
         parameters.push(json!({ "$ref": "#/components/parameters/cursor" }));
         parameters.push(json!({ "$ref": "#/components/parameters/limit" }));
@@ -358,6 +363,44 @@ fn operation_parameters(operation: &Operation) -> Vec<Value> {
     }
 
     parameters
+}
+
+fn conditional_documentation(operation: &Operation, object: &mut Value) {
+    if matches!(
+        operation.id(),
+        crate::CONDITIONAL_SETTINGS_READ_ID | crate::CONDITIONAL_SETTINGS_UPDATE_ID
+    ) {
+        object["responses"]["200"]["content"]["application/json"]["schema"] = json!({"type":"object","required":["sensitivity","revision"],"additionalProperties":false,"properties":{"sensitivity":{"enum":[null,"standard","sensitive","critical"]},"revision":{"type":["string","null"],"format":"uuid"}}});
+        if operation.id() == crate::CONDITIONAL_SETTINGS_UPDATE_ID {
+            object["requestBody"] = json!({"required":true,"content":{"application/json":{"schema":{"type":"object","additionalProperties":false,"required":["sensitivity","expected_revision"],"properties":{"sensitivity":{"enum":[null,"standard","sensitive","critical"]},"expected_revision":{"type":["string","null"],"format":"uuid"}},"description":"Administrative application classification. Both keys required; null revision expects no saved settings. Exact UUID CAS; stale updates are 409. This source is independent of dynamic client registration and PEP attributes."}}}});
+            object["responses"]["409"] =
+                error_response("The saved classification revision changed.");
+        }
+    }
+    if operation.id() == crate::POLICY_UPDATE_ID {
+        object["requestBody"] = json!({"required":true,"content":{"application/json":{"schema":{
+            "type":"object","additionalProperties":false,"required":["version","rules"],
+            "properties":{
+                "version":{"const":1},"rules":{"type":"array","maxItems":128,"items":{"type":"object"}},
+                "conditional_scopes":{"type":"array","maxItems":64,"items":{
+                    "type":"object","additionalProperties":false,"required":["mode","id","clients","actions","rules"],
+                    "properties":{
+                        "mode":{"enum":["active","report_only"]},"id":{"type":"string","minLength":1,"maxLength":128},
+                        "clients":{"type":"array","minItems":1,"maxItems":64,"uniqueItems":true,"items":{"type":"string","minLength":1,"maxLength":256}},
+                        "actions":{"type":"array","minItems":1,"maxItems":32,"uniqueItems":true,"items":{"enum":["authorize","authorization_code","refresh_token","device_code","ciba","token_exchange","client_credentials","jwt_bearer","access_evaluation"]}},
+                        "required_facts":{"type":"array","maxItems":32,"uniqueItems":true,"items":{"enum":["assurance","authentication_age","application_sensitivity","network_zone","device_compliance","groups","roles","grants"]}},
+                        "rules":{"type":"array","maxItems":128,"items":{"type":"object"}},
+                        "assurance_remedy":{"type":["string","null"],"maxLength":256},
+                        "network_zones":{"type":"object","maxProperties":64,"additionalProperties":{"type":"array","minItems":1,"maxItems":16,"uniqueItems":true,"items":{"type":"string","description":"Explicit IPv4 or IPv6 CIDR"}}}
+                    }
+                }}
+            },
+            "description":"64 KiB whole policy; at most 128 rules across base and conditional scopes. Conditional selectors reference registered clients and supported server enforcement actions, with no overlap. Every referenced trusted fact is mandatory before ANY/NOT. New predicates are closed and available only inside conditional scopes: application_sensitivity, network_zone, authentication_age_at_most (60..86400 seconds), device_compliance. Unknown/stale sources deny active scopes; report_only emits diagnostics. Named zones must be defined; assurance remedies must be configured attainable ACR levels. Never derives trusted facts from PEP properties."
+        }}}});
+        object["responses"]["409"] = error_response(
+            "Policy revision changed, or conditional publication lacks an exact precondition.",
+        );
+    }
 }
 
 fn invitation_documentation(operation: &Operation, object: &mut Value) {

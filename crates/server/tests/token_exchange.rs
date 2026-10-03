@@ -470,6 +470,7 @@ impl Fixture {
                 certificate: None,
             },
             agent_policy: AgentPolicy {
+                conditional: None,
                 policy: self
                     .policy
                     .clone()

@@ -2642,3 +2642,35 @@ trusted. The native proxy forwards its sensitive gateway session cookie to that
 backend, which must exclude it from logs and disclosure; OAuth access/ID tokens
 and caller Authorization are not delegated. The [gateway recipe](integrations/gateway.md) describes the tested
 topology and native product evidence without claiming downstream DPoP binding.
+
+## Conditional transaction authority
+
+Conditional scopes bind exact registered client identities and closed issuance
+boundaries, independently of the optional agent PDP/cache. Their source metadata
+is separate from PEP properties; reserved trusted namespaces are rejected. A
+required-fact availability guard precedes NOT, ANY and permit evaluation, so
+unknown device or authentication evidence cannot become authority through
+boolean syntax. Current directory/classification/proxy data and exact original
+human authentication are revalidated; refresh, unrelated elevated sessions and
+delegated human parents cannot synthesize fresh assurance. Agent task JTI lookup
+requires the signed immutable task/revision tuple after token authentication.
+
+Prepared signing preserves each decorator: shared bounded admission and key
+resolution precede task/principal/lineage locks, then a policy publication fence
+protects current conditional resolution and local signature. All SQL policy
+writers acquire the same tenant fence, including first publication and deletion.
+Final clock evaluation follows audit waits without changing original source
+timestamps. Complete AccessIssuance context and implicit-resource policy remain
+intact through non-task and task paths. Missing ancestry, newly approved task
+bindings and insufficient database capacity fail closed. Admission limits signer
+self-starvation; outages and unrelated blocked database work remain bounded
+operational failures rather than a permissive fallback.
+
+Persisted interactive requirements bind the original pushed client, action and
+revision and intersect existing essential requirements. Authentication remedies
+are hypothetical denied outcomes, never device/network bypasses. Scope mode and
+classification/policy CAS are explicit administrative controls. Report-only
+cannot promote another denial; offline JWT consumers retain their existing
+expiry/online-revocation limits. No instant withdrawal or device attestation
+claim is made. See [the operator guide](conditional-access.md) for exact sources,
+limits and deployment capacity.

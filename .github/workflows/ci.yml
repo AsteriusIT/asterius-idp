@@ -90,7 +90,7 @@ jobs:
       - name: operator fixture prerequisites and focused Go checks
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y python3-cryptography
+          sudo apt-get install -y python3-cryptography postgresql-client
           cd providers/terraform
           go test ./internal/operator ./internal/client -run '^Test' -count=1
           go vet ./internal/operator ./internal/client ./cmd/asterius-operator
@@ -102,6 +102,13 @@ jobs:
         env:
           ASTERIUS_BIN: ${{ github.workspace }}/target/debug/asterius
         run: ./scripts/kubernetes-e2e.sh
+      - name: conditional boundaries, concurrent signatures and browser step-up
+        env:
+          ASTERIUS_BIN: ${{ github.workspace }}/target/debug/asterius
+          ASTERIUS_ACCEPTANCE_DB_CONTAINER: ${{ job.services.postgres.id }}
+        run: |
+          bash scripts/conditional-access-acceptance.sh
+          python3 scripts/conditional/browser_acceptance.py
       - name: real structural schemas and namespace admission
         run: bash scripts/kubernetes-crd-tests.sh
       - name: real operator reconciliation and tenant isolation
@@ -260,7 +267,7 @@ jobs:
       # These database/race regressions stay ignored in local worker runs;
       # explicitly select them here so the persistence contracts are exercised.
       - name: Managed groups and session policy PostgreSQL regressions
-        run: cargo nextest run --workspace --all-features --run-ignored only -E 'binary(groups) or test(session_policy) or binary(authorization_diagnostics) or test(disabled_and_locked_accounts_refuse) or test(scim_disable_then_reactivate)' --no-fail-fast
+        run: cargo nextest run --workspace --all-features --run-ignored only -E 'binary(groups) or test(session_policy) or binary(authorization_diagnostics) or binary(conditional_access) or test(disabled_and_locked_accounts_refuse) or test(scim_disable_then_reactivate)' --no-fail-fast
 
       # Same reason: `cargo test` aborts after the first failing doctest
       # binary otherwise.

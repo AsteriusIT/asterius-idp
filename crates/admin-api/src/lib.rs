@@ -47,6 +47,7 @@ pub mod auth;
 pub mod authorization_details_types;
 pub mod backend;
 pub mod clients;
+pub mod conditional;
 pub mod console;
 pub mod csrf;
 mod declarative;
@@ -135,6 +136,8 @@ pub const CLIENT_READ_ID: &str = "clients.read";
 /// The `operationId` of `GET /clients/{client_id}/health`.
 pub const CLIENT_HEALTH_ID: &str = "clients.health";
 /// Reads a cluster's bounded onboarding profile and examples.
+pub const CONDITIONAL_SETTINGS_READ_ID: &str = "clients.conditional.read";
+pub const CONDITIONAL_SETTINGS_UPDATE_ID: &str = "clients.conditional.update";
 pub const KUBERNETES_PROFILE_READ_ID: &str = "clients.kubernetes.read";
 /// Replaces a cluster's tenant-owned group release profile.
 pub const KUBERNETES_PROFILE_UPDATE_ID: &str = "clients.kubernetes.update";
@@ -583,6 +586,20 @@ pub const CLIENT_HEALTH: Operation = Operation::read(
 );
 
 /// Tenant-scoped, read-only cluster onboarding configuration.
+pub const CONDITIONAL_SETTINGS_READ: Operation = Operation::read(
+    CONDITIONAL_SETTINGS_READ_ID,
+    "/clients/{client_id}/conditional-access",
+    S::Get,
+    A::new(R::Tenant, "admin.clients:read"),
+    "Reads server-owned application sensitivity and classification revision",
+);
+pub const CONDITIONAL_SETTINGS_UPDATE: Operation = Operation::mutation(
+    CONDITIONAL_SETTINGS_UPDATE_ID,
+    "/clients/{client_id}/conditional-access",
+    M::Put,
+    A::new(R::Tenant, "admin.clients:write"),
+    "Classifies an application with an exact saved revision",
+);
 pub const KUBERNETES_PROFILE_READ: Operation = Operation::read(
     KUBERNETES_PROFILE_READ_ID,
     "/clients/{client_id}/kubernetes",
@@ -2084,6 +2101,8 @@ static REGISTRY: &[Operation] = &[
     CLIENTS_LIST,
     CLIENT_READ,
     CLIENT_HEALTH,
+    CONDITIONAL_SETTINGS_READ,
+    CONDITIONAL_SETTINGS_UPDATE,
     KUBERNETES_PROFILE_READ,
     KUBERNETES_PROFILE_UPDATE,
     CLIENT_CREATE,

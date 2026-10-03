@@ -346,6 +346,15 @@ pub async fn layer(State(state): State<TenantState>, mut request: Request, next:
     // itself would be a second place for the spoofing rule to be got wrong.
     // `ast-2vk.9`'s login limiter is the first reader; `ast-p2l.3` and the
     // audit trail are the next.
+    let origin = if request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<SocketAddr>>()
+        .is_some()
+    {
+        forwarded::resolve_conditional(peer, request.headers(), &state.trusted_proxies)
+    } else {
+        forwarded::ConditionalOrigin::absent()
+    };
     let client = forwarded::resolve(peer, request.headers(), &state.trusted_proxies);
     request.extensions_mut().insert(client);
     // RFC 8705 §2's certificate, resolved here for the reason the address is:
@@ -381,7 +390,12 @@ pub async fn layer(State(state): State<TenantState>, mut request: Request, next:
     // The prefix routing just removed, so a handler can put it back on a URL
     // it hands to the browser (`ast-295`).
     request.extensions_mut().insert(resolved.prefix);
-    next.run(request).await
+    crate::http::conditional::PDP_AUTHORITY
+        .scope(
+            std::cell::RefCell::new(None),
+            crate::http::conditional::ORIGIN.scope(origin, next.run(request)),
+        )
+        .await
 }
 
 /// A resolved request: which tenant, and what path the handler should see.

@@ -86,6 +86,7 @@ pub mod backchannel_authentication;
 pub mod ciba_grant;
 pub mod client_configuration;
 pub mod client_credentials;
+pub(crate) mod conditional;
 pub mod console;
 pub mod deliver;
 pub mod device;

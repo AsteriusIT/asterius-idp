@@ -2974,9 +2974,16 @@ async fn access_search_dispatch(
     let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
     let scope = endpoints.store.scope(tenant.id.clone());
     let policies = asterius_store_pg::PgPolicies::new(endpoints.store.pool().clone());
-    let engine = asterius_domain::policy::DeclarativeEngine::new(Arc::new(
-        asterius_store_pg::PgPolicies::new(endpoints.store.pool().clone()),
-    ));
+    let engine = super::conditional::ConditionalPolicyEngine::new(
+        super::conditional::ConditionalAccess::new(
+            endpoints.store.clone(),
+            endpoints.capabilities,
+            Arc::clone(&endpoints.kek),
+            Arc::clone(&endpoints.audit),
+        ),
+        tenant.clone(),
+        now,
+    );
     let subjects = StoredSubjects {
         users: scope.users(Arc::clone(&endpoints.kek)),
         groups: asterius_store_pg::PgGroups::new(endpoints.store.pool().clone()),
@@ -3087,10 +3094,16 @@ async fn access_evaluation_dispatch(
     let now = time::OffsetDateTime::now_utc();
     let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
     let scope = endpoints.store.scope(tenant.id.clone());
-    let engine = asterius_domain::policy::DeclarativeEngine::new(Arc::new(
-        asterius_store_pg::PgPolicies::new(endpoints.store.pool().clone()),
-    ))
-    .with_explanations("access_evaluation");
+    let engine = super::conditional::ConditionalPolicyEngine::new(
+        super::conditional::ConditionalAccess::new(
+            endpoints.store.clone(),
+            endpoints.capabilities,
+            Arc::clone(&endpoints.kek),
+            Arc::clone(&endpoints.audit),
+        ),
+        tenant.clone(),
+        now,
+    );
     let subjects = StoredSubjects {
         users: scope.users(Arc::clone(&endpoints.kek)),
         groups: asterius_store_pg::PgGroups::new(endpoints.store.pool().clone()),
@@ -3976,6 +3989,12 @@ fn agent_policy<'a>(
         )) as Arc<dyn asterius_domain::issuance::IssuancePolicy>
     });
     crate::http::agent_issuance::AgentPolicy {
+        conditional: Some(Arc::new(crate::http::conditional::ConditionalAccess::new(
+            endpoints.store.clone(),
+            endpoints.capabilities,
+            Arc::clone(&endpoints.kek),
+            Arc::clone(&endpoints.audit),
+        ))),
         policy: pdp,
         fail_open: endpoints
             .issuance
@@ -4039,9 +4058,21 @@ async fn dispatch_grants(
     let codes = scope.codes();
     let grants = scope.grants();
     let agent_tasks = grants.agent_tasks();
+    // Resolve the key before any fence, then hold task/lineage locks before
+    // evaluating the final conditional context and invoking local crypto.
+    let conditional_signer = super::conditional::ConditionalSigner::new(
+        endpoints.signer.as_ref(),
+        super::conditional::ConditionalAccess::new(
+            endpoints.store.clone(),
+            endpoints.capabilities,
+            Arc::clone(&endpoints.kek),
+            Arc::clone(&endpoints.audit),
+        ),
+        tenant.as_ref().clone(),
+    );
     let task_signer = asterius_store_pg::agent_tasks::TaskSigner {
         tasks: &agent_tasks,
-        inner: endpoints.signer.as_ref(),
+        inner: &conditional_signer,
         audit: endpoints.audit.as_ref(),
     };
     let refresh_tokens = scope.refresh_tokens();
@@ -4669,6 +4700,12 @@ async fn run_authorize(
 
     authorize::authorize(
         AuthorizeContext {
+            conditional: Some(Arc::new(super::conditional::ConditionalAccess::new(
+                endpoints.store.clone(),
+                endpoints.capabilities,
+                Arc::clone(&endpoints.kek),
+                Arc::clone(&endpoints.audit),
+            ))),
             tenant,
             signer: Some(endpoints.signer.as_ref()),
             language: &language,
@@ -5438,6 +5475,12 @@ async fn interaction_show(
     let mail = scope.mail();
     interaction::show(
         InteractionContext {
+            conditional: Some(Arc::new(super::conditional::ConditionalAccess::new(
+                endpoints.store.clone(),
+                endpoints.capabilities,
+                Arc::clone(&endpoints.kek),
+                Arc::clone(&endpoints.audit),
+            ))),
             upstream_providers: &upstream_providers,
             tenant: &tenant,
             signer: Some(endpoints.signer.as_ref()),
@@ -5579,6 +5622,12 @@ async fn interaction_submit(
     let mail = scope.mail();
     interaction::submit(
         InteractionContext {
+            conditional: Some(Arc::new(super::conditional::ConditionalAccess::new(
+                endpoints.store.clone(),
+                endpoints.capabilities,
+                Arc::clone(&endpoints.kek),
+                Arc::clone(&endpoints.audit),
+            ))),
             upstream_providers: &upstream_providers,
             tenant: &tenant,
             signer: Some(endpoints.signer.as_ref()),
@@ -5898,6 +5947,12 @@ async fn upstream_callback(
     let mail = scope.mail();
     interaction::complete_external(
         InteractionContext {
+            conditional: Some(Arc::new(super::conditional::ConditionalAccess::new(
+                endpoints.store.clone(),
+                endpoints.capabilities,
+                Arc::clone(&endpoints.kek),
+                Arc::clone(&endpoints.audit),
+            ))),
             upstream_providers: &upstream_providers,
             tenant: &tenant,
             signer: Some(endpoints.signer.as_ref()),

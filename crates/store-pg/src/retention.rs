@@ -113,6 +113,7 @@ pub const POLICY: &[Retention] = &[
             grace: Duration::ZERO,
         },
     },
+    Retention { table: "conditional_client_settings", rule: Rule::Kept("administrative application classification; removed with its registered client") },
     Retention { table: "agent_task_clients", rule: Rule::Kept("persistent task obligation survives client recreation; removed only with tenant") },
     Retention { table: "agent_tasks", rule: Rule::Kept("immutable approval and terminal root fence; retain while descendant credentials may live") },
     Retention { table: "agent_task_grants", rule: Rule::Kept("durable task lineage for authoritative online checks; removed only with grant") },
