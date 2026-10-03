@@ -1,7 +1,6 @@
 # Standing-access ownership and reviews
 
-Runtime implementation is in progress in ast-dd1y.5.4. The proposed initial
-catalogue covers five provenance sources: one managed-group membership, one
+The supported initial catalogue covers five standing provenance sources: one managed-group membership, one
 user tenant/client application-role assignment, or one group tenant/client
 application-role assignment. Administrative roles, legacy claim strings and
 temporary privilege activations remain distinct authorities.
@@ -9,7 +8,7 @@ temporary privilege activations remain distinct authorities.
 Ownership is explicit, tenant scoped and versioned. Initial owners and assigned
 reviewers are active tenant administrators of the same realm; assignment alone
 confers no administrative role. New `admin.governance:read` and
-`admin.governance:write` operations will use the existing closed-role grants
+`admin.governance:write` operations use the existing closed-role grants
 model. A read-only auditor cannot decide or apply a removal. Human decisions
 use the actual verified session tenant and subject, never a posted UUID or a
 fabricated automation actor. Writes remain subject to the normal console CSRF,
@@ -44,12 +43,20 @@ Historical snapshots remain readable to authorized actors after the target,
 owner configuration or user disappears. Reason text is bounded and privately
 rendered; the audit records identifiers and results rather than logging reasons
 or credentials. Notifications are disabled unless a separately authorized
-transport is configured. This implementation preparation does not enable or
-send email, Slack or other external messages.
+transport is configured. Notification delivery is not configured by this workflow.
 
-Current preparation evidence: migration 0165 applied successfully in an owned
-disposable Asterius database; ordinary assignment edits and deletion/recreation
-changed generation, ownership changes invalidated revisions, and historical
-review snapshots survived ownership-configuration deletion. Runtime API,
-interface and final targeted verification remain required before advertising
-this workflow as supported.
+Application compares ownership revision, assignment generation and the complete
+bounded context, including group membership, affected account status and application
+metadata updates. Deleting and recreating a source does not revive an older decision.
+The read-only report helper uses the same context shape in its caller's snapshot
+without acquiring mutation locks.
+
+Verified against an isolated PostgreSQL database and the actual server binary:
+20 browser/API checks exercised a real user-verifying resident passkey enrollment,
+a fresh assertion and signed assurance, all five source removals, retain, ownership
+and generation drift, new group membership, controller/LDAP protection, concurrent
+retry and audit rollback. The actual desktop/mobile console passed WCAG AA checks.
+The targeted final gate passed formatting, strict Clippy and 63 tests including
+mandatory source/secret audits; all 112 fuzz targets compiled and passed strict
+linting. Slow ignored PostgreSQL integration tests remain reserved for CI.
+See [the captured evidence](evidence/access-reviews-2026-10-03.json).
