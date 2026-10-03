@@ -167,6 +167,7 @@ impl PgManagedDevices {
         Self::resolve_on(connection, tenant, grant, binding, current_anchor, true).await
     }
 
+    #[expect(clippy::too_many_lines, reason = "Keep strict issued authority and explicit provisional-parent phase checks on the same publication connection")]
     async fn resolve_on(
         connection: &mut PgConnection,
         tenant: &TenantId,
@@ -192,6 +193,7 @@ impl PgManagedDevices {
         {
             return Ok(missing(Availability::Invalid));
         }
+        let mut authority_expiry = grant.expires_at;
         if preflight {
             let Some(parent) = binding
                 .request_parent()
@@ -213,6 +215,9 @@ impl PgManagedDevices {
             };
             let current: bool = sqlx::query_scalar("select claimed_at is not null and revoked_at is null and (expires_at is null or expires_at>clock_timestamp()) from grants where tenant_id=$1 and grant_id=$2")
                 .bind(tenant.as_str()).bind(parent).fetch_one(&mut *connection).await.map_err(to_domain_error)?;
+            let parent_expiry: Option<OffsetDateTime> = sqlx::query_scalar("select expires_at from grants where tenant_id=$1 and grant_id=$2")
+                .bind(tenant.as_str()).bind(parent).fetch_one(&mut *connection).await.map_err(to_domain_error)?;
+            if let Some(expiry) = parent_expiry { authority_expiry = Some(authority_expiry.map_or(expiry, |current| current.min(expiry))); }
             if !current
                 || binding.bound_grant_id() != Some(&grant.id)
                 || user != grant.user.map(|u| *u.as_uuid())
@@ -241,6 +246,8 @@ impl PgManagedDevices {
                 return Ok(missing(Availability::Invalid));
             };
             let live_after_lock: bool = sqlx::query_scalar("select claimed_at is not null and revoked_at is null and (expires_at is null or expires_at>clock_timestamp()) from grants where tenant_id=$1 and grant_id=$2")
+                .bind(tenant.as_str()).bind(id).fetch_one(&mut *connection).await.map_err(to_domain_error)?;
+            authority_expiry = sqlx::query_scalar("select expires_at from grants where tenant_id=$1 and grant_id=$2")
                 .bind(tenant.as_str()).bind(id).fetch_one(&mut *connection).await.map_err(to_domain_error)?;
             if !live
                 || !live_after_lock
@@ -293,7 +300,11 @@ impl PgManagedDevices {
             .fetch_one(&mut *connection)
             .await
             .map_err(to_domain_error)?;
-        Ok(resolve_row(row.as_ref(), binding, now))
+        let mut fact = resolve_row(row.as_ref(), binding, now);
+        if let Some(deadline) = authority_expiry {
+            fact.expires_at = fact.expires_at.map(|expiry| expiry.min(deadline));
+        }
+        Ok(fact)
     }
 }
 
@@ -1020,7 +1031,7 @@ async fn relay_token_current_on(
          on g.tenant_id=r.tenant_id and g.grant_id=r.grant_id \
          where r.tenant_id=$1 and r.client_id=$2 and r.jti=$3 and r.expires_at>clock_timestamp() \
          and g.client_id=r.client_id and g.revoked_at is null and g.user_id is null and g.subject is null \
-         and g.parent_grant_id is null and g.session_id is null and g.actor_chain='[]'::jsonb \
+         and g.claimed_at is not null and g.parent_grant_id is null and g.session_id is null and g.actor_chain='[]'::jsonb \
          and (g.expires_at is null or g.expires_at>clock_timestamp()) \
          and not exists(select 1 from agent_task_grants t where t.tenant_id=g.tenant_id and t.grant_id=g.grant_id))"
     ).bind(tenant.as_str()).bind(client.as_str()).bind(jti).fetch_one(connection).await.map_err(to_domain_error)?;
