@@ -67,6 +67,20 @@ native-denial latencies in redacted JSON. This is measured evidence, not an
 instantaneous revocation guarantee; operators needing online enforcement must
 use the separately designed online authentication path.
 
+The rotation fixture deliberately exercises the console's emergency **Rotate and
+sign immediately** action. Kubernetes v1.35 uses go-oidc v2, whose
+[remote key-set cache](https://github.com/coreos/go-oidc/blob/v2.3.0/jwks.go)
+keeps its cached keys until the issuer's cache lifetime approaches expiry, even
+when a token names a new `kid`. Asterius serves `Cache-Control: max-age=300`.
+Consequently an immediately activated key can cause temporary authentication
+failures despite a valid new signature. The fixture polls actual native
+verification for at most 360 seconds, refreshes through the real OP if a token
+approaches expiry, and records convergence rather than bypassing verification.
+For ordinary operations, use staged rotation and its published-before-signing
+propagation period; reserve immediate activation for the documented emergency
+tradeoff. This follows the issuer/cache coordination described in
+[OIDC Core §10.1.1](https://openid.net/specs/openid-connect-core-1_0.html#RotateSigKeys).
+
 The browser run also guards a web interoperability detail: the broker sends
 `Referrer-Policy: strict-origin`. The WHATWG Fetch
 [Origin-header algorithm](https://fetch.spec.whatwg.org/#append-a-request-origin-header)

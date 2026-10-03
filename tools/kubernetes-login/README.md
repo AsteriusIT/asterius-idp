@@ -198,3 +198,8 @@ evidence.
 
 Real OP/browser/OS-store/kubectl acceptance and CI reproduction are described in
 [the interoperability guide](../../docs/testing/kubernetes-interoperability.md).
+
+Use staged ES256 rotation for normal operations. The native Kubernetes v1.35
+verifier honors Asterius's five-minute JWKS cache lifetime; **Rotate and sign
+immediately** can therefore cause temporary new-token authentication failures.
+The interoperability guide measures this emergency propagation boundary.

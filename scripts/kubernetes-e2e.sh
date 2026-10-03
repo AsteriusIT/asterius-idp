@@ -41,7 +41,7 @@ cleanup() {
   if [[ "$secret_created" = 1 ]]; then docker rm -f "$secret_container" >/dev/null 2>&1 || true; fi
   if [[ "${KUBE_E2E_KEEP_CLUSTER:-0}" != 1 ]]; then
     if [[ "$issuer_created" = 1 ]]; then docker rm -f "$issuer_container" >/dev/null 2>&1 || true; fi
-    if [[ "$cluster_created" = 1 ]]; then kind delete cluster --name "$cluster_name" >/dev/null 2>&1 || true; fi
+    if [[ "$cluster_created" = 1 ]]; then kind delete cluster --name "$cluster_name" --kubeconfig "$run_dir/admin-kubeconfig" >/dev/null 2>&1 || true; fi
   else
     echo "Cluster lease retained: $run_dir/admin-kubeconfig; caller owns eventual cleanup."
   fi

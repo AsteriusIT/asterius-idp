@@ -52,7 +52,7 @@ jobs:
   kubernetes-interoperability:
     name: Kubernetes real OP, helper, RBAC and expiry
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 45
     services:
       postgres:
         image: postgres:16-alpine

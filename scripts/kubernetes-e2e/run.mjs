@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { createServer, request as httpsRequest } from "node:https";
-import { spawn, execFileSync, execFile } from "node:child_process";
+import { spawn, spawnSync, execFileSync, execFile } from "node:child_process";
 import { chromium } from "../../e2e/node_modules/playwright/index.mjs";
 import {
   decodeJwt,
@@ -464,9 +464,42 @@ try {
   );
   await new Promise((resolve) => setTimeout(resolve, 31000));
   forceRefresh();
+  const propagationStarted = Date.now();
+  let initialKeyPropagationRejection = false;
+  try {
+    await kube(["get", "configmaps", "-n", "human-access", "-o", "name"]);
+  } catch (error) {
+    if (!error.message.includes("(Unauthorized)")) throw error;
+    initialKeyPropagationRejection = true;
+  }
+  let rotated = latest();
+  const newKid = decodeProtectedHeader(rotated.idToken).kid;
+  let nativeStatus;
+  do {
+    nativeStatus = await api(
+      rotated.idToken,
+      "/api/v1/namespaces/human-access/configmaps",
+    );
+    if (nativeStatus === 200) break;
+    assert.equal(nativeStatus, 401, "unexpected_rotation_status");
+    if (decodeJwt(rotated.idToken).exp * 1000 - Date.now() < 60000) {
+      forceRefresh();
+      try {
+        await kube(["get", "configmaps", "-n", "human-access", "-o", "name"]);
+      } catch (error) {
+        if (!error.message.includes("(Unauthorized)")) throw error;
+      }
+      rotated = latest();
+      assert.equal(decodeProtectedHeader(rotated.idToken).kid, newKid);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  } while (Date.now() - propagationStarted < 360000);
+  assert.equal(
+    nativeStatus,
+    200,
+    "new_key_did_not_converge_within_jwks_cache_bound",
+  );
   await kube(["get", "configmaps", "-n", "human-access", "-o", "name"]);
-  const rotated = latest(),
-    newKid = decodeProtectedHeader(rotated.idToken).kid;
   assert.ok(newKid !== beforeKid, "tenant_rotation_did_not_change_kid");
   const jwks = await (await fetch(cluster.jwksUri)).json();
   assert.ok(
@@ -475,6 +508,10 @@ try {
   );
   check(
     "real ES256 signing key rotation: old JWT retained and newly signed credential accepted",
+    {
+      initialKeyPropagationRejection,
+      propagationMilliseconds: Date.now() - propagationStarted,
+    },
   );
   const suspendedAt = Date.now(),
     held = rotated.idToken;
@@ -541,6 +578,32 @@ try {
     JSON.stringify(report, null, 2) + "\n",
   );
 } catch (error) {
+  try {
+    const container = execFileSync(
+      "docker",
+      [
+        "exec",
+        "asterius-dd1y14-control-plane",
+        "crictl",
+        "ps",
+        "-q",
+        "--name",
+        "kube-apiserver",
+      ],
+      { encoding: "utf8" },
+    ).trim();
+    const diagnostic = spawnSync(
+      "docker",
+      ["exec", "asterius-dd1y14-control-plane", "crictl", "logs", container],
+      { encoding: "utf8", maxBuffer: 2097152 },
+    );
+    const logs = (diagnostic.stdout || "") + (diagnostic.stderr || "");
+    writeFileSync(
+      "/tmp/asterius-dd1y14-apiserver-diagnostic.log",
+      logs.replace(/eyJ[A-Za-z0-9_.-]+/g, "[redacted JWT]"),
+      { mode: 0o600 },
+    );
+  } catch {}
   process.stderr.write("Acceptance failure: " + error.message + "\n");
   throw error;
 } finally {
