@@ -138,6 +138,8 @@ impl std::fmt::Display for IssuanceAction {
 /// be signed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IssuanceQuery {
+    /// Task/run and immutable approval identity for cache separation.
+    pub task: Option<crate::agent_tasks::Binding>,
     /// The agent, by the `client_id` it authenticated as.
     pub agent: ClientId,
     /// The principal it acts for.
@@ -179,6 +181,11 @@ impl IssuanceQuery {
             key.push_str(part);
             key.push('|');
         };
+        if let Some(task) = &self.task {
+            push(&task.task_id.to_string());
+            push(&task.approval_revision.to_string());
+        }
+        push("");
         push(self.agent.as_str());
         push(&self.owner.to_string());
         push(self.action.name());
@@ -299,6 +306,7 @@ mod tests {
 
     fn query() -> IssuanceQuery {
         IssuanceQuery {
+            task: None,
             agent: ClientId::new("c.agent".to_owned()),
             owner: AgentOwner::User(UserId::new(uuid::Uuid::nil())),
             action: IssuanceAction::ObtainToken,

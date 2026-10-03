@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: asterius-controller
+spec:
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels: {app: asterius-controller}
+  template:
+    metadata:
+      labels: {app: asterius-controller}
+    spec:
+      serviceAccountName: asterius-controller
+      automountServiceAccountToken: false
+      securityContext: {runAsNonRoot: true, runAsUser: 65532, runAsGroup: 65532, fsGroup: 65532}
+      containers:
+        - name: controller
+          image: {{ printf "%s@%s" (required "image.repository required" .Values.image.repository) (required "image.digest required" .Values.image.digest) | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+            seccompProfile: {type: RuntimeDefault}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 500m, memory: 128Mi}
+          env:
+            - {name: ASTERIUS_NAMESPACE, value: {{ .Release.Namespace | quote }}}
+            - {name: ASTERIUS_TENANT, value: {{ required "tenant required" .Values.tenant | quote }}}
+            - {name: ASTERIUS_ISSUER, value: {{ required "issuer required" .Values.issuer | quote }}}
+            - {name: ASTERIUS_CLIENT_ID, value: {{ required "clientID required" .Values.clientID | quote }}}
+            - {name: ASTERIUS_KEY_ID, value: {{ required "keyID required" .Values.keyID | quote }}}
+            - {name: ASTERIUS_BINDING_UID, value: {{ required "bindingUID required" .Values.bindingUID | quote }}}
+            - {name: ASTERIUS_CLUSTER_ID, value: {{ required "clusterID required" .Values.clusterID | quote }}}
+            - {name: ASTERIUS_SECRET_NAMES, value: {{ join "," .Values.secretNames | quote }}}
+            - name: ASTERIUS_HOLDER
+              valueFrom: {fieldRef: {fieldPath: metadata.uid}}
+          volumeMounts:
+            - {name: kubernetes-credential, mountPath: /var/run/asterius-kubernetes, readOnly: true}
+      volumes:
+        - name: kubernetes-credential
+          projected:
+            defaultMode: 0440
+            sources:
+              - serviceAccountToken: {path: token, expirationSeconds: 600}
+              - configMap:
+                  name: kube-root-ca.crt
+                  items: [{key: ca.crt, path: ca.crt}]

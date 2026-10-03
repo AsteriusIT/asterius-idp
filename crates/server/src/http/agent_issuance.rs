@@ -750,6 +750,7 @@ fn query(
     grant_type: GrantType,
 ) -> IssuanceQuery {
     IssuanceQuery {
+        task: grant.task.clone(),
         agent: client.id.clone(),
         owner: *owner,
         action: IssuanceAction::of(grant_type),
@@ -831,6 +832,7 @@ mod tests {
 
     fn sample() -> IssuanceQuery {
         IssuanceQuery {
+            task: None,
             agent: ClientId::new("c.agent".to_owned()),
             owner: AgentOwner::User(asterius_domain::entities::user::UserId::new(
                 uuid::Uuid::nil(),

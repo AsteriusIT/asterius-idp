@@ -114,6 +114,10 @@ pub const POLICY: &[Retention] = &[
         },
     },
     Retention { table: "conditional_client_settings", rule: Rule::Kept("administrative application classification; removed with its registered client") },
+    Retention { table: "agent_task_clients", rule: Rule::Kept("persistent task obligation survives client recreation; removed only with tenant") },
+    Retention { table: "agent_tasks", rule: Rule::Kept("immutable approval and terminal root fence; retain while descendant credentials may live") },
+    Retention { table: "agent_task_grants", rule: Rule::Kept("durable task lineage for authoritative online checks; removed only with grant") },
+    Retention { table: "agent_task_tokens", rule: Rule::Kept("private JTI lineage independent of public grant claims; retained with task grant") },
     Retention { table: "kubernetes_profiles", rule: Rule::Kept("tenant-owned cluster configuration; removed with its registered client") },
     Retention { table: "declarative_owners", rule: Rule::Kept("live ownership and deleted-resource generations prevent ABA and unsafe adoption; explicit release, cascade with tenant") },
     Retention { table: "declarative_creation_keys", rule: Rule::Kept("durable declarative retry receipts cannot expire while stale controller retries remain possible; cascade with tenant") },
@@ -655,6 +659,7 @@ pub const POLICY: &[Retention] = &[
             statement: "delete from grants where ctid = any (array(
                             select g.ctid from grants g
                              where g.tenant_id = $1
+                               and not exists (select 1 from agent_task_grants t where t.tenant_id=g.tenant_id and t.grant_id=g.grant_id)
                                and g.user_id is null
                                and (g.subject is null or exists (select 1 from workload_grant_bindings w where w.tenant_id=g.tenant_id and w.grant_id=g.grant_id))
                                and g.session_id is null

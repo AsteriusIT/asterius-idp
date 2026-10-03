@@ -165,6 +165,10 @@ pub async fn token(
         }
     };
 
+    if let Err(description) = task_selector(&params, dispatch.grant()) {
+        return error(StatusCode::BAD_REQUEST, "invalid_request", description);
+    }
+
     if context
         .ipsie_identity_only_clients
         .is_some_and(|clients| clients.contains(client.id.as_str()))
@@ -222,6 +226,16 @@ pub(crate) fn no_store() -> [(header::HeaderName, header::HeaderValue); 2] {
         (header::CACHE_CONTROL, HEADER_NO_STORE),
         (header::PRAGMA, HEADER_NO_CACHE),
     ]
+}
+
+fn task_selector(params: &Parameters, grant: GrantType) -> Result<(), &'static str> {
+    let Ok(task) = params.get("task_id") else {
+        return Err("task_id was sent more than once");
+    };
+    if task.is_some() && grant != GrantType::ClientCredentials {
+        return Err("task_id may only select an approved client-credentials run");
+    }
+    Ok(())
 }
 
 /// An RFC 6749 §5.2 error a grant handler decided on.
@@ -396,6 +410,25 @@ pub(crate) fn is_form_encoded(headers: &HeaderMap) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_tasks_selector_only_selects_client_credentials_and_refuses_duplicates() {
+        let params = Parameters::from_pairs([("task_id", "opaque-run")]);
+        assert!(task_selector(&params, GrantType::ClientCredentials).is_ok());
+        for kind in [
+            GrantType::AuthorizationCode,
+            GrantType::RefreshToken,
+            GrantType::TokenExchange,
+            GrantType::DeviceCode,
+            GrantType::Ciba,
+        ] {
+            assert!(task_selector(&params, kind).is_err());
+        }
+        let duplicate = Parameters::from_pairs([("task_id", "first"), ("task_id", "second")]);
+        assert!(task_selector(&duplicate, GrantType::ClientCredentials).is_err());
+        let absent = Parameters::default();
+        assert!(task_selector(&absent, GrantType::TokenExchange).is_ok());
+    }
 
     #[test]
     fn a_client_secret_basic_failure_has_a_matching_challenge() {

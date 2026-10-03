@@ -322,6 +322,15 @@ impl fmt::Display for CompactJws {
     }
 }
 
+/// Access-token authorization context supplied by a validated grant handler.
+#[derive(Debug, Clone, Copy)]
+pub struct AccessIssuance<'a> {
+    pub grant: &'a crate::Grant,
+    pub kind: crate::GrantType,
+    /// Server-owned audiences offered by this validated handler, never request data.
+    pub implicit_resources: &'a [crate::ResourceServer],
+}
+
 /// Signs tokens for one tenant.
 ///
 /// The port is deliberately narrow: a caller says what kind of token it is,
@@ -331,6 +340,19 @@ impl fmt::Display for CompactJws {
 /// (RFC 8725 §3.11) without any call site having to remember.
 #[async_trait::async_trait]
 pub trait Signer: fmt::Debug + Send + Sync {
+    /// Resolve any database/key-unwrapping work before an authorization fence.
+    /// A prepared adapter retains the full port, including `sign_access`
+    /// enforcement; returning a raw key adapter from a policy decorator would
+    /// bypass its fence. `None` means this signer performs only local work and
+    /// needs no preparation. Network-backed implementations must override it.
+    async fn prepare(
+        &self,
+        _tenant: &TenantId,
+        _algorithm: Option<SigningAlgorithm>,
+    ) -> Result<Option<Box<dyn Signer + '_>>, crate::DomainError> {
+        Ok(None)
+    }
+
     /// Signs `claims` as a JWT of media type `typ`, under `algorithm`.
     ///
     /// `typ` is the explicit type header — `at+jwt` for an access token
@@ -391,6 +413,21 @@ pub trait Signer: fmt::Debug + Send + Sync {
         typ: &'static str,
         claims: &serde_json::Value,
     ) -> Result<CompactJws, crate::DomainError>;
+
+    /// Signs an access token with its durable authorization lineage available
+    /// to an issuance fence. Adapters without task enforcement retain signing
+    /// behavior; the production composition installs the authoritative fence.
+    async fn sign_access(
+        &self,
+        tenant: &TenantId,
+        issuance: AccessIssuance<'_>,
+        algorithm: Option<SigningAlgorithm>,
+        typ: &'static str,
+        claims: &serde_json::Value,
+    ) -> Result<CompactJws, crate::DomainError> {
+        let _ = issuance;
+        self.sign(tenant, algorithm, typ, claims).await
+    }
 }
 
 /// What one pass of the key lifecycle did.

@@ -964,6 +964,14 @@ fn grants_pages(endpoints: Arc<ClientEndpoints>) -> Router {
             post(grants_revoke).with_state(Arc::clone(&endpoints)),
         )
         .route(
+            account_grants::TASK_PREVIEW_PATH,
+            get(agent_task_preview).with_state(Arc::clone(&endpoints)),
+        )
+        .route(
+            account_grants::TASK_APPROVE_PATH,
+            post(agent_task_approve).with_state(Arc::clone(&endpoints)),
+        )
+        .route(
             account_grants::SIGN_IN_PATH,
             get(grants_sign_in).with_state(endpoints),
         )
@@ -4030,6 +4038,12 @@ async fn dispatch_grants(
     // same way, by computing the proof key at the edge and handing it down.
     let codes = scope.codes();
     let grants = scope.grants();
+    let agent_tasks = grants.agent_tasks();
+    let task_signer = asterius_store_pg::agent_tasks::TaskSigner {
+        tasks: &agent_tasks,
+        inner: endpoints.signer.as_ref(),
+        audit: endpoints.audit.as_ref(),
+    };
     let refresh_tokens = scope.refresh_tokens();
     let native_sso =
         asterius_store_pg::PgNativeSso::new(endpoints.store.pool().clone(), tenant.id.clone());
@@ -4059,7 +4073,9 @@ async fn dispatch_grants(
         proof_key: request.binding.map(|binding| &binding.jkt),
         certificate,
     };
+    let agent_policy = agent_policy(endpoints, &acr_policy, &tenant.id, now);
     let authorization_code = AuthorizationCode {
+        agent_policy: agent_policy.clone(),
         ipsie_identity_only_clients: endpoints
             .ipsie_identity_only_clients
             .get(tenant.id.as_str()),
@@ -4079,7 +4095,7 @@ async fn dispatch_grants(
         sessions: &sessions,
         users: &users,
         resource_servers: &resource_servers,
-        signer: endpoints.signer.as_ref(),
+        signer: &task_signer,
         grant_id_claim,
         grant_management,
         lifetimes,
@@ -4097,11 +4113,10 @@ async fn dispatch_grants(
     // mint, and the posture to take when it cannot answer. Absent —
     // `[features] authzen` off — every handler below carries a policy of
     // `None` and behaves exactly as it did.
-    let agent_policy = agent_policy(endpoints, &acr_policy, &tenant.id, now);
     let client_credentials = ClientCredentials {
         grants: &grants,
         resource_servers: &resource_servers,
-        signer: endpoints.signer.as_ref(),
+        signer: &task_signer,
         audit: endpoints.audit.as_ref(),
         grant_id_claim,
         grant_management,
@@ -4159,7 +4174,7 @@ async fn dispatch_grants(
         redemption: &id_jag_redemption,
         users: &users,
         resource_servers: &resource_servers,
-        signer: endpoints.signer.as_ref(),
+        signer: &task_signer,
         agent_policy,
         constraint,
         lifetimes,
@@ -7231,6 +7246,72 @@ async fn grants_revoke(
     let language = page_language(&endpoints, &tenant, &headers).await;
     let text = language.for_request(&asterius_domain::locale::UiLocales::default());
     account_grants::revoke(
+        &grants_context(
+            &tenant,
+            &parts,
+            &text,
+            endpoints.audit.as_ref(),
+            &nonce,
+            mount,
+        ),
+        &headers,
+        &body,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+async fn agent_task_preview(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<std::collections::BTreeMap<String, String>>,
+) -> Response {
+    let parts = match grants_parts(&endpoints, &tenant).await {
+        Ok(parts) => parts,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    account_grants::task_preview(
+        &grants_context(
+            &tenant,
+            &parts,
+            &text,
+            endpoints.audit.as_ref(),
+            &nonce,
+            mount,
+        ),
+        &headers,
+        query.get("root_grant_id").map_or("", String::as_str),
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+async fn agent_task_approve(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let parts = match grants_parts(&endpoints, &tenant).await {
+        Ok(parts) => parts,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    account_grants::task_approve(
         &grants_context(
             &tenant,
             &parts,

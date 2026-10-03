@@ -2538,3 +2538,68 @@ can orphan live authority. Status/events/logs contain bounded categories and
 opaque public identity/revision only, never secrets, credentials or raw policy
 literals. [The CRD ADR](adr/kubernetes-identity-resources.md) specifies this trust
 boundary; operator runtime verification is separate.
+
+The operator pins namespace, tenant/issuer/client, binding UID and cluster ID on
+every cycle. Status and import IDs are parsed and tenant/kind checked before any
+remote read. FAPI private keys and issuer CA remain selected Secret material in
+memory; a malformed rotation discards prior usable credentials. A 30-second
+conditional Lease and ten-second operation deadline bound overlapping replicas,
+and exact remote ETags protect concurrent state writes. Same-generation console
+drift is reported without overwrite. GitOps finalizer stripping is refused by
+admission; only the exact controller service account or an administrator permitted
+to update the local binding can remove it. Delete requires the confirmed prior
+protection-disabled generation, accounting for the API server's deletion bump,
+and the same live revision. Errors/conditions use bounded fixed categories,
+including invalid Secret canaries; no raw error body or private key enters status.
+The controlled real-server/Kubernetes evidence is described in
+[the operator guide](kubernetes-identity-operator.md).
+
+### Vault/OpenBao recipe trust boundary (ast-dd1y.6.6)
+
+The tested human recipe uses an explicitly selected standard OIDC confidential
+client, exact HTTPS callback, S256 PKCE and ES256 ID token. The downstream role
+binds the verified stable subject, client audience and verified-email claim to
+one read policy. Its client secret is external to committed templates and is
+rendered only to a new private file. The workload recipe establishes separate
+explicit Kubernetes JWT trust with pinned public keys, issuer, audience,
+namespace and ServiceAccount name/UID. It does not translate DPoP access tokens
+into Bearer authority or verify their proof in Vault/OpenBao. Offline JWT
+validation retains validity after ServiceAccount deletion until expiry. Product
+token authority has its own TTL/revocation; upstream logout cannot withdraw a
+fetched secret or silently revoke that token. Versioned native positive/refusal,
+logout and expiry evidence and the exact limits are in
+[the integration recipe](integrations/vault-openbao.md). Its test cluster,
+databases, TLS services and credential files are disposable and independently
+owned; no current Kubernetes context or shared schema is modified.
+
+### Immutable agent task approvals
+
+An agent client retains independent FAPI authentication and sender proof. A
+fresh owner session and a separate CSRF challenge are required to approve an
+existing owner-scoped human grant. Reading a preview, presenting `task_id`, or
+copying an opaque revision never grants authority. Expansion requires a new
+root and explicit approval; task fields and grant parentage cannot be updated
+under existing credentials. The recognized RFC9396 comparator preserves exact
+action/location association rather than merging unrelated approved details.
+
+Production key selection and any KEK network operation finish before an
+authority transaction begins. A detached key handle remains tenant/algorithm
+bound and expires with the original cache lease; prepared decorators preserve
+task enforcement rather than returning a raw crypto signer.
+
+A transaction fence locks current principals, root, task and ancestors through
+signing, private JTI insertion and audit append, then commits before a token can
+leave the handler. Cached PDP decisions cannot bypass lifecycle validity.
+Revocation that commits first causes issuance to fail; signing that commits
+first produces a bounded credential linked to the subsequent withdrawal.
+Signature or persistence failure rolls back both new grant and JTI. Owner/client
+removal leaves an irreversible terminal approval tombstone; deferred nullable
+FK checks permit all cascade actions to complete in either order.
+
+Task tokens carry opaque task/revision correlators and omit automatically
+inherited owner roles. Private lineage remains mandatory even when an operator
+hides the public grant ID. External-workload, Native SSO and ID-JAG raw signing
+cannot bypass the explicit task obligation. Online descendant withdrawal is a
+separate ast-dd1y.8.3 enforcement boundary; offline use is bounded by a 300-second
+maximum and task/ancestor deadlines. See `docs/agent-task-approvals.md` for the
+activation, supported paths and retained history contract.

@@ -87,6 +87,13 @@ jobs:
           go-version: "1.24"
       - name: install isolated kind runner
         run: go install sigs.k8s.io/kind@v0.31.0
+      - name: operator fixture prerequisites and focused Go checks
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y python3-cryptography
+          cd providers/terraform
+          go test ./internal/operator ./internal/client -run '^Test' -count=1
+          go vet ./internal/operator ./internal/client ./cmd/asterius-operator
       - name: build the real OP and embedded console
         run: |
           ./scripts/build-console.sh
@@ -97,11 +104,18 @@ jobs:
         run: ./scripts/kubernetes-e2e.sh
       - name: real structural schemas and namespace admission
         run: bash scripts/kubernetes-crd-tests.sh
+      - name: real operator reconciliation and tenant isolation
+        env:
+          ASTERIUS_BIN: ${{ github.workspace }}/target/debug/asterius
+          ASTERIUS_ACCEPTANCE_DB_CONTAINER: ${{ job.services.postgres.id }}
+        run: bash scripts/operator-acceptance.sh
       - name: retain public evidence only
         uses: actions/upload-artifact@v4
         with:
           name: kubernetes-interoperability
-          path: artifacts/kubernetes-e2e.json
+          path: |
+            artifacts/kubernetes-e2e.json
+            artifacts/operator-e2e.json
           if-no-files-found: ignore
 
   # -------------------------------------------------------------------------

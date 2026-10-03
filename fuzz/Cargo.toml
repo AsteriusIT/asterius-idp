@@ -162,6 +162,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "agent_task_permissions"
+path = "fuzz_targets/agent_task_permissions.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "approval_decision"
 path = "fuzz_targets/approval_decision.rs"
 test = false

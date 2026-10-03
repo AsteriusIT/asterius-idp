@@ -231,7 +231,16 @@ enum Failure {
 
 impl From<DomainError> for Failure {
     fn from(error: DomainError) -> Self {
-        Self::Server(error)
+        match error {
+            DomainError::Invalid {
+                field: "agent_task",
+                ..
+            } => Self::Client(
+                "invalid_grant",
+                "task authority is not active or does not cover this request",
+            ),
+            other => Self::Server(other),
+        }
     }
 }
 
@@ -433,7 +442,7 @@ impl RefreshToken<'_> {
         let targets = asterius_oidc::token::requested_resources(params)
             .map_err(|_| Failure::Client(INVALID_TARGET, TARGET_REFUSED))?;
 
-        let (access_token, id_token) = self
+        let (access_token, id_token, access_lifetime) = self
             .mint(
                 tenant,
                 client,
@@ -464,7 +473,7 @@ impl RefreshToken<'_> {
             &access_token,
             &returned,
             id_token.as_deref(),
-            self.lifetimes.access_token(),
+            access_lifetime,
             device_secret.as_ref().map(|issued| issued.value.as_str()),
         ))
     }
@@ -493,11 +502,11 @@ impl RefreshToken<'_> {
         effective: &BTreeSet<String>,
         targets: &BTreeSet<String>,
         device_secret_hash: Option<&str>,
-    ) -> Result<(String, Option<String>), Failure> {
+    ) -> Result<(String, Option<String>, time::Duration), Failure> {
         let mut session = self.session_facts(grant).await?;
         session.revalidate_acr(self.acr_policy);
-        let claimed = self.grants.claim(&grant.id, self.now).await?;
-        let narrowed = Grant {
+        let claimed = self.grants.claim_for_issuance(&grant.id, self.now).await?;
+        let mut narrowed = Grant {
             scopes: effective.clone(),
             ..grant.clone()
         };
@@ -539,6 +548,19 @@ impl RefreshToken<'_> {
         // refreshed after a role was withdrawn must not still assert it.
         let held = issuance::held_roles(self.roles, &narrowed).await?;
 
+        let access_lifetime = self
+            .grants
+            .agent_tasks()
+            .prepare(
+                &mut narrowed,
+                None,
+                None,
+                self.now,
+                self.lifetimes.access_token(),
+                self.audit,
+            )
+            .await?;
+
         let access = AccessToken::new(
             &tenant.issuer,
             &narrowed,
@@ -549,7 +571,7 @@ impl RefreshToken<'_> {
             self.now,
         )
         .authenticated_by(session.authentication.clone())
-        .for_lifetime(self.lifetimes.access_token())
+        .for_lifetime(access_lifetime)
         .with_grant_id_when(self.grant_id_claim)
         // `ast-095`: the tenant's shared roles under `roles`, this client's own
         // under `resource_access.<client_id>.roles`. The builder narrows them
@@ -560,8 +582,19 @@ impl RefreshToken<'_> {
 
         let access_token = self
             .signer
-            .sign(
+            .sign_access(
                 &tenant.id,
+                asterius_domain::keys::AccessIssuance {
+                    implicit_resources: &issuance::implicit_resources(
+                        tenant,
+                        issuance::ImplicitResources {
+                            grant_management: self.grant_management,
+                            ssf: false,
+                        },
+                    ),
+                    grant: &narrowed,
+                    kind: GrantType::RefreshToken,
+                },
                 access.required_algorithm(),
                 access.typ(),
                 access.claims(),
@@ -617,7 +650,7 @@ impl RefreshToken<'_> {
             None
         };
 
-        Ok((access_token.as_str().to_owned(), id_token))
+        Ok((access_token.as_str().to_owned(), id_token, access_lifetime))
     }
 
     /// RFC 9449 §5, and the tenant's `bind_to_dpop_key`.
