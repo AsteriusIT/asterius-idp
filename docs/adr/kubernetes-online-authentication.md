@@ -70,12 +70,33 @@ identities. Review does not create grants, subjects, sessions or policy objects.
 ## TokenReview and operator contract
 
 Reject malformed JSON, unsupported version/kind, oversized tokens, excessive
-audiences and caller-supplied status. Require nonempty `spec.audiences`, at most
+audiences and caller-populated authentication status. Require nonempty `spec.audiences`, at most
 16 bounded strings, with the configured client audience present. This deliberately
 stricter deployment contract avoids an ambiguous default audience. A successful
 response returns only that configured audience in `status.audiences`,
 `authenticated: true`, and the validated user. A denied review has no user.
 Never echo the submitted bearer token in the response, logs or errors.
+
+### Proposed wire-compatibility correction for the same pending review
+
+Kubernetes 1.35 creates a zero-status TokenReview and serializes through Go's
+standard JSON encoder. Its non-pointer status/user structs can emit
+`status: {"user": {}}`; zero metadata emits
+`metadata: {"creationTimestamp": null}`. Rejecting the presence of every status
+field would reject this upstream request. The prepared candidate accepts only
+absent status or this exact empty-user shape, discards it, and rejects populated
+authenticated/user/audiences/error fields and null status. Metadata is closed to
+the absent/empty/zero-creationTimestamp shapes; it is never an identity hint.
+
+This refines the earlier phrase "caller-supplied status" and must be included in
+the still-pending human review. It changes no authentication authority. See the
+[controlled serialization evidence](../testing/kubernetes-tokenreview-wire-evidence.json),
+[upstream v1 types](https://github.com/kubernetes/kubernetes/blob/v1.35.0/staging/src/k8s.io/api/authentication/v1/types.go),
+[webhook construction](https://github.com/kubernetes/kubernetes/blob/v1.35.0/staging/src/k8s.io/apiserver/plugin/pkg/authenticator/token/webhook/webhook.go),
+and [serializer delegation](https://github.com/kubernetes/apimachinery/blob/v0.35.0/pkg/runtime/serializer/json/json.go).
+The evidence reproduces wire shape, not real Kubernetes authentication or
+revocation.
+
 
 Configure `--authentication-token-webhook-version=v1`,
 `--api-audiences=<human-client-id>` and
