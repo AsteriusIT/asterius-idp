@@ -309,20 +309,34 @@ impl HeldRoles {
     /// Unmarked roles retain their independent standing authority.
     #[must_use]
     pub fn role_current_at(&self, client: &ClientId, role: &RoleName, now: OffsetDateTime) -> bool {
-        self.clients.get(client).is_some_and(|roles| roles.contains(role))
-            && self.temporary_deadlines.get(client).and_then(|roles| roles.get(role))
-                .is_none_or(|deadline| now < *deadline
-                    && self.temporary_proof_expires_at.is_some_and(|proof| now <= proof))
+        self.clients
+            .get(client)
+            .is_some_and(|roles| roles.contains(role))
+            && self
+                .temporary_deadlines
+                .get(client)
+                .and_then(|roles| roles.get(role))
+                .is_none_or(|deadline| {
+                    now < *deadline
+                        && self
+                            .temporary_proof_expires_at
+                            .is_some_and(|proof| now <= proof)
+                })
     }
 
     /// Remove temporary-only authority that expired during asynchronous work.
     /// This never removes an independently held standing role.
     pub fn retain_current_temporary_roles(&mut self, now: OffsetDateTime) {
-        let proof_current = self.temporary_proof_expires_at.is_some_and(|proof| now <= proof);
+        let proof_current = self
+            .temporary_proof_expires_at
+            .is_some_and(|proof| now <= proof);
         for (client, deadlines) in &self.temporary_deadlines {
             if let Some(roles) = self.clients.get_mut(client) {
-                roles.retain(|role| deadlines.get(role)
-                    .is_none_or(|deadline| proof_current && now < *deadline));
+                roles.retain(|role| {
+                    deadlines
+                        .get(role)
+                        .is_none_or(|deadline| proof_current && now < *deadline)
+                });
             }
         }
     }

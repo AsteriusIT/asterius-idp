@@ -760,7 +760,8 @@ async fn render(
     held.retain_current_temporary_roles(time::OffsetDateTime::now_utc());
     if held.for_client(&grant.client).clients != issued_roles.clients {
         return Err(Refused::Server(DomainError::invalid(
-            "temporary_entitlement", "temporary authority expired while rendering UserInfo",
+            "temporary_entitlement",
+            "temporary authority expired while rendering UserInfo",
         )));
     }
     Ok(no_store(
