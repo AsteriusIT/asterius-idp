@@ -35,6 +35,10 @@ use axum::response::{IntoResponse, Response};
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum AdminError {
+    /// Management errors contain only bounded nonsecret diagnostics.
+    #[error("{0}")]
+    Declarative(asterius_domain::declarative::Error),
+
     /// No credential at all: no session cookie and no token.
     #[error("this operation requires an authenticated administrator")]
     Unauthenticated,
@@ -121,11 +125,11 @@ pub enum AdminError {
     Conflict(String),
 
     /// A SCIM mutation omitted the required resource version.
-    #[error("a SCIM mutation requires If-Match")]
+    #[error("a conditional mutation requires If-Match")]
     PreconditionRequired,
 
     /// The resource changed after the client's last read.
-    #[error("the SCIM resource version changed")]
+    #[error("the resource version changed")]
     PreconditionFailed,
 
     /// A limit was reached.
@@ -146,6 +150,17 @@ impl AdminError {
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
+            Self::Declarative(error) => match error {
+                asterius_domain::declarative::Error::Invalid => "invalid_request",
+                asterius_domain::declarative::Error::NotFound => "not_found",
+                asterius_domain::declarative::Error::Revision => "revision_conflict",
+                asterius_domain::declarative::Error::Owner => "owner_conflict",
+                asterius_domain::declarative::Error::Protected => "delete_protected",
+                asterius_domain::declarative::Error::Dependency => "dependency_conflict",
+                asterius_domain::declarative::Error::LogicalKey => "logical_key_conflict",
+                asterius_domain::declarative::Error::Unsupported => "not_implemented",
+                asterius_domain::declarative::Error::Storage(_) => "unavailable",
+            },
             Self::Unauthenticated | Self::SessionUnusable => "unauthenticated",
             Self::StepUpRequired => "step_up_required",
             Self::InvalidToken => "invalid_token",
@@ -172,6 +187,14 @@ impl AdminError {
     #[must_use]
     pub const fn status(&self) -> StatusCode {
         match self {
+            Self::Declarative(error) => match error {
+                asterius_domain::declarative::Error::Invalid => StatusCode::BAD_REQUEST,
+                asterius_domain::declarative::Error::NotFound => StatusCode::NOT_FOUND,
+                asterius_domain::declarative::Error::Revision => StatusCode::PRECONDITION_FAILED,
+                asterius_domain::declarative::Error::Unsupported => StatusCode::NOT_IMPLEMENTED,
+                asterius_domain::declarative::Error::Storage(_) => StatusCode::SERVICE_UNAVAILABLE,
+                _ => StatusCode::CONFLICT,
+            },
             Self::Unauthenticated
             | Self::SessionUnusable
             | Self::InvalidToken

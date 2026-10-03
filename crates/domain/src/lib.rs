@@ -122,3 +122,5 @@ pub use groups::{
     Group, GroupDirectory, GroupId, GroupMetadata, GroupMetadataError, GroupName,
     ScimGroupReplacement, ScimGroupState,
 };
+
+pub mod declarative;

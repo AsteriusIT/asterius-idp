@@ -755,3 +755,10 @@ path = "fuzz_targets/webauthn_client_data.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "declarative_import_id"
+path = "fuzz_targets/declarative_import_id.rs"
+test = false
+doc = false
+bench = false

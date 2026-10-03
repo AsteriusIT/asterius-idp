@@ -114,6 +114,11 @@ pub trait PolicyTrial: std::fmt::Debug + Send + Sync {
 /// What an admin API request needs from below the API.
 #[async_trait::async_trait]
 pub trait AdminBackend: std::fmt::Debug + Send + Sync {
+    /// Atomic live management adapter; unavailable backends fail closed.
+    fn management(&self) -> Option<Arc<dyn asterius_domain::declarative::Management>> {
+        None
+    }
+
     async fn update_flow_api(
         &self,
         _tenant: &TenantId,

@@ -256,6 +256,17 @@ impl PgClientRepository {
     /// Returns [`DomainError::Invalid`] if the stored row no longer describes a
     /// client this profile accepts, or a storage error.
     pub async fn find(&self, client_id: &ClientId) -> Result<Option<Client>, DomainError> {
+        let mut connection = self.pool.acquire().await.map_err(to_domain_error)?;
+        Self::find_on_connection(&mut connection, &self.tenant, self.capabilities, client_id).await
+    }
+
+    /// Reuses live reconstruction within a controller-owned transaction.
+    pub(crate) async fn find_on_connection(
+        connection: &mut sqlx::PgConnection,
+        tenant: &TenantId,
+        capabilities: Capabilities,
+        client_id: &ClientId,
+    ) -> Result<Option<Client>, DomainError> {
         let row = bind_all!(sqlx::query_as::<_, Row>(
             "select client_id, client_name, compliance_profile, token_endpoint_auth_method, redirect_uris,
                     post_logout_redirect_uris, grant_types, response_types, scopes, resources, jwks, jwks_uri,
@@ -274,13 +285,13 @@ impl PgClientRepository {
                     status, created_at, updated_at
              from clients
              where tenant_id = $1 and client_id = $2"),
-            self.tenant.as_str(),
+            tenant.as_str(),
             client_id.as_str()
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(connection)
         .await
         .map_err(to_domain_error)?;
-        row.map(|row| row.into_entity(&self.tenant, self.capabilities))
+        row.map(|row| row.into_entity(tenant, capabilities))
             .transpose()
     }
 
@@ -589,8 +600,13 @@ impl PgClientRepository {
         let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
         let connection = transaction.acquire().await.map_err(to_domain_error)?;
 
-        let row =
-            Self::insert_row(connection, &self.tenant, client, registration_access_token).await?;
+        let row = Self::insert_row(
+            connection,
+            &self.tenant,
+            client,
+            Some(registration_access_token),
+        )
+        .await?;
 
         // In the same transaction, under the trail's own per-tenant lock. A
         // failure here rolls the row back with it, so the endpoint's caller is
@@ -611,7 +627,7 @@ impl PgClientRepository {
         connection: &mut sqlx::PgConnection,
         tenant: &TenantId,
         client: &Client,
-        registration_access_token: &[u8; 32],
+        registration_access_token: Option<&[u8; 32]>,
     ) -> Result<Row, DomainError> {
         let registration = &client.registration;
         let lists = ListColumns::of(registration);
@@ -684,7 +700,7 @@ impl PgClientRepository {
             &lists.authorization_details_types,
             registration.use_mtls_endpoint_aliases,
             client.status.as_str(),
-            &registration_access_token[..],
+            registration_access_token.map(<[u8; 32]>::as_slice),
             &lists.post_logout_redirect_uris,
             tls_field,
             tls_value,
@@ -711,6 +727,27 @@ impl PgClientRepository {
         .fetch_one(&mut *connection)
         .await
         .map_err(to_domain_error)
+    }
+
+    /// Operator creation shares DCR's complete validated column mapping, without a registration credential.
+    pub(crate) async fn create_on_connection(
+        connection: &mut sqlx::PgConnection,
+        tenant: &TenantId,
+        capabilities: Capabilities,
+        client: &Client,
+    ) -> Result<Client, DomainError> {
+        if &client.tenant != tenant
+            || client.registration.compliance_profile != ClientComplianceProfile::Fapi
+        {
+            return Err(DomainError::invalid(
+                "client",
+                "declarative creation requires this tenant's FAPI registration",
+            ));
+        }
+        check_response_encryption(&client.registration)?;
+        Self::insert_row(connection, tenant, client, None)
+            .await?
+            .into_entity(tenant, capabilities)
     }
 
     /// The two columns a management request is authorised against.
@@ -843,16 +880,35 @@ impl PgClientRepository {
 
     /// Replaces metadata and applies a secret rotation or revocation in the
     /// same statement, so neither half can become visible alone.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "compile-time checked client metadata columns stay in one atomic update"
-    )]
     pub async fn replace_with_secret(
         &self,
         client: &Client,
         client_secret: ClientSecretUpdate,
     ) -> Result<Client, DomainError> {
-        if client.tenant != self.tenant {
+        let mut connection = self.pool.acquire().await.map_err(to_domain_error)?;
+        Self::replace_on_connection(
+            &mut connection,
+            &self.tenant,
+            self.capabilities,
+            client,
+            client_secret,
+        )
+        .await
+    }
+
+    /// Uses the existing metadata update and agent ceilings on the supplied transaction.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "reuse the complete atomic client metadata update without a second schema"
+    )]
+    pub(crate) async fn replace_on_connection(
+        connection: &mut sqlx::PgConnection,
+        tenant: &TenantId,
+        capabilities: Capabilities,
+        client: &Client,
+        client_secret: ClientSecretUpdate,
+    ) -> Result<Client, DomainError> {
+        if client.tenant != *tenant {
             return Err(DomainError::invalid(
                 "tenant_id",
                 "does not match the tenant this repository is scoped to",
@@ -871,7 +927,8 @@ impl PgClientRepository {
         // still permits. Checked before the write and not after: the read-back
         // below applies the same rule, and by then the change would already be
         // committed.
-        self.check_agent_limits(&client.id, registration).await?;
+        Self::check_agent_limits_on_connection(connection, tenant, &client.id, registration)
+            .await?;
 
         let row = bind_all!(sqlx::query_as::<_, Row>(
             "update clients
@@ -929,7 +986,7 @@ impl PgClientRepository {
                        backchannel_logout_uri, backchannel_logout_session_required,
                        roles_in_id_token, managed_groups_claim, command_endpoint,
                        status, created_at, updated_at"),
-            self.tenant.as_str(),
+            tenant.as_str(),
             client.id.as_str(),
             registration.client_name.as_str(),
             registration.token_endpoint_auth_method.as_str(),
@@ -975,12 +1032,12 @@ impl PgClientRepository {
             algorithm_column(registration.authorization_signed_response_alg),
             registration.response_modes.as_ref().map(|modes| modes.iter().cloned().collect::<Vec<_>>()),
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(connection)
         .await
         .map_err(to_domain_error)?
         .ok_or(DomainError::NotFound)?;
 
-        row.into_entity(&self.tenant, self.capabilities)
+        row.into_entity(tenant, capabilities)
     }
 
     /// Replaces the administrator-owned resource allow-list atomically.
@@ -1047,18 +1104,19 @@ impl PgClientRepository {
     ///
     /// [`DomainError::Invalid`] when the row is an agent and the replacement
     /// leaves its limits, or when the stored profile does not parse.
-    async fn check_agent_limits(
-        &self,
+    async fn check_agent_limits_on_connection(
+        connection: &mut sqlx::PgConnection,
+        tenant: &TenantId,
         client_id: &ClientId,
         registration: &ClientRegistration,
     ) -> Result<(), DomainError> {
         let row = sqlx::query!(
             "select is_agent, agent_policy from clients
              where tenant_id = $1 and client_id = $2",
-            self.tenant.as_str(),
+            tenant.as_str(),
             client_id.as_str()
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(connection)
         .await
         .map_err(to_domain_error)?;
         let Some(row) = row.filter(|row| row.is_agent) else {

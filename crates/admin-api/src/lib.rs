@@ -49,6 +49,7 @@ pub mod backend;
 pub mod clients;
 pub mod console;
 pub mod csrf;
+mod declarative;
 pub mod error;
 pub mod flows;
 pub mod groups;
@@ -1996,7 +1997,15 @@ pub const SCIM_BULK: Operation = Operation::mutation(
     "SCIM Bulk is unsupported by this service",
 );
 
-static REGISTRY: [Operation; 154] = [
+static REGISTRY: [Operation; 162] = [
+    DECLARATIVE_READ,
+    DECLARATIVE_RESOLVE,
+    DECLARATIVE_CREATE,
+    DECLARATIVE_REPLACE,
+    DECLARATIVE_ADOPT,
+    DECLARATIVE_RELEASE,
+    DECLARATIVE_DELETE,
+    DECLARATIVE_PLAN,
     SESSION_READ,
     SESSION_END,
     OVERVIEW_USERS,
@@ -2266,6 +2275,72 @@ pub const POLICY_TRY: Operation = Operation::probe(
 pub fn registry() -> &'static [Operation] {
     &REGISTRY
 }
+
+/// Management routes additionally require the addressed kind's exact read/write scope.
+pub const DECLARATIVE_READ: Operation = Operation::read(
+    "declarative.read",
+    "/declarative/v1/resources/{import_id}",
+    S::Get,
+    A::new(R::Authenticated, "admin.session:read"),
+    "Reads canonical live state; requires kind read scope and service authentication",
+)
+.for_services();
+pub const DECLARATIVE_RESOLVE: Operation = Operation::read(
+    "declarative.resolve",
+    "/declarative/v1/resources",
+    S::Get,
+    A::new(R::Authenticated, "admin.session:read"),
+    "Resolves the authenticated owner's logical creation key; requires kind read scope",
+)
+.for_services();
+pub const DECLARATIVE_CREATE: Operation = Operation::mutation(
+    "declarative.create",
+    "/declarative/v1/resources",
+    M::Post,
+    A::new(R::Authenticated, "admin.session:read"),
+    "Atomically creates live state and logical identity; requires kind read/write scopes",
+)
+.for_services();
+pub const DECLARATIVE_REPLACE: Operation = Operation::mutation(
+    "declarative.replace",
+    "/declarative/v1/resources/{import_id}",
+    M::Put,
+    A::new(R::Authenticated, "admin.session:read"),
+    "Conditionally replaces owned live state; requires kind read/write scopes",
+)
+.for_services();
+pub const DECLARATIVE_ADOPT: Operation = Operation::mutation(
+    "declarative.adopt",
+    "/declarative/v1/resources/{import_id}/adopt",
+    M::Post,
+    A::new(R::Authenticated, "admin.session:read"),
+    "Explicitly claims unowned live state without managed builder/SCIM origin",
+)
+.for_services();
+pub const DECLARATIVE_RELEASE: Operation = Operation::mutation(
+    "declarative.release",
+    "/declarative/v1/resources/{import_id}/release",
+    M::Post,
+    A::new(R::Authenticated, "admin.session:read"),
+    "Conditionally releases controller ownership while retaining the live resource",
+)
+.for_services();
+pub const DECLARATIVE_DELETE: Operation = Operation::mutation(
+    "declarative.delete",
+    "/declarative/v1/resources/{import_id}",
+    M::Delete,
+    A::new(R::Authenticated, "admin.session:read"),
+    "Conditionally deletes unprotected owned resources; tenant deletion refused",
+)
+.for_services();
+pub const DECLARATIVE_PLAN: Operation = Operation::probe(
+    "declarative.plan",
+    "/declarative/v1/resources/{import_id}/plan",
+    M::Post,
+    A::new(R::Authenticated, "admin.session:read"),
+    "Validates a secret-free desired spec against live state; requires kind read scope",
+)
+.for_services();
 
 #[cfg(test)]
 mod tests {
