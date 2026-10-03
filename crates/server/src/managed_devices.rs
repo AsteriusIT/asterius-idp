@@ -98,6 +98,7 @@ impl std::fmt::Debug for VerifiedProxyHop {
 
 /// The immediate hop must be authenticated independently of the device leaf.
 /// This grouping keeps the transport evidence explicit at the verifier boundary.
+#[derive(Clone, Copy)]
 pub struct DeviceProxyRequest<'a> {
     pub hop: &'a VerifiedProxyHop,
     pub peer: IpAddr,

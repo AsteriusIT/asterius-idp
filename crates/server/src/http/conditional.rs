@@ -116,10 +116,6 @@ impl ConditionalAccess {
             .await
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "Exact issuance context and the separately verified device fact must remain explicit"
-    )]
     async fn check_grant_fact(
         &self,
         tenant: &Tenant,
@@ -1359,6 +1355,7 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
         self.sign_identity_bound(tenant, grant, None, algorithm, typ, claims)
             .await
     }
+    #[expect(clippy::too_many_lines, reason = "Keep the exact publication fence, current facts, successful signing and final authority recheck in one auditable transition")]
     async fn sign_identity_bound(
         &self,
         tenant: &asterius_domain::TenantId,
@@ -1527,6 +1524,7 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
         Ok(signed)
     }
 
+    #[expect(clippy::too_many_lines, reason = "Keep the exact publication fence, current facts, successful signing and final authority recheck in one auditable transition")]
     async fn sign_access(
         &self,
         tenant: &asterius_domain::TenantId,

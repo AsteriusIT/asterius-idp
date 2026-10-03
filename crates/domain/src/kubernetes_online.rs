@@ -1,4 +1,4 @@
-//! Prepared TokenReview v1 candidate. Not exported or mounted before delivery review.
+//! Prepared `TokenReview` v1 candidate, isolated pending delivery review.
 //! Request parsing never authenticates a caller, token or user.
 use crate::{Actor, ClientId, DomainError, Secret, Tenant, TenantId};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -86,7 +86,7 @@ struct EmptyStatus {
     _user: EmptyUser,
 }
 
-/// The zero ObjectMeta serialization has creationTimestamp:null. No arbitrary
+/// The zero `ObjectMeta` serialization has creationTimestamp:null. No arbitrary
 /// annotation, UID, namespace, owner reference or caller identity is accepted.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -116,7 +116,7 @@ struct WireReview {
 }
 
 /// No Serialize implementation: the request bearer credential cannot be echoed
-/// by using this type as a TokenReview response. Secret zeroizes on drop.
+/// by using this type as a `TokenReview` response. Secret zeroizes on drop.
 #[derive(Debug)]
 pub struct TokenReviewRequest {
     token: Secret<String>,

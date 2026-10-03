@@ -9364,6 +9364,17 @@ impl Handling<'_> {
     }
 }
 
+fn device_storage_error(operation: &'static str, error: &DomainError) -> AdminError {
+    match error {
+        DomainError::NotFound => AdminError::NotFound,
+        DomainError::Conflict(message) => AdminError::Conflict(message.clone()),
+        DomainError::Invalid { .. } => {
+            AdminError::Invalid("invalid managed-device operation".into())
+        }
+        other => AdminError::from_storage(operation, other),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -20395,16 +20406,5 @@ mod tests {
                 .len(),
             1
         );
-    }
-}
-
-fn device_storage_error(operation: &'static str, error: &DomainError) -> AdminError {
-    match error {
-        DomainError::NotFound => AdminError::NotFound,
-        DomainError::Conflict(message) => AdminError::Conflict(message.clone()),
-        DomainError::Invalid { .. } => {
-            AdminError::Invalid("invalid managed-device operation".into())
-        }
-        other => AdminError::from_storage(operation, other),
     }
 }

@@ -1,4 +1,4 @@
-//! Candidate supplied-connection online authentication adapter, not yet exported.
+//! Candidate supplied-connection online authentication adapter pending delivery review.
 //! Callers verify the ID signature before review and hold the publication fence
 //! while recording a successfully signed identity assertion.
 
