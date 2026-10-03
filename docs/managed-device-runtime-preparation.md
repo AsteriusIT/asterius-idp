@@ -8,8 +8,10 @@ interaction/code proof transfer, and configures a dedicated authenticated proxy
 TLS listener. Sources remain disabled by default. Source checkpoints composed by
 the parent passed workspace checks/strict lint. The composed candidate at
 `372a51de` passed 156 targeted Rust checks and all 115 fuzz target smoke checks.
-Its retained binary (`11f0d89427097dd2d4797311abea5e0fb26b973838fa3bebb70e531f453785ca`)
-passed 26 controlled HTTPS/browser checks with 114 embedded migrations; see
+The later composed candidate `d3f395c5`, including the final identity grant fence,
+passed all 26 controlled HTTPS/browser checks with 115 embedded migrations. Its
+retained binary SHA-256 is
+`6c8cd8c81dc7ab3f144aba650321074bf19ece522e637a1295cf2cdbf3a1b95a`; see
 [sanitized acceptance evidence](testing/managed-device-asterius-controlled.json).
 Human review still gates delivery. This proves the controlled software PKI
 profile; it does not prove live MDM interoperability or hardware attestation.
@@ -22,10 +24,13 @@ changes, missing/cyclic/deeper-than-ten lineage, revocation and expiry after loc
 waits. The minimum current lineage expiry caps the signed identity and is
 rechecked after cryptography and online digest persistence. Separate consent/code
 and exact-parent exchange preflight helpers never establish final issued authority.
-The previously recorded 26 runtime controls describe the earlier binary; they do
-not claim that this later concurrency correction has already been exercised.
-Focused ignored PostgreSQL regressions are supplied separately for CI, and a
-composed targeted gate/runtime proof remains pending alongside human review.
+The corrected binary passed the full 26 normal HTTPS/browser controls, including
+original-code identity issuance. That run does not claim to exercise withdrawal
+between the access-token and identity signatures. Focused ignored PostgreSQL
+regressions are supplied separately for CI; they verify real withdrawal waits,
+withdrawal-wins refusal, fresh expiry after waits and bounded cycle rejection.
+Those ignored tests have not been run locally. The composed final targeted gate
+and human review remain separate delivery requirements.
 
 The fixture performs real password and user-verified WebAuthn authentication,
 FAPI private-key JWT/DPoP PAR/PKCE, exact interaction-to-code transfer, current
@@ -35,7 +40,7 @@ Its stale observation check perturbs an owned database timestamp; it does not
 claim to measure a real 300-second outage. Source/enrollment incarnation,
 monotonic replay, tenant/user bounds, audit rollback, removal erasure and a
 concurrent source publication/signature fence are exercised. The measured owner
-removal-to-next-refusal interval was 0.357 seconds. Already-issued offline JWTs
+removal-to-next-refusal interval was 0.367 seconds. Already-issued offline JWTs
 remain bounded by their expiry and resource-server enforcement.
 
 Source administration uses established exact-realm `ConsoleTenant` administrator
