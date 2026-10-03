@@ -1,0 +1,12 @@
+{
+  "clusters": [
+    {
+      "id": "cluster-a",
+      "broker": "https://kube-login.example.com",
+      "issuer": "https://auth.example.com/t/team",
+      "clientId": "REPLACE_WITH_CLUSTER_CLIENT_ID",
+      "jwksUri": "https://auth.example.com/t/team/jwks",
+      "server": "https://cluster-a.example.com:6443"
+    }
+  ]
+}

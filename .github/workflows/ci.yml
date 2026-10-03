@@ -32,6 +32,23 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  kubernetes-login:
+    name: Kubernetes broker/helper (Node 24)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools/kubernetes-login
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.4.0
+          cache: npm
+          cache-dependency-path: tools/kubernetes-login/package-lock.json
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run check
+      - run: npm test
+
   # -------------------------------------------------------------------------
   # Cheap, parallel checks. These fail in under two minutes and catch most PRs.
   # -------------------------------------------------------------------------

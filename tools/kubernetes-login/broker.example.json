@@ -1,0 +1,21 @@
+{
+  "origin": "https://kube-login.example.com",
+  "port": 8099,
+  "database": "/var/lib/asterius-kube-broker/state.sqlite",
+  "storageKey": "REPLACE_WITH_BASE64_32_RANDOM_BYTES_FROM_SECRET_STORE",
+  "clusters": [
+    {
+      "id": "cluster-a",
+      "issuer": "https://auth.example.com/t/team",
+      "clientId": "REPLACE_WITH_CLUSTER_CLIENT_ID",
+      "keyId": "broker-client-key-1",
+      "privateJwk": {
+        "kty": "EC",
+        "crv": "P-256",
+        "x": "REPLACE",
+        "y": "REPLACE",
+        "d": "REPLACE"
+      }
+    }
+  ]
+}
