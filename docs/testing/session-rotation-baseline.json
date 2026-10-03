@@ -1,0 +1,1 @@
+{"fixture": "real_postgresql_session_rotation", "status": "pass", "baseline_fk_failure_reproduced": true, "controls": ["same_public_sid", "participants_follow_digest", "pending_enrolment_invalidated", "logout_deletion_cascades"]}
