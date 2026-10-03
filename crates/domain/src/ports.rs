@@ -1545,6 +1545,19 @@ pub trait SessionRepository: Debug + Send + Sync {
         now: OffsetDateTime,
     ) -> Result<(), DomainError>;
 
+    /// Rotates with separately verified class provenance. Legacy adapters retain
+    /// their existing rotation; missing stored provenance never authorizes freshness.
+    async fn rotate_verified(
+        &self,
+        old_digest: &str,
+        new_digest: &str,
+        proof: crate::entities::session::VerifiedSessionRotation<'_>,
+        now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        self.rotate(old_digest, new_digest, proof.methods, proof.acr, now)
+            .await
+    }
+
     /// Ends one session.
     ///
     /// # Errors

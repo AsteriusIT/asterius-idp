@@ -972,6 +972,10 @@ fn grants_pages(endpoints: Arc<ClientEndpoints>) -> Router {
             post(agent_task_approve).with_state(Arc::clone(&endpoints)),
         )
         .route(
+            account_grants::TASK_REVOKE_PATH,
+            post(agent_task_revoke).with_state(Arc::clone(&endpoints)),
+        )
+        .route(
             account_grants::SIGN_IN_PATH,
             get(grants_sign_in).with_state(endpoints),
         )
@@ -2133,6 +2137,7 @@ async fn grant_query(
     let scope = endpoints.store.scope(tenant.id.clone());
     let store = StoredGrants {
         grants: scope.grants(),
+        audit: endpoints.audit.clone(),
     };
     grant_management::query(
         grant_management_context(
@@ -2160,6 +2165,7 @@ async fn grant_revoke(
     let scope = endpoints.store.scope(tenant.id.clone());
     let store = StoredGrants {
         grants: scope.grants(),
+        audit: endpoints.audit.clone(),
     };
     grant_management::revoke(
         grant_management_context(
@@ -2200,10 +2206,18 @@ fn grant_management_context<'a>(
 #[derive(Debug)]
 struct StoredGrants {
     grants: asterius_store_pg::PgGrantRepository,
+    audit: Arc<dyn asterius_domain::AuditSink>,
 }
 
 #[async_trait::async_trait]
 impl grant_management::GrantManagementStore for StoredGrants {
+    async fn task_token_active(
+        &self,
+        query: &asterius_domain::agent_tasks::TokenQuery,
+    ) -> Result<bool, DomainError> {
+        self.grants.task_token_active(query).await
+    }
+
     async fn grant(
         &self,
         id: &asterius_domain::GrantId,
@@ -2245,7 +2259,13 @@ impl grant_management::GrantManagementStore for StoredGrants {
     ) -> Result<bool, asterius_domain::DomainError> {
         match self
             .grants
-            .revoke(id, asterius_domain::RevocationReason::UserRevoked, &[], now)
+            .revoke_with_audit(
+                id,
+                asterius_domain::RevocationReason::UserRevoked,
+                &[],
+                now,
+                self.audit.as_ref(),
+            )
             .await
         {
             Ok(_) => Ok(true),
@@ -2732,6 +2752,13 @@ impl crate::http::ssf_management::SsfManagementStore for StoredManagement {
 
 #[async_trait::async_trait]
 impl crate::http::ssf::SsfTokenStatus for StoredManagement {
+    async fn task_token_active(
+        &self,
+        query: &asterius_domain::agent_tasks::TokenQuery,
+    ) -> Result<bool, DomainError> {
+        self.grants.task_token_active(query).await
+    }
+
     async fn is_denylisted(&self, jti: &str) -> Result<bool, DomainError> {
         self.grants.is_denylisted(jti).await
     }
@@ -3226,6 +3253,13 @@ struct StoredPdpTokens {
 
 #[async_trait::async_trait]
 impl crate::http::access_evaluation::PdpTokenStatus for StoredPdpTokens {
+    async fn task_token_active(
+        &self,
+        query: &asterius_domain::agent_tasks::TokenQuery,
+    ) -> Result<bool, DomainError> {
+        self.grants.task_token_active(query).await
+    }
+
     async fn is_denylisted(&self, jti: &str) -> Result<bool, DomainError> {
         self.grants.is_denylisted(jti).await
     }
@@ -3306,6 +3340,13 @@ impl crate::http::ssf_poll::SsfPollStore for StoredPoll {
 
 #[async_trait::async_trait]
 impl crate::http::ssf::SsfTokenStatus for StoredPoll {
+    async fn task_token_active(
+        &self,
+        query: &asterius_domain::agent_tasks::TokenQuery,
+    ) -> Result<bool, DomainError> {
+        self.grants.task_token_active(query).await
+    }
+
     async fn is_denylisted(&self, jti: &str) -> Result<bool, DomainError> {
         self.grants.is_denylisted(jti).await
     }
@@ -3375,6 +3416,13 @@ impl crate::http::ssf::SsfStreamStore for StoredStreams {
 
 #[async_trait::async_trait]
 impl crate::http::ssf::SsfTokenStatus for StoredStreams {
+    async fn task_token_active(
+        &self,
+        query: &asterius_domain::agent_tasks::TokenQuery,
+    ) -> Result<bool, DomainError> {
+        self.grants.task_token_active(query).await
+    }
+
     async fn is_denylisted(&self, jti: &str) -> Result<bool, DomainError> {
         self.grants.is_denylisted(jti).await
     }
@@ -3511,6 +3559,20 @@ struct StoredIntrospection {
 
 #[async_trait::async_trait]
 impl introspection::IntrospectionSource for StoredIntrospection {
+    async fn task_grant_active(
+        &self,
+        grant: &asterius_domain::GrantId,
+    ) -> Result<bool, DomainError> {
+        self.grants.task_grant_active(grant).await
+    }
+
+    async fn task_token_active(
+        &self,
+        query: &asterius_domain::agent_tasks::TokenQuery,
+    ) -> Result<bool, DomainError> {
+        self.grants.task_token_active(query).await
+    }
+
     async fn is_denylisted(&self, jti: &str) -> Result<bool, DomainError> {
         self.grants.is_denylisted(jti).await
     }
@@ -3714,6 +3776,13 @@ struct StoredClaims {
 
 #[async_trait::async_trait]
 impl userinfo::UserInfoSource for StoredClaims {
+    async fn task_token_active(
+        &self,
+        query: &asterius_domain::agent_tasks::TokenQuery,
+    ) -> Result<bool, DomainError> {
+        self.grants.task_token_active(query).await
+    }
+
     async fn aggregated_claims(
         &self,
         tenant: &asterius_domain::Tenant,
@@ -7363,6 +7432,39 @@ async fn agent_task_approve(
     let language = page_language(&endpoints, &tenant, &headers).await;
     let text = language.for_request(&asterius_domain::locale::UiLocales::default());
     account_grants::task_approve(
+        &grants_context(
+            &tenant,
+            &parts,
+            &text,
+            endpoints.audit.as_ref(),
+            &nonce,
+            mount,
+        ),
+        &headers,
+        &body,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+async fn agent_task_revoke(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let parts = match grants_parts(&endpoints, &tenant).await {
+        Ok(parts) => parts,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    account_grants::task_revoke(
         &grants_context(
             &tenant,
             &parts,

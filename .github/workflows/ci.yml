@@ -108,7 +108,11 @@ jobs:
           ASTERIUS_ACCEPTANCE_DB_CONTAINER: ${{ job.services.postgres.id }}
         run: |
           bash scripts/conditional-access-acceptance.sh
+          bash scripts/conditional-simulation-acceptance.sh
           python3 scripts/conditional/browser_acceptance.py
+          python3 scripts/session-rotation-acceptance.py
+          python3 scripts/conditional/assurance_schema_acceptance.py
+          python3 scripts/conditional/assurance_acceptance.py
       - name: real structural schemas and namespace admission
         run: bash scripts/kubernetes-crd-tests.sh
       - name: real operator reconciliation and tenant isolation

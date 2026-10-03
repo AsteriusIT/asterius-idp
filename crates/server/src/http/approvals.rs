@@ -555,6 +555,9 @@ async fn authorization(
         .unwrap_or_default();
     grant.session = Some(DomainSessionId::new(session.id_digest.clone()));
     grant.authentication = Some(asterius_domain::GrantAuthentication {
+        assurance_authenticated_at: session.assurance_authenticated_at,
+        assurance_policy_revision: session.assurance_policy_revision.clone(),
+        assurance_methods: session.assurance_methods.clone(),
         authenticated_at: session.authenticated_at,
         acr: session.acr.clone(),
         amr: session.amr.clone(),

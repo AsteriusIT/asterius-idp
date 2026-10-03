@@ -1,0 +1,21 @@
+{
+  "fixture": "real_chromium_webauthn",
+  "status": "pass",
+  "checks": [
+    "real_password_authorization_baseline",
+    "real_resident_user_verified_passkey_enrollment",
+    "prompt_none_cannot_bypass_conditional_stepup",
+    "verified_stepup_and_signed_code_token_assurance",
+    "ordinary_cumulative_stepup_still_updates_public_auth_time",
+    "old_passkey_provenance_is_not_freshened_by_password",
+    "fresh_strong_scope_refuses_old_proof_after_password",
+    "device_hard_denial_has_no_authentication_bypass"
+  ],
+  "binary_sha256": "4a1f8a71a6d99c32e4af8c12d939486895e55e09ca43aa7a451ead8d43c6f6c9",
+  "targeted_rust_tests": 216,
+  "strict_clippy": "pass",
+  "schema_controls": "ASSURANCE_SCHEMA_CONTROLS=pass rotation_cascade original_clock unchanged_claim session_cleanup exact_descendant changed_tuple grant_cleanup",
+  "controlled_age": "Existing verified session/proof timestamps aged ten minutes in own fixture database; fresh factors still verified in real Chromium.",
+  "offline_boundary": "Public legacy auth_time and cumulative AMR remain compatible; scoped freshness consumes private proof provenance.",
+  "review": "Independent sub-agent read-only assurance review; federated assertion-time excluded from local human freshness."
+}

@@ -1142,12 +1142,18 @@ mod tests {
     fn an_amended_grant_reports_the_authentication_that_amended_it() {
         let mut existing = grant();
         existing.authentication = Some(asterius_domain::GrantAuthentication {
+            assurance_authenticated_at: None,
+            assurance_policy_revision: None,
+            assurance_methods: Vec::new(),
             authenticated_at: now() - time::Duration::days(30),
             acr: Some("old".to_owned()),
             amr: Vec::new(),
         });
         let mut granted = grant();
         granted.authentication = Some(asterius_domain::GrantAuthentication {
+            assurance_authenticated_at: None,
+            assurance_policy_revision: None,
+            assurance_methods: Vec::new(),
             authenticated_at: now(),
             acr: Some("fresh".to_owned()),
             amr: Vec::new(),

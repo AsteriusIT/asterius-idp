@@ -2008,6 +2008,9 @@ async fn mint(
     // `asterius_domain::GrantAuthentication` for why this is a snapshot and
     // not a pointer, and why a later step-up does not rewrite it.
     grant.authentication = Some(asterius_domain::GrantAuthentication {
+        assurance_authenticated_at: session.assurance_authenticated_at,
+        assurance_policy_revision: session.assurance_policy_revision.clone(),
+        assurance_methods: session.assurance_methods.clone(),
         authenticated_at: session.authenticated_at,
         acr: session.acr.clone().filter(|value| {
             context

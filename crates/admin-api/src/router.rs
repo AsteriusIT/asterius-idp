@@ -3301,9 +3301,15 @@ impl Handling<'_> {
             policies::SimulationOutcome::Decided {
                 decision,
                 current_revision,
+                conditional,
             } => Ok(json_no_store(
                 StatusCode::OK,
-                &policies::simulation_response(&simulation, &decision, current_revision.as_deref()),
+                &policies::simulation_response(
+                    &simulation,
+                    &decision,
+                    current_revision.as_deref(),
+                    &conditional,
+                ),
             )),
         }
     }
@@ -6934,6 +6940,17 @@ impl Handling<'_> {
         let id = self.user_in_path()?;
         let user = self.load_user(id, crate::USER_GRANT_REVOKE_ID).await?;
 
+        if !self
+            .state
+            .backend
+            .users()
+            .grant_owned(&self.tenant.id, user.id, &grant)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::USER_GRANT_REVOKE_ID, &error))?
+        {
+            return Err(AdminError::NotFound);
+        }
+
         let revoked = self
             .state
             .backend
@@ -9373,13 +9390,29 @@ mod tests {
                         .map_or(OffsetDateTime::UNIX_EPOCH, |policy| policy.updated_at),
                 })
                 .or(current);
+            let now = OffsetDateTime::UNIX_EPOCH;
+            let trusted = asterius_domain::policy::conditional::TrustedAccessContext {
+                tenant: tenant.clone(),
+                subject: Some("resolved-subject".to_owned()),
+                client: simulation.client.clone(),
+                action: simulation.enforcement_action.clone(),
+                evaluated_at: now,
+                policy_revision: revision.clone().unwrap_or_else(|| "absent".to_owned()),
+                acr_revision: "fixture-acr".to_owned(),
+                client_revision: "fixture-client".to_owned(),
+                facts: policies::conditional_simulation::current_facts(None, now),
+            };
+            let (decision, conditional) = policies::conditional_simulation::evaluate(
+                snapshot.as_ref(),
+                &request,
+                trusted,
+                simulation.trusted_examples.as_ref(),
+                &asterius_domain::AcrPolicy::default(),
+            );
             Ok(policies::SimulationOutcome::Decided {
-                decision: Box::new(asterius_domain::policy::explanation::evaluate(
-                    snapshot.as_ref(),
-                    &request,
-                    "admin_policy_simulation",
-                )),
+                decision: Box::new(decision),
                 current_revision: revision,
+                conditional,
             })
         }
 
@@ -19282,6 +19315,67 @@ mod tests {
         // Assert
         assert_eq!(first.status(), StatusCode::OK);
         assert_eq!(second.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn agent_task_admin_revoke_cannot_substitute_another_users_grant() {
+        let (world, cookie) = console_over_the_seeded_account();
+        let other_id = UserId::new(uuid::Uuid::new_v4());
+        let mut other = seeded_user("acme");
+        other.id = other_id;
+        world
+            .handle
+            .0
+            .accounts
+            .lock()
+            .expect("uncontended fixture")
+            .push(other);
+        let id = {
+            let mut grants = world
+                .handle
+                .0
+                .account_grants
+                .lock()
+                .expect("uncontended fixture");
+            let grant = grants
+                .iter_mut()
+                .find(|grant| grant.tenant.as_str() == "acme")
+                .expect("seeded grant");
+            grant.user = Some(other_id);
+            grant.id.clone()
+        };
+        let response = world
+            .send(
+                as_console(&crate::USER_GRANT_REVOKE, &cookie)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let grants = world
+            .handle
+            .0
+            .account_grants
+            .lock()
+            .expect("uncontended fixture");
+        assert!(
+            grants
+                .iter()
+                .find(|grant| grant.tenant.as_str() == "acme" && grant.id == id)
+                .expect("foreign owned grant remains")
+                .revoked_at
+                .is_none()
+        );
+        assert!(
+            !world
+                .handle
+                .0
+                .events
+                .lock()
+                .expect("uncontended fixture")
+                .iter()
+                .any(|event| event.event_type == EventType::GRANT_REVOKED)
+        );
     }
 
     /// The grants tab renders what an operator needs to decide and nothing
