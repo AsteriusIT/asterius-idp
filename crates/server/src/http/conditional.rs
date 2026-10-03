@@ -99,10 +99,11 @@ impl ConditionalAccess {
         if let Some(sensitivity) = classification.as_ref().and_then(|value| value.sensitivity) {
             facts.insert(FactName::ApplicationSensitivity, known(FactValue::Text(sensitivity.as_str().to_owned()), "administrative_client_settings", now));
         }
-        let verified_acr = input.authentication.and_then(|authentication| authentication.acr.as_ref().filter(|value| acr.level(value).is_some_and(|level| level.is_met_by(&authentication.amr))));
+        let verified_acr = input.authentication.filter(|authentication| authentication.authenticated_at <= now).and_then(|authentication| authentication.acr.as_ref().filter(|value| acr.level(value).is_some_and(|level| level.is_met_by(&authentication.amr))));
         if let Some(authentication) = input.authentication {
             facts.insert(FactName::AuthenticationAge, known(FactValue::AuthenticationTime(authentication.authenticated_at), "exact_grant_authentication", now));
             if let Some(value) = verified_acr { facts.insert(FactName::Assurance, known(FactValue::Text(value.clone()), "exact_grant_authentication", now)); }
+            else if authentication.authenticated_at > now { facts.insert(FactName::Assurance, Fact::missing(Availability::Invalid, "exact_grant_authentication")); }
         }
         let trusted = TrustedAccessContext { tenant: tenant.id.clone(), subject: input.subject.map(str::to_owned), client: client.id.clone(), action: action.to_owned(), evaluated_at: now, policy_revision: asterius_domain::policy::explanation::revision(&policy.rules), acr_revision: asterius_domain::sha256_hex(acr.to_json().to_string().as_bytes()), client_revision: asterius_domain::sha256_hex(format!("{}:{:?}", current.updated_at.unix_timestamp_nanos(), classification.as_ref().map(|value| value.revision)).as_bytes()), facts };
         let subject = self.subject(tenant, client, input, now).await?;
@@ -143,10 +144,11 @@ impl ConditionalAccess {
         let mut explanation = asterius_domain::policy::explanation::explain(Some(&nested), request, "conditional_access");
         explanation.policy_revision = Some(asterius_domain::policy::explanation::revision(&policy.rules));
         add_guard_trace(&mut explanation, scope, request);
-        let states: BTreeMap<_, _> = scope.required().into_iter().map(|name| (name, request.context.trusted().map_or(Availability::Absent, |context| context.availability(name)))).collect();
+        let states: BTreeMap<_, _> = scope.required_for(request).into_iter().map(|name| (name, request.context.trusted().map_or(Availability::Absent, |context| context.availability(name)))).collect();
         let mut detail = Detail::new().label("enforcement", if scope.mode == EnforcementMode::Active { "active" } else { "report_only" }).text("action", request.context.trusted().map_or("unknown", |context| context.action.as_str())).text("scope", &scope.id).text("required_fact_states", serde_json::json!(states).to_string());
         if let Some(trusted) = request.context.trusted() {
-            detail = detail.text("acr_revision", &trusted.acr_revision).text("client_revision", &trusted.client_revision).text("evaluated_at", trusted.evaluated_at.unix_timestamp().to_string());
+            let sources: BTreeMap<_, _> = trusted.facts.iter().map(|(name, fact)| (name, serde_json::json!({"source":fact.source,"observed_at":fact.observed_at.map(OffsetDateTime::unix_timestamp),"expires_at":fact.expires_at.map(OffsetDateTime::unix_timestamp)}))).collect();
+            detail = detail.text("acr_revision", &trusted.acr_revision).text("client_revision", &trusted.client_revision).text("evaluated_at", trusted.evaluated_at.unix_timestamp().to_string()).text("fact_sources", serde_json::json!(sources).to_string());
         }
         let mut event = AuditEvent::new(tenant.id.clone(), EventType::ACCESS_EVALUATED, if decision.permit() { Outcome::Success } else { Outcome::Failure }, Actor::Client(client.id.clone()), now).client(client.id.clone()).detail(detail);
         if let Some(grant) = grant {
@@ -239,13 +241,18 @@ impl asterius_domain::ports::PolicyEngine for ConditionalPolicyEngine {
 }
 
 fn add_guard_trace(explanation: &mut asterius_domain::policy::explanation::DecisionExplanation, scope: &ConditionalScope, request: &EvaluationRequest) {
-    let available = request.context.trusted().is_some_and(|trusted| scope.required().into_iter().all(|name| trusted.availability(name) == Availability::Known));
+    let available = request.context.trusted().is_some_and(|trusted| scope.required_for(request).into_iter().all(|name| trusted.availability(name) == Availability::Known));
     // The guard precedes boolean rules: NOT and ANY cannot negate absence.
     explanation.rules.insert(0, asterius_domain::policy::explanation::RuleExplanation {
         id: "conditional-required-facts".to_owned(), effect: "deny", applicable: true, matched: !available,
         conditions: vec![asterius_domain::policy::explanation::ConditionExplanation { path: "required_facts".to_owned(), kind: "trusted_fact_guard", matched: available, missing: !available }],
     });
     if explanation.rules.len() > 128 { explanation.rules.pop(); explanation.truncated = true; }
+    let mut remaining = asterius_domain::policy::explanation::MAX_TRACE_NODES;
+    for rule in &mut explanation.rules {
+        if rule.conditions.len() > remaining { rule.conditions.truncate(remaining); explanation.truncated = true; }
+        remaining -= rule.conditions.len();
+    }
 }
 
 #[async_trait::async_trait]

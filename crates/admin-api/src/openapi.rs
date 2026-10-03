@@ -374,6 +374,25 @@ fn conditional_documentation(operation: &Operation, object: &mut Value) {
         }
     }
     if operation.id() == crate::POLICY_UPDATE_ID {
+        object["requestBody"] = json!({"required":true,"content":{"application/json":{"schema":{
+            "type":"object","additionalProperties":false,"required":["version","rules"],
+            "properties":{
+                "version":{"const":1},"rules":{"type":"array","maxItems":128,"items":{"type":"object"}},
+                "conditional_scopes":{"type":"array","maxItems":64,"items":{
+                    "type":"object","additionalProperties":false,"required":["mode","id","clients","actions","rules"],
+                    "properties":{
+                        "mode":{"enum":["active","report_only"]},"id":{"type":"string","minLength":1,"maxLength":128},
+                        "clients":{"type":"array","minItems":1,"maxItems":64,"uniqueItems":true,"items":{"type":"string","minLength":1,"maxLength":256}},
+                        "actions":{"type":"array","minItems":1,"maxItems":32,"uniqueItems":true,"items":{"enum":["authorize","authorization_code","refresh_token","device_code","ciba","token_exchange","client_credentials","jwt_bearer","access_evaluation"]}},
+                        "required_facts":{"type":"array","maxItems":32,"uniqueItems":true,"items":{"enum":["assurance","authentication_age","application_sensitivity","network_zone","device_compliance","groups","roles","grants"]}},
+                        "rules":{"type":"array","maxItems":128,"items":{"type":"object"}},
+                        "assurance_remedy":{"type":["string","null"],"maxLength":256},
+                        "network_zones":{"type":"object","maxProperties":64,"additionalProperties":{"type":"array","minItems":1,"maxItems":16,"uniqueItems":true,"items":{"type":"string","description":"Explicit IPv4 or IPv6 CIDR"}}}
+                    }
+                }}
+            },
+            "description":"64 KiB whole policy; at most 128 rules across base and conditional scopes. Conditional selectors reference registered clients and supported server enforcement actions, with no overlap. Every referenced trusted fact is mandatory before ANY/NOT. New predicates are closed and available only inside conditional scopes: application_sensitivity, network_zone, authentication_age_at_most (60..86400 seconds), device_compliance. Unknown/stale sources deny active scopes; report_only emits diagnostics. Named zones must be defined; assurance remedies must be configured attainable ACR levels. Never derives trusted facts from PEP properties."
+        }}}});
         object["responses"]["409"] = error_response("Policy revision changed, or conditional publication lacks an exact precondition.");
     }
 }

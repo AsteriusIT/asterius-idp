@@ -13,6 +13,8 @@ create table conditional_client_settings (
 create function validate_conditional_policy_clients() returns trigger language plpgsql as $$
 declare
     requested_client text;
+    requested_remedy text;
+    acr_document jsonb;
 begin
     for requested_client in
         select distinct jsonb_array_elements_text(scope->'clients')
@@ -22,6 +24,16 @@ begin
         perform 1 from clients where tenant_id = new.tenant_id and client_id = requested_client for key share;
         if not found then
             raise exception 'conditional scope references an unregistered client' using errcode = '23514';
+        end if;
+    end loop;
+    select settings->'options'->'acr_policy' into acr_document from tenants where tenant_id=new.tenant_id;
+    for requested_remedy in
+        select distinct scope->>'assurance_remedy'
+        from jsonb_array_elements(coalesce(new.document->'conditional_scopes', '[]'::jsonb)) scope
+        where scope->>'assurance_remedy' is not null
+    loop
+        if not exists(select 1 from jsonb_array_elements(coalesce(acr_document->'levels','[]'::jsonb)) level where level->>'value'=requested_remedy) then
+            raise exception 'conditional remedy references an unsupported assurance level' using errcode='23514';
         end if;
     end loop;
     return new;

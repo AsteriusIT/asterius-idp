@@ -1623,6 +1623,15 @@ impl TokenExchange<'_> {
             .constraint
             .proof_key
             .ok_or(Failure::Dpop(dpop::Refusal::missing_proof()))?;
+        // An ID-JAG is a token-exchange output too. Conditional application
+        // gates run before minting it, without borrowing assurance from an
+        // unrelated live human grant behind the source ID token.
+        let mut conditional_grant = Grant::new(tenant.id.clone(), client.id.clone(), self.now);
+        conditional_grant.user = Some(user.id);
+        conditional_grant.subject = Some(subject.clone());
+        conditional_grant.scopes = scopes.iter().map(|scope| (*scope).to_owned()).collect();
+        conditional_grant.resources.insert(resource.to_owned());
+        self.permitted(tenant, client, &conditional_grant).await?;
         let mut claims = json!({
             "iss": tenant.issuer.as_str(),
             "sub": subject.as_str(),

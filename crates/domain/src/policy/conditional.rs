@@ -259,6 +259,16 @@ impl ConditionalScope {
         required
     }
 
+    /// Selector-inapplicable rules cannot impose requirements on this question.
+    #[must_use]
+    pub fn required_for(&self, request: &EvaluationRequest) -> BTreeSet<FactName> {
+        let mut required = self.required_facts.clone();
+        for rule in self.rules.rules().iter().filter(|rule| rule.subject_type.as_ref().is_none_or(|kind| kind == request.subject.kind()) && rule.resource_type.as_ref().is_none_or(|kind| kind == request.resource.kind()) && (rule.actions.is_empty() || rule.actions.contains(request.action.name()))) {
+            if let Some(condition) = &rule.when { referenced(condition, &mut required); }
+        }
+        required
+    }
+
     #[must_use]
     pub fn applies(&self, client: &ClientId, action: &str) -> bool {
         self.clients.contains(client) && self.actions.contains(action)
@@ -270,7 +280,7 @@ impl ConditionalScope {
         let Some(trusted) = request.context.trusted() else {
             return Decision::default_deny("conditional transaction evidence absent");
         };
-        if !self.applies(&trusted.client, &trusted.action) || self.required().iter().any(|name| trusted.availability(*name) != Availability::Known) {
+        if trusted.subject.as_deref().is_some_and(|subject| subject != request.subject.id()) || !self.applies(&trusted.client, &trusted.action) || self.required_for(request).iter().any(|name| trusted.availability(*name) != Availability::Known) {
             return Decision::default_deny("conditional required facts unavailable");
         }
         self.rules.evaluate(request)
@@ -285,7 +295,7 @@ impl ConditionalScope {
         if !ladder.can_produce(target) { return None; }
         let mut trusted = request.context.trusted()?.clone();
         if trusted.subject.is_none() || !self.applies(&trusted.client, &trusted.action) { return None; }
-        let required = self.required();
+        let required = self.required_for(request);
         if !required.contains(&FactName::Assurance) && !required.contains(&FactName::AuthenticationAge) { return None; }
         if required.iter().any(|name| !matches!(name, FactName::Assurance | FactName::AuthenticationAge) && trusted.availability(*name) != Availability::Known) { return None; }
         let now = trusted.evaluated_at;
@@ -317,7 +327,7 @@ impl ConditionalScope {
         if wire.id.is_empty() || wire.id.len() > 128 || wire.id.chars().any(char::is_control) || !bounded(&wire.clients, 64) || !bounded(&wire.actions, 32) || wire.required_facts.len() > 32 || wire.required_facts.iter().collect::<BTreeSet<_>>().len() != wire.required_facts.len() || wire.assurance_remedy.as_ref().is_some_and(|value| value.is_empty() || value.len() > 256 || value.chars().any(char::is_control)) {
             return Err(PolicyDocumentError::Malformed("conditional scope exceeds bounds or repeats values"));
         }
-        const ACTIONS: &[&str] = &["authorize", "authorization_code", "refresh_token", "device_code", "ciba", "token_exchange", "client_credentials", "jwt_bearer", "id_jag", "access_evaluation"];
+        const ACTIONS: &[&str] = &["authorize", "authorization_code", "refresh_token", "device_code", "ciba", "token_exchange", "client_credentials", "jwt_bearer", "access_evaluation"];
         if wire.actions.iter().any(|action| !ACTIONS.contains(&action.as_str())) {
             return Err(PolicyDocumentError::Malformed("unsupported conditional enforcement action"));
         }
@@ -432,6 +442,21 @@ mod tests {
         for name in ["trusted", "trusted.device_compliance", "asterius.trusted.assurance"] {
             assert!(Properties::new([(name, json!("compliant"))]).is_err());
         }
+    }
+
+    #[test]
+    fn selector_inapplicable_device_rule_does_not_require_device_for_user_rule() {
+        let scope = ConditionalScope::parse(&json!({"mode":"active","id":"typed","clients":["app"],"actions":["refresh_token"],"rules":[{"id":"agent-device","effect":"permit","subject_type":"agent","when":{"device_compliance":"compliant"}},{"id":"user","effect":"permit","subject_type":"user"}]})).expect("scope");
+        let mut input = request(BTreeMap::new());
+        input.subject = Subject::new("user", "alice", Properties::empty()).expect("user");
+        // Reuse the fixture's exact server application/action binding.
+        assert!(scope.required_for(&input).is_empty());
+        assert!(!scope.required().is_empty());
+        assert!(scope.evaluate(&input).permit());
+        input.subject = Subject::new("agent", "alice", Properties::empty()).expect("agent");
+        assert!(!scope.evaluate(&input).permit());
+        input.subject = Subject::new("user", "another", Properties::empty()).expect("another user");
+        assert!(!scope.evaluate(&input).permit());
     }
 
 }
