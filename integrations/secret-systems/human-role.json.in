@@ -1,0 +1,13 @@
+{
+  "role_type": "oidc",
+  "user_claim": "sub",
+  "bound_subject": "${ASTERIUS_SUBJECT}",
+  "bound_audiences": ["${ASTERIUS_CLIENT_ID}"],
+  "bound_claims": {"email_verified": true},
+  "oidc_scopes": ["email"],
+  "allowed_redirect_uris": ["${SECRET_SYSTEM_HTTPS_CALLBACK}"],
+  "token_policies": ["asterius-human-read"],
+  "token_no_default_policy": true,
+  "token_ttl": 300,
+  "token_explicit_max_ttl": 300
+}

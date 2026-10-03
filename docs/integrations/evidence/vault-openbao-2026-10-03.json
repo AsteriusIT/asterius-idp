@@ -1,0 +1,225 @@
+{
+  "date": "2026-10-03",
+  "cluster": "owned disposable kind v1.35.0",
+  "products": [
+    {
+      "product": "openbao",
+      "version": "OpenBao v2.7.1 (a5db72cef75c24b920ade02065b18dd8eb666bac), committed 2026-10-01T15:32:54Z",
+      "asterius_binary_sha256": "f285716d9b514d2fc1e9052d44fbbe89eafc474f99eef3b76295661bd0d224b1",
+      "cases": [
+        {
+          "case": "native OIDC discover-fixture-subject",
+          "status": 200
+        },
+        {
+          "case": "native OIDC human",
+          "status": 200
+        },
+        {
+          "case": "human allowed policy read",
+          "status": 200
+        },
+        {
+          "case": "human forbidden policy read",
+          "status": 403
+        },
+        {
+          "case": "source logout does not revoke product token",
+          "status": 200
+        },
+        {
+          "case": "human self revocation",
+          "status": 204
+        },
+        {
+          "case": "revoked human token refused",
+          "status": 403
+        },
+        {
+          "case": "native OIDC foreign-human",
+          "status": 400
+        },
+        {
+          "case": "projected Kubernetes JWT login",
+          "status": 200
+        },
+        {
+          "case": "workload allowed policy read",
+          "status": 200
+        },
+        {
+          "case": "workload forbidden policy read",
+          "status": 403
+        },
+        {
+          "case": "wrong audience refused",
+          "status": 400
+        },
+        {
+          "case": "wrong ServiceAccount refused",
+          "status": 400
+        },
+        {
+          "case": "wrong namespace refused",
+          "status": 400
+        },
+        {
+          "case": "replacement ServiceAccount UID refused",
+          "status": 400
+        },
+        {
+          "case": "deleted ServiceAccount JWT retains offline validity",
+          "status": 200
+        },
+        {
+          "case": "wrong issuer refused",
+          "status": 400
+        },
+        {
+          "case": "expired product token refused",
+          "status": 403
+        },
+        {
+          "case": "valid projected JWT can reauthenticate after product expiry",
+          "status": 200
+        },
+        {
+          "case": "new workload token allowed",
+          "status": 200
+        }
+      ],
+      "human_profile": "explicit standard OIDC; S256 PKCE; ES256 ID token; client_secret_basic",
+      "workload_profile": "direct projected Kubernetes RS256 JWT; pinned issuer/key/audience/namespace/SA name+UID; no static OAuth secret",
+      "limits": [
+        "Asterius DPoP access-token JWT is not a supported direct Bearer trust input",
+        "deleted ServiceAccount JWT remains valid offline until expiry; no TokenReview or pod-deletion invalidation",
+        "identity-token expiry/source logout does not revoke an already issued secret-system token or fetched secret",
+        "no dynamic-secret lease engine exercised; KV policy and auth token expiry/revocation tested"
+      ],
+      "cleanup": "only own namespace/database/processes/private fixture files removed"
+    },
+    {
+      "product": "vault",
+      "version": "Vault v2.1.1 (d78bbbe2d2f3d289c1ec29d431071beb23668212), built 2026-09-15T21:21:56Z",
+      "asterius_binary_sha256": "f285716d9b514d2fc1e9052d44fbbe89eafc474f99eef3b76295661bd0d224b1",
+      "cases": [
+        {
+          "case": "native OIDC discover-fixture-subject",
+          "status": 200
+        },
+        {
+          "case": "native OIDC human",
+          "status": 200
+        },
+        {
+          "case": "human allowed policy read",
+          "status": 200
+        },
+        {
+          "case": "human forbidden policy read",
+          "status": 403
+        },
+        {
+          "case": "source logout does not revoke product token",
+          "status": 200
+        },
+        {
+          "case": "human self revocation",
+          "status": 204
+        },
+        {
+          "case": "revoked human token refused",
+          "status": 403
+        },
+        {
+          "case": "native OIDC foreign-human",
+          "status": 500
+        },
+        {
+          "case": "projected Kubernetes JWT login",
+          "status": 200
+        },
+        {
+          "case": "workload allowed policy read",
+          "status": 200
+        },
+        {
+          "case": "workload forbidden policy read",
+          "status": 403
+        },
+        {
+          "case": "wrong audience refused",
+          "status": 400
+        },
+        {
+          "case": "wrong ServiceAccount refused",
+          "status": 400
+        },
+        {
+          "case": "wrong namespace refused",
+          "status": 400
+        },
+        {
+          "case": "replacement ServiceAccount UID refused",
+          "status": 400
+        },
+        {
+          "case": "deleted ServiceAccount JWT retains offline validity",
+          "status": 200
+        },
+        {
+          "case": "wrong issuer refused",
+          "status": 400
+        },
+        {
+          "case": "expired product token refused",
+          "status": 403
+        },
+        {
+          "case": "valid projected JWT can reauthenticate after product expiry",
+          "status": 200
+        },
+        {
+          "case": "new workload token allowed",
+          "status": 200
+        }
+      ],
+      "human_profile": "explicit standard OIDC; S256 PKCE; ES256 ID token; client_secret_basic",
+      "workload_profile": "direct projected Kubernetes RS256 JWT; pinned issuer/key/audience/namespace/SA name+UID; no static OAuth secret",
+      "limits": [
+        "Asterius DPoP access-token JWT is not a supported direct Bearer trust input",
+        "deleted ServiceAccount JWT remains valid offline until expiry; no TokenReview or pod-deletion invalidation",
+        "identity-token expiry/source logout does not revoke an already issued secret-system token or fetched secret",
+        "no dynamic-secret lease engine exercised; KV policy and auth token expiry/revocation tested"
+      ],
+      "cleanup": "only own namespace/database/processes/private fixture files removed"
+    }
+  ],
+  "source": "Asterius main 904a1d86; integration recipes ast-dd1y.6.6",
+  "official_archives": {
+    "openbao_2.7.1_linux_amd64.tar.gz": {
+      "source": "https://github.com/openbao/openbao/releases/tag/v2.7.1",
+      "sha256": "0e2f1ce10d124e03112b50dd2fbec6b78003783253bc3a91587938f39d1e2243"
+    },
+    "vault_2.1.1_linux_amd64.zip": {
+      "source": "https://releases.hashicorp.com/vault/2.1.1/",
+      "sha256": "8aa90f9cea46f541fc7baa3d0ec692fc06afde9a248cc1f2dcac46a567c6f56b"
+    }
+  },
+  "fixture_assertions": [
+    "native auth URL contains S256 PKCE challenge",
+    "OIDC subject learned through verified email bootstrap, then immutable sub-bound role selected and bootstrap role deleted",
+    "source logout clears Asterius browser session cookie",
+    "refusal never returns an auth authority object",
+    "all kube operations specify isolated kubeconfig and context",
+    "published JSON config/role templates rendered and consumed by real products",
+    "all temporary product/Asterius processes, databases, namespaces, cluster and credential files removed"
+  ],
+  "verification": {
+    "native_product_cases": "40 PASS across OpenBao2.7.1 and Vault2.1.1",
+    "syntax": "bash -n, node --check and Python py_compile PASS",
+    "renderer": "escaped PEM/quotes JSON, mode0600, overwrite refusal and insecure input refusal PASS",
+    "rust": "no Rust sources changed; no Rust build or nextest invoked for this ticket",
+    "cleanup": "kind get clusters shows only original asterius-local; global context unchanged kind-asterius-local; no ast_secret_* databases remain"
+  }
+}

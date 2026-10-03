@@ -1,0 +1,24 @@
+# Fill namespace/ServiceAccount/image explicitly; apply only in your own cluster.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: secret-system-reader
+  namespace: ${NAMESPACE}
+spec:
+  serviceAccountName: ${SERVICE_ACCOUNT}
+  automountServiceAccountToken: false
+  containers:
+    - name: reader
+      image: ${PINNED_WORKLOAD_IMAGE}
+      volumeMounts:
+        - name: projected-identity
+          mountPath: /var/run/secret-system-identity
+          readOnly: true
+  volumes:
+    - name: projected-identity
+      projected:
+        sources:
+          - serviceAccountToken:
+              path: token
+              audience: urn:asterius:secret-system:workload
+              expirationSeconds: 600
