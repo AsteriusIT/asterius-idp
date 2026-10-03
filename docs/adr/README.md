@@ -28,3 +28,9 @@ Copy [`0000-template.md`](0000-template.md) to start one.
 | [0017](0017-id-jag-draft-profile.md) | Explicit enterprise approval for ID-JAG issuance | Provisional |
 | [0018](0018-oid4vp-verifier-profile.md) | Narrow OID4VP verifier profile | Provisional |
 | [0019](0019-caep-interop-algorithm-boundary.md) | Keep CAEP Draft 01 outside the supported SSF receiver profile | Accepted |
+
+The modern IDP decisions use descriptive filenames to avoid concurrent numbering:
+
+| Decision | Status |
+| --- | --- |
+| [Declarative management v1](declarative-management-contract.md) | Accepted architecture; runtime implementation tracked in ast-dd1y.3.2 |
