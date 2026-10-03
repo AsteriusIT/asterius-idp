@@ -26,7 +26,7 @@ def command(arguments, body=None, timeout=90):
     result = subprocess.run(arguments, input=body, text=True, capture_output=True, timeout=timeout)
     if result.returncode:
         # Never print Docker config, runtime logs or child stderr with credentials.
-        stage = next((line for line in result.stderr.splitlines() if line.startswith('OUTBOUND_SCIM_STAGE=')), '')
+        stage = ' '.join(line[:2048] for line in result.stderr.splitlines() if line.startswith(('OUTBOUND_SCIM_STAGE=', 'OUTBOUND_SCIM_STATE=', 'OUTBOUND_SCIM_PEER=', 'OUTBOUND_SCIM_ASSERT=', 'OUTBOUND_SCIM_SQL=')))
         if not stage:
             stage = ','.join(marker for marker in ('ERR_MODULE_NOT_FOUND', 'SyntaxError', 'ENOENT', 'ENOSPC') if marker in result.stderr)
         raise RuntimeError('owned outbound fixture command refused: ' + Path(arguments[0]).name + (' ' + stage if stage else ''))
