@@ -270,7 +270,13 @@ pub fn assurance_current(
 ) -> bool {
     let Some(at) = proof.at else { return false };
     let age = now - at;
-    !age.is_negative()
+    !proof.methods.iter().any(|method| {
+        matches!(
+            method,
+            crate::AuthenticationMethod::FederatedOidc
+                | crate::AuthenticationMethod::ExistingSession
+        )
+    }) && !age.is_negative()
         && age <= time::Duration::seconds(120)
         && proof.revision
             == Some(crate::sha256_hex(policy.to_json().to_string().as_bytes()).as_str())
@@ -440,6 +446,21 @@ mod tests {
         let now = OffsetDateTime::from_unix_timestamp(1000).unwrap();
         let revision = crate::sha256_hex(policy.to_json().to_string().as_bytes());
         let methods = [crate::AuthenticationMethod::Passkey];
+        for borrowed in [
+            crate::AuthenticationMethod::FederatedOidc,
+            crate::AuthenticationMethod::ExistingSession,
+        ] {
+            assert!(!assurance_current(
+                &policy,
+                crate::acr::PASSKEY,
+                AssuranceProof {
+                    at: Some(now),
+                    revision: Some(&revision),
+                    methods: &[crate::AuthenticationMethod::Passkey, borrowed],
+                },
+                now
+            ));
+        }
         for (at, revision, methods) in [
             (None, Some(revision.as_str()), methods.as_slice()),
             (

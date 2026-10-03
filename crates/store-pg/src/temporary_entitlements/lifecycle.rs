@@ -219,6 +219,9 @@ impl PgTemporaryEntitlements {
         {
             return decode(result);
         }
+        if r.status != RequestStatus::Pending || now.unix_timestamp() >= r.deadline {
+            return Err(DomainError::Conflict("request is terminal".into()));
+        }
         let changed=sqlx::query("update temporary_entitlement_requests set status='cancelled',decided_at=$3,decided_by=$4,decision_key=$5 where tenant_id=$1 and request_id=$2 and status='pending'").bind(tenant.as_str()).bind(r.request_id).bind(now).bind(actor.user.as_uuid()).bind(c.idempotency_key).execute(&mut *tx).await.map_err(to_domain_error)?.rows_affected();
         if changed != 1 {
             return Err(DomainError::Conflict("request is terminal".into()));

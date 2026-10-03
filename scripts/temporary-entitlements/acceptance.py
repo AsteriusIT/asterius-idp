@@ -82,7 +82,16 @@ class Browser:
         return parser.forms
     def command(self, action, fields, csrf=None):
         if csrf is None:
-            csrf = next(form['values']['csrf'] for form in self.forms() if 'csrf' in form['values'])
+            forms = self.forms()
+            tokens = [form['values']['csrf'] for form in forms if 'csrf' in form['values']]
+            if tokens:
+                csrf = tokens[0]
+            else:
+                # Controlled adversarial caller owns this seeded credential:
+                # still probe server independence when the UI hides the action.
+                cookie = next(item.value for item in self.jar if item.name == '__Host-asterius_session')
+                digest = hashlib.sha256(cookie.encode()).hexdigest()
+                csrf = hashlib.sha256((digest+':temporary-entitlement-account-csrf').encode()).hexdigest()
         body = urllib.parse.urlencode({'csrf':csrf, **fields}).encode()
         return self.request('POST', issuer+'/account/entitlements/'+action, body, {'Content-Type':'application/x-www-form-urlencoded','Origin':origin,'Sec-Fetch-Site':'same-origin'})
 class Forms(HTMLParser):
