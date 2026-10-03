@@ -1317,9 +1317,11 @@ mod scim_security_tests {
             Uuid::new_v4(),
             Uuid::new_v4(),
         );
+        let malformed_source = reserved.replacen(tenant.as_str(), "INVALID", 1);
         for (name, external, erase) in [
             ("reserved", reserved.as_str(), true),
             ("ordinary", "ordinary-owned", false),
+            ("malformed", malformed_source.as_str(), false),
         ] {
             let user = UserId::generate();
             let email = format!("{name}@example.test");
@@ -1365,6 +1367,7 @@ mod scim_security_tests {
                 .bind(tenant.as_str()).bind(client.as_str()).bind(user.as_uuid())
                 .fetch_one(&pool).await.expect("retained identity");
             assert!(retained);
+            assert_retirement_key(&pool, &tenant, &client, user, erase).await;
             if erase {
                 sqlx::query("insert into users(tenant_id,user_id,username,email) values($1,$2,'fresh-generation',$3)")
                     .bind(tenant.as_str()).bind(Uuid::new_v4()).bind(&email)
@@ -1376,6 +1379,26 @@ mod scim_security_tests {
             .execute(&pool)
             .await
             .expect("fixture cleanup");
+    }
+
+    async fn assert_retirement_key(
+        pool: &PgPool,
+        tenant: &TenantId,
+        client: &ClientId,
+        user: UserId,
+        expected: bool,
+    ) {
+        let present: bool = sqlx::query_scalar(
+            "select exists(select 1 from scim_outbound_incarnation_tombstones
+             where tenant_id=$1 and client_id=$2 and kind='user' and target_id=$3)",
+        )
+        .bind(tenant.as_str())
+        .bind(client.as_str())
+        .bind(user.as_uuid())
+        .fetch_one(pool)
+        .await
+        .expect("read reserved retirement key");
+        assert_eq!(present, expected);
     }
 
     #[tokio::test]
