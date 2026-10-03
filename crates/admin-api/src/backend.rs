@@ -828,9 +828,15 @@ pub struct PresentedToken<'a> {
 /// Private metadata supplied only after an adapter verifies the exact signed
 /// access token, issuer/audience, sender constraint and current token status.
 /// This is not an HTTP field and is never serialized in an admin response.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct VerifiedMachineCredential {
     jti: asterius_domain::Secret<String>,
+}
+// Clone only the verified private metadata envelope; Secret remains non-Clone.
+impl Clone for VerifiedMachineCredential {
+    fn clone(&self) -> Self {
+        Self { jti:asterius_domain::Secret::new(self.jti.expose().clone()) }
+    }
 }
 impl VerifiedMachineCredential {
     /// Seal the verified JWT's identifier; parsing an identifier does not prove

@@ -321,10 +321,17 @@ pub const POSTURE_SCOPE: &str = "device.posture:write";
 
 /// Private signed machine metadata, supplied only by the authenticated ingress.
 /// Writers additionally verify the exact successful CC receipt/current grant.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct RelayCredential {
     client: ClientId,
     jti: crate::Secret<String>,
+}
+// This narrow verified metadata envelope may be copied by owned lifecycle
+// commands; each copy retains redaction and zeroizes its own JTI on drop.
+impl Clone for RelayCredential {
+    fn clone(&self) -> Self {
+        Self { client:self.client.clone(), jti:crate::Secret::new(self.jti.expose().clone()) }
+    }
 }
 impl RelayCredential {
     pub fn from_verified(client: ClientId, jti: &str) -> Result<Self, DomainError> {

@@ -289,7 +289,7 @@ impl AdminTokens for AutomationTokens {
             credential: Some(asterius_admin_api::backend::VerifiedMachineCredential::from_verified_jti(jti)?),
             subject: client.to_owned(),
             tenant,
-            scopes,
+            scopes: scopes.into_iter().collect(),
         }))
     }
 }

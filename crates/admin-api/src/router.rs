@@ -2317,7 +2317,7 @@ impl Handling<'_> {
     async fn review_kubernetes_identity(&self, body: axum::body::Body)
         -> Result<Response,AdminError> {
         use asterius_domain::kubernetes_online::{TokenReviewRequest,TokenReviewResponse};
-        let Principal::Automation {subject,held} = self.principal else { return Err(AdminError::Forbidden); };
+        let Principal::Automation {subject,held,..} = self.principal else { return Err(AdminError::Forbidden); };
         let crate::rbac::Held::Scopes {tenant:Some(realm),..} = held else { return Err(AdminError::Forbidden); };
         if realm!=&self.tenant.id { return Err(AdminError::Forbidden); }
         let client = self.client_in_path("/kubernetes/reviews")?;
@@ -8977,7 +8977,7 @@ impl Handling<'_> {
             .ok_or(AdminError::NotFound)?;
         let error = |e| group_error(crate::TEMPORARY_KUBERNETES_BINDING_WRITE_ID, e);
         if operation == crate::TEMPORARY_KUBERNETES_PROJECT_ID {
-            let Principal::Automation { subject, held } = &self.principal else {
+            let Principal::Automation { subject, held, .. } = &self.principal else {
                 return Err(AdminError::Forbidden);
             };
             let crate::rbac::Held::Scopes {
