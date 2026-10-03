@@ -504,6 +504,20 @@ pub trait ConditionalGuard: std::fmt::Debug + Send + Sync {
         kind: GrantType,
         now: OffsetDateTime,
     ) -> Result<bool, DomainError>;
+
+    /// Exact private proof supplied by this issuance boundary. Compatibility
+    /// adapters retain their existing behavior; production must override this.
+    async fn permits_bound(
+        &self,
+        tenant: &Tenant,
+        client: &Client,
+        grant: &Grant,
+        kind: GrantType,
+        now: OffsetDateTime,
+        _binding: Option<&asterius_domain::managed_devices::DeviceBinding>,
+    ) -> Result<bool, DomainError> {
+        self.permits(tenant, client, grant, kind, now).await
+    }
 }
 
 #[derive(Clone)]
@@ -579,9 +593,27 @@ impl AgentPolicy<'_> {
         grant_type: GrantType,
         now: OffsetDateTime,
     ) -> Result<(), Refusal> {
+        self.permits_bound(tenant, client, grant, audience, grant_type, now, None).await
+    }
+
+    /// Preserve the exact private proof through the early conditional gate.
+    ///
+    /// # Errors
+    /// Returns refusal for a denial or unavailable mandatory policy facts.
+    #[expect(clippy::too_many_arguments, reason = "exact grant, audiences and private boundary evidence are assessed together")]
+    pub async fn permits_bound(
+        &self,
+        tenant: &Tenant,
+        client: &Client,
+        grant: &Grant,
+        audience: &BTreeSet<String>,
+        grant_type: GrantType,
+        now: OffsetDateTime,
+        binding: Option<&asterius_domain::managed_devices::DeviceBinding>,
+    ) -> Result<(), Refusal> {
         if let Some(conditional) = &self.conditional {
             match conditional
-                .permits(tenant, client, grant, grant_type, now)
+                .permits_bound(tenant, client, grant, grant_type, now, binding)
                 .await
             {
                 Ok(true) => {}
