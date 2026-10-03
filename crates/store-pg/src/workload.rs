@@ -17,6 +17,69 @@ impl PgWorkloadTrusts {
         Self { pool }
     }
 }
+impl PgWorkloadTrusts {
+    /// Consume the assertion, persist its child and provenance, and append
+    /// issuance audit atomically. A signing failure requires a fresh assertion.
+    pub async fn issue(
+        &self,
+        verified: &Verified,
+        grant: &asterius_domain::Grant,
+        now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        let expires = grant.expires_at.ok_or_else(invalid)?;
+        if grant.client != verified.client
+            || grant.tenant != verified.tenant
+            || grant.user.is_some()
+            || grant.session.is_some()
+            || grant.parent.is_some()
+            || grant
+                .subject
+                .as_ref()
+                .map(asterius_domain::SubjectId::as_str)
+                != Some(verified.principal.as_str())
+            || !grant.scopes.is_subset(&verified.scopes)
+            || !grant.resources.is_subset(&verified.resources)
+            || grant.resources.len() != 1
+            || grant.claimed_at != Some(now)
+            || expires <= now
+            || expires > verified.expires_at
+            || expires > now + time::Duration::seconds(300)
+        {
+            return Err(invalid());
+        }
+        asterius_domain::workload::validate_actions(
+            &grant.authorization_details,
+            &verified.actions,
+            &grant.resources,
+        )?;
+        let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
+        consume_on_connection(&mut tx, verified, now).await?;
+        crate::grants::PgGrantRepository::insert_on(&mut tx, &verified.tenant, grant).await?;
+        sqlx::query("insert into workload_grant_bindings(tenant_id,grant_id,trust_id,trust_version,provider,principal,assertion_digest,assertion_expires_at) values($1,$2,$3,$4,$5,$6,$7,$8)")
+            .bind(verified.tenant.as_str()).bind(uuid::Uuid::parse_str(grant.id.as_str()).map_err(|_| invalid())?).bind(&verified.trust_id).bind(verified.trust_version)
+            .bind(match verified.provider { asterius_domain::workload::Provider::Kubernetes => "kubernetes", asterius_domain::workload::Provider::Github => "github" })
+            .bind(&verified.principal).bind(verified.digest.as_slice()).bind(verified.expires_at)
+            .execute(&mut *tx).await.map_err(to_domain_error)?;
+        let event = AuditEvent::new(
+            verified.tenant.clone(),
+            EventType::TOKEN_EXCHANGED,
+            Outcome::Success,
+            Actor::Client(grant.client.clone()),
+            now,
+        )
+        .client(grant.client.clone())
+        .grant(grant.id.clone())
+        .subject(verified.principal.clone())
+        .detail(
+            Detail::new()
+                .text("trust_id", &verified.trust_id)
+                .number("trust_version", verified.trust_version),
+        );
+        crate::audit::append(&mut tx, event).await?;
+        tx.commit().await.map_err(to_domain_error)
+    }
+}
+
 fn invalid() -> DomainError {
     DomainError::invalid("workload_trust", "invalid workload trust")
 }
@@ -260,7 +323,15 @@ pub async fn consume_on_connection(
         row.try_get("version").map_err(to_domain_error)?,
         row.try_get("config").map_err(to_domain_error)?,
     )?;
-    if !trust.config.enabled || trust.version != verified.trust_version {
+    if !trust.config.enabled
+        || trust.version != verified.trust_version
+        || trust.config.provider != verified.provider
+        || trust.config.principal != verified.principal
+        || !trust.config.clients.contains(verified.client.as_str())
+        || trust.config.scopes != verified.scopes
+        || trust.config.resources != verified.resources
+        || trust.config.actions != verified.actions
+    {
         return Err(invalid());
     }
     let inserted=sqlx::query("insert into workload_assertion_consumptions(tenant_id,trust_id,digest,expires_at,consumed_at) values($1,$2,$3,$4,$5) on conflict do nothing")

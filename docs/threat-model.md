@@ -2405,3 +2405,10 @@ trust version while consuming the assertion digest and persisting its child
 grant. See [workload trust administration](workload-trusts.md) for bounds and
 [the approved decision](adr/external-workload-trust.md) for offline revocation
 and independent FAPI client authentication requirements.
+
+Kubernetes exchange consumes assertion digests atomically with grants and source
+provenance. External JWTs remain subject credentials, independently of FAPI
+client authentication. The pod-deletion bound is offline freshness plus output
+TTL; granting TokenRequest creation authority is an explicit Kubernetes RBAC
+choice. Exact registered RFC9396 actions and locations cannot exceed the trust
+ceiling. See [the runtime and renewal recipe](kubernetes-workload-exchange.md).

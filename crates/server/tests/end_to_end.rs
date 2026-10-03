@@ -1351,6 +1351,13 @@ fn assemble(
         tenant_settings: Some(settings.clone()),
         signed_metadata: None,
         clients: Some(Arc::new(ClientEndpoints {
+            workloads: Some(Arc::new(asterius_server::workload::ExternalWorkloads::new(
+                Arc::new(asterius_store_pg::PgWorkloadTrusts::new(
+                    store.pool().clone(),
+                )),
+                Arc::clone(&outbound),
+                audit.clone(),
+            ))),
             upstream_identity_resolver: None,
             ipsie_https_only_clients: Arc::default(),
             ipsie_identity_only_clients: Arc::default(),
@@ -6971,3 +6978,6 @@ async fn a_complete_code_flow_stays_within_its_query_budget() {
 
     flow.tear_down().await;
 }
+
+#[path = "end_to_end/workload_exchange.rs"]
+mod workload_exchange;

@@ -105,6 +105,7 @@ pub const MAX_BATCHES: usize = 100;
 /// Kept in the schema's own order so that reading this next to
 /// `0001_baseline.sql` is a straight comparison.
 pub const POLICY: &[Retention] = &[
+    Retention { table:"workload_grant_bindings", rule:Rule::Kept("external workload source provenance; cascades with the child grant") },
     Retention { table: "workload_trusts", rule: Rule::Kept("operator-pinned external workload configuration; explicit audited removal") },
     Retention {
         table: "workload_assertion_consumptions",
@@ -643,7 +644,7 @@ pub const POLICY: &[Retention] = &[
                             select g.ctid from grants g
                              where g.tenant_id = $1
                                and g.user_id is null
-                               and g.subject is null
+                               and (g.subject is null or exists (select 1 from workload_grant_bindings w where w.tenant_id=g.tenant_id and w.grant_id=g.grant_id))
                                and g.session_id is null
                                and g.expires_at is not null
                                and g.expires_at <= $2

@@ -1,0 +1,61 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: inventory, namespace: apps }
+automountServiceAccountToken: false
+---
+# This permission creates fresh, pod-bound assertions; review this authority.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: { name: inventory-tokenrequest, namespace: apps }
+rules:
+  - apiGroups: [""]
+    resources: ["serviceaccounts/token"]
+    resourceNames: ["inventory"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: { name: inventory-tokenrequest, namespace: apps }
+subjects: [{ kind: ServiceAccount, name: inventory, namespace: apps }]
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: inventory-tokenrequest }
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: inventory, namespace: apps }
+spec:
+  serviceAccountName: inventory
+  automountServiceAccountToken: false
+  containers:
+    - name: inventory
+      # Build the sample client into an operator-selected pinned image.
+      image: REPLACE_WITH_PINNED_CLIENT_IMAGE
+      command: ["node", "/app/client.mjs"]
+      env:
+        - { name: POD_NAME, valueFrom: { fieldRef: { fieldPath: metadata.name } } }
+        - { name: POD_UID, valueFrom: { fieldRef: { fieldPath: metadata.uid } } }
+        - { name: POD_NAMESPACE, valueFrom: { fieldRef: { fieldPath: metadata.namespace } } }
+        - { name: SERVICE_ACCOUNT, value: inventory }
+        - { name: ASTERIUS_ISSUER, value: "https://id.example/acme" }
+        - { name: ASTERIUS_CLIENT_ID, value: inventory-client }
+        - { name: ASTERIUS_CLIENT_KID, value: inventory-client-key }
+        - { name: ASTERIUS_CLIENT_KEY_FILE, value: /var/run/client-key/client.pem }
+        - { name: ASTERIUS_WORKLOAD_AUDIENCE, value: "urn:asterius:workload:acme:inventory" }
+        - { name: ASTERIUS_RESOURCE, value: "https://inventory.example/" }
+        - { name: ASTERIUS_API_URL, value: "https://inventory.example/items" }
+        - { name: ASTERIUS_SCOPE, value: "inventory:read" }
+        - { name: ASTERIUS_ACTIONS, value: read }
+      volumeMounts:
+        - { name: workload, mountPath: /var/run/workload, readOnly: true }
+        - { name: kube-ca, mountPath: /var/run/kube-ca, readOnly: true }
+        - { name: client-key, mountPath: /var/run/client-key, readOnly: true }
+  volumes:
+    - name: workload
+      projected:
+        sources:
+          - serviceAccountToken: { path: workload-token, audience: "urn:asterius:workload:acme:inventory", expirationSeconds: 600 }
+          - serviceAccountToken: { path: kube-api-token, expirationSeconds: 3600 }
+    - name: kube-ca
+      configMap: { name: kube-root-ca.crt }
+    - name: client-key
+      # Existing confidential client key supplied by the operator. No OAuth secret.
+      secret: { secretName: inventory-client-key }
