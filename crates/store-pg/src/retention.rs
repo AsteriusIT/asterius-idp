@@ -105,6 +105,9 @@ pub const MAX_BATCHES: usize = 100;
 /// Kept in the schema's own order so that reading this next to
 /// `0001_baseline.sql` is a straight comparison.
 pub const POLICY: &[Retention] = &[
+    Retention { table: "kubernetes_profiles", rule: Rule::Kept("tenant-owned cluster configuration; removed with its registered client") },
+    Retention { table: "declarative_owners", rule: Rule::Kept("live ownership and deleted-resource generations prevent ABA and unsafe adoption; explicit release, cascade with tenant") },
+    Retention { table: "declarative_creation_keys", rule: Rule::Kept("durable declarative retry receipts cannot expire while stale controller retries remain possible; cascade with tenant") },
     Retention { table: "workload_trusts", rule: Rule::Kept("operator-pinned external workload configuration; explicit audited removal") },
     Retention {
         table: "workload_assertion_consumptions",

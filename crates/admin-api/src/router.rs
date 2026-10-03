@@ -3194,8 +3194,10 @@ impl Handling<'_> {
             .policy_trial()
             .simulate(&self.tenant.id, &simulation)
             .await
-            .map_err(|error| AdminError::from_storage(crate::POLICY_SIMULATE_ID, &error))?
-        {
+            .map_err(|error| match error {
+                DomainError::NotFound => AdminError::NotFound,
+                error => AdminError::from_storage(crate::POLICY_SIMULATE_ID, &error),
+            })? {
             policies::SimulationOutcome::Stale => Err(AdminError::Conflict(
                 "the policy revision changed; refresh before simulating".into(),
             )),
