@@ -125,6 +125,10 @@ pub trait PolicyTrial: std::fmt::Debug + Send + Sync {
 /// What an admin API request needs from below the API.
 #[async_trait::async_trait]
 pub trait AdminBackend: std::fmt::Debug + Send + Sync {
+    /// Managed-device registries are distinct from OAuth client certificates.
+    fn device_registry(&self) -> Option<Arc<dyn asterius_domain::managed_devices::Registry>> { None }
+    fn device_relay(&self) -> Option<Arc<dyn asterius_domain::managed_devices::Relay>> { None }
+
     /// Read-only evidence; absent adapters do not synthesize healthy reports.
     fn governance_reports(
         &self,
@@ -828,9 +832,14 @@ pub struct PresentedToken<'a> {
 /// Private metadata supplied only after an adapter verifies the exact signed
 /// access token, issuer/audience, sender constraint and current token status.
 /// This is not an HTTP field and is never serialized in an admin response.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct VerifiedMachineCredential {
     jti: asterius_domain::Secret<String>,
+}
+impl Clone for VerifiedMachineCredential {
+    fn clone(&self) -> Self {
+        Self { jti: asterius_domain::Secret::new(self.jti.expose().to_owned()) }
+    }
 }
 impl VerifiedMachineCredential {
     /// Seal the verified JWT's identifier; parsing an identifier does not prove

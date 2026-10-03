@@ -482,6 +482,13 @@ async fn route_standard(
         crate::ID_JAG_SUBJECT_REMOVE_ID => context.remove_id_jag_subject(body).await,
         crate::SAML_SP_LIST_ID => context.list_saml_sp_trust().await,
         crate::OIDC_PROVIDER_CHECK_ID => context.check_oidc_provider(body).await,
+        crate::DEVICE_SOURCES_LIST_ID => context.list_device_sources().await,
+        crate::DEVICE_SOURCE_CREATE_ID => context.save_device_source(body, false).await,
+        crate::DEVICE_SOURCE_UPDATE_ID => context.save_device_source(body, true).await,
+        crate::DEVICES_LIST_ID => context.list_devices().await,
+        crate::DEVICE_REMOVE_ID => context.remove_device(body).await,
+        crate::DEVICE_ENROLL_ID => context.enroll_device(body).await,
+        crate::DEVICE_POSTURE_ID => context.ingest_device_posture(body).await,
         crate::WORKLOAD_TRUSTS_LIST_ID => context.list_workload_trusts().await,
         crate::WORKLOAD_TRUST_READ_ID => context.read_workload_trust().await,
         crate::WORKLOAD_TRUST_PUT_ID => context.put_workload_trust(body).await,
@@ -2317,7 +2324,7 @@ impl Handling<'_> {
     async fn review_kubernetes_identity(&self, body: axum::body::Body)
         -> Result<Response,AdminError> {
         use asterius_domain::kubernetes_online::{TokenReviewRequest,TokenReviewResponse};
-        let Principal::Automation {subject,held} = self.principal else { return Err(AdminError::Forbidden); };
+        let Principal::Automation {subject,held,..} = self.principal else { return Err(AdminError::Forbidden); };
         let crate::rbac::Held::Scopes {tenant:Some(realm),..} = held else { return Err(AdminError::Forbidden); };
         if realm!=&self.tenant.id { return Err(AdminError::Forbidden); }
         let client = self.client_in_path("/kubernetes/reviews")?;
@@ -3803,6 +3810,63 @@ impl Handling<'_> {
                 other => AdminError::from_storage(crate::OIDC_PROVIDER_CHECK_ID, &other),
             })?;
         Ok(json_no_store(StatusCode::OK, &report))
+    }
+
+    fn device_id_in_path(&self, relay: bool) -> Result<uuid::Uuid, AdminError> {
+        let mut segments = self.path.rsplit('/');
+        let segment = if relay { segments.nth(1) } else { segments.next() };
+        segment.and_then(|s| uuid::Uuid::parse_str(s).ok()).filter(|id| !id.is_nil()).ok_or(AdminError::NotFound)
+    }
+    async fn list_device_sources(&self) -> Result<Response, AdminError> {
+        let registry = self.state.backend.device_registry().ok_or(AdminError::NotFound)?;
+        let sources = registry.sources(&self.tenant.id).await.map_err(|e| device_storage_error(crate::DEVICE_SOURCES_LIST_ID, &e))?;
+        Ok(json_no_store(StatusCode::OK, &serde_json::json!({"sources":sources})))
+    }
+    async fn save_device_source(&self, body: axum::body::Body, replace: bool) -> Result<Response, AdminError> {
+        let bytes = axum::body::to_bytes(body, asterius_domain::managed_devices::MAX_UPDATE_BYTES).await.map_err(|_| AdminError::Invalid("device source body exceeds its limit".into()))?;
+        let change = asterius_domain::managed_devices::SourceChange::parse(&bytes).map_err(|_| AdminError::Invalid("invalid device source".into()))?;
+        if replace != change.expected_revision.is_some() { return Err(AdminError::Invalid("source revision does not match the operation".into())); }
+        let id = if replace { Some(self.device_id_in_path(false)?) } else { None };
+        let registry = self.state.backend.device_registry().ok_or(AdminError::NotFound)?;
+        let source = registry.save_source(&self.tenant.id, id, &change, Actor::Admin(self.principal.audit_actor()), self.now).await.map_err(|e| device_storage_error(crate::DEVICE_SOURCE_UPDATE_ID, &e))?;
+        Ok(json_no_store(if replace { StatusCode::OK } else { StatusCode::CREATED }, &serde_json::json!(source)))
+    }
+    async fn list_devices(&self) -> Result<Response, AdminError> {
+        let after = query_value(&self.query, "after").map(|s| uuid::Uuid::parse_str(&s)).transpose().map_err(|_| AdminError::Invalid("invalid device cursor".into()))?;
+        let limit: u16 = query_value(&self.query, "limit").map_or(Ok(50), |s| s.parse()).map_err(|_| AdminError::Invalid("invalid device page limit".into()))?;
+        if !(1..=100).contains(&limit) { return Err(AdminError::Invalid("device page limit must be between 1 and 100".into())); }
+        let registry = self.state.backend.device_registry().ok_or(AdminError::NotFound)?;
+        let devices = registry.devices(&self.tenant.id, None, after, limit).await.map_err(|e| device_storage_error(crate::DEVICES_LIST_ID, &e))?;
+        Ok(json_no_store(StatusCode::OK, &serde_json::json!({"devices":devices})))
+    }
+    async fn remove_device(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Input { expected_revision: uuid::Uuid }
+        let bytes = axum::body::to_bytes(body, 1024).await.map_err(|_| AdminError::Invalid("device removal body exceeds its limit".into()))?;
+        let input: Input = serde_json::from_slice(&bytes).map_err(|_| AdminError::Invalid("invalid device removal".into()))?;
+        let registry = self.state.backend.device_registry().ok_or(AdminError::NotFound)?;
+        registry.remove(&self.tenant.id, self.device_id_in_path(false)?, input.expected_revision, asterius_domain::managed_devices::RemovalAuthority::Administrator(Actor::Admin(self.principal.audit_actor())), self.now).await.map_err(|e| device_storage_error(crate::DEVICE_REMOVE_ID, &e))?;
+        Ok(StatusCode::NO_CONTENT.into_response())
+    }
+    fn device_relay_credential(&self) -> Result<asterius_domain::managed_devices::RelayCredential, AdminError> {
+        let Principal::Automation { subject, .. } = &self.principal else { return Err(AdminError::NotFound); };
+        let jti = self.principal.verified_machine_jti().ok_or(AdminError::NotFound)?;
+        asterius_domain::managed_devices::RelayCredential::from_verified(asterius_domain::ClientId::new(subject.clone()), jti).map_err(|_| AdminError::NotFound)
+    }
+    async fn enroll_device(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let bytes = axum::body::to_bytes(body, asterius_domain::managed_devices::MAX_UPDATE_BYTES).await.map_err(|_| AdminError::Invalid("device enrollment body exceeds its limit".into()))?;
+        let request = asterius_domain::managed_devices::EnrollmentRequest::parse(&bytes).map_err(|_| AdminError::Invalid("invalid device enrollment".into()))?;
+        let relay = self.state.backend.device_relay().ok_or(AdminError::NotFound)?;
+        let id = relay.enroll(&self.tenant.id, self.device_id_in_path(true)?, &self.device_relay_credential()?, &request, self.now).await.map_err(|e| device_storage_error(crate::DEVICE_ENROLL_ID, &e))?;
+        Ok(json_no_store(StatusCode::CREATED, &serde_json::json!({"id":id})))
+    }
+    async fn ingest_device_posture(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let bytes = axum::body::to_bytes(body, asterius_domain::managed_devices::MAX_UPDATE_BYTES).await.map_err(|_| AdminError::Invalid("device posture body exceeds its limit".into()))?;
+        let update = asterius_domain::managed_devices::Update::parse(&bytes, self.now).map_err(|_| AdminError::Invalid("invalid device posture update".into()))?;
+        let relay = self.state.backend.device_relay().ok_or(AdminError::NotFound)?;
+        relay.ingest(&self.tenant.id, self.device_id_in_path(true)?, &self.device_relay_credential()?, &update, self.now).await.map_err(|e| device_storage_error(crate::DEVICE_POSTURE_ID, &e))?;
+        Ok(StatusCode::NO_CONTENT.into_response())
     }
 
     fn workload_trust_in_path(&self) -> Result<&str, AdminError> {
@@ -8977,7 +9041,7 @@ impl Handling<'_> {
             .ok_or(AdminError::NotFound)?;
         let error = |e| group_error(crate::TEMPORARY_KUBERNETES_BINDING_WRITE_ID, e);
         if operation == crate::TEMPORARY_KUBERNETES_PROJECT_ID {
-            let Principal::Automation { subject, held } = &self.principal else {
+            let Principal::Automation { subject, held, .. } = &self.principal else {
                 return Err(AdminError::Forbidden);
             };
             let crate::rbac::Held::Scopes {
@@ -20137,5 +20201,14 @@ mod tests {
                 .len(),
             1
         );
+    }
+}
+
+fn device_storage_error(operation: &'static str, error: &DomainError) -> AdminError {
+    match error {
+        DomainError::NotFound => AdminError::NotFound,
+        DomainError::Conflict(message) => AdminError::Conflict(message.clone()),
+        DomainError::Invalid { .. } => AdminError::Invalid("invalid managed-device operation".into()),
+        other => AdminError::from_storage(operation, other),
     }
 }

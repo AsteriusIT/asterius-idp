@@ -222,6 +222,14 @@ pub const ID_JAG_SUBJECT_BIND_ID: &str = "id_jag.subject.bind";
 pub const ID_JAG_SUBJECT_REMOVE_ID: &str = "id_jag.subject.remove";
 pub const SAML_SP_LIST_ID: &str = "saml.sp.list";
 pub const OIDC_PROVIDER_CHECK_ID: &str = "oidc.providers.check";
+pub const DEVICE_SOURCES_LIST_ID: &str = "devices.sources.list";
+pub const DEVICE_SOURCE_CREATE_ID: &str = "devices.sources.create";
+pub const DEVICE_SOURCE_UPDATE_ID: &str = "devices.sources.update";
+pub const DEVICES_LIST_ID: &str = "devices.list";
+pub const DEVICE_REMOVE_ID: &str = "devices.remove";
+pub const DEVICE_ENROLL_ID: &str = "devices.enroll";
+pub const DEVICE_POSTURE_ID: &str = "devices.posture";
+
 pub const WORKLOAD_TRUSTS_LIST_ID: &str = "workload.trusts.list";
 pub const WORKLOAD_TRUST_READ_ID: &str = "workload.trusts.read";
 pub const WORKLOAD_TRUST_PUT_ID: &str = "workload.trusts.put";
@@ -1137,6 +1145,14 @@ pub const OIDC_PROVIDER_CHECK: Operation = Operation::probe(
     A::new(R::Tenant, "admin.oidc_providers:read"),
     "Checks stored provider discovery and public keys without using client credentials",
 );
+
+pub const DEVICE_SOURCES_LIST: Operation = Operation::read(DEVICE_SOURCES_LIST_ID, "/device-sources", S::Get, A::new(R::ConsoleTenant, "admin.device_sources:read"), "Lists device source generations without credentials");
+pub const DEVICE_SOURCE_CREATE: Operation = Operation::mutation(DEVICE_SOURCE_CREATE_ID, "/device-sources", M::Post, A::new(R::ConsoleTenant, "admin.device_sources:write"), "Creates a default-disabled device source");
+pub const DEVICE_SOURCE_UPDATE: Operation = Operation::mutation(DEVICE_SOURCE_UPDATE_ID, "/device-sources/{source_id}", M::Put, A::new(R::ConsoleTenant, "admin.device_sources:write"), "Changes a source with an exact revision fence");
+pub const DEVICES_LIST: Operation = Operation::read(DEVICES_LIST_ID, "/devices", S::Get, A::new(R::ConsoleTenant, "admin.devices:read"), "Lists bounded device metadata without certificates");
+pub const DEVICE_REMOVE: Operation = Operation::mutation(DEVICE_REMOVE_ID, "/devices/{device_id}", M::Delete, A::new(R::ConsoleTenant, "admin.devices:write"), "Erases identifying device state and invalidates proofs");
+pub const DEVICE_ENROLL: Operation = Operation::mutation(DEVICE_ENROLL_ID, "/device-sources/{source_id}/enrollments", M::Post, A::new(R::AutomationTenant, "device.enrollments:write"), "Enrolls an account-bound device from its exact authorized relay");
+pub const DEVICE_POSTURE: Operation = Operation::mutation(DEVICE_POSTURE_ID, "/device-sources/{source_id}/posture", M::Post, A::new(R::AutomationTenant, "device.posture:write"), "Atomically accepts bounded monotonic posture updates");
 
 pub const WORKLOAD_TRUSTS_LIST: Operation = Operation::read(
     WORKLOAD_TRUSTS_LIST_ID,
@@ -2278,6 +2294,13 @@ static REGISTRY: &[Operation] = &[
     ID_JAG_SUBJECT_BIND,
     ID_JAG_SUBJECT_REMOVE,
     SAML_SP_LIST,
+    DEVICE_SOURCES_LIST,
+    DEVICE_SOURCE_CREATE,
+    DEVICE_SOURCE_UPDATE,
+    DEVICES_LIST,
+    DEVICE_REMOVE,
+    DEVICE_ENROLL,
+    DEVICE_POSTURE,
     WORKLOAD_TRUSTS_LIST,
     WORKLOAD_TRUST_READ,
     WORKLOAD_TRUST_PUT,

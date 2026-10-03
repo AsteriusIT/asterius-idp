@@ -289,7 +289,7 @@ impl AdminTokens for AutomationTokens {
             credential: Some(asterius_admin_api::backend::VerifiedMachineCredential::from_verified_jti(jti)?),
             subject: client.to_owned(),
             tenant,
-            scopes,
+            scopes: scopes.into_iter().collect(),
         }))
     }
 }
@@ -3743,6 +3743,13 @@ impl AdminBackend for Deployment {
         }))
     }
 
+    fn device_registry(&self) -> Option<Arc<dyn asterius_domain::managed_devices::Registry>> {
+        Some(Arc::new(asterius_store_pg::PgManagedDevices::new(self.store.pool().clone(), self.audit())))
+    }
+    fn device_relay(&self) -> Option<Arc<dyn asterius_domain::managed_devices::Relay>> {
+        Some(Arc::new(asterius_store_pg::PgManagedDevices::new(self.store.pool().clone(), self.audit())))
+    }
+
     fn workload_trusts(&self) -> Option<Arc<dyn asterius_domain::workload::Registry>> {
         Some(Arc::new(crate::workload::Administration::new(
             asterius_store_pg::PgWorkloadTrusts::new(self.store.pool().clone()),
@@ -4167,6 +4174,20 @@ mod automation_tests {
         assert_eq!(resolved.subject, "admin-automation");
         assert_eq!(resolved.tenant, Some(routed.id));
         assert_eq!(resolved.scopes, ["admin.users:read"]);
+    }
+
+    #[tokio::test]
+    async fn dedicated_service_scopes_require_exact_private_cc_receipts() {
+        let routed = tenant("acme");
+        let fixture = Fixture::new(vec![routed.clone()], None);
+        let audience = admin_url(&routed, asterius_admin_api::BASE_PATH);
+        let url = admin_url(&routed, "/admin/api/v1/devices");
+        for (index, scope) in ["admin.kubernetes_reviews:read", asterius_domain::managed_devices::ENROLLMENT_SCOPE, asterius_domain::managed_devices::POSTURE_SCOPE].into_iter().enumerate() {
+            let token = fixture.token(&routed, &audience, &[scope]).await;
+            let proof = fixture.proof(&token, "GET", &url, &format!("receipt-denied-{index}"));
+            let result = fixture.resolver.resolve(&routed, &PresentedToken { token: &token, proof: &proof, method: "GET", url: &url }).await.expect("the stores answer");
+            assert!(result.is_none(), "a signed client-shaped subject alone must not grant {scope}");
+        }
     }
 
     #[tokio::test]
