@@ -325,11 +325,24 @@ impl PgUserRepository {
         }
         // SCIM deactivation is narrower than clearing an administrator's lock:
         // keep Locked through disable/delete so a later active=true cannot bypass it.
+        // A reviewed reserved-incarnation DELETE retains its identity tombstone but
+        // releases personal email. Disable/archive and ordinary SCIM lifecycles
+        // retain email; active-account uniqueness is never weakened.
         let updated = sqlx::query(
-            "update users set username = $4, email = $5,
+            "with retirement as (
+               select $7::boolean and exists(
+                 select 1 from scim_user_external_ids
+                 where tenant_id=$1 and client_id=$8 and user_id=$2
+                   and external_id=$9 and deleted_at is null
+                   and scim_outbound_reserved_external(external_id,'user')
+               ) as erase_email
+             )
+             update users set username = $4,
+             email = case when retirement.erase_email then null else $5 end,
              status = case when status = 'locked' then 'locked' else $6 end,
-             email_verified = case when email is distinct from $5
+             email_verified = case when retirement.erase_email or email is distinct from $5
                                    then false else email_verified end
+             from retirement
              where tenant_id = $1 and user_id = $2 and scim_revision = $3
                and (status <> 'locked' or $6 <> 'active')",
         )
@@ -343,6 +356,9 @@ impl PgUserRepository {
         } else {
             replacement.status.as_str()
         })
+        .bind(replacement.delete)
+        .bind(replacement.client.as_str())
+        .bind(&replacement.external_id)
         .execute(&mut *connection)
         .await
         .map_err(to_domain_error)?
@@ -1266,6 +1282,101 @@ impl asterius_domain::UserDirectory for PgUserRepository {
 #[cfg(test)]
 mod scim_security_tests {
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "slow PostgreSQL reserved SCIM retirement regression; CI only"]
+    async fn reserved_delete_releases_email_but_ordinary_delete_retains_it() {
+        let url = std::env::var("DATABASE_URL").expect("CI database URL");
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("test database");
+        crate::MIGRATOR.run(&pool).await.expect("migrated fixture");
+        let tenant = TenantId::parse(&format!("scim-retire-{}", Uuid::new_v4().simple()))
+            .expect("fixture tenant");
+        let client = ClientId::new("retirement-fixture".to_owned());
+        sqlx::query("insert into tenants(tenant_id,issuer,display_name,default_resource) values($1,$2,'Retirement fixture','https://api.example/')")
+            .bind(tenant.as_str()).bind(format!("https://id.example/t/{}",tenant.as_str()))
+            .execute(&pool).await.expect("fixture tenant");
+        sqlx::query("insert into clients(tenant_id,client_id,redirect_uris) values($1,$2,'{}')")
+            .bind(tenant.as_str())
+            .bind(client.as_str())
+            .execute(&pool)
+            .await
+            .expect("fixture client");
+        let repository = PgUserRepository {
+            pool: pool.clone(),
+            tenant: tenant.clone(),
+            kek: Arc::new(asterius_jose::LocalKek::from_bytes(&[0x58; 32]).expect("fixture KEK")),
+        };
+        let (_, reserved) = asterius_domain::outbound_scim::resource_identity(
+            &tenant,
+            Uuid::new_v4(),
+            asterius_domain::outbound_scim::ResourceKind::User,
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+        );
+        for (name, external, erase) in [
+            ("reserved", reserved.as_str(), true),
+            ("ordinary", "ordinary-owned", false),
+        ] {
+            let user = UserId::generate();
+            let email = format!("{name}@example.test");
+            sqlx::query("insert into users(tenant_id,user_id,username,email,email_verified,status) values($1,$2,$3,$4,true,'locked')")
+                .bind(tenant.as_str()).bind(user.as_uuid()).bind(name).bind(&email)
+                .execute(&pool).await.expect("locked owned user");
+            sqlx::query("insert into scim_user_external_ids(tenant_id,client_id,user_id,external_id) values($1,$2,$3,$4)")
+                .bind(tenant.as_str()).bind(client.as_str()).bind(user.as_uuid()).bind(external)
+                .execute(&pool).await.expect("SCIM ownership");
+            let held = repository
+                .scim_find(&client, user)
+                .await
+                .expect("read user")
+                .expect("owned user");
+            let mut edit = ScimProfileReplacement {
+                operation: "patch",
+                tenant: tenant.clone(),
+                client: client.clone(),
+                user,
+                expected_revision: held.revision,
+                username: name.to_owned(),
+                email: Some(email.clone()),
+                external_id: Some(external.to_owned()),
+                status: UserStatus::Disabled,
+                delete: false,
+            };
+            let (disabled, _) = repository
+                .scim_replace_profile(&edit)
+                .await
+                .expect("disable");
+            assert_eq!(disabled.user.email.as_deref(), Some(email.as_str()));
+            edit.expected_revision = disabled.revision;
+            edit.delete = true;
+            let (deleted, _) = repository
+                .scim_replace_profile(&edit)
+                .await
+                .expect("delete");
+            assert_eq!(deleted.user.status, UserStatus::Locked);
+            assert_eq!(deleted.user.email.is_none(), erase);
+            assert_eq!(deleted.user.email_verified, !erase);
+            assert_eq!(deleted.external_id.as_deref(), Some(external));
+            let retained: bool = sqlx::query_scalar("select deleted_at is not null from scim_user_external_ids where tenant_id=$1 and client_id=$2 and user_id=$3")
+                .bind(tenant.as_str()).bind(client.as_str()).bind(user.as_uuid())
+                .fetch_one(&pool).await.expect("retained identity");
+            assert!(retained);
+            if erase {
+                sqlx::query("insert into users(tenant_id,user_id,username,email) values($1,$2,'fresh-generation',$3)")
+                    .bind(tenant.as_str()).bind(Uuid::new_v4()).bind(&email)
+                    .execute(&pool).await.expect("fresh generation may use same email");
+            }
+        }
+        sqlx::query("delete from tenants where tenant_id=$1")
+            .bind(tenant.as_str())
+            .execute(&pool)
+            .await
+            .expect("fixture cleanup");
+    }
 
     #[tokio::test]
     #[ignore = "slow PostgreSQL SCIM security-lock regression; CI only"]
