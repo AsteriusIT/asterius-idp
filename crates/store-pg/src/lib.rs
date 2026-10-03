@@ -73,10 +73,12 @@ mod ssf_streams;
 mod ssf_subjects;
 mod ssf_upstream_streams;
 mod store;
+mod temporary_entitlements;
 mod tenant_settings;
 mod tenants;
 mod themes;
 mod totp;
+pub use temporary_entitlements::PgTemporaryEntitlements;
 mod users;
 mod verified_claims;
 

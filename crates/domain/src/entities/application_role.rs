@@ -242,6 +242,9 @@ pub struct HeldRoles {
     pub tenant: BTreeSet<RoleName>,
     /// Client roles, by the client that defines them.
     pub clients: BTreeMap<ClientId, BTreeSet<RoleName>>,
+    /// Server-resolved exclusive deadlines for roles supplied by activations.
+    /// Standing authority never receives a temporary deadline.
+    pub temporary_deadlines: BTreeMap<ClientId, BTreeMap<RoleName, OffsetDateTime>>,
 }
 
 impl HeldRoles {
@@ -254,6 +257,7 @@ impl HeldRoles {
         Self {
             tenant: BTreeSet::new(),
             clients: BTreeMap::new(),
+            temporary_deadlines: BTreeMap::new(),
         }
     }
 
@@ -286,7 +290,25 @@ impl HeldRoles {
                 .map(|roles| (client.clone(), roles.clone()))
                 .into_iter()
                 .collect(),
+            temporary_deadlines: self
+                .temporary_deadlines
+                .get(client)
+                .map(|deadlines| (client.clone(), deadlines.clone()))
+                .into_iter()
+                .collect(),
         }
+    }
+
+    /// Earliest deadline among temporary roles actually held by this client.
+    #[must_use]
+    pub fn temporary_expiry_for(&self, client: &ClientId) -> Option<OffsetDateTime> {
+        let roles = self.clients.get(client)?;
+        self.temporary_deadlines
+            .get(client)?
+            .iter()
+            .filter(|(role, _)| roles.contains(*role))
+            .map(|(_, at)| *at)
+            .min()
     }
 
     /// One role claim's value, or `None` when there is nothing to say.

@@ -203,6 +203,7 @@ fn operation_object(operation: &Operation) -> Value {
     client_resources_documentation(operation, &mut object);
     kubernetes_documentation(operation, &mut object);
     conditional_documentation(operation, &mut object);
+    temporary_entitlement_documentation(operation, &mut object);
     invitation_documentation(operation, &mut object);
     agent_task_documentation(operation, &mut object);
     theme_documentation(operation, &mut object);
@@ -1003,6 +1004,68 @@ fn task_view_parameters(operation: &Operation, parameters: &mut Vec<Value>) {
             parameters.push(json!({"name":"agent","in":"query","required":false,"schema":{"type":"string","minLength":1,"maxLength":256}}));
         }
     }
+}
+
+fn temporary_entitlement_documentation(operation: &Operation, object: &mut Value) {
+    if !operation.id().starts_with("temporary_entitlements.") {
+        return;
+    }
+    object["security"] = json!([{"consoleSession":[]}]);
+    object["description"] = json!(
+        "Console-only, exact resource owner server user. Existing admin.app_roles scope remains mandatory. Posted editor/actor/authentication evidence is refused. Configuration binding is immutable; UUID CAS revisions invalidate old requests and activations. Timestamps are authoritative Unix seconds. Ordinary account request/approval routes use their own session and CSRF token, never these admin credentials."
+    );
+    object["responses"]["409"] =
+        error_response("Configuration/eligibility CAS or immutable idempotency payload conflicts.");
+    let mut schema = json!({"type":"object","additionalProperties":false});
+    match operation.id() {
+        crate::TEMPORARY_ENTITLEMENT_CREATE_ID | crate::TEMPORARY_ENTITLEMENT_UPDATE_ID => {
+            schema["properties"] = json!({
+                "owner_user_id":{"type":"string","format":"uuid","description":"Must equal verified Console user; binding immutable."},
+                "client_id":{"type":"string","minLength":1,"maxLength":2048},"resource":{"type":"string","format":"uri"},"role_name":{"type":"string","minLength":1,"maxLength":64},
+                "permissions":{"type":"array","minItems":1,"maxItems":64,"uniqueItems":true,"items":{"type":"string"}},
+                "approver_user_ids":{"type":"array","minItems":1,"maxItems":16,"uniqueItems":true,"items":{"type":"string","format":"uuid"}},
+                "requester_acr":{"type":"string","minLength":1,"maxLength":256},"approver_acr":{"type":"string","minLength":1,"maxLength":256},
+                "max_duration_seconds":{"type":"integer","minimum":1,"maximum":3600,"default":900},"max_eligibility_seconds":{"type":"integer","minimum":1,"maximum":2_592_000,"default":86400},"enabled":{"type":"boolean"}
+            });
+            schema["required"] = json!([
+                "owner_user_id",
+                "client_id",
+                "resource",
+                "role_name",
+                "permissions",
+                "approver_user_ids",
+                "requester_acr",
+                "approver_acr",
+                "max_duration_seconds",
+                "max_eligibility_seconds",
+                "enabled"
+            ]);
+            if operation.id() == crate::TEMPORARY_ENTITLEMENT_UPDATE_ID {
+                schema["properties"]["expected_revision"] =
+                    json!({"type":"string","format":"uuid"});
+                schema["required"]
+                    .as_array_mut()
+                    .expect("required is the array constructed above")
+                    .push(json!("expected_revision"));
+            }
+        }
+        crate::TEMPORARY_ENTITLEMENT_ELIGIBILITY_SET_ID => {
+            schema["properties"] = json!({"user_id":{"type":"string","format":"uuid"},"not_before":{"type":"integer"},"expires_at":{"type":"integer"},"expected_revision":{"type":["string","null"],"format":"uuid"}});
+            schema["required"] =
+                json!(["user_id", "not_before", "expires_at", "expected_revision"]);
+        }
+        crate::TEMPORARY_ENTITLEMENT_ELIGIBILITY_REMOVE_ID => {
+            schema["properties"] = json!({"expected_revision":{"type":"string","format":"uuid"}});
+            schema["required"] = json!(["expected_revision"]);
+        }
+        crate::TEMPORARY_ENTITLEMENT_REVOKE_ID => {
+            schema["properties"] = json!({"activation_id":{"type":"string","format":"uuid","description":"Must equal addressed activation."},"reason":{"type":"string","minLength":1,"maxLength":1024,"description":"UTF-8 byte bound; control characters refused."},"idempotency_key":{"type":"string","format":"uuid","description":"Authoritative lifecycle replay key, atomically bound to actor/operation/exact payload and original response. Generic admin header is validated, never consumed before this transaction."}});
+            schema["required"] = json!(["activation_id", "reason", "idempotency_key"]);
+        }
+        _ => return,
+    }
+    object["requestBody"] =
+        json!({"required":true,"content":{"application/json":{"schema":schema}}});
 }
 
 #[cfg(test)]

@@ -18,6 +18,7 @@
 <a href="{{ account_root() }}/activity"{% if account_section() == "activity" %} aria-current="page"{% endif %}>{% call icons::icon("clock") %}{% endcall %}<span>{{ text.account_activity_link() }}</span></a>
 </div><div class="account-nav-group"><h2>{{ text.account_access_group() }}</h2>
 <a href="{{ account_root() }}/grants"{% if account_section() == "grants" %} aria-current="page"{% endif %}>{% call icons::icon("apps") %}{% endcall %}<span>{{ text.account_grants_link() }}</span></a>
+<a href="{{ account_root() }}/entitlements"{% if account_section() == "entitlements" %} aria-current="page"{% endif %}>{% call icons::icon("clock") %}{% endcall %}<span>{% if text.lang() == "fr" %}Accès temporaire{% else %}Temporary access{% endif %}</span></a>
 <a href="{{ account_root() }}/approvals"{% if account_section() == "approvals" %} aria-current="page"{% endif %}>{% call icons::icon("check") %}{% endcall %}<span>{{ text.account_approvals_link() }}</span></a>
 <a href="{{ account_root() }}/claims-providers"{% if account_section() == "providers" %} aria-current="page"{% endif %}>{% call icons::icon("link") %}{% endcall %}<span>{{ text.providers_title() }}</span></a>
 <a href="{{ account_root() }}/id-jag"{% if account_section() == "external" %} aria-current="page"{% endif %}>{% call icons::icon("link") %}{% endcall %}<span>{{ text.external_approvals_title() }}</span></a>

@@ -282,14 +282,18 @@ async fn handle(
             .and_then(|value| value.to_str().ok())
             .ok_or(AdminError::IdempotencyKeyMissing)?;
         let key = IdempotencyKey::parse(key)?;
-        idempotency::claim(
-            backend.replay().as_ref(),
-            &tenant.id,
-            &principal.audit_actor(),
-            &key,
-            now,
-        )
-        .await?;
+        // Temporary revocation commits its canonical body UUID and response
+        // atomically. A generic one-shot claim would reject lost-response retries.
+        if operation.id() != crate::TEMPORARY_ENTITLEMENT_REVOKE_ID {
+            idempotency::claim(
+                backend.replay().as_ref(),
+                &tenant.id,
+                &principal.audit_actor(),
+                &key,
+                now,
+            )
+            .await?;
+        }
     }
 
     let context = Handling {
@@ -319,6 +323,9 @@ async fn route(
     context: &Handling<'_>,
     body: axum::body::Body,
 ) -> Result<Response, AdminError> {
+    if id.starts_with("temporary_entitlements.") {
+        return context.temporary_entitlement(id, body).await;
+    }
     if crate::declarative::is_route(id) {
         return context.management(id, body).await;
     }
@@ -8711,6 +8718,176 @@ impl Handling<'_> {
     }
 }
 
+impl Handling<'_> {
+    async fn temporary_entitlement(
+        &self,
+        operation: &str,
+        body: axum::body::Body,
+    ) -> Result<Response, AdminError> {
+        use asterius_domain::temporary_entitlements::{EntitlementConfiguration, RevokeActivation};
+        let Principal::Console {
+            tenant: realm,
+            user,
+            ..
+        } = &self.principal
+        else {
+            return Err(AdminError::Forbidden);
+        };
+        // Deployment administration does not make a reserved-realm account
+        // the target tenant's human resource owner, even for equal UUIDs.
+        if realm != &self.tenant.id {
+            return Err(AdminError::Forbidden);
+        }
+        let port = self
+            .state
+            .backend
+            .temporary_entitlements()
+            .ok_or(AdminError::Unavailable)?;
+        let (id, nested) = self.temporary_entitlement_path()?;
+        let error = |e| group_error(crate::TEMPORARY_ENTITLEMENT_CREATE_ID, e);
+        let tenant = &self.tenant.id;
+        match operation {
+            crate::TEMPORARY_ENTITLEMENT_LIST_ID => Ok(json_no_store(
+                StatusCode::OK,
+                &serde_json::json!({"items":port.list(tenant,user).await.map_err(error)?}),
+            )),
+            crate::TEMPORARY_ENTITLEMENT_CREATE_ID => {
+                let c: EntitlementConfiguration = self.parse_body(body).await?;
+                let result = port
+                    .configure(tenant, user, None, None, c)
+                    .await
+                    .map_err(error)?;
+                Ok(json_no_store(
+                    StatusCode::CREATED,
+                    &serde_json::json!(result),
+                ))
+            }
+            crate::TEMPORARY_ENTITLEMENT_READ_ID => {
+                let id = id.ok_or(AdminError::NotFound)?;
+                let result = port.get(tenant, user, id).await.map_err(error)?;
+                Ok(json_no_store(StatusCode::OK, &serde_json::json!(result)))
+            }
+            crate::TEMPORARY_ENTITLEMENT_UPDATE_ID => {
+                let c = crate::temporary_entitlements::ReplaceConfiguration::parse(
+                    self.parse_body(body).await?,
+                )?;
+                let result = port
+                    .configure(tenant, user, id, Some(c.expected_revision), c.configuration)
+                    .await
+                    .map_err(error)?;
+                Ok(json_no_store(StatusCode::OK, &serde_json::json!(result)))
+            }
+            crate::TEMPORARY_ENTITLEMENT_ELIGIBILITIES_ID => Ok(json_no_store(
+                StatusCode::OK,
+                &serde_json::json!({"items":port.eligibilities(tenant,user,id.ok_or(AdminError::NotFound)?).await.map_err(error)?}),
+            )),
+            crate::TEMPORARY_ENTITLEMENT_ELIGIBILITY_SET_ID
+            | crate::TEMPORARY_ENTITLEMENT_ELIGIBILITY_REMOVE_ID => {
+                self.temporary_entitlement_eligibility(
+                    port.as_ref(),
+                    user,
+                    (id, nested),
+                    operation,
+                    body,
+                )
+                .await
+            }
+            crate::TEMPORARY_ENTITLEMENT_REQUESTS_ID => Ok(json_no_store(
+                StatusCode::OK,
+                &serde_json::json!({"items":port.owner_requests(tenant,user,id.ok_or(AdminError::NotFound)?).await.map_err(error)?}),
+            )),
+            crate::TEMPORARY_ENTITLEMENT_ACTIVATIONS_ID => Ok(json_no_store(
+                StatusCode::OK,
+                &serde_json::json!({"items":port.owner_activations(tenant,user,id.ok_or(AdminError::NotFound)?).await.map_err(error)?}),
+            )),
+            crate::TEMPORARY_ENTITLEMENT_REVOKE_ID => {
+                let activation = nested.ok_or(AdminError::NotFound)?;
+                let c: RevokeActivation = self.parse_body(body).await?;
+                if c.activation_id != activation {
+                    return Err(AdminError::Invalid(
+                        "activation_id differs from addressed activation".into(),
+                    ));
+                }
+                let result = port
+                    .owner_revoke(tenant, user, id.ok_or(AdminError::NotFound)?, c)
+                    .await
+                    .map_err(error)?;
+                Ok(json_no_store(StatusCode::OK, &serde_json::json!(result)))
+            }
+            _ => Err(AdminError::NotFound),
+        }
+    }
+    async fn temporary_entitlement_eligibility(
+        &self,
+        port: &dyn asterius_domain::temporary_entitlements::TemporaryEntitlements,
+        user: &asterius_domain::UserId,
+        addressed: (Option<uuid::Uuid>, Option<uuid::Uuid>),
+        operation: &str,
+        body: axum::body::Body,
+    ) -> Result<Response, AdminError> {
+        use asterius_domain::temporary_entitlements::EligibilityChange;
+        let (id, nested) = addressed;
+        let tenant = &self.tenant.id;
+        let error = |e| group_error(crate::TEMPORARY_ENTITLEMENT_CREATE_ID, e);
+        match operation {
+            crate::TEMPORARY_ENTITLEMENT_ELIGIBILITY_SET_ID => {
+                let value: serde_json::Value = self.parse_body(body).await?;
+                if !value
+                    .as_object()
+                    .is_some_and(|o| o.contains_key("expected_revision"))
+                {
+                    return Err(AdminError::Invalid(
+                        "expected_revision must be explicitly null or UUID".into(),
+                    ));
+                }
+                let c: EligibilityChange = serde_json::from_value(value)
+                    .map_err(|_| AdminError::Invalid("invalid eligibility document".into()))?;
+                let result = port
+                    .set_eligibility(tenant, user, id.ok_or(AdminError::NotFound)?, c)
+                    .await
+                    .map_err(error)?;
+                Ok(json_no_store(StatusCode::OK, &serde_json::json!(result)))
+            }
+            crate::TEMPORARY_ENTITLEMENT_ELIGIBILITY_REMOVE_ID => {
+                let eligibility = nested.ok_or(AdminError::NotFound)?;
+                let c: crate::temporary_entitlements::RemoveEligibility =
+                    self.parse_body(body).await?;
+                port.remove_eligibility(
+                    tenant,
+                    user,
+                    id.ok_or(AdminError::NotFound)?,
+                    eligibility,
+                    c.expected_revision,
+                )
+                .await
+                .map_err(error)?;
+                Ok(json_no_store(
+                    StatusCode::OK,
+                    &serde_json::json!({"removed":true}),
+                ))
+            }
+            _ => Err(AdminError::NotFound),
+        }
+    }
+    fn temporary_entitlement_path(
+        &self,
+    ) -> Result<(Option<uuid::Uuid>, Option<uuid::Uuid>), AdminError> {
+        let segments: Vec<_> = self.path.split('/').filter(|s| !s.is_empty()).collect();
+        let marker = segments
+            .iter()
+            .position(|s| *s == "temporary-entitlements")
+            .ok_or(AdminError::NotFound)?;
+        let id = segments
+            .get(marker + 1)
+            .map(|s| uuid::Uuid::parse_str(s).map_err(|_| AdminError::NotFound))
+            .transpose()?;
+        let nested = segments
+            .get(marker + 3)
+            .and_then(|s| uuid::Uuid::parse_str(s).ok());
+        Ok((id, nested))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -16051,6 +16228,30 @@ mod tests {
 
         // Assert
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn temporary_entitlement_owner_refuses_cross_realm_even_with_equal_user_uuid() {
+        let world = World::new().routed_at("acme");
+        let deployment =
+            world.sign_in_as("asterius-admin", seeded_user_id(), &[Role::DeploymentAdmin]);
+        assert_eq!(
+            world
+                .get(&crate::TEMPORARY_ENTITLEMENT_LIST, &deployment)
+                .await
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+        // The same UUID in the correct realm reaches the missing fixture port,
+        // proving the refusal above came before any owner persistence lookup.
+        let local = world.sign_in_as("acme", seeded_user_id(), &[Role::TenantAdmin]);
+        assert_eq!(
+            world
+                .get(&crate::TEMPORARY_ENTITLEMENT_LIST, &local)
+                .await
+                .status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
     }
 
     /// The two tenant identities a cross-tenant console needs stay distinct:

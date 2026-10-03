@@ -36,6 +36,8 @@ pub(crate) struct PdpAuthority {
     pub client: asterius_domain::ClientId,
     pub grant: Option<asterius_domain::GrantId>,
     pub subject: Option<String>,
+    pub scopes: std::collections::BTreeSet<String>,
+    pub resources: std::collections::BTreeSet<String>,
     pub task: Option<PdpTaskAuthority>,
 }
 #[derive(Debug, Clone)]
@@ -432,10 +434,20 @@ impl ConditionalAccess {
         let groups = PgGroups::new(self.store.pool().clone())
             .authorization_references_for_user(&tenant.id, user.id)
             .await?;
-        let roles = tenant_scope
-            .application_roles()
-            .held_by(&tenant.id, user.id)
-            .await?;
+        let roles = match input.grant {
+            Some(grant) => {
+                tenant_scope
+                    .application_roles()
+                    .held_by_grant(grant)
+                    .await?
+            }
+            None => {
+                tenant_scope
+                    .application_roles()
+                    .held_by(&tenant.id, user.id)
+                    .await?
+            }
+        };
         let grants = match input.subject {
             Some(subject) => {
                 tenant_scope
@@ -701,6 +713,12 @@ impl asterius_domain::ports::PolicyEngine for ConditionalPolicyEngine {
                 Some(id) => repositories.grants().find(id).await?,
                 None => None,
             };
+            // The verified PDP token can be narrower than the durable grant.
+            let grant = grant.map(|mut grant| {
+                grant.scopes.clone_from(&authority.scopes);
+                grant.resources.clone_from(&authority.resources);
+                grant
+            });
             let exact = grant.as_ref().filter(|grant| {
                 grant.tenant == *tenant
                     && grant.client == authority.client
@@ -1014,6 +1032,70 @@ impl ConditionalSignerInner<'_> {
         }
     }
 }
+// Generated role claims must still be present in the current exact-grant
+// snapshot. No historical activation or unrelated principal supplies authority.
+fn signed_roles_current(
+    claims: &serde_json::Value,
+    held: &asterius_domain::HeldRoles,
+    client: &asterius_domain::ClientId,
+    now: OffsetDateTime,
+) -> bool {
+    if let Some(roles) = claims.get("roles") {
+        let Some(roles) = roles.as_array() else {
+            return false;
+        };
+        if !roles.iter().all(|role| {
+            role.as_str()
+                .is_some_and(|name| held.tenant.iter().any(|current| current.as_str() == name))
+        }) {
+            return false;
+        }
+    }
+    let Some(access) = claims.get("resource_access") else {
+        return true;
+    };
+    let Some(access) = access.as_object() else {
+        return false;
+    };
+    if access.len() != 1 {
+        return false;
+    }
+    let Some(roles) = access
+        .get(client.as_str())
+        .and_then(|value| value.get("roles"))
+        .and_then(serde_json::Value::as_array)
+    else {
+        return false;
+    };
+    let Some(current) = held.clients.get(client) else {
+        return roles.is_empty();
+    };
+    for value in roles {
+        let Some(name) = value.as_str() else {
+            return false;
+        };
+        let Some(role) = current.iter().find(|role| role.as_str() == name) else {
+            return false;
+        };
+        if let Some(deadline) = held
+            .temporary_deadlines
+            .get(client)
+            .and_then(|deadlines| deadlines.get(role))
+        {
+            let Some(expiry) = claims.get("exp").and_then(serde_json::Value::as_i64) else {
+                return false;
+            };
+            if expiry > deadline.unix_timestamp()
+                || expiry <= now.unix_timestamp()
+                || *deadline <= now
+            {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 impl<'a> ConditionalSigner<'a> {
     pub(crate) fn new(
         inner: &'a dyn asterius_domain::Signer,
@@ -1027,6 +1109,31 @@ impl<'a> ConditionalSigner<'a> {
             admission: None,
         }
     }
+    async fn current_roles(
+        &self,
+        tenant: &asterius_domain::TenantId,
+        grant: &Grant,
+        claims: &serde_json::Value,
+    ) -> Result<(), DomainError> {
+        if claims.get("roles").is_none() && claims.get("resource_access").is_none() {
+            return Ok(());
+        }
+        let held = self
+            .access
+            .store
+            .scope(tenant.clone())
+            .application_roles()
+            .held_by_grant(grant)
+            .await?;
+        if !signed_roles_current(claims, &held, &grant.client, OffsetDateTime::now_utc()) {
+            return Err(DomainError::invalid(
+                "temporary_entitlement",
+                "current role authority or exclusive expiry changed",
+            ));
+        }
+        Ok(())
+    }
+
     async fn fence(
         &self,
         tenant: &asterius_domain::TenantId,
@@ -1120,6 +1227,44 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
         transaction.commit().await?;
         Ok(signed)
     }
+    async fn sign_identity(
+        &self,
+        tenant: &asterius_domain::TenantId,
+        grant: &Grant,
+        algorithm: Option<asterius_domain::SigningAlgorithm>,
+        typ: &'static str,
+        claims: &serde_json::Value,
+    ) -> Result<asterius_domain::CompactJws, DomainError> {
+        if grant.tenant != *tenant
+            || claims.get("iss").and_then(serde_json::Value::as_str)
+                != Some(self.tenant.issuer.as_str())
+            || !matches!(typ, "JWT" | "dpop+id_token")
+            || claims.get("aud").and_then(serde_json::Value::as_str) != Some(grant.client.as_str())
+            || grant.subject.as_ref().is_none_or(|subject| {
+                claims.get("sub").and_then(serde_json::Value::as_str) != Some(subject.as_str())
+            })
+        {
+            return Err(DomainError::invalid(
+                "id_token",
+                "exact identity grant required",
+            ));
+        }
+        if let Some(prepared) = self.prepare(tenant, algorithm).await? {
+            return prepared
+                .sign_identity(tenant, grant, algorithm, typ, claims)
+                .await;
+        }
+        let transaction = self.fence(tenant).await?;
+        self.current_roles(tenant, grant, claims).await?;
+        let signed = self
+            .inner
+            .get()
+            .sign_identity(tenant, grant, algorithm, typ, claims)
+            .await?;
+        transaction.commit().await?;
+        Ok(signed)
+    }
+
     async fn sign_access(
         &self,
         tenant: &asterius_domain::TenantId,
@@ -1217,6 +1362,7 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
                 "conditional issuance refused",
             ));
         }
+        self.current_roles(tenant, &narrowed, claims).await?;
         let signed = self
             .inner
             .get()
@@ -1231,6 +1377,50 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn temporary_signed_roles_require_current_authority_and_exclusive_expiry() {
+        let client = asterius_domain::ClientId::new("app");
+        let role = asterius_domain::RoleName::parse("privileged").expect("role");
+        let now = OffsetDateTime::UNIX_EPOCH;
+        let deadline = now + Duration::seconds(60);
+        let mut held = asterius_domain::HeldRoles::default();
+        held.clients
+            .insert(client.clone(), [role.clone()].into_iter().collect());
+        held.temporary_deadlines
+            .insert(client.clone(), [(role, deadline)].into_iter().collect());
+        let claims = json!({"exp":30,"resource_access":{"app":{"roles":["privileged"]}}});
+        assert!(signed_roles_current(&claims, &held, &client, now));
+        assert!(!signed_roles_current(
+            &claims,
+            &asterius_domain::HeldRoles::empty(),
+            &client,
+            now
+        ));
+        assert!(!signed_roles_current(
+            &json!({"exp":61,"resource_access":{"app":{"roles":["privileged"]}}}),
+            &held,
+            &client,
+            now
+        ));
+        assert!(!signed_roles_current(&claims, &held, &client, deadline));
+        assert!(!signed_roles_current(
+            &json!({"exp":30,"resource_access":{"other":{"roles":["privileged"]}}}),
+            &held,
+            &client,
+            now
+        ));
+        held.temporary_deadlines.clear();
+        assert!(
+            signed_roles_current(
+                &json!({"exp":3600,"resource_access":{"app":{"roles":["privileged"]}}}),
+                &held,
+                &client,
+                now
+            ),
+            "independent standing authority keeps its lifetime"
+        );
+    }
+
     #[test]
     fn final_clock_recheck_preserves_authentication_age_and_fact_expiry() {
         let observed = OffsetDateTime::UNIX_EPOCH;

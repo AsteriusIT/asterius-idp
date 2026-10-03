@@ -579,6 +579,12 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
     /// [`asterius_domain::Role`]: there is no method on it that takes one.
     fn application_roles(&self) -> Arc<dyn asterius_domain::ApplicationRoleDirectory>;
 
+    fn temporary_entitlements(
+        &self,
+    ) -> Option<Arc<dyn asterius_domain::temporary_entitlements::TemporaryEntitlements>> {
+        None
+    }
+
     /// The deployment's clients, for the console's client screen.
     ///
     /// A handle for the same reason [`Self::tenants`] is one, and with the same

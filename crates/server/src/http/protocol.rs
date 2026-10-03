@@ -687,6 +687,7 @@ fn mount_features(
     let router = router.merge(approvals_pages(Arc::clone(&endpoints)));
     let router = router.merge(grants_pages(Arc::clone(&endpoints)));
     let router = router.merge(account_pages(Arc::clone(&endpoints)));
+    let router = router.merge(entitlement_pages(Arc::clone(&endpoints)));
     router.merge(device_pages(endpoints))
 }
 
@@ -3824,6 +3825,14 @@ impl userinfo::UserInfoSource for StoredClaims {
     ) -> Result<asterius_domain::HeldRoles, asterius_domain::DomainError> {
         use asterius_domain::ports::ApplicationRoleDirectory;
         self.roles.held_by(&self.tenant, user).await
+    }
+
+    async fn roles_for_grant(
+        &self,
+        grant: &asterius_domain::Grant,
+    ) -> Result<asterius_domain::HeldRoles, asterius_domain::DomainError> {
+        use asterius_domain::ports::ApplicationRoleDirectory;
+        self.roles.held_by_grant(grant).await
     }
 
     async fn verified_claims(
@@ -8312,6 +8321,103 @@ fn device_context<'a>(
         audit: endpoints.audit.as_ref(),
         mount: mount_of(mount),
     }
+}
+
+fn entitlement_pages(endpoints: Arc<ClientEndpoints>) -> Router {
+    use crate::http::entitlements;
+    Router::new()
+        .route(entitlements::PAGE_PATH, get(account_entitlements_page))
+        .route(
+            entitlements::SIGN_IN_PATH,
+            get(account_entitlements_sign_in),
+        )
+        .route(
+            "/account/entitlements/{action}",
+            post(account_entitlements_command),
+        )
+        .layer(axum::extract::DefaultBodyLimit::max(
+            crate::http::account::MAX_BODY,
+        ))
+        .with_state(endpoints)
+}
+async fn account_entitlements_page(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let parts = match account_parts(&endpoints, &tenant).await {
+        Ok(parts) => parts,
+        Err(error) => {
+            tracing::error!(%error,"cannot read entitlement account settings");
+            return unavailable();
+        }
+    };
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    let store = asterius_store_pg::PgTemporaryEntitlements::new(endpoints.store.pool().clone());
+    let limits = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
+    let context = crate::http::entitlements::EntitlementsContext {
+        account: account_context(&tenant, &parts, &text, &nonce, mount),
+        store: &store,
+        limits: &limits,
+    };
+    crate::http::entitlements::page(&context, &headers, "", time::OffsetDateTime::now_utc()).await
+}
+async fn account_entitlements_sign_in(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let Ok(parts) = account_parts(&endpoints, &tenant).await else {
+        return unavailable();
+    };
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    let store = asterius_store_pg::PgTemporaryEntitlements::new(endpoints.store.pool().clone());
+    let limits = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
+    let context = crate::http::entitlements::EntitlementsContext {
+        account: account_context(&tenant, &parts, &text, &nonce, mount),
+        store: &store,
+        limits: &limits,
+    };
+    crate::http::entitlements::sign_in(&context, time::OffsetDateTime::now_utc()).await
+}
+async fn account_entitlements_command(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    Path(action): Path<String>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    if !matches!(action.as_str(), "request" | "decide" | "cancel" | "revoke") {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let Ok(parts) = account_parts(&endpoints, &tenant).await else {
+        return unavailable();
+    };
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    let store = asterius_store_pg::PgTemporaryEntitlements::new(endpoints.store.pool().clone());
+    let limits = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
+    let context = crate::http::entitlements::EntitlementsContext {
+        account: account_context(&tenant, &parts, &text, &nonce, mount),
+        store: &store,
+        limits: &limits,
+    };
+    crate::http::entitlements::command(
+        &context,
+        &action,
+        &headers,
+        &body,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
 }
 
 #[cfg(test)]

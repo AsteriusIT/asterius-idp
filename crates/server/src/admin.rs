@@ -3705,6 +3705,14 @@ impl AdminBackend for Deployment {
         }))
     }
 
+    fn temporary_entitlements(
+        &self,
+    ) -> Option<Arc<dyn asterius_domain::temporary_entitlements::TemporaryEntitlements>> {
+        Some(Arc::new(asterius_store_pg::PgTemporaryEntitlements::new(
+            self.store.pool().clone(),
+        )))
+    }
+
     fn application_roles(&self) -> Arc<dyn asterius_domain::ApplicationRoleDirectory> {
         Arc::new(asterius_store_pg::PgApplicationRoles::new(
             self.store.pool().clone(),

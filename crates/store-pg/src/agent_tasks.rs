@@ -594,6 +594,30 @@ impl Signer for TaskSigner<'_> {
         self.sign_checked(tenant, algorithm, typ, claims).await
     }
 
+    async fn sign_identity(
+        &self,
+        tenant: &TenantId,
+        grant: &Grant,
+        algorithm: Option<asterius_domain::SigningAlgorithm>,
+        typ: &'static str,
+        claims: &serde_json::Value,
+    ) -> Result<asterius_domain::CompactJws, DomainError> {
+        if !matches!(typ, "JWT" | "dpop+id_token") {
+            return Err(DomainError::invalid(
+                "id_token",
+                "identity assertion type required",
+            ));
+        }
+        if let Some(prepared) = self.prepare(tenant, algorithm).await? {
+            return prepared
+                .sign_identity(tenant, grant, algorithm, typ, claims)
+                .await;
+        }
+        self.inner
+            .sign_identity(tenant, grant, algorithm, typ, claims)
+            .await
+    }
+
     async fn sign_access(
         &self,
         tenant: &TenantId,
@@ -991,6 +1015,25 @@ impl Signer for PreparedTaskSigner<'_> {
         .sign_checked(tenant, algorithm, typ, claims)
         .await
     }
+    async fn sign_identity(
+        &self,
+        tenant: &TenantId,
+        grant: &Grant,
+        algorithm: Option<asterius_domain::SigningAlgorithm>,
+        typ: &'static str,
+        claims: &serde_json::Value,
+    ) -> Result<asterius_domain::CompactJws, DomainError> {
+        if !matches!(typ, "JWT" | "dpop+id_token") {
+            return Err(DomainError::invalid(
+                "id_token",
+                "identity assertion type required",
+            ));
+        }
+        self.inner
+            .sign_identity(tenant, grant, algorithm, typ, claims)
+            .await
+    }
+
     async fn sign_access(
         &self,
         tenant: &TenantId,

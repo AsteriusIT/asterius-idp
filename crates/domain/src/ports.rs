@@ -2179,6 +2179,19 @@ pub trait ApplicationRoleDirectory: Debug + Send + Sync {
     /// skipped: a token minted with a *subset* of somebody's roles is an
     /// authorization decision taken by a parse failure.
     async fn held_by(&self, tenant: &TenantId, user: UserId) -> Result<HeldRoles, DomainError>;
+
+    /// Current roles bound to this exact human grant's resource and permissions.
+    /// The default preserves standing-only repositories and fixture adapters.
+    ///
+    /// # Errors
+    ///
+    /// Returns a domain error if current role authority cannot be read.
+    async fn held_by_grant(&self, grant: &Grant) -> Result<HeldRoles, DomainError> {
+        match grant.user {
+            Some(user) => self.held_by(&grant.tenant, user).await,
+            None => Ok(HeldRoles::empty()),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

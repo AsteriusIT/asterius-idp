@@ -14142,6 +14142,1167 @@
         "x-asterius-scope": "admin.ssf:write"
       }
     },
+    "/admin/api/v1/temporary-entitlements": {
+      "get": {
+        "description": "Console-only, exact resource owner server user. Existing admin.app_roles scope remains mandatory. Posted editor/actor/authentication evidence is refused. Configuration binding is immutable; UUID CAS revisions invalidate old requests and activations. Timestamps are authoritative Unix seconds. Ordinary account request/approval routes use their own session and CSRF token, never these admin credentials.",
+        "operationId": "temporary_entitlements.list",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Configuration/eligibility CAS or immutable idempotency payload conflicts."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Console-only owner-scoped temporary entitlement list",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.app_roles:read"
+      },
+      "post": {
+        "description": "Console-only, exact resource owner server user. Existing admin.app_roles scope remains mandatory. Posted editor/actor/authentication evidence is refused. Configuration binding is immutable; UUID CAS revisions invalidate old requests and activations. Timestamps are authoritative Unix seconds. Ordinary account request/approval routes use their own session and CSRF token, never these admin credentials.",
+        "operationId": "temporary_entitlements.create",
+        "parameters": [
+          {
+            "description": "A caller-chosen key, unique per creation. A repeat is refused with 409 rather than executed a second time.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "approver_acr": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "approver_user_ids": {
+                    "items": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "maxItems": 16,
+                    "minItems": 1,
+                    "type": "array",
+                    "uniqueItems": true
+                  },
+                  "client_id": {
+                    "maxLength": 2048,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "max_duration_seconds": {
+                    "default": 900,
+                    "maximum": 3600,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "max_eligibility_seconds": {
+                    "default": 86400,
+                    "maximum": 2592000,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "owner_user_id": {
+                    "description": "Must equal verified Console user; binding immutable.",
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "permissions": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "maxItems": 64,
+                    "minItems": 1,
+                    "type": "array",
+                    "uniqueItems": true
+                  },
+                  "requester_acr": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "resource": {
+                    "format": "uri",
+                    "type": "string"
+                  },
+                  "role_name": {
+                    "maxLength": 64,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "owner_user_id",
+                  "client_id",
+                  "resource",
+                  "role_name",
+                  "permissions",
+                  "approver_user_ids",
+                  "requester_acr",
+                  "approver_acr",
+                  "max_duration_seconds",
+                  "max_eligibility_seconds",
+                  "enabled"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Configuration/eligibility CAS or immutable idempotency payload conflicts."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Console-only owner-scoped temporary entitlement create",
+        "x-asterius-idempotent": true,
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.app_roles:write"
+      }
+    },
+    "/admin/api/v1/temporary-entitlements/{id}": {
+      "get": {
+        "description": "Console-only, exact resource owner server user. Existing admin.app_roles scope remains mandatory. Posted editor/actor/authentication evidence is refused. Configuration binding is immutable; UUID CAS revisions invalidate old requests and activations. Timestamps are authoritative Unix seconds. Ordinary account request/approval routes use their own session and CSRF token, never these admin credentials.",
+        "operationId": "temporary_entitlements.read",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Configuration/eligibility CAS or immutable idempotency payload conflicts."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Console-only owner-scoped temporary entitlement read",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.app_roles:read"
+      },
+      "put": {
+        "description": "Console-only, exact resource owner server user. Existing admin.app_roles scope remains mandatory. Posted editor/actor/authentication evidence is refused. Configuration binding is immutable; UUID CAS revisions invalidate old requests and activations. Timestamps are authoritative Unix seconds. Ordinary account request/approval routes use their own session and CSRF token, never these admin credentials.",
+        "operationId": "temporary_entitlements.update",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "approver_acr": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "approver_user_ids": {
+                    "items": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "maxItems": 16,
+                    "minItems": 1,
+                    "type": "array",
+                    "uniqueItems": true
+                  },
+                  "client_id": {
+                    "maxLength": 2048,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "expected_revision": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "max_duration_seconds": {
+                    "default": 900,
+                    "maximum": 3600,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "max_eligibility_seconds": {
+                    "default": 86400,
+                    "maximum": 2592000,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "owner_user_id": {
+                    "description": "Must equal verified Console user; binding immutable.",
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "permissions": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "maxItems": 64,
+                    "minItems": 1,
+                    "type": "array",
+                    "uniqueItems": true
+                  },
+                  "requester_acr": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "resource": {
+                    "format": "uri",
+                    "type": "string"
+                  },
+                  "role_name": {
+                    "maxLength": 64,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "owner_user_id",
+                  "client_id",
+                  "resource",
+                  "role_name",
+                  "permissions",
+                  "approver_user_ids",
+                  "requester_acr",
+                  "approver_acr",
+                  "max_duration_seconds",
+                  "max_eligibility_seconds",
+                  "enabled",
+                  "expected_revision"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Configuration/eligibility CAS or immutable idempotency payload conflicts."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Console-only owner-scoped temporary entitlement update",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.app_roles:write"
+      }
+    },
+    "/admin/api/v1/temporary-entitlements/{id}/activations": {
+      "get": {
+        "description": "Console-only, exact resource owner server user. Existing admin.app_roles scope remains mandatory. Posted editor/actor/authentication evidence is refused. Configuration binding is immutable; UUID CAS revisions invalidate old requests and activations. Timestamps are authoritative Unix seconds. Ordinary account request/approval routes use their own session and CSRF token, never these admin credentials.",
+        "operationId": "temporary_entitlements.activations",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Configuration/eligibility CAS or immutable idempotency payload conflicts."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Console-only owner-scoped temporary entitlement activations",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.app_roles:read"
+      }
+    },
+    "/admin/api/v1/temporary-entitlements/{id}/activations/{activation_id}/revoke": {
+      "post": {
+        "description": "Console-only, exact resource owner server user. Existing admin.app_roles scope remains mandatory. Posted editor/actor/authentication evidence is refused. Configuration binding is immutable; UUID CAS revisions invalidate old requests and activations. Timestamps are authoritative Unix seconds. Ordinary account request/approval routes use their own session and CSRF token, never these admin credentials.",
+        "operationId": "temporary_entitlements.revoke",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "activation_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A caller-chosen key, unique per creation. A repeat is refused with 409 rather than executed a second time.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "activation_id": {
+                    "description": "Must equal addressed activation.",
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "idempotency_key": {
+                    "description": "Authoritative lifecycle replay key, atomically bound to actor/operation/exact payload and original response. Generic admin header is validated, never consumed before this transaction.",
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "description": "UTF-8 byte bound; control characters refused.",
+                    "maxLength": 1024,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "activation_id",
+                  "reason",
+                  "idempotency_key"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Configuration/eligibility CAS or immutable idempotency payload conflicts."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Console-only owner-scoped temporary entitlement revoke",
+        "x-asterius-idempotent": true,
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.app_roles:write"
+      }
+    },
+    "/admin/api/v1/temporary-entitlements/{id}/eligibilities": {
+      "get": {
+        "description": "Console-only, exact resource owner server user. Existing admin.app_roles scope remains mandatory. Posted editor/actor/authentication evidence is refused. Configuration binding is immutable; UUID CAS revisions invalidate old requests and activations. Timestamps are authoritative Unix seconds. Ordinary account request/approval routes use their own session and CSRF token, never these admin credentials.",
+        "operationId": "temporary_entitlements.eligibilities",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Configuration/eligibility CAS or immutable idempotency payload conflicts."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Console-only owner-scoped temporary entitlement eligibilities",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.app_roles:read"
+      },
+      "post": {
+        "description": "Console-only, exact resource owner server user. Existing admin.app_roles scope remains mandatory. Posted editor/actor/authentication evidence is refused. Configuration binding is immutable; UUID CAS revisions invalidate old requests and activations. Timestamps are authoritative Unix seconds. Ordinary account request/approval routes use their own session and CSRF token, never these admin credentials.",
+        "operationId": "temporary_entitlements.eligibility_set",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A caller-chosen key, unique per creation. A repeat is refused with 409 rather than executed a second time.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "expected_revision": {
+                    "format": "uuid",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "expires_at": {
+                    "type": "integer"
+                  },
+                  "not_before": {
+                    "type": "integer"
+                  },
+                  "user_id": {
+                    "format": "uuid",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "user_id",
+                  "not_before",
+                  "expires_at",
+                  "expected_revision"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Configuration/eligibility CAS or immutable idempotency payload conflicts."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Console-only owner-scoped temporary entitlement eligibility_set",
+        "x-asterius-idempotent": true,
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.app_roles:write"
+      }
+    },
+    "/admin/api/v1/temporary-entitlements/{id}/eligibilities/{eligibility_id}": {
+      "delete": {
+        "description": "Console-only, exact resource owner server user. Existing admin.app_roles scope remains mandatory. Posted editor/actor/authentication evidence is refused. Configuration binding is immutable; UUID CAS revisions invalidate old requests and activations. Timestamps are authoritative Unix seconds. Ordinary account request/approval routes use their own session and CSRF token, never these admin credentials.",
+        "operationId": "temporary_entitlements.eligibility_remove",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "eligibility_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "expected_revision": {
+                    "format": "uuid",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "expected_revision"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Configuration/eligibility CAS or immutable idempotency payload conflicts."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Console-only owner-scoped temporary entitlement eligibility_remove",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.app_roles:write"
+      }
+    },
+    "/admin/api/v1/temporary-entitlements/{id}/requests": {
+      "get": {
+        "description": "Console-only, exact resource owner server user. Existing admin.app_roles scope remains mandatory. Posted editor/actor/authentication evidence is refused. Configuration binding is immutable; UUID CAS revisions invalidate old requests and activations. Timestamps are authoritative Unix seconds. Ordinary account request/approval routes use their own session and CSRF token, never these admin credentials.",
+        "operationId": "temporary_entitlements.requests",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Configuration/eligibility CAS or immutable idempotency payload conflicts."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Console-only owner-scoped temporary entitlement requests",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.app_roles:read"
+      }
+    },
     "/admin/api/v1/tenants": {
       "get": {
         "operationId": "tenants.list",
