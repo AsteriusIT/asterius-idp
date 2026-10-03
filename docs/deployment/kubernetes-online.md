@@ -32,6 +32,15 @@ terminally disable the profile; restoring metadata does not revive bindings.
 Re-enable explicitly with the current revision and obtain newly issued tokens.
 An offline token minted before opt-in cannot be enrolled through TokenReview.
 
+Emergency signing-key retirement or purge does not immediately invalidate a
+previously cached private-key lease. The shared signer can still produce and
+register a signature until its existing lease expires, at most sixty seconds
+after loading; normal retiring-key rotation overlap remains supported. Verifier
+JWKS state and caching determine whether that signature authenticates. Do not
+promise immediate signing or authentication shutdown after purge. The missing
+shared final key-withdrawal fence is tracked as `ast-psi2`, independently of the
+Kubernetes cache bound and this candidate's pending human review.
+
 ## Authenticated adapter
 
 Build `./cmd/asterius-token-review` from `providers/terraform`. Store the reviewer

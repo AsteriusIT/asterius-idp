@@ -2887,6 +2887,17 @@ The local three-second review deadline does not establish a shorter wire-level
 bound. Actual delayed-response, outage and replica evidence is still required;
 healthy-network latency alone is not worst-case acceptance evidence.
 
+The shared signer caches decrypted signing material with a sixty-second lease.
+Prepared signing checks the lease deadline, tenant and algorithm, but does not
+serialize emergency key retirement/purge with final signature release or online
+digest registration. A withdrawn key can therefore still sign until that existing
+lease expires. Normal retiring-key overlap remains published intentionally;
+emergency withdrawal is a distinct unresolved boundary (`ast-psi2`). Actual
+authentication also depends on current published-key resolution and verifier
+JWKS caches, so neither immediate usability loss nor continued usability after
+purge is guaranteed by this source review. This limit is independent of the
+Kubernetes authentication cache bound and remains part of pending human review.
+
 ### Candidate managed-device request proof (`ast-dd1y.4.5`)
 
 A device CA signature or matching enrollment fingerprint does not prove leaf-key

@@ -144,6 +144,17 @@ uncached human authentication fails; globally cached identities remain the
 documented availability/revocation trade-off. RBAC continues to authorize each
 request separately after authentication.
 
+Signing-key withdrawal retains the existing shared signer limitation: its cached
+private-key lease lasts at most sixty seconds from loading, and a prepared
+signature does not recheck emergency retirement or purge in the database. Normal
+rotation deliberately keeps a retiring key published for overlap. Emergency
+withdrawal can therefore race final signing and digest registration until that
+lease expires; this candidate does not provide an immediate key-withdrawal fence.
+Whether such a token authenticates also depends on the verifier's current
+published-key resolution and JWKS cache. These are separate limits from the
+forty-second Kubernetes authentication cache bound. The shared-signer correction
+is tracked as `ast-psi2`; human review of this candidate remains pending.
+
 ## Normative review and verification
 
 Human review must cover the v1 request/response and audience intersection rules
