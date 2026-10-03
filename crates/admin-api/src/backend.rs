@@ -125,6 +125,12 @@ pub trait PolicyTrial: std::fmt::Debug + Send + Sync {
 /// What an admin API request needs from below the API.
 #[async_trait::async_trait]
 pub trait AdminBackend: std::fmt::Debug + Send + Sync {
+    /// Read-only evidence; absent adapters do not synthesize healthy reports.
+    fn governance_reports(
+        &self,
+    ) -> Option<Arc<dyn asterius_domain::governance_reports::GovernanceReports>> {
+        None
+    }
     /// Human standing-access review commands; missing backends fail closed.
     fn access_reviews(&self) -> Option<Arc<dyn asterius_domain::access_reviews::AccessReviews>> {
         None

@@ -956,6 +956,10 @@ fn path_parameters(path: &str) -> Vec<&str> {
 }
 
 fn governance_documentation(operation: &Operation, object: &mut Value) {
+    if operation.id() == "governance.findings" {
+        governance_reports_documentation(object);
+        return;
+    }
     if !operation.id().starts_with("governance.") {
         return;
     }
@@ -992,6 +996,35 @@ fn governance_documentation(operation: &Operation, object: &mut Value) {
     if let Some(schema) = schema {
         object["requestBody"] = json!({"required":!matches!(operation.id(),"governance.review.apply"|"governance.review.cancel"),"content":{"application/json":{"schema":schema}}});
     }
+}
+
+fn governance_reports_documentation(object: &mut Value) {
+    object["security"] = json!([{"consoleSession":[]}]);
+    object["x-console-only"] = json!(true);
+    object["description"] = json!(
+        "Read-only tenant evidence and review proposals. Each page uses its own repeatable-read snapshot; empty pages with next require continuation. Inactivity is retained-session evidence, not proof of upstream deletion. Source registration is not reachability. Local recovery candidates are preserved. Historical retention counts only with exact ownership, row generation and complete current context. Removal always requires a separately authorized lifecycle command."
+    );
+    object["parameters"] = json!([
+        {"name":"section","in":"query","schema":{"enum":["accounts","ownership","assignments","temporary_entitlements","administrative_roles"],"default":"accounts"}},
+        {"name":"limit","in":"query","schema":{"type":"integer","minimum":1,"maximum":50,"default":25}},
+        {"name":"after","in":"query","schema":{"type":"string","maxLength":16384},"description":"Opaque versioned keyset cursor bound to the tenant and category; do not construct or reuse across categories."}
+    ]);
+    object["responses"]["200"]["content"]["application/json"]["schema"] = json!({
+        "type":"object","additionalProperties":false,
+        "required":["section","observed_at","thresholds","items","next","scanned","read_only"],
+        "properties":{
+            "section":{"enum":["accounts","ownership","assignments","temporary_entitlements","administrative_roles"]},
+            "observed_at":{"type":"string","format":"date-time"},
+            "thresholds":{"type":"object","additionalProperties":false,"required":["inactivity_days","membership_review_days","privilege_review_days"],"properties":{"inactivity_days":{"const":90},"membership_review_days":{"const":365},"privilege_review_days":{"const":90}}},
+            "items":{"type":"array","maxItems":50,"items":{"type":"object","additionalProperties":false,"required":["key","reasons","evidence","proposals"],"properties":{
+                "key":{"type":"string","maxLength":8192},
+                "reasons":{"type":"array","uniqueItems":true,"items":{"enum":["missing_owner","inactive_owner","owner_authority_unavailable","reviewer_unavailable","missing_ownership","disconnected_source","upstream_deleted","upstream_absent","inactive_account","no_recent_observed_activity","unknown_activity","stale_membership","unreviewed_privilege","stale_review","overdue_review","unapplied_decision","protected_recovery_account","source_health_unknown"]}},
+                "evidence":{"type":"object","description":"Server-selected current public source identifiers/statuses, timestamps, revisions and historical-versus-current review context. Contains no credentials, raw external directory identifiers or complete activity-history claim. Evidence is not a lifecycle command."},
+                "proposals":{"type":"array","items":{"enum":["inspect_provisioning_source","assign_current_owner","review_account_lifecycle","review_membership_source","start_independent_review","inspect_review_application","preserve_recovery_access"]}}
+            }}},
+            "next":{"type":["string","null"],"maxLength":16384},"scanned":{"type":"integer","minimum":0,"maximum":100},"read_only":{"const":true}
+        }
+    });
 }
 
 fn declarative_documentation(operation: &Operation, object: &mut Value) {
@@ -1140,6 +1173,18 @@ mod tests {
             CHECKED_IN, generated,
             "docs/admin-api-openapi.json is stale. Regenerate it:\n    {REGENERATE_COMMAND}"
         );
+    }
+
+    #[test]
+    fn governance_findings_are_console_only_readonly_and_bounded() {
+        let document = value();
+        let route = &document["paths"][crate::GOVERNANCE_FINDINGS.full_path()]["get"];
+        assert_eq!(route["x-console-only"], json!(true));
+        assert!(route.get("requestBody").is_none());
+        let schema = &route["responses"]["200"]["content"]["application/json"]["schema"];
+        assert_eq!(schema["properties"]["read_only"]["const"], json!(true));
+        assert_eq!(schema["properties"]["items"]["maxItems"], json!(50));
+        assert_eq!(schema["properties"]["scanned"]["maximum"], json!(100));
     }
 
     #[test]
