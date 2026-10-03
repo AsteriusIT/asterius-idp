@@ -16,7 +16,7 @@ import {
 const headers = {
   "Cache-Control": "no-store",
   Pragma: "no-cache",
-  "Referrer-Policy": "no-referrer",
+  "Referrer-Policy": "strict-origin",
   "X-Content-Type-Options": "nosniff",
   "Content-Security-Policy":
     "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",

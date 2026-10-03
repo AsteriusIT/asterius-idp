@@ -339,6 +339,15 @@ impl RefreshToken<'_> {
         if !matches!(grant.status(self.now), GrantStatus::Active) {
             return Err(invalid_grant());
         }
+        // Account state can change after authorization. Re-read it before
+        // minting any token or rotating the refresh credential; a still-active
+        // grant/session never overrides a disabled, locked or removed user.
+        if let Some(user_id) = grant.user {
+            let user = self.users.find(user_id).await?.ok_or_else(invalid_grant)?;
+            if !user.can_authenticate() {
+                return Err(invalid_grant());
+            }
+        }
         if grant.scopes.contains("bound_key") {
             // A key-bound ID Token can only be refreshed under the original
             // key, even when the tenant otherwise permits DPoP key rotation
