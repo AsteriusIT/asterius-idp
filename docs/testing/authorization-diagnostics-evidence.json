@@ -1,0 +1,43 @@
+{
+  "date": "2026-10-03",
+  "ticket": "ast-dd1y.7.3",
+  "environment": "Disposable PostgreSQL database and HTTPS Asterius server; independently authenticated private_key_jwt and DPoP clients",
+  "targeted_verify": {
+    "format": "pass",
+    "strict_clippy": "pass",
+    "tests_passed": 238,
+    "source_and_secret_audits": "pass"
+  },
+  "console": {
+    "typescript_and_build": "pass",
+    "api_boundary_tests_passed": 2
+  },
+  "fuzz": {
+    "registered_parsers": 104,
+    "format_and_strict_clippy": "pass"
+  },
+  "openapi": "Generated server document equals checked-in artifact",
+  "actual_http_checks": [
+    "PDP denial preserves public response shape",
+    "Server support reference cannot be set by caller",
+    "AuthZEN caller request reference remains separate",
+    "Support reference finds actual tenant event",
+    "Stored explanation names actual enforcement point and revision",
+    "Missing context is explained without property names or values",
+    "Conjunctive filters and pagination",
+    "Malformed reference refused",
+    "Insufficient scope refused",
+    "Cross-tenant credential cannot retrieve event",
+    "Independent foreign tenant client can read its own audit route but cannot find original event",
+    "Policy change leaves original snapshot unchanged",
+    "Mutated snapshot fails immutable event digest validation",
+    "Expired or removed snapshot unavailable while event remains"
+  ],
+  "slow_postgresql_regression": "Compiled and ignored locally; selected explicitly by CI",
+  "cleanup": "Owned server process, generated private keys and random database removed by fixture trap",
+  "limitations": [
+    "No local full Rust suite or remote CI run",
+    "No downstream resource-server visibility without integration",
+    "Snapshot expiry unit tested against immutable event expiry; real HTTP fixture expires stored evidence without altering immutable audit chain"
+  ]
+}

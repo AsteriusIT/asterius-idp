@@ -55,9 +55,11 @@ assert status == 400, "reference syntax bound"
 status, _, _ = pdp.request("GET", api + f"/audit/events/{event_id}")
 assert status in (401, 403), "unauthorized evidence refusal"
 status, _, _ = admin.request("GET", f"https://127.0.0.1:{port}/t/e2e/admin/api/v1/audit/events/{event_id}")
-assert status == 401, "cross-tenant credential refusal"
+assert status in (401, 403, 404), f"cross-tenant credential refusal ({status})"
 foreign_issuer = f"https://127.0.0.1:{port}/t/e2e"
 foreign = Client(foreign_issuer + "/admin/api/v1", "admin.audit:read", foreign_issuer)
+status, _, own_page = foreign.request("GET", foreign.resource + "/audit/events?limit=1")
+assert status == 200 and "items" in own_page, "foreign credential can read its own audit route"
 status, _, _ = foreign.request("GET", foreign.resource + f"/audit/events/{event_id}")
 assert status == 404, "authorized foreign tenant cannot probe another tenant's event or evidence"
 

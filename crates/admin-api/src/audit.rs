@@ -522,7 +522,10 @@ mod tests {
             .expect("server references");
         assert_eq!(filter.request_id.as_deref(), Some(request.as_str()));
         assert_eq!(
-            filter.session.as_ref().map(|id| id.as_str()),
+            filter
+                .session
+                .as_ref()
+                .map(asterius_domain::SessionId::as_str),
             Some(session.as_str())
         );
         for bad in [
