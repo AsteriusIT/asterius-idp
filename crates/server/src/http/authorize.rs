@@ -76,7 +76,6 @@ pub trait ConditionalAuthorization: std::fmt::Debug + Send + Sync {
     ) -> Result<bool, asterius_domain::DomainError> {
         self.permits(tenant, client, grant, now).await
     }
-
 }
 
 /// What the handler needs.

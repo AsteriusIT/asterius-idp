@@ -4787,12 +4787,15 @@ async fn run_authorize(
 
     authorize::authorize(
         AuthorizeContext {
-            conditional: Some(Arc::new(super::conditional::ConditionalAccess::new(
-                endpoints.store.clone(),
-                endpoints.capabilities,
-                Arc::clone(&endpoints.kek),
-                Arc::clone(&endpoints.audit),
-            ).with_device_anchors(Arc::clone(&endpoints.device_anchors)))),
+            conditional: Some(Arc::new(
+                super::conditional::ConditionalAccess::new(
+                    endpoints.store.clone(),
+                    endpoints.capabilities,
+                    Arc::clone(&endpoints.kek),
+                    Arc::clone(&endpoints.audit),
+                )
+                .with_device_anchors(Arc::clone(&endpoints.device_anchors)),
+            )),
             tenant,
             signer: Some(endpoints.signer.as_ref()),
             language: &language,
@@ -5564,12 +5567,15 @@ async fn interaction_show(
     interaction::show(
         InteractionContext {
             device_leaf: device_leaf.as_ref().map(|Extension(leaf)| leaf.as_ref()),
-            conditional: Some(Arc::new(super::conditional::ConditionalAccess::new(
-                endpoints.store.clone(),
-                endpoints.capabilities,
-                Arc::clone(&endpoints.kek),
-                Arc::clone(&endpoints.audit),
-            ).with_device_anchors(Arc::clone(&endpoints.device_anchors)))),
+            conditional: Some(Arc::new(
+                super::conditional::ConditionalAccess::new(
+                    endpoints.store.clone(),
+                    endpoints.capabilities,
+                    Arc::clone(&endpoints.kek),
+                    Arc::clone(&endpoints.audit),
+                )
+                .with_device_anchors(Arc::clone(&endpoints.device_anchors)),
+            )),
             upstream_providers: &upstream_providers,
             tenant: &tenant,
             signer: Some(endpoints.signer.as_ref()),
@@ -5713,12 +5719,15 @@ async fn interaction_submit(
     interaction::submit(
         InteractionContext {
             device_leaf: device_leaf.as_ref().map(|Extension(leaf)| leaf.as_ref()),
-            conditional: Some(Arc::new(super::conditional::ConditionalAccess::new(
-                endpoints.store.clone(),
-                endpoints.capabilities,
-                Arc::clone(&endpoints.kek),
-                Arc::clone(&endpoints.audit),
-            ).with_device_anchors(Arc::clone(&endpoints.device_anchors)))),
+            conditional: Some(Arc::new(
+                super::conditional::ConditionalAccess::new(
+                    endpoints.store.clone(),
+                    endpoints.capabilities,
+                    Arc::clone(&endpoints.kek),
+                    Arc::clone(&endpoints.audit),
+                )
+                .with_device_anchors(Arc::clone(&endpoints.device_anchors)),
+            )),
             upstream_providers: &upstream_providers,
             tenant: &tenant,
             signer: Some(endpoints.signer.as_ref()),
@@ -6040,12 +6049,15 @@ async fn upstream_callback(
     interaction::complete_external(
         InteractionContext {
             device_leaf: device_leaf.as_ref().map(|Extension(leaf)| leaf.as_ref()),
-            conditional: Some(Arc::new(super::conditional::ConditionalAccess::new(
-                endpoints.store.clone(),
-                endpoints.capabilities,
-                Arc::clone(&endpoints.kek),
-                Arc::clone(&endpoints.audit),
-            ).with_device_anchors(Arc::clone(&endpoints.device_anchors)))),
+            conditional: Some(Arc::new(
+                super::conditional::ConditionalAccess::new(
+                    endpoints.store.clone(),
+                    endpoints.capabilities,
+                    Arc::clone(&endpoints.kek),
+                    Arc::clone(&endpoints.audit),
+                )
+                .with_device_anchors(Arc::clone(&endpoints.device_anchors)),
+            )),
             upstream_providers: &upstream_providers,
             tenant: &tenant,
             signer: Some(endpoints.signer.as_ref()),

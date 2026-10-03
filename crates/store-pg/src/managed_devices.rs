@@ -7,8 +7,8 @@ use asterius_domain::managed_devices::{
 };
 use asterius_domain::policy::conditional::{Availability, Fact, FactValue};
 use asterius_domain::{ClientId, DomainError, Grant, TenantId, UserId};
-use sqlx::{PgConnection, PgPool};
 use serde_json::Value;
+use sqlx::{PgConnection, PgPool};
 use std::sync::Arc;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -893,21 +893,42 @@ pub(crate) async fn capture_interaction(
 ) -> Result<(), DomainError> {
     use asterius_domain::managed_devices::{DeviceBinding, VerifiedDeviceEvidence};
     let interaction = hex::decode(interaction_digest).map_err(|_| DomainError::NotFound)?;
-    if interaction.len() != 32 { return Err(DomainError::NotFound); }
+    if interaction.len() != 32 {
+        return Err(DomainError::NotFound);
+    }
     let mut transaction = pool.begin().await.map_err(to_domain_error)?;
-    let active: Option<String> = sqlx::query_scalar("select tenant_id from tenants where tenant_id=$1 and status='active' for share")
-        .bind(tenant.as_str()).fetch_optional(&mut *transaction).await.map_err(to_domain_error)?;
-    if active.is_none() { return Err(DomainError::NotFound); }
+    let active: Option<String> = sqlx::query_scalar(
+        "select tenant_id from tenants where tenant_id=$1 and status='active' for share",
+    )
+    .bind(tenant.as_str())
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(to_domain_error)?;
+    if active.is_none() {
+        return Err(DomainError::NotFound);
+    }
     let request: Option<(Vec<u8>, String, String, OffsetDateTime)> = sqlx::query_as(
         "select request_uri_hash,client_id,session_id,expires_at from auth_requests \
          where tenant_id=$1 and interaction_id_hash=$2 and consumed_at is null \
-         and expires_at>clock_timestamp() and session_id is not null for update"
-    ).bind(tenant.as_str()).bind(&interaction).fetch_optional(&mut *transaction).await.map_err(to_domain_error)?;
-    let Some((request, client, session, request_expiry)) = request else { return Err(DomainError::NotFound); };
+         and expires_at>clock_timestamp() and session_id is not null for update",
+    )
+    .bind(tenant.as_str())
+    .bind(&interaction)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(to_domain_error)?;
+    let Some((request, client, session, request_expiry)) = request else {
+        return Err(DomainError::NotFound);
+    };
     let user: Option<Uuid> = sqlx::query_scalar(
         "select user_id from sessions where tenant_id=$1 and session_id=$2 and revoked_at is null \
-         and expires_at>clock_timestamp() and idle_expires_at>clock_timestamp() for share"
-    ).bind(tenant.as_str()).bind(session).fetch_optional(&mut *transaction).await.map_err(to_domain_error)?;
+         and expires_at>clock_timestamp() and idle_expires_at>clock_timestamp() for share",
+    )
+    .bind(tenant.as_str())
+    .bind(session)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(to_domain_error)?;
     let user = user.ok_or(DomainError::NotFound)?;
     let device: Option<(Uuid, Uuid, i64, i64, String)> = sqlx::query_as(
         "select d.device_id,d.source_id,d.source_generation,d.enrollment_generation,s.client_id \
@@ -916,40 +937,71 @@ pub(crate) async fn capture_interaction(
          and d.removed_at is null and s.enabled and s.generation=d.source_generation for share of d,s"
     ).bind(tenant.as_str()).bind(hex::decode(certificate.leaf.as_str()).map_err(|_| DomainError::NotFound)?)
         .bind(user).bind(&client).fetch_optional(&mut *transaction).await.map_err(to_domain_error)?;
-    let Some((device, source, source_generation, enrollment_generation, source_client)) = device else {
+    let Some((device, source, source_generation, enrollment_generation, source_client)) = device
+    else {
         transaction.commit().await.map_err(to_domain_error)?;
         return Ok(());
     };
     relay_client_on(&mut transaction, tenant, &ClientId::new(source_client)).await?;
     let active: Option<String> = sqlx::query_scalar("select client_id from clients where tenant_id=$1 and client_id=$2 and status='active' for share")
         .bind(tenant.as_str()).bind(&client).fetch_optional(&mut *transaction).await.map_err(to_domain_error)?;
-    let user_active: Option<Uuid> = sqlx::query_scalar("select user_id from users where tenant_id=$1 and user_id=$2 and status='active' for share")
-        .bind(tenant.as_str()).bind(user).fetch_optional(&mut *transaction).await.map_err(to_domain_error)?;
-    if active.is_none() || user_active.is_none() { return Err(DomainError::NotFound); }
+    let user_active: Option<Uuid> = sqlx::query_scalar(
+        "select user_id from users where tenant_id=$1 and user_id=$2 and status='active' for share",
+    )
+    .bind(tenant.as_str())
+    .bind(user)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(to_domain_error)?;
+    if active.is_none() || user_active.is_none() {
+        return Err(DomainError::NotFound);
+    }
     let current: OffsetDateTime = sqlx::query_scalar("select clock_timestamp()")
-        .fetch_one(&mut *transaction).await.map_err(to_domain_error)?;
-    if certificate.expires_at<=current || request_expiry<=current { return Err(DomainError::NotFound); }
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(to_domain_error)?;
+    if certificate.expires_at <= current || request_expiry <= current {
+        return Err(DomainError::NotFound);
+    }
     let existing: Option<Value> = sqlx::query_scalar(
         "select binding from managed_device_interaction_proofs where tenant_id=$1 and request_uri_hash=$2"
     ).bind(tenant.as_str()).bind(&request).fetch_optional(&mut *transaction).await.map_err(to_domain_error)?;
     if let Some(existing) = existing {
-        let existing: DeviceBinding = serde_json::from_value(existing).map_err(|_| DomainError::NotFound)?;
+        let existing: DeviceBinding =
+            serde_json::from_value(existing).map_err(|_| DomainError::NotFound)?;
         existing.validate(current)?;
-        if existing.interaction_digest()!=interaction_digest || existing.user()!=&UserId::new(user)
-            || existing.client().as_str()!=client || existing.device()!=device
-            || existing.anchor_sha256()!=certificate.anchor.as_str()
-            || existing.enrollment_generation()!=enrollment_generation || existing.source_generation()!=source_generation
-        { return Err(DomainError::NotFound); }
+        if existing.interaction_digest() != interaction_digest
+            || existing.user() != &UserId::new(user)
+            || existing.client().as_str() != client
+            || existing.device() != device
+            || existing.anchor_sha256() != certificate.anchor.as_str()
+            || existing.enrollment_generation() != enrollment_generation
+            || existing.source_generation() != source_generation
+        {
+            return Err(DomainError::NotFound);
+        }
         // Repeated submissions never refresh the original five-minute proof.
     } else {
-        let expiry = (now + time::Duration::seconds(300)).min(certificate.expires_at).min(request_expiry);
-        let binding = DeviceBinding::from_verified(VerifiedDeviceEvidence {
-            tenant: tenant.clone(), user: UserId::new(user), client: ClientId::new(client),
-            interaction_digest: interaction_digest.to_owned(), source, source_generation,
-            device, enrollment_generation, leaf_sha256: certificate.leaf.as_str().to_owned(),
-            anchor_sha256: certificate.anchor.as_str().to_owned(), certificate_expires_at: certificate.expires_at,
-            proof_expires_at: expiry,
-        }, current)?;
+        let expiry = (now + time::Duration::seconds(300))
+            .min(certificate.expires_at)
+            .min(request_expiry);
+        let binding = DeviceBinding::from_verified(
+            VerifiedDeviceEvidence {
+                tenant: tenant.clone(),
+                user: UserId::new(user),
+                client: ClientId::new(client),
+                interaction_digest: interaction_digest.to_owned(),
+                source,
+                source_generation,
+                device,
+                enrollment_generation,
+                leaf_sha256: certificate.leaf.as_str().to_owned(),
+                anchor_sha256: certificate.anchor.as_str().to_owned(),
+                certificate_expires_at: certificate.expires_at,
+                proof_expires_at: expiry,
+            },
+            current,
+        )?;
         sqlx::query("insert into managed_device_interaction_proofs(tenant_id,request_uri_hash,interaction_id_hash,device_id,binding,expires_at) values($1,$2,$3,$4,$5,$6)")
             .bind(tenant.as_str()).bind(request).bind(interaction).bind(device)
             .bind(serde_json::to_value(binding).map_err(|_| DomainError::NotFound)?).bind(expiry)

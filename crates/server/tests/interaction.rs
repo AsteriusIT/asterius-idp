@@ -616,7 +616,7 @@ fn context_with<'a>(
     static THEME: std::sync::LazyLock<asterius_domain::Theme> =
         std::sync::LazyLock::new(asterius_domain::Theme::default);
     InteractionContext {
-            device_leaf: None,
+        device_leaf: None,
         conditional: None,
         upstream_providers: &[],
         tenant,
