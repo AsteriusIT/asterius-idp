@@ -191,6 +191,7 @@ impl Fixture {
             status: ClientStatus::Active,
             created_at: self.now,
             updated_at: self.now,
+            authority_revision: uuid::Uuid::new_v4(),
         };
         client.registration.resources.insert(RESOURCE.to_owned());
         self.store
@@ -230,6 +231,7 @@ impl Fixture {
             status: ClientStatus::Active,
             created_at: self.now,
             updated_at: self.now,
+            authority_revision: uuid::Uuid::new_v4(),
         };
         client.registration.resources.insert(RESOURCE.to_owned());
         self.store
@@ -266,6 +268,7 @@ impl Fixture {
             status: ClientStatus::Active,
             created_at: self.now,
             updated_at: self.now,
+            authority_revision: uuid::Uuid::new_v4(),
         };
         client.registration.resources.insert(RESOURCE.to_owned());
         self.store
@@ -302,6 +305,7 @@ impl Fixture {
             status: ClientStatus::Active,
             created_at: self.now,
             updated_at: self.now,
+            authority_revision: uuid::Uuid::new_v4(),
         };
         client.registration.resources.insert(RESOURCE.to_owned());
         self.store
@@ -334,6 +338,7 @@ impl Fixture {
             status: ClientStatus::Active,
             created_at: self.now,
             updated_at: self.now,
+            authority_revision: uuid::Uuid::new_v4(),
         };
         client.registration.resources.insert(RESOURCE.to_owned());
         self.store
@@ -418,6 +423,7 @@ impl Fixture {
             },
             created_at: self.now,
             updated_at: self.now,
+            authority_revision: uuid::Uuid::new_v4(),
         })
         .await
         .expect("store the user");
@@ -465,6 +471,7 @@ impl Fixture {
             resources: std::collections::BTreeSet::new(),
             actor_chain: Vec::new(),
             parent: None,
+            parent_derivation: None,
             task: None,
             // The store keeps the digest, which is what the token endpoint
             // looks the session up by.
@@ -480,6 +487,7 @@ impl Fixture {
             }),
             created_at: self.now,
             updated_at: self.now,
+            authority_revision: uuid::Uuid::new_v4(),
             expires_at: None,
             revoked_at: None,
             revocation_reason: None,

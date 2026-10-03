@@ -111,6 +111,41 @@ impl GrantAuthorityFence {
     }
 }
 
+async fn lock_authority_principals_on(
+    connection: &mut PgConnection,
+    tenant: &TenantId,
+    grant: &Grant,
+    rows: &[AuthorityRow],
+) -> Result<(), DomainError> {
+    let mut clients = rows
+        .iter()
+        .map(|row| row.client_id.clone())
+        .collect::<Vec<_>>();
+    clients.push(grant.client.to_string());
+    clients.sort();
+    clients.dedup();
+    let active_clients: Vec<String> = sqlx::query_scalar(
+        "select client_id from clients where tenant_id=$1 and client_id=any($2) and status='active' order by client_id for share",
+    ).bind(tenant.as_str()).bind(&clients).fetch_all(&mut *connection).await.map_err(to_domain_error)?;
+    if active_clients != clients {
+        return Err(authority_invalid());
+    }
+    let mut users = rows
+        .iter()
+        .filter_map(|row| row.user_id)
+        .collect::<Vec<_>>();
+    users.extend(grant.user.map(|user| *user.as_uuid()));
+    users.sort();
+    users.dedup();
+    let active_users: Vec<Uuid> = sqlx::query_scalar(
+        "select user_id from users where tenant_id=$1 and user_id=any($2) and status='active' order by user_id for share",
+    ).bind(tenant.as_str()).bind(&users).fetch_all(connection).await.map_err(to_domain_error)?;
+    if active_users != users {
+        return Err(authority_invalid());
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, sqlx::FromRow)]
 struct AuthorityRow {
     grant_id: Uuid,
@@ -121,7 +156,8 @@ struct AuthorityRow {
     claimed_at: Option<OffsetDateTime>,
     revoked_at: Option<OffsetDateTime>,
     expires_at: Option<OffsetDateTime>,
-    updated_at: OffsetDateTime,
+    authority_revision: Uuid,
+    parent_authority_revision: Option<Uuid>,
 }
 
 /// The grant repository for one tenant.
@@ -179,7 +215,21 @@ impl PgGrantRepository {
         }
         let mut parent = child.clone();
         parent.id = parent_id.clone();
-        parent.updated_at = row.updated_at;
+        let receipt = child
+            .parent_derivation
+            .as_ref()
+            .filter(|receipt| receipt.parent() == parent_id)
+            .ok_or_else(authority_invalid)?;
+        parent.authority_revision = receipt.revision();
+        parent.parent_derivation =
+            row.parent_grant_id
+                .zip(row.parent_authority_revision)
+                .map(|(id, revision)| {
+                    asterius_domain::ParentDerivation::from_stored(
+                        GrantId::new(id.to_string()),
+                        revision,
+                    )
+                });
         parent.client = ClientId::new(row.client_id);
         parent.parent = row.parent_grant_id.map(|id| GrantId::new(id.to_string()));
         Self::lock_issuance_authority_on(connection, tenant, &parent).await
@@ -207,17 +257,6 @@ impl PgGrantRepository {
         if grant.tenant != *tenant {
             return Err(authority_invalid());
         }
-        let client: Option<String> = sqlx::query_scalar(
-            "select status from clients where tenant_id=$1 and client_id=$2 for share",
-        )
-        .bind(tenant.as_str())
-        .bind(grant.client.as_str())
-        .fetch_optional(&mut *connection)
-        .await
-        .map_err(to_domain_error)?;
-        if client.as_deref() != Some("active") {
-            return Err(authority_invalid());
-        }
         let mut rows = Vec::<AuthorityRow>::new();
         let mut next = Some(uuid(&grant.id)?);
         while let Some(id) = next {
@@ -227,6 +266,7 @@ impl PgGrantRepository {
             let row = authority_row_on(connection, tenant, id, false).await?;
             let Some(row) = row else {
                 if rows.is_empty() && !claimed {
+                    lock_authority_principals_on(connection, tenant, grant, &rows).await?;
                     return Ok(None);
                 }
                 return Err(authority_invalid());
@@ -245,6 +285,7 @@ impl PgGrantRepository {
         {
             return Err(authority_invalid());
         }
+        lock_authority_principals_on(connection, tenant, grant, &rows).await?;
         // Discovery is untrusted until every row has been locked root to leaf.
         for expected in rows.iter().rev() {
             let locked = authority_row_on(connection, tenant, expected.grant_id, true)
@@ -255,25 +296,30 @@ impl PgGrantRepository {
                 || locked.user_id != expected.user_id
                 || locked.subject != expected.subject
                 || locked.parent_grant_id != expected.parent_grant_id
-                || locked.updated_at != expected.updated_at
+                || locked.authority_revision != expected.authority_revision
+                || locked.parent_authority_revision != expected.parent_authority_revision
             {
                 return Err(authority_invalid());
             }
         }
-        // Match the loaded grant revision using PostgreSQL's same timestamptz
-        // encoding as insertion. Claim only stamps claimed_at; target narrowing
-        // and task preparation leave this durable permission/auth revision intact.
+        // Bookkeeping timestamps change on first claim. Only the durable
+        // private authority generation identifies permissions/authentication.
         let same_revision: bool = sqlx::query_scalar(
-            "select updated_at=$3 from grants where tenant_id=$1 and grant_id=$2",
+            "select authority_revision=$3 from grants where tenant_id=$1 and grant_id=$2",
         )
         .bind(tenant.as_str())
         .bind(uuid(&grant.id)?)
-        .bind(grant.updated_at)
+        .bind(grant.authority_revision)
         .fetch_one(&mut *connection)
         .await
         .map_err(to_domain_error)?;
         if !same_revision {
             return Err(authority_invalid());
+        }
+        for edge in rows.windows(2) {
+            if edge[0].parent_authority_revision != Some(edge[1].authority_revision) {
+                return Err(authority_invalid());
+            }
         }
         let now: OffsetDateTime = sqlx::query_scalar("select clock_timestamp()")
             .fetch_one(&mut *connection)
@@ -439,37 +485,35 @@ impl PgGrantRepository {
         // 8693 exchange — are created already claimed. A caller that leaves it
         // `None`, which is what `Grant::new` produces, is storing a grant no
         // credential has been taken from yet, and the sweep may collect it.
-        sqlx::query!(
-            "insert into grants (tenant_id, grant_id, client_id, user_id, subject, scopes,
+        let parent_revision = grant
+            .parent_derivation
+            .as_ref()
+            .map(|receipt| {
+                if grant.parent.as_ref() != Some(receipt.parent()) {
+                    return Err(authority_invalid());
+                }
+                Ok(receipt.revision())
+            })
+            .transpose()?;
+        sqlx::query(
+"insert into grants (tenant_id, grant_id, client_id, user_id, subject, scopes,
                                  claims, claims_locales, authorization_details, resources,
                                  actor_chain, parent_grant_id, session_id, authenticated_at,
-                                 acr, amr, created_at, updated_at, expires_at, claimed_at)
+                                 acr, amr, created_at, updated_at, expires_at, claimed_at, authority_revision, parent_authority_revision)
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-                     $17, $18, $19)",
-            tenant.as_str(),
-            id,
-            grant.client.as_str(),
-            grant.user.map(|user| *user.as_uuid()),
-            grant.subject.as_ref().map(SubjectId::as_str),
-            &scopes,
-            grant.claims,
-            &claims_locales,
-            authorization_details,
-            &resources,
-            actor_chain,
-            parent,
-            grant.session.as_ref().map(SessionId::as_str),
-            authentication.as_ref().map(|a| a.authenticated_at),
-            authentication.and_then(|a| a.acr.as_deref()),
-            &amr,
-            grant.created_at,
-            grant.expires_at,
-            grant.claimed_at,
+                     $17, $18, $19, $20, $21)"
         )
-        .execute(connection)
-        .await
-        .map(|_| ())
-        .map_err(to_domain_error)
+        .bind(tenant.as_str()).bind(id).bind(grant.client.as_str())
+        .bind(grant.user.map(|user| *user.as_uuid()))
+        .bind(grant.subject.as_ref().map(SubjectId::as_str))
+        .bind(scopes).bind(&grant.claims).bind(claims_locales)
+        .bind(authorization_details).bind(resources).bind(actor_chain).bind(parent)
+        .bind(grant.session.as_ref().map(SessionId::as_str))
+        .bind(authentication.map(|auth| auth.authenticated_at))
+        .bind(authentication.and_then(|auth| auth.acr.as_deref())).bind(amr)
+        .bind(grant.created_at).bind(grant.expires_at).bind(grant.claimed_at)
+        .bind(grant.authority_revision).bind(parent_revision)
+        .execute(connection).await.map(|_| ()).map_err(to_domain_error)
     }
 
     // Proof is server-owned and matched to the complete original authentication
@@ -518,7 +562,7 @@ impl PgGrantRepository {
         let row = sqlx::query_as!(
             Row,
             "select grant_id, client_id, user_id, subject, scopes, claims, claims_locales,
-                    authorization_details, resources, actor_chain, parent_grant_id,
+                    authorization_details, resources, actor_chain, parent_grant_id, authority_revision, parent_authority_revision,
                     session_id, authenticated_at, acr, amr, created_at, updated_at, expires_at,
                     claimed_at, revoked_at, revocation_reason
                from grants
@@ -678,7 +722,7 @@ impl PgGrantRepository {
         let rows = sqlx::query_as!(
             Row,
             "select grant_id, client_id, user_id, subject, scopes, claims, claims_locales,
-                    authorization_details, resources, actor_chain, parent_grant_id,
+                    authorization_details, resources, actor_chain, parent_grant_id, authority_revision, parent_authority_revision,
                     session_id, authenticated_at, acr, amr, created_at, updated_at, expires_at,
                     claimed_at, revoked_at, revocation_reason
                from grants
@@ -719,7 +763,7 @@ impl PgGrantRepository {
         let rows = sqlx::query_as!(
             Row,
             "select grant_id, client_id, user_id, subject, scopes, claims, claims_locales,
-                    authorization_details, resources, actor_chain, parent_grant_id,
+                    authorization_details, resources, actor_chain, parent_grant_id, authority_revision, parent_authority_revision,
                     session_id, authenticated_at, acr, amr, created_at, updated_at, expires_at,
                     claimed_at, revoked_at, revocation_reason
                from grants
@@ -785,7 +829,7 @@ impl PgGrantRepository {
                and revoked_at is null
                and (expires_at is null or expires_at > $3)
              returning grant_id, client_id, user_id, subject, scopes, claims, claims_locales,
-                       authorization_details, resources, actor_chain, parent_grant_id,
+                       authorization_details, resources, actor_chain, parent_grant_id, authority_revision, parent_authority_revision,
                        session_id, authenticated_at, acr, amr, created_at, updated_at,
                        expires_at, claimed_at, revoked_at, revocation_reason",
             self.tenant.as_str(),
@@ -1197,9 +1241,9 @@ async fn authority_row_on(
     lock: bool,
 ) -> Result<Option<AuthorityRow>, DomainError> {
     let query = if lock {
-        "select grant_id,client_id,user_id,subject,parent_grant_id,claimed_at,revoked_at,expires_at,updated_at from grants where tenant_id=$1 and grant_id=$2 for share"
+        "select grant_id,client_id,user_id,subject,parent_grant_id,claimed_at,revoked_at,expires_at,authority_revision,parent_authority_revision from grants where tenant_id=$1 and grant_id=$2 for share"
     } else {
-        "select grant_id,client_id,user_id,subject,parent_grant_id,claimed_at,revoked_at,expires_at,updated_at from grants where tenant_id=$1 and grant_id=$2"
+        "select grant_id,client_id,user_id,subject,parent_grant_id,claimed_at,revoked_at,expires_at,authority_revision,parent_authority_revision from grants where tenant_id=$1 and grant_id=$2"
     };
     sqlx::query_as(query)
         .bind(tenant.as_str())
@@ -1222,6 +1266,8 @@ struct Row {
     resources: Vec<String>,
     actor_chain: serde_json::Value,
     parent_grant_id: Option<Uuid>,
+    authority_revision: Uuid,
+    parent_authority_revision: Option<Uuid>,
     session_id: Option<String>,
     authenticated_at: Option<OffsetDateTime>,
     acr: Option<String>,
@@ -1243,7 +1289,18 @@ impl Row {
     /// edited during an incident must fail to load rather than reach a token —
     /// see [`GrantRecord`] for what each rule is defending.
     fn into_entity(self, tenant: &TenantId) -> Result<Grant, DomainError> {
-        GrantRecord {
+        let authority_revision = self.authority_revision;
+        let derivation = self
+            .parent_grant_id
+            .zip(self.parent_authority_revision)
+            .map(|(parent, revision)| {
+                asterius_domain::ParentDerivation::from_stored(
+                    GrantId::new(parent.to_string()),
+                    revision,
+                )
+            });
+
+        let mut grant = GrantRecord {
             id: GrantId::new(self.grant_id.to_string()),
             client: ClientId::new(self.client_id),
             user: self.user_id.map(UserId::new),
@@ -1274,7 +1331,10 @@ impl Row {
                 "grants",
                 format!("stored row is not a valid grant: {error}"),
             )
-        })
+        })?;
+        grant.authority_revision = authority_revision;
+        grant.parent_derivation = derivation;
+        Ok(grant)
     }
 }
 
