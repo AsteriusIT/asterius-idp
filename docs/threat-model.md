@@ -2366,3 +2366,101 @@ cancels pending cluster transactions conservatively. Broker TLS termination,
 secret-store protection and redacted proxy logs remain operator responsibilities.
 A stolen native Kubernetes ID token still works until expiry; offline JWT
 revocation remains explicitly bounded, not immediate.
+
+### Controlled policy simulation
+
+Simulation requires policy, user, application and resource catalogue read
+authority in the routed tenant. Real references are checked before facts are
+resolved, and extra caller-supplied trusted-fact fields are rejected. Only
+context properties and a bounded policy document may be hypothetical.
+A stale policy revision yields a conflict before subject inspection. The
+response identifies input provenance and explicitly marks the result as
+nonenforcing; the public authorization endpoint accepts its existing dialect.
+
+An inspection-intent audit write must succeed before subject lookup. It records
+account/client references without policy literals, context or results; it is
+not an enforcement event. Audit outages return an unavailable response and no
+facts. The read-only pairwise derivation cannot reserve identifiers or create
+grants. Policy uses one snapshot, while authorization facts remain separate
+repository reads and may change during the inspection. This diagnostic result
+must never substitute for a live enforcement decision.
+
+## Declarative management trust boundary (ast-dd1y.3.2)
+
+Terraform/OpenTofu and operator controllers use the existing client-credentials
+DPoP admin token. The additive management surface is service-only; the registry
+session-read gate and the addressed resource kind's exact read/write scopes are
+both required. Imported IDs bind tenant/kind/live identity and canonical UUID
+spelling. An identity from another tenant fails before lookup. Tenant provisioning
+requires deployment reach; ordinary tenant controllers cannot mint tenants.
+
+Controller ownership is derived from verified issuer/client context. Server-side
+adoption refuses another owner, managed builder provenance and SCIM/LDAP ownership.
+References grant no controller privileges. Creation-key mappings, live configuration,
+ownership and generation commit together. Shared identity locks and strong revision
+checks prevent conflicting reconciliation; delete-protection triggers cover ordinary
+writers as well as the controller. Monotonic generations detect ABA drift. Resource
+incarnations and deletion receipts prevent a retry of an old delete from touching a
+new object with the same natural identity. Membership operations serialize against
+the parent group so deletion cannot silently race a new authority edge.
+
+Application specs reuse registration validation, sector verification and signing-key
+availability without broadening the FAPI profile. New tenant keys and pairwise salts
+are wrapped under the deployment KEK and provisioned in the management transaction.
+Canonical reads/plans contain public metadata and provenance, never private JWK
+members, reusable generated secrets, key ciphertext or registration access tokens.
+Errors/audits record only nonsecret resource IDs and stable codes. Configuration
+policy literals remain visible to principals granted policy read access.
+
+Residual trust: a controller credential with legitimate write scopes can change
+its own managed resources. Console administrators retain authorized edits, producing
+drift rather than being implicitly demoted by controller ownership. Independent
+controllers must use separate credentials. PostgreSQL and the deployment KEK remain
+in the existing trusted computing base. Availability/deadlock failures roll back and
+require refresh/retry; no success is synthesized. Slow live store tests, parser fuzz
+coverage and the management OpenAPI describe this boundary; this change makes no new
+protocol-conformance or cryptographic-profile claim.
+
+### External workload assertions
+
+External JWTs cross a separate trust boundary from browser OIDC login and
+OAuth client authentication. Tenant-pinned workload trust versions require
+exact provider claims, public keys and client allowlists. JWT routing fields
+cannot supply a JWKS URL or establish issuer trust. Guarded JWKS fetches never
+extend an expired cache entry during outages. Administrative enable/disable
+changes are audited atomically; minting must lock and recheck the same live
+trust version while consuming the assertion digest and persisting its child
+grant. See [workload trust administration](workload-trusts.md) for bounds and
+[the approved decision](adr/external-workload-trust.md) for offline revocation
+and independent FAPI client authentication requirements.
+
+### Terraform and OpenTofu service boundary
+
+The standalone [provider](../providers/terraform/README.md) uses the declarative
+API authority model. Operator-controlled HTTPS issuer/target URLs and additional
+trusted CA files are explicit trust inputs; redirects and certificate-verification
+bypasses are refused. An external PKCS8 signing-key path authenticates one
+separately provisioned service client. Runtime access tokens and the distinct
+process-local DPoP key never become Terraform attributes. Dedicated kind scopes
+and deployment reach still come from token verification; HCL cannot choose owner.
+
+Public desired JSON, canonical reads, policy literals and optional file paths are
+configuration records in state/saved plans, so those records still need access
+control. Private/symmetric JWK fields, reusable credential fields, private PEM
+material and duplicate JSON keys fail before state writes; response bodies and
+transport errors are never echoed into provider diagnostics. Terraform/OpenTofu
+trace logging can print operator-supplied configuration before the provider sees
+it, so public specs are not a channel for secrets. Import/data-source reads grant
+no adoption authority. Updates/deletes bind to refreshed revisions, ownership
+conflicts fail, and protection must be disabled in a separate apply. Acceptance
+uses a dedicated disposable database and actual TLS/DPoP client-credentials
+requests; no provider installation or acceptance run deploys production state.
+
+### Kubernetes workload exchange
+
+Kubernetes exchange consumes assertion digests atomically with grants and source
+provenance. External JWTs remain subject credentials, independently of FAPI
+client authentication. The pod-deletion bound is offline freshness plus output
+TTL; granting TokenRequest creation authority is an explicit Kubernetes RBAC
+choice. Exact registered RFC9396 actions and locations cannot exceed the trust
+ceiling. See [the runtime and renewal recipe](kubernetes-workload-exchange.md).

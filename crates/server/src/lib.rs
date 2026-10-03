@@ -43,3 +43,5 @@ pub use themes::ThemeDirectory;
 
 /// The version of the running server, as reported by metadata and `/healthz`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+pub mod workload;

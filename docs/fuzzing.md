@@ -68,7 +68,7 @@ cargo +nightly fuzz run --target x86_64-unknown-linux-gnu <target> path/to/crash
 
 ## Coverage
 
-The 101 targets below cover 124 declared entry points. Generated from the
+The 104 targets below cover 129 declared entry points. Generated from the
 `// fuzz-target:` markers in `crates/`.
 
 | Fuzz target | Entry point | Source |
@@ -93,6 +93,7 @@ The 101 targets below cover 124 declared entry points. Generated from the
 | `admin_key_request` | `RotationRequest::algorithm` | `crates/admin-api/src/keys.rs` |
 | `admin_key_request` | `ScheduleRequest::schedule` | `crates/admin-api/src/keys.rs` |
 | `admin_key_request` | `public_members` | `crates/admin-api/src/keys.rs` |
+| `admin_policy_simulation` | `parse_simulation` | `crates/admin-api/src/policies.rs` |
 | `admin_stream_status` | `parse_status_request` | `crates/admin-api/src/ssf.rs` |
 | `admin_user_claims` | `accept_claims` | `crates/admin-api/src/users.rs` |
 | `agent_profile` | `AgentLimits::from_json` | `crates/domain/src/entities/agent.rs` |
@@ -127,6 +128,7 @@ The 101 targets below cover 124 declared entry points. Generated from the
 | `consent_memory` | `Remembered::covers` | `crates/oidc/src/consent_memory.rs` |
 | `cose_key` | `parse` | `crates/webauthn/src/cose.rs` |
 | `csp_form_action` | `FormActionOrigin::parse` | `crates/web/src/csp.rs` |
+| `declarative_import_id` | `Identity::parse` | `crates/domain/src/declarative.rs` |
 | `device_authorization_request` | `validate` | `crates/oidc/src/device.rs` |
 | `device_user_code` | `UserCode::parse` | `crates/oidc/src/device.rs` |
 | `dpop_proof` | `NonceIssuer::accepts` | `crates/jose/src/dpop.rs` |
@@ -197,3 +199,6 @@ The 101 targets below cover 124 declared entry points. Generated from the
 | `ui_locales_parse` | `UiLocales::parse` | `crates/domain/src/locale.rs` |
 | `userinfo_presentation` | `present` | `crates/oidc/src/userinfo.rs` |
 | `webauthn_client_data` | `verify` | `crates/webauthn/src/client_data.rs` |
+| `workload_token` | `KeySet::parse` | `crates/jose/src/workload.rs` |
+| `workload_token` | `Parsed::parse` | `crates/jose/src/workload.rs` |
+| `workload_token` | `issuer_hint` | `crates/jose/src/workload.rs` |

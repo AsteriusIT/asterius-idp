@@ -767,7 +767,7 @@ pub async fn decide_without_enforcing(
 /// attaches the same facts to every evaluation that names it: one read, one
 /// view of the tenant, and no chance of two evaluations in one answer
 /// disagreeing about who the subject is.
-fn attach(
+pub(crate) fn attach(
     acr_policy: &AcrPolicy,
     now: OffsetDateTime,
     request: EvaluationRequest,

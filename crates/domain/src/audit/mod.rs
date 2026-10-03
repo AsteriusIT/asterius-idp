@@ -400,6 +400,9 @@ impl EventType {
     /// put every attribute name a tenant reasons about into the one table this
     /// deployment keeps forever.
     pub const POLICY_UPDATED: Self = Self("policy.updated");
+    /// An administrator inspected resolved subject facts in a simulation.
+    /// No access was granted and no hypothetical input value is retained.
+    pub const POLICY_SIMULATED: Self = Self("policy.simulated");
     /// A policy enforcement point asked for a decision (`ast-pj0.1`).
     ///
     /// One type for permit and for deny, told apart by [`Outcome`], because
@@ -576,6 +579,14 @@ impl EventType {
     pub const SAML_SP_REMOVED: Self = Self("saml.sp_removed");
     /// An administrator saved an upstream OIDC identity provider.
     pub const OIDC_PROVIDER_SAVED: Self = Self("oidc.provider_saved");
+    /// An operator changed a workload trust, including enable/disable and key rotation.
+    pub const WORKLOAD_TRUST_SAVED: Self = Self("workload.trust_saved");
+    /// An operator deleted an external workload trust.
+    pub const WORKLOAD_TRUST_DELETED: Self = Self("workload.trust_deleted");
+    /// A workload assertion was verified without issuing a credential yet.
+    pub const WORKLOAD_VERIFIED: Self = Self("workload.verified");
+    /// An external workload assertion failed validation.
+    pub const WORKLOAD_REJECTED: Self = Self("workload.rejected");
     /// An administrator removed an upstream OIDC identity provider.
     pub const OIDC_PROVIDER_REMOVED: Self = Self("oidc.provider_removed");
     /// A local account was created after verified upstream authentication.
@@ -597,7 +608,7 @@ impl EventType {
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 97] = [
+    pub const ALL: [Self; 102] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -660,6 +671,7 @@ impl EventType {
         Self::APP_ROLE_ASSIGNED,
         Self::APP_ROLE_WITHDRAWN,
         Self::POLICY_UPDATED,
+        Self::POLICY_SIMULATED,
         Self::ACCESS_EVALUATED,
         Self::ACCESS_SEARCHED,
         Self::AUDIT_PURGED,
@@ -683,6 +695,10 @@ impl EventType {
         Self::SAML_SP_PROVISIONED,
         Self::SAML_SP_REMOVED,
         Self::OIDC_PROVIDER_SAVED,
+        Self::WORKLOAD_TRUST_SAVED,
+        Self::WORKLOAD_TRUST_DELETED,
+        Self::WORKLOAD_VERIFIED,
+        Self::WORKLOAD_REJECTED,
         Self::OIDC_PROVIDER_REMOVED,
         Self::OIDC_IDENTITY_CREATED,
         Self::OIDC_IDENTITY_LINKED,

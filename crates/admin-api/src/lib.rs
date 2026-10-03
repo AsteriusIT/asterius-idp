@@ -49,6 +49,7 @@ pub mod backend;
 pub mod clients;
 pub mod console;
 pub mod csrf;
+mod declarative;
 pub mod error;
 pub mod flows;
 pub mod groups;
@@ -214,6 +215,10 @@ pub const ID_JAG_SUBJECT_BIND_ID: &str = "id_jag.subject.bind";
 pub const ID_JAG_SUBJECT_REMOVE_ID: &str = "id_jag.subject.remove";
 pub const SAML_SP_LIST_ID: &str = "saml.sp.list";
 pub const OIDC_PROVIDER_CHECK_ID: &str = "oidc.providers.check";
+pub const WORKLOAD_TRUSTS_LIST_ID: &str = "workload.trusts.list";
+pub const WORKLOAD_TRUST_READ_ID: &str = "workload.trusts.read";
+pub const WORKLOAD_TRUST_PUT_ID: &str = "workload.trusts.put";
+pub const WORKLOAD_TRUST_DELETE_ID: &str = "workload.trusts.delete";
 pub const OIDC_PROVIDERS_LIST_ID: &str = "oidc.providers.list";
 pub const OIDC_PROVIDERS_PUT_ID: &str = "oidc.providers.put";
 pub const OIDC_PROVIDERS_DELETE_ID: &str = "oidc.providers.delete";
@@ -1096,6 +1101,35 @@ pub const OIDC_PROVIDER_CHECK: Operation = Operation::probe(
     "Checks stored provider discovery and public keys without using client credentials",
 );
 
+pub const WORKLOAD_TRUSTS_LIST: Operation = Operation::read(
+    WORKLOAD_TRUSTS_LIST_ID,
+    "/workload-trusts",
+    S::Get,
+    A::new(R::Tenant, "admin.workload_trusts:read"),
+    "Lists workload trust metadata and public fingerprints without key material",
+);
+pub const WORKLOAD_TRUST_READ: Operation = Operation::read(
+    WORKLOAD_TRUST_READ_ID,
+    "/workload-trusts/{trust_id}",
+    S::Get,
+    A::new(R::Tenant, "admin.workload_trusts:read"),
+    "Reads one tenant workload trust without key material",
+);
+pub const WORKLOAD_TRUST_PUT: Operation = Operation::mutation(
+    WORKLOAD_TRUST_PUT_ID,
+    "/workload-trusts/{trust_id}",
+    M::Put,
+    A::new(R::Tenant, "admin.workload_trusts:write"),
+    "Conditionally creates or replaces a pinned workload trust; default disabled",
+);
+pub const WORKLOAD_TRUST_DELETE: Operation = Operation::mutation(
+    WORKLOAD_TRUST_DELETE_ID,
+    "/workload-trusts/{trust_id}",
+    M::Delete,
+    A::new(R::Tenant, "admin.workload_trusts:write"),
+    "Conditionally deletes a workload trust and preserves assertion replay marks",
+);
+
 pub const OIDC_PROVIDERS_LIST: Operation = Operation::read(
     OIDC_PROVIDERS_LIST_ID,
     "/oidc/providers",
@@ -1717,6 +1751,7 @@ pub const POLICY_UPDATE_ID: &str = "policies.update";
 pub const POLICY_DELETE_ID: &str = "policies.delete";
 /// The `operationId` of [`POLICY_TRY`].
 pub const POLICY_TRY_ID: &str = "policies.try";
+pub const POLICY_SIMULATE_ID: &str = "policies.simulate";
 
 /// The tenant's shared role catalogue (`ast-095`).
 ///
@@ -2018,7 +2053,15 @@ pub const SCIM_BULK: Operation = Operation::mutation(
     "SCIM Bulk is unsupported by this service",
 );
 
-static REGISTRY: [Operation; 156] = [
+static REGISTRY: &[Operation] = &[
+    DECLARATIVE_READ,
+    DECLARATIVE_RESOLVE,
+    DECLARATIVE_CREATE,
+    DECLARATIVE_REPLACE,
+    DECLARATIVE_ADOPT,
+    DECLARATIVE_RELEASE,
+    DECLARATIVE_DELETE,
+    DECLARATIVE_PLAN,
     SESSION_READ,
     SESSION_END,
     OVERVIEW_USERS,
@@ -2084,6 +2127,10 @@ static REGISTRY: [Operation; 156] = [
     ID_JAG_SUBJECT_BIND,
     ID_JAG_SUBJECT_REMOVE,
     SAML_SP_LIST,
+    WORKLOAD_TRUSTS_LIST,
+    WORKLOAD_TRUST_READ,
+    WORKLOAD_TRUST_PUT,
+    WORKLOAD_TRUST_DELETE,
     OIDC_PROVIDERS_LIST,
     OIDC_PROVIDER_CHECK,
     OIDC_PROVIDERS_PUT,
@@ -2175,6 +2222,7 @@ static REGISTRY: [Operation; 156] = [
     POLICY_UPDATE,
     POLICY_DELETE,
     POLICY_TRY,
+    POLICY_SIMULATE,
 ];
 
 /// The tenant's authorization policy, as the PDP evaluates it (`ast-pj0.4`).
@@ -2285,16 +2333,132 @@ pub const POLICY_TRY: Operation = Operation::probe(
     "Decides one Authorization API evaluation against the tenant's stored policy, without enforcing it",
 );
 
+/// This additionally requires user/client/resource read scopes before looking
+/// up subject information; simulation may not become an enforcement endpoint.
+pub const POLICY_SIMULATE: Operation = Operation::probe(
+    POLICY_SIMULATE_ID,
+    "/policies/simulate",
+    M::Post,
+    A::new(R::Tenant, "admin.policies:read"),
+    "Simulates a stored or hypothetical policy over actual tenant-owned user, client and resource references; additionally requires admin.users:read, admin.clients:read and admin.resource_servers:read",
+);
+
 /// The registry.
 #[must_use]
 pub fn registry() -> &'static [Operation] {
-    &REGISTRY
+    REGISTRY
 }
+
+/// Management routes additionally require the addressed kind's exact read/write scope.
+pub const DECLARATIVE_READ: Operation = Operation::read(
+    "declarative.read",
+    "/declarative/v1/resources/{import_id}",
+    S::Get,
+    A::new(R::Authenticated, "admin.session:read"),
+    "Reads canonical live state; requires kind read scope and service authentication",
+)
+.for_services();
+pub const DECLARATIVE_RESOLVE: Operation = Operation::read(
+    "declarative.resolve",
+    "/declarative/v1/resources",
+    S::Get,
+    A::new(R::Authenticated, "admin.session:read"),
+    "Resolves the authenticated owner's logical creation key; requires kind read scope",
+)
+.for_services();
+pub const DECLARATIVE_CREATE: Operation = Operation::mutation(
+    "declarative.create",
+    "/declarative/v1/resources",
+    M::Post,
+    A::new(R::Authenticated, "admin.session:read"),
+    "Atomically creates live state and logical identity; requires kind read/write scopes",
+)
+.for_services();
+pub const DECLARATIVE_REPLACE: Operation = Operation::mutation(
+    "declarative.replace",
+    "/declarative/v1/resources/{import_id}",
+    M::Put,
+    A::new(R::Authenticated, "admin.session:read"),
+    "Conditionally replaces owned live state; requires kind read/write scopes",
+)
+.for_services();
+pub const DECLARATIVE_ADOPT: Operation = Operation::mutation(
+    "declarative.adopt",
+    "/declarative/v1/resources/{import_id}/adopt",
+    M::Post,
+    A::new(R::Authenticated, "admin.session:read"),
+    "Explicitly claims unowned live state without managed builder/SCIM origin",
+)
+.for_services();
+pub const DECLARATIVE_RELEASE: Operation = Operation::mutation(
+    "declarative.release",
+    "/declarative/v1/resources/{import_id}/release",
+    M::Post,
+    A::new(R::Authenticated, "admin.session:read"),
+    "Conditionally releases controller ownership while retaining the live resource",
+)
+.for_services();
+pub const DECLARATIVE_DELETE: Operation = Operation::mutation(
+    "declarative.delete",
+    "/declarative/v1/resources/{import_id}",
+    M::Delete,
+    A::new(R::Authenticated, "admin.session:read"),
+    "Conditionally deletes unprotected owned resources; tenant deletion refused",
+)
+.for_services();
+pub const DECLARATIVE_PLAN: Operation = Operation::probe(
+    "declarative.plan",
+    "/declarative/v1/resources/{import_id}/plan",
+    M::Post,
+    A::new(R::Authenticated, "admin.session:read"),
+    "Validates a secret-free desired spec against live state; requires kind read scope",
+)
+.for_services();
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+
+    #[test]
+    fn workload_trust_operations_require_dedicated_tenant_authority() {
+        use crate::rbac::{Held, Reach};
+        use asterius_domain::{Role, TenantId};
+        let tenant = TenantId::new("one");
+        let foreign = TenantId::new("two");
+        for operation in registry()
+            .iter()
+            .filter(|op| op.path().starts_with("/workload-trusts"))
+        {
+            let authority = operation.authority();
+            assert_eq!(authority.reach(), Reach::Tenant);
+            assert!(authority.scope().starts_with("admin.workload_trusts:"));
+            let exact = Held::Scopes {
+                tenant: Some(tenant.clone()),
+                scopes: vec![authority.scope().to_owned()],
+            };
+            assert!(exact.satisfies(authority, &tenant));
+            assert!(!exact.satisfies(authority, &foreign));
+            let unrelated = Held::Scopes {
+                tenant: Some(tenant.clone()),
+                scopes: vec!["admin.clients:write".to_owned()],
+            };
+            assert!(!unrelated.satisfies(authority, &tenant));
+            let support = Held::Roles {
+                tenant: tenant.clone(),
+                roles: vec![Role::UserSupport],
+            };
+            assert!(!support.satisfies(authority, &tenant));
+            let auditor = Held::Roles {
+                tenant: tenant.clone(),
+                roles: vec![Role::SecurityAuditor],
+            };
+            assert_eq!(
+                auditor.satisfies(authority, &tenant),
+                authority.scope().ends_with(":read")
+            );
+        }
+    }
 
     #[test]
     fn every_operation_id_is_unique() {

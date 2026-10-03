@@ -169,6 +169,8 @@ fn operation_object(operation: &Operation) -> Value {
         "responses": responses(operation),
     });
 
+    simulation_documentation(operation, &mut object);
+
     if operation.id() == crate::TENANT_SETTINGS_UPDATE_ID {
         object["requestBody"] = json!({
             "required": true,
@@ -197,6 +199,7 @@ fn operation_object(operation: &Operation) -> Value {
                     "allow_ephemeral_subjects": {"type": "boolean"} }
         });
     }
+    declarative_documentation(operation, &mut object);
     client_resources_documentation(operation, &mut object);
     kubernetes_documentation(operation, &mut object);
     invitation_documentation(operation, &mut object);
@@ -228,6 +231,49 @@ fn operation_object(operation: &Operation) -> Value {
     object
 }
 
+fn simulation_documentation(operation: &Operation, object: &mut Value) {
+    if operation.id() == crate::POLICY_SIMULATE_ID {
+        object["security"] = json!([{ "consoleSession": [] }, { "adminToken": [
+            "admin.policies:read", "admin.users:read", "admin.clients:read", "admin.resource_servers:read"
+        ] }]);
+        object["x-asterius-additional-scopes"] = json!([
+            "admin.users:read",
+            "admin.clients:read",
+            "admin.resource_servers:read"
+        ]);
+        object["requestBody"] = json!({"required": true, "content": {"application/json": {"schema": {
+            "type": "object", "additionalProperties": false,
+            "required": ["user_id", "client_id", "resource_id", "resource_type", "action", "expected_policy_revision"],
+            "properties": {
+                "user_id": {"type": "string", "format": "uuid"},
+                "client_id": {"type": "string", "minLength": 1, "maxLength": 256},
+                "resource_id": {"type": "string", "minLength": 1, "maxLength": 256},
+                "resource_type": {"type": "string", "minLength": 1, "maxLength": 256},
+                "action": {"type": "string", "minLength": 1, "maxLength": 256},
+                "expected_policy_revision": {"type": ["string", "null"], "description": "SHA-256 revision from GET /policies; null requires no stored policy."},
+                "hypothetical_policy": {"type": "object"}, "hypothetical_context": {"type": "object"}
+            },
+            "description": "Bounded 128 KiB inspection. All references must exist in the routed tenant. Only policy and context properties may be hypothetical. Audited before lookup; never grants access or issues a token."
+        }}}});
+        object["responses"]["409"] =
+            error_response("Stored policy revision changed; refresh the snapshot.");
+        object["responses"]["400"] = error_response("Invalid simulation request.");
+        object["responses"]["404"] =
+            error_response("A referenced record is absent from the routed tenant.");
+        let mut schema = policy_trial_schema();
+        schema["required"] = json!(["decision", "simulation"]);
+        schema["properties"]["simulation"] = json!({"type": "object", "required": ["enforced", "current_policy_revision", "provenance"], "properties": {
+            "enforced": {"const": false}, "current_policy_revision": {"type": ["string", "null"]},
+            "provenance": {"type": "object", "properties": {
+                "subject": {"const": "tenant_user_and_client"}, "resource": {"const": "tenant_resource_registry"},
+                "groups_roles_grants_acr": {"const": "server_resolved"},
+                "policy": {"enum": ["stored", "hypothetical"]}, "context_properties": {"enum": ["absent", "hypothetical"]}
+            }}
+        }});
+        object["responses"]["200"]["content"]["application/json"]["schema"] = schema;
+    }
+}
+
 fn operation_parameters(operation: &Operation) -> Vec<Value> {
     let mut parameters: Vec<Value> = Vec::new();
     for placeholder in path_parameters(operation.path()) {
@@ -237,6 +283,18 @@ fn operation_parameters(operation: &Operation) -> Vec<Value> {
             "required": true,
             "schema": { "type": "string" },
         }));
+    }
+    if crate::declarative::is_route(operation.id()) {
+        if !matches!(
+            operation.id(),
+            "declarative.create" | "declarative.read" | "declarative.resolve"
+        ) {
+            parameters.push(json!({"name":"If-Match","in":"header","required":true,"schema":{"type":"string","pattern":"^\"[0-9a-f]{64}\"$"}}));
+        }
+        if operation.id() == "declarative.resolve" {
+            parameters.push(json!({"name":"kind","in":"query","required":true,"schema":{"type":"string","enum":["tenant","application","resource","group","membership","policy"]}}));
+            parameters.push(json!({"name":"external_key","in":"query","required":true,"schema":{"type":"string","minLength":1,"maxLength":512}}));
+        }
     }
     if operation.is_paginated() {
         parameters.push(json!({ "$ref": "#/components/parameters/cursor" }));
@@ -723,6 +781,52 @@ fn path_parameters(path: &str) -> Vec<&str> {
     path.split('/')
         .filter_map(|segment| segment.strip_prefix('{')?.strip_suffix('}'))
         .collect()
+}
+
+fn declarative_documentation(operation: &Operation, object: &mut Value) {
+    if !crate::declarative::is_route(operation.id()) {
+        return;
+    }
+    object["security"] = json!([{"adminToken":[]}]);
+    object["x-service-only"] = json!(true);
+    object["x-kind-scopes"] = json!({
+        "tenant":["admin.tenants:read","admin.tenants:write"],
+        "application":["admin.clients:read","admin.clients:write"],
+        "resource":["admin.resource_servers:read","admin.resource_servers:write"],
+        "group":["admin.groups:read","admin.groups:write"],
+        "membership":["admin.memberships:read","admin.memberships:write"],
+        "policy":["admin.policies:read","admin.policies:write"]
+    });
+    object["description"] = json!(
+        "Requires admin.session:read plus the addressed kind's read scope; mutation additionally requires kind write scope. Tenant create requires deployment reach. Ownership comes only from verified issuer/client credentials. The import ID is unpadded base64url of [tenant,kind,identity], or [tenant,membership,groupUUID,userUUID]. If-Match uses the exact strong 64-hex ETag. POST create retries use durable external_key, not Idempotency-Key. Plan/read/import never return credentials."
+    );
+    for (status, code) in [
+        (
+            "409",
+            "owner_conflict / delete_protected / logical_key_conflict / dependency_conflict",
+        ),
+        ("412", "revision_conflict"),
+        ("428", "precondition_required"),
+    ] {
+        object["responses"][status] = json!({"description":code,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/Error"}}}});
+    }
+    if matches!(
+        operation.id(),
+        "declarative.create" | "declarative.replace" | "declarative.plan"
+    ) {
+        let mut properties = json!({"spec":{"type":"object","description":"Kind-specific domain-validated desired document; maximum shared request body limit is 64 KiB. Application fields are public FAPI registration metadata plus resources; generated client secrets and private JWK material are rejected. Tenant fields: tenant_id, issuer, display_name, default_resource, custom_host, options."}});
+        let required = if operation.id() == "declarative.create" {
+            properties["kind"] = json!({"type":"string","enum":["tenant","application","resource","group","membership","policy"]});
+            properties["external_key"] = json!({"type":"string","minLength":1,"maxLength":512});
+            json!(["kind", "external_key", "spec"])
+        } else {
+            json!(["spec"])
+        };
+        if operation.id() != "declarative.plan" {
+            properties["deletion_protection"] = json!({"type":"boolean","default":true});
+        }
+        object["requestBody"] = json!({"required":true,"content":{"application/json":{"schema":{"type":"object","additionalProperties":false,"required":required,"properties":properties}}}});
+    }
 }
 
 #[cfg(test)]
