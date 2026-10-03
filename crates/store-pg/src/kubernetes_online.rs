@@ -20,6 +20,12 @@ impl PgKubernetesOnline {
     #[must_use]
     pub const fn new(pool: sqlx::PgPool) -> Self { Self { pool } }
 
+    pub async fn reviewer_token_current(&self, tenant:&TenantId, client:&ClientId, jti:&str)
+        ->Result<bool,DomainError> {
+        let mut connection=self.pool.acquire().await.map_err(to_domain_error)?;
+        reviewer_token_current_on(&mut connection,tenant,client,jti).await
+    }
+
     pub async fn begin_review(&self) -> Result<OnlineReview<'_>,DomainError> {
         let mut tx=self.pool.begin().await.map_err(to_domain_error)?;
         sqlx::query("set transaction read only").execute(&mut *tx).await.map_err(to_domain_error)?;
@@ -50,7 +56,9 @@ impl PgKubernetesOnline {
               join clients c on c.tenant_id=p.tenant_id and c.client_id=p.client_id
               join clients r on r.tenant_id=p.tenant_id and r.client_id=$3
               where p.tenant_id=$1 and p.client_id=$2 and c.client_id<>r.client_id
-                and c.status='active' and not c.is_agent and c.subject_type='public'
+                and not exists(select 1 from agent_task_clients task where task.tenant_id=c.tenant_id and task.client_id=c.client_id)
+           and not exists(select 1 from agent_task_clients task where task.tenant_id=r.tenant_id and task.client_id=r.client_id)
+           and c.status='active' and not c.is_agent and c.subject_type='public'
                 and c.compliance_profile='oidc' and c.application_type='web'
                 and c.token_endpoint_auth_method='private_key_jwt' and c.dpop_bound_access_tokens
                 and c.id_token_signed_response_alg='ES256' and not c.encrypt_id_token
@@ -185,6 +193,8 @@ pub async fn record_signed_on(
            and not exists(select 1 from agent_task_grants task where task.tenant_id=g.tenant_id and task.grant_id=g.grant_id)
            and u.status='active' and s.revoked_at is null
            and s.expires_at>clock_timestamp() and s.idle_expires_at>clock_timestamp()
+           and not exists(select 1 from agent_task_clients task where task.tenant_id=c.tenant_id and task.client_id=c.client_id)
+           and not exists(select 1 from agent_task_clients task where task.tenant_id=r.tenant_id and task.client_id=r.client_id)
            and c.status='active' and not c.is_agent and c.subject_type='public'
            and c.compliance_profile='oidc' and c.application_type='web'
            and c.token_endpoint_auth_method='private_key_jwt' and c.dpop_bound_access_tokens
@@ -263,6 +273,8 @@ pub async fn review_verified_on(
            and g.parent_grant_id is null and g.actor_chain='[]'::jsonb
            and not exists(select 1 from agent_task_grants task where task.tenant_id=g.tenant_id and task.grant_id=g.grant_id)
            and u.status='active' and s.revoked_at is null and s.expires_at>clock_timestamp() and s.idle_expires_at>clock_timestamp()
+           and not exists(select 1 from agent_task_clients task where task.tenant_id=c.tenant_id and task.client_id=c.client_id)
+           and not exists(select 1 from agent_task_clients task where task.tenant_id=r.tenant_id and task.client_id=r.client_id)
            and c.status='active' and not c.is_agent and c.subject_type='public' and c.compliance_profile='oidc'
            and c.application_type='web' and c.token_endpoint_auth_method='private_key_jwt'
            and c.dpop_bound_access_tokens and cardinality(c.redirect_uris)=1
@@ -306,4 +318,70 @@ pub async fn review_verified_on(
         groups: current.into_iter().filter(|id| issued_groups.contains(id))
             .map(|id|format!("{prefix}group:group:{id}")).collect(),
     }))
+}
+
+/// Successful CC issuance is a private receipt; never inferred from public sub.
+pub async fn record_reviewer_token_on(connection:&mut PgConnection, tenant:&TenantId,
+    issuance:asterius_domain::keys::AccessIssuance<'_>, claims:&Value)->Result<(),DomainError> {
+    let scope=claims.get("scope").and_then(Value::as_str).unwrap_or_default();
+    if !scope.split_ascii_whitespace().any(|scope|scope==asterius_domain::kubernetes_online::REVIEW_SCOPE) {
+        return Ok(());
+    }
+    let grant=issuance.grant;
+    if issuance.kind!=asterius_domain::GrantType::ClientCredentials || grant.tenant!=*tenant
+        || grant.user.is_some() || grant.parent.is_some() || grant.task.is_some()
+        || !grant.actor_chain.is_empty() || claims.get("act").is_some()
+        || claims.get("client_id").and_then(Value::as_str)!=Some(grant.client.as_str())
+        || claims.get("sub").and_then(Value::as_str)!=Some(grant.client.as_str()) {
+        return Err(invalid());
+    }
+    let jti=claims.get("jti").and_then(Value::as_str).filter(|jti|!jti.is_empty()&&jti.len()<=1024).ok_or_else(invalid)?;
+    let expires=OffsetDateTime::from_unix_timestamp(claims.get("exp").and_then(Value::as_i64).ok_or_else(invalid)?)
+        .map_err(|_|invalid())?;
+    let issuer:Option<(String,)> = sqlx::query_as("select issuer from tenants where tenant_id=$1 and status='active'")
+        .bind(tenant.as_str()).fetch_optional(&mut *connection).await.map_err(to_domain_error)?;
+    let issuer=issuer.ok_or_else(invalid)?.0;
+    let resource=format!("{issuer}/admin/api/v1");
+    let audience=claims.get("aud").is_some_and(|aud|match aud {
+        Value::String(aud)=>aud==&resource,
+        Value::Array(aud)=>aud.iter().any(|aud|aud.as_str()==Some(resource.as_str())),
+        _=>false,
+    });
+    if !audience || claims.get("iss").and_then(Value::as_str)!=Some(issuer.as_str()) {return Err(invalid());}
+    let receipt:Option<(Uuid,)> = sqlx::query_as("insert into kubernetes_online_reviewer_tokens(tenant_id,jti_digest,grant_id,client_id,expires_at)
+        select g.tenant_id,$2,g.grant_id,g.client_id,$5 from grants g
+        join clients c on c.tenant_id=g.tenant_id and c.client_id=g.client_id
+        where g.tenant_id=$1 and g.grant_id=$3 and g.client_id=$4 and g.user_id is null
+          and g.parent_grant_id is null and g.actor_chain='[]'::jsonb and g.claimed_at is not null
+          and g.revoked_at is null and (g.expires_at is null or g.expires_at>clock_timestamp())
+          and not exists(select 1 from agent_task_grants task where task.tenant_id=g.tenant_id and task.grant_id=g.grant_id)
+          and not exists(select 1 from agent_task_clients task where task.tenant_id=c.tenant_id and task.client_id=c.client_id)
+          and c.status='active' and not c.is_agent and c.compliance_profile='fapi'
+          and c.token_endpoint_auth_method='private_key_jwt' and c.dpop_bound_access_tokens
+          and c.grant_types=ARRAY['client_credentials']::text[] and 'admin.kubernetes_reviews:read'=any(c.scopes)
+          and $5>clock_timestamp() returning grant_id")
+        .bind(tenant.as_str()).bind(sha256(jti.as_bytes()).as_slice())
+        .bind(Uuid::parse_str(grant.id.as_str()).map_err(|_|invalid())?).bind(grant.client.as_str()).bind(expires)
+        .fetch_optional(connection).await.map_err(to_domain_error)?;
+    if receipt.is_none(){return Err(invalid());}
+    Ok(())
+}
+
+pub async fn reviewer_token_current_on(connection:&mut PgConnection, tenant:&TenantId,
+    client:&ClientId,jti:&str)->Result<bool,DomainError> {
+    if jti.is_empty()||jti.len()>1024{return Ok(false);}
+    sqlx::query_scalar("select exists(select 1 from kubernetes_online_reviewer_tokens b
+        join grants g on g.tenant_id=b.tenant_id and g.grant_id=b.grant_id and g.client_id=b.client_id
+        join clients c on c.tenant_id=b.tenant_id and c.client_id=b.client_id
+        join tenants t on t.tenant_id=b.tenant_id and t.status='active'
+        where b.tenant_id=$1 and b.client_id=$2 and b.jti_digest=$3 and b.expires_at>clock_timestamp()
+          and g.user_id is null and g.parent_grant_id is null and g.actor_chain='[]'::jsonb
+          and g.claimed_at is not null and g.revoked_at is null and (g.expires_at is null or g.expires_at>clock_timestamp())
+          and not exists(select 1 from agent_task_grants task where task.tenant_id=g.tenant_id and task.grant_id=g.grant_id)
+          and not exists(select 1 from agent_task_clients task where task.tenant_id=c.tenant_id and task.client_id=c.client_id)
+          and c.status='active' and not c.is_agent and c.compliance_profile='fapi'
+          and c.token_endpoint_auth_method='private_key_jwt' and c.dpop_bound_access_tokens
+          and c.grant_types=ARRAY['client_credentials']::text[] and 'admin.kubernetes_reviews:read'=any(c.scopes))")
+        .bind(tenant.as_str()).bind(client.as_str()).bind(sha256(jti.as_bytes()).as_slice())
+        .fetch_one(connection).await.map_err(to_domain_error)
 }

@@ -109,3 +109,17 @@ create table kubernetes_online_tokens (
         references clients (tenant_id, client_id) on delete cascade
 );
 create index kubernetes_online_tokens_expiry on kubernetes_online_tokens (expires_at);
+
+-- Dedicated reviewer credentials prove their original issuance kind privately.
+-- Matching public sub/client claims alone cannot establish client_credentials.
+create table kubernetes_online_reviewer_tokens (
+    tenant_id text not null,
+    jti_digest bytea not null check (octet_length(jti_digest)=32),
+    grant_id uuid not null,
+    client_id text not null,
+    expires_at timestamptz not null,
+    primary key (tenant_id,jti_digest),
+    foreign key (tenant_id,grant_id) references grants(tenant_id,grant_id) on delete cascade,
+    foreign key (tenant_id,client_id) references clients(tenant_id,client_id) on delete cascade
+);
+create index kubernetes_online_reviewer_tokens_expiry on kubernetes_online_reviewer_tokens(expires_at);

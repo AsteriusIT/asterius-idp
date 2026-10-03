@@ -105,6 +105,10 @@ pub const MAX_BATCHES: usize = 100;
 /// Kept in the schema's own order so that reading this next to
 /// `0001_baseline.sql` is a straight comparison.
 pub const POLICY: &[Retention] = &[
+    Retention { table: "kubernetes_online_reviewer_tokens", rule: Rule::Sweep {
+        statement: "delete from kubernetes_online_reviewer_tokens where ctid = any (array(select ctid from kubernetes_online_reviewer_tokens where tenant_id=$1 and expires_at <= $2 limit $3))",
+        grace: Duration::ZERO,
+    } },
     Retention { table: "kubernetes_online_profiles", rule: Rule::Kept("tenant-owned online mode and revision tombstone; cascades with selected cluster client") },
     Retention { table: "kubernetes_online_tokens", rule: Rule::Sweep {
         statement: "delete from kubernetes_online_tokens where ctid = any (array(select ctid from kubernetes_online_tokens where tenant_id=$1 and expires_at <= $2 limit $3))",

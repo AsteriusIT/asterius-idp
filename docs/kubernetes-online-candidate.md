@@ -96,3 +96,10 @@ otherwise the offline path bypasses live revocation.
 Only after candidate implementation, coordinated targeted verification and
 actual controlled runtime evidence may these statuses change. Human delivery
 review remains a separate required gate before main merge/completion/enabling.
+
+The dedicated reviewer scope also requires a private SHA-256 JTI receipt recorded
+only after successful client_credentials signing with the exact fresh root grant.
+Current receipt lookup checks that grant, client status and exclusive CC
+registration; matching public `sub == client_id` alone cannot turn a historical
+workload, delegated or task credential into reviewer authority. The receipt
+contains no bearer token and expires through the bounded retention sweep.

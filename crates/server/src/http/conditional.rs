@@ -73,6 +73,7 @@ struct Principal<'a> {
     subject: Option<&'a str>,
     authentication: Option<&'a GrantAuthentication>,
     grant: Option<&'a Grant>,
+    device: Option<&'a Fact>,
 }
 
 impl ConditionalAccess {
@@ -106,6 +107,13 @@ impl ConditionalAccess {
         kind: GrantType,
         now: OffsetDateTime,
     ) -> Result<bool, DomainError> {
+        self.check_grant_fact(tenant, client, grant, kind, now, None).await
+    }
+
+    async fn check_grant_fact(
+        &self, tenant: &Tenant, client: &Client, grant: &Grant,
+        kind: GrantType, now: OffsetDateTime, device: Option<&Fact>,
+    ) -> Result<bool, DomainError> {
         if grant.tenant != tenant.id || client.tenant != tenant.id || grant.client != client.id {
             return Err(DomainError::invalid(
                 "conditional_access",
@@ -132,6 +140,7 @@ impl ConditionalAccess {
                 .map(asterius_domain::SubjectId::as_str),
             authentication,
             grant: Some(grant),
+            device,
         };
         self.check(tenant, client, action(kind), input, now).await
     }
@@ -247,6 +256,9 @@ impl ConditionalAccess {
             .read(&tenant.id, &client.id)
             .await?;
         let mut facts = Self::connection_facts(scope, now);
+        if let Some(device) = input.device {
+            facts.insert(FactName::DeviceCompliance, device.clone());
+        }
         if let Some(sensitivity) = classification.as_ref().and_then(|value| value.sensitivity) {
             facts.insert(
                 FactName::ApplicationSensitivity,
@@ -621,6 +633,21 @@ impl super::agent_issuance::ConditionalGuard for ConditionalAccess {
     ) -> Result<bool, DomainError> {
         self.check_grant(tenant, client, grant, kind, now).await
     }
+    async fn permits_bound(
+        &self, tenant: &Tenant, client: &Client, grant: &Grant,
+        kind: GrantType, now: OffsetDateTime,
+        binding: Option<&asterius_domain::managed_devices::DeviceBinding>,
+    ) -> Result<bool, DomainError> {
+        let mut fence = PgPolicies::new(self.store.pool().clone())
+            .signing_fence(&tenant.id, &tenant.issuer).await?;
+        let device = asterius_store_pg::PgManagedDevices::resolve_for_grant_on(
+            fence.connection(), &tenant.id, grant, binding,
+            self.device_anchors.get(tenant.id.as_str()),
+        ).await?;
+        let permitted = self.check_grant_fact(tenant, client, grant, kind, now, Some(&device)).await?;
+        fence.commit().await?;
+        Ok(permitted)
+    }
 }
 
 /// Uses one policy snapshot for both the base PDP and its application guard.
@@ -745,6 +772,7 @@ impl asterius_domain::ports::PolicyEngine for ConditionalPolicyEngine {
                 subject: Some(question.subject.id()),
                 authentication,
                 grant: exact,
+                device: None,
             };
             let resolved = self
                 .access
@@ -971,6 +999,7 @@ impl super::authorize::ConditionalAuthorization for ConditionalAccess {
                 subject: Some(subject.as_str()),
                 authentication: Some(&authentication),
                 grant: None,
+                device: None,
             };
             let request = self
                 .resolve(tenant, &client, "authorize", &policy, scope, input, now)
@@ -1028,6 +1057,7 @@ impl super::authorize::ConditionalAuthorization for ConditionalAccess {
                 .map(asterius_domain::SubjectId::as_str),
             authentication: grant.authentication.as_ref(),
             grant: Some(grant),
+            device: None,
         };
         self.check(tenant, client, "authorize", input, now).await
     }
@@ -1286,11 +1316,6 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
         typ: &'static str,
         claims: &serde_json::Value,
     ) -> Result<asterius_domain::CompactJws, DomainError> {
-        // Candidate integration remains closed until the supplied-connection
-        // device resolver and current operator anchor map are installed.
-        if binding.is_some() {
-            return Err(DomainError::invalid("managed_device","device publication resolver unavailable"));
-        }
         if claims.get("asterius_jit").is_some()
             || grant.tenant != *tenant
             || claims.get("iss").and_then(serde_json::Value::as_str)
@@ -1312,6 +1337,10 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
                 .await;
         }
         let mut transaction = self.fence(tenant).await?;
+        let device = asterius_store_pg::PgManagedDevices::resolve_for_grant_on(
+            transaction.connection(), tenant, grant, binding,
+            self.access.device_anchors.get(tenant.as_str()),
+        ).await?;
         let held = self.current_roles(tenant, grant, claims).await?;
         let mut identity_claims = claims.clone();
         let identity =
@@ -1385,6 +1414,14 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
                 "temporary authority expired during signing",
             ));
         }
+        // Device facts retain their original deadline across awaited signing.
+        let client = self.access.store.scope(tenant.clone()).clients(self.access.capabilities)
+            .find(&grant.client).await?.ok_or(DomainError::NotFound)?;
+        let kind = if binding.is_some() { GrantType::AuthorizationCode } else { GrantType::RefreshToken };
+        if !self.access.check_grant_fact(&self.tenant, &client, grant, kind,
+            OffsetDateTime::now_utc(), Some(&device)).await? {
+            return Err(DomainError::invalid("conditional_access", "identity device authority expired during signing"));
+        }
         asterius_store_pg::kubernetes_online::record_signed_on(
             transaction.connection(),tenant,grant,&signed,&identity_claims).await?;
         transaction.commit().await?;
@@ -1404,7 +1441,11 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
                 .sign_access(tenant, issuance, algorithm, typ, claims)
                 .await;
         }
-        let transaction = self.fence(tenant).await?;
+        let mut transaction = self.fence(tenant).await?;
+        let device = asterius_store_pg::PgManagedDevices::resolve_for_grant_on(
+            transaction.connection(), tenant, issuance.grant, issuance.device_binding,
+            self.access.device_anchors.get(tenant.as_str()),
+        ).await?;
         let client = self
             .access
             .store
@@ -1474,12 +1515,13 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
         // the original transaction, never from an unrelated elevated session.
         if !self
             .access
-            .check_grant(
+            .check_grant_fact(
                 &self.tenant,
                 &client,
                 &narrowed,
                 issuance.kind,
                 OffsetDateTime::now_utc(),
+                Some(&device),
             )
             .await?
         {
@@ -1489,16 +1531,23 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
             ));
         }
         let held = self.current_roles(tenant, &narrowed, claims).await?;
+        let kind = issuance.kind;
         let signed = self
             .inner
             .get()
             .sign_access(tenant, issuance, algorithm, typ, claims)
             .await?;
+        asterius_store_pg::kubernetes_online::record_reviewer_token_on(
+            transaction.connection(),tenant,issuance,claims).await?;
         if !signed_roles_current(claims, &held, &narrowed.client, OffsetDateTime::now_utc()) {
             return Err(DomainError::invalid(
                 "temporary_entitlement",
                 "temporary authority expired during signing",
             ));
+        }
+        if !self.access.check_grant_fact(&self.tenant, &client, &narrowed, kind,
+            OffsetDateTime::now_utc(), Some(&device)).await? {
+            return Err(DomainError::invalid("conditional_access", "device authority expired during signing"));
         }
         transaction.commit().await?;
         Ok(signed)
