@@ -62,3 +62,20 @@ begin
 end; $$;
 create trigger entitlements_invalidate_temporary_kubernetes after update on temporary_entitlements
     for each row execute function invalidate_temporary_kubernetes_entitlement();
+
+create function invalidate_temporary_kubernetes_cluster_client() returns trigger language plpgsql as $$
+begin
+    if new.status <> 'active' or new.is_agent or new.subject_type <> 'public'
+       or new.compliance_profile <> 'oidc' or new.application_type <> 'web'
+       or new.token_endpoint_auth_method <> 'private_key_jwt'
+       or new.id_token_signed_response_alg <> 'ES256' or not new.dpop_bound_access_tokens
+       or not new.managed_groups_claim or not new.roles_in_id_token
+       or not ('authorization_code'=any(new.grant_types)) or not ('refresh_token'=any(new.grant_types))
+       or not ('openid'=any(new.scopes)) or cardinality(new.redirect_uris) <> 1 then
+        update temporary_kubernetes_bindings set enabled=false
+          where tenant_id=new.tenant_id and cluster_client_reference=new.client_id and enabled;
+    end if;
+    return new;
+end; $$;
+create trigger clients_invalidate_temporary_kubernetes_cluster after update of status,is_agent,subject_type,compliance_profile,application_type,token_endpoint_auth_method,id_token_signed_response_alg,dpop_bound_access_tokens,managed_groups_claim,roles_in_id_token,grant_types,scopes,redirect_uris on clients
+    for each row execute function invalidate_temporary_kubernetes_cluster_client();

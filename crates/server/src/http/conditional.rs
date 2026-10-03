@@ -1290,7 +1290,7 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
             }
             identity_claims["exp"] = serde_json::json!(capped);
             identity_claims["asterius_jit"] = serde_json::to_value(identity)
-                .map_err(|error| DomainError::Storage(error.to_string()))?;
+                .map_err(|error| DomainError::Storage(Box::new(error)))?;
         }
         let signed = self
             .inner
