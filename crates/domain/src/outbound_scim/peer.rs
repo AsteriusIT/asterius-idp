@@ -97,7 +97,7 @@ pub fn parse_peer_capabilities(bytes: &[u8]) -> Result<(), FailureCode> {
             != Some(true)
         || document.get(INCARNATION_PROTECTION_SCHEMA)
             != Some(&serde_json::json!({
-                "supported":true,"namespace":"urn:asterius:outbound:","maxRetiredPerClientKind":10000,"automaticExpiry":false
+                "supported":true,"namespace":"urn:asterius:outbound:","maxRetiredPerClientKind":10000,"automaticExpiry":false,"reservedUserDeleteReleasesEmail":true
             }))
     {
         return Err(FailureCode::SourceProjectionInvalid);
@@ -124,7 +124,7 @@ mod tests {
     }
     #[test]
     fn discovery_without_versioned_writes_or_exact_scim_schema_cannot_enable_peer() {
-        let good = serde_json::json!({"schemas":["urn:ietf:params:scim:schemas:core:2.0:ServiceProviderConfig", INCARNATION_PROTECTION_SCHEMA],"filter":{"supported":true,"maxResults":200},"etag":{"supported":true},INCARNATION_PROTECTION_SCHEMA:{"supported":true,"namespace":"urn:asterius:outbound:","maxRetiredPerClientKind":10000,"automaticExpiry":false}});
+        let good = serde_json::json!({"schemas":["urn:ietf:params:scim:schemas:core:2.0:ServiceProviderConfig", INCARNATION_PROTECTION_SCHEMA],"filter":{"supported":true,"maxResults":200},"etag":{"supported":true},INCARNATION_PROTECTION_SCHEMA:{"supported":true,"namespace":"urn:asterius:outbound:","maxRetiredPerClientKind":10000,"automaticExpiry":false,"reservedUserDeleteReleasesEmail":true}});
         assert!(parse_peer_capabilities(&serde_json::to_vec(&good).unwrap()).is_ok());
         let mut bad = good.clone();
         bad["etag"]["supported"] = serde_json::json!(false);
@@ -138,6 +138,16 @@ mod tests {
             .unwrap()
             .remove(INCARNATION_PROTECTION_SCHEMA);
         assert!(parse_peer_capabilities(&serde_json::to_vec(&absent).unwrap()).is_err());
+        let mut old_peer = good.clone();
+        old_peer[INCARNATION_PROTECTION_SCHEMA]
+            .as_object_mut()
+            .unwrap()
+            .remove("reservedUserDeleteReleasesEmail");
+        assert!(parse_peer_capabilities(&serde_json::to_vec(&old_peer).unwrap()).is_err());
+        let mut retaining_peer = good.clone();
+        retaining_peer[INCARNATION_PROTECTION_SCHEMA]["reservedUserDeleteReleasesEmail"] =
+            serde_json::json!(false);
+        assert!(parse_peer_capabilities(&serde_json::to_vec(&retaining_peer).unwrap()).is_err());
         let mut bad = good;
         bad["schemas"] = serde_json::json!([]);
         assert!(parse_peer_capabilities(&serde_json::to_vec(&bad).unwrap()).is_err());

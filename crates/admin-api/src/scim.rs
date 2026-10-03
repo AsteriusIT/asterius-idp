@@ -535,6 +535,7 @@ pub fn discovery_response(id: &str, base: &str) -> Response {
             asterius_domain::outbound_scim::INCARNATION_PROTECTION_SCHEMA: {
                 "supported": true, "namespace": "urn:asterius:outbound:",
                 "maxRetiredPerClientKind": 10000, "automaticExpiry": false,
+                "reservedUserDeleteReleasesEmail": true,
             },
             "patch": {"supported": true},
             "bulk": {"supported": false, "maxOperations": 0, "maxPayloadSize": 0},
@@ -590,6 +591,7 @@ fn outbound_incarnation_schema() -> Value {
         ("namespace", "string"),
         ("maxRetiredPerClientKind", "integer"),
         ("automaticExpiry", "boolean"),
+        ("reservedUserDeleteReleasesEmail", "boolean"),
     ]
     .into_iter()
     .map(|(name, kind)| {
