@@ -125,6 +125,10 @@ pub trait PolicyTrial: std::fmt::Debug + Send + Sync {
 /// What an admin API request needs from below the API.
 #[async_trait::async_trait]
 pub trait AdminBackend: std::fmt::Debug + Send + Sync {
+    /// Managed-device registries are distinct from OAuth client certificates.
+    fn device_registry(&self) -> Option<Arc<dyn asterius_domain::managed_devices::Registry>> { None }
+    fn device_relay(&self) -> Option<Arc<dyn asterius_domain::managed_devices::Relay>> { None }
+
     /// Read-only evidence; absent adapters do not synthesize healthy reports.
     fn governance_reports(
         &self,
