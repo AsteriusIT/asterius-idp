@@ -13276,17 +13276,8 @@ mod tests {
         Body::from(bytes)
     }
 
-    /// A body each mutating route will accept.
-    ///
-    /// Keyed on the `operationId` rather than on the verb, because the table
-    /// tests assert that every registered route *succeeds* for a caller holding
-    /// the authority it declares — so a route reached with a body it rejects
-    /// would fail those tests for the wrong reason and hide a real refusal.
-    fn body_for(operation: &Operation) -> Body {
-        if operation.id() == crate::THEME_LOGO_UPLOAD_ID {
-            return test_logo_body();
-        }
-        let document = match operation.id() {
+    fn registry_governance_body(operation_id: &str) -> Option<serde_json::Value> {
+        Some(match operation_id {
             "governance.ownership.configure" => serde_json::json!({
                 "target":{"kind":"membership","group_id":SEEDED_GROUP_ID,"user_id":SEEDED_USER_ID},
                 "owner_user_id":SEEDED_USER_ID,"reviewers":[SEEDED_USER_ID],"enabled":true,"expected_revision":null
@@ -13298,6 +13289,24 @@ mod tests {
                 serde_json::json!({"decision":"retain","reason":"Registry fixture review"})
             }
 
+            _ => return None,
+        })
+    }
+
+    /// A body each mutating route will accept.
+    ///
+    /// Keyed on the `operationId` rather than on the verb, because the table
+    /// tests assert that every registered route *succeeds* for a caller holding
+    /// the authority it declares — so a route reached with a body it rejects
+    /// would fail those tests for the wrong reason and hide a real refusal.
+    fn body_for(operation: &Operation) -> Body {
+        if operation.id() == crate::THEME_LOGO_UPLOAD_ID {
+            return test_logo_body();
+        }
+        if let Some(document) = registry_governance_body(operation.id()) {
+            return Body::from(document.to_string());
+        }
+        let document = match operation.id() {
             crate::WORKLOAD_TRUST_PUT_ID => registry_workload_trust_body(),
             crate::WORKLOAD_TRUST_DELETE_ID => serde_json::json!({"expected_version":1}),
             crate::KUBERNETES_PROFILE_UPDATE_ID => {
