@@ -113,14 +113,16 @@ pub fn parse_trial(body: &[u8]) -> Result<EvaluationRequest, AdminError> {
 
 /// The decision as `POST /policies/try` renders it.
 ///
-/// §6.2's response and nothing beside it — `decision`, and `context` when the
-/// rule that decided carries one — because the console's bench is showing the
-/// administrator what a PEP would receive. A member this server added for the
-/// console's convenience would be a member the console learned to read and a
-/// relying party never sees.
+/// The usual decision plus opt-in administrator diagnostics. Only this
+/// tenant-authorized bench renders diagnostics; the public PDP contract
+/// continues to use `decision_response` directly.
 #[must_use]
 pub fn trial_response(decision: &Decision) -> Value {
-    asterius_oidc::authzen::decision_response(decision)
+    let mut response = asterius_oidc::authzen::decision_response(decision);
+    if let Some(explanation) = decision.explanation() {
+        response["diagnostics"] = json!(explanation);
+    }
+    response
 }
 
 #[cfg(test)]

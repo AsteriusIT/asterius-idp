@@ -50,9 +50,24 @@ use crate::{DomainError, TenantId};
 pub struct Decision {
     permit: bool,
     context: DecisionContext,
+    explanation: Option<super::explanation::DecisionExplanation>,
 }
 
 impl Decision {
+    /// Administrator diagnostics, present only when explicitly requested by
+    /// a trusted adapter. Public AuthZEN serialization ignores this field.
+    #[must_use]
+    pub const fn explanation(&self) -> Option<&super::explanation::DecisionExplanation> {
+        self.explanation.as_ref()
+    }
+
+    pub(super) fn with_explanation(
+        mut self,
+        explanation: super::explanation::DecisionExplanation,
+    ) -> Self {
+        self.explanation = Some(explanation);
+        self
+    }
     /// §5.5's `decision`.
     #[must_use]
     pub const fn permit(&self) -> bool {
@@ -75,6 +90,7 @@ impl Decision {
     pub fn default_deny(reason_admin: &'static str) -> Self {
         Self {
             permit: false,
+            explanation: None,
             context: DecisionContext {
                 rule: None,
                 reason_admin: Some(reason_admin.to_owned()),
@@ -87,6 +103,7 @@ impl Decision {
     fn from_rule(rule: &Rule) -> Self {
         Self {
             permit: rule.effect == Effect::Permit,
+            explanation: None,
             context: DecisionContext {
                 rule: Some(rule.id.clone()),
                 reason_admin: rule.reason_admin.clone(),
@@ -209,7 +226,7 @@ impl RuleSet {
 
 /// Whether a rule is about this request at all, and whether its condition
 /// holds.
-fn matches(rule: &Rule, request: &EvaluationRequest) -> bool {
+pub(super) fn matches(rule: &Rule, request: &EvaluationRequest) -> bool {
     if let Some(kind) = &rule.subject_type
         && kind != request.subject.kind()
     {
@@ -233,7 +250,7 @@ fn matches(rule: &Rule, request: &EvaluationRequest) -> bool {
 /// Recursive, and bounded by the parser: `MAX_DEPTH` was enforced on the way
 /// in, so this cannot be driven deeper than a constant of
 /// [`super::document`] whatever a tenant writes.
-fn holds(condition: &Condition, request: &EvaluationRequest) -> bool {
+pub(super) fn holds(condition: &Condition, request: &EvaluationRequest) -> bool {
     match condition {
         Condition::All(children) => children.iter().all(|child| holds(child, request)),
         Condition::Any(children) => children.iter().any(|child| holds(child, request)),
@@ -338,13 +355,25 @@ fn grant_matches(matcher: &GrantMatch, grant: &ActiveGrant, request: &Evaluation
 #[derive(Debug, Clone)]
 pub struct DeclarativeEngine {
     policies: Arc<dyn PolicyStore>,
+    explanation_point: Option<&'static str>,
 }
 
 impl DeclarativeEngine {
     /// An engine reading the tenants' documents from `policies`.
     #[must_use]
     pub const fn new(policies: Arc<dyn PolicyStore>) -> Self {
-        Self { policies }
+        Self {
+            policies,
+            explanation_point: None,
+        }
+    }
+
+    /// Enables bounded diagnostics for a trusted administrative enforcement
+    /// point. Adapters must authorize access before selecting this engine.
+    #[must_use]
+    pub const fn with_explanations(mut self, point: &'static str) -> Self {
+        self.explanation_point = Some(point);
+        self
     }
 }
 
@@ -356,10 +385,18 @@ impl crate::ports::PolicyEngine for DeclarativeEngine {
         request: &EvaluationRequest,
     ) -> Result<Decision, DomainError> {
         let stored = self.policies.load(tenant).await?;
-        Ok(stored.map_or_else(
+        let decision = stored.as_ref().map_or_else(
             || Decision::default_deny("this tenant has no policy document"),
             |policy| policy.rules.evaluate(request),
-        ))
+        );
+        Ok(match self.explanation_point {
+            None => decision,
+            Some(point) => decision.with_explanation(super::explanation::explain(
+                stored.as_ref(),
+                request,
+                point,
+            )),
+        })
     }
 }
 
@@ -685,6 +722,27 @@ mod tests {
                 "acr_values": ["urn:acr:passkey"],
             })
         );
+    }
+
+    #[test]
+    fn administrator_trace_does_not_change_the_public_decision_context() {
+        let policy = crate::policy::StoredPolicy {
+            rules: rules(r#"[{"id":"r", "effect":"deny", "reason_admin":"because"}]"#),
+            updated_at: time::OffsetDateTime::UNIX_EPOCH,
+        };
+        let request = request();
+        let public = policy.rules.evaluate(&request);
+        let traced = public
+            .clone()
+            .with_explanation(super::super::explanation::explain(
+                Some(&policy),
+                &request,
+                "admin_policy_trial",
+            ));
+        assert!(public.explanation().is_none());
+        assert!(traced.explanation().is_some());
+        assert_eq!(public.permit(), traced.permit());
+        assert_eq!(public.context().to_json(), traced.context().to_json());
     }
 
     /// A default deny says nothing to the person refused: there is no rule

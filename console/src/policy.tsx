@@ -94,6 +94,24 @@ export interface DecisionDocument {
     readonly acr_values?: readonly string[];
     readonly error?: unknown;
   };
+  readonly diagnostics?: {
+    readonly policy_revision: string | null;
+    readonly policy_updated_at: string | null;
+    readonly enforcement_point: string;
+    readonly truncated: boolean;
+    readonly rules: readonly {
+      readonly id: string;
+      readonly effect: 'permit' | 'deny';
+      readonly applicable: boolean;
+      readonly matched: boolean;
+      readonly conditions: readonly {
+        readonly path: string;
+        readonly kind: string;
+        readonly matched: boolean;
+        readonly missing: boolean;
+      }[];
+    }[];
+  };
 }
 
 /**
@@ -686,6 +704,61 @@ function Verdict({ answer }: Readonly<{ answer: Answer }>): JSX.Element {
         </div>
       )}
       </dl>
+      {answer.decision.diagnostics !== undefined && (
+        <DecisionTrace diagnostics={answer.decision.diagnostics} />
+      )}
+    </section>
+  );
+}
+
+/** Uses the same table and details vocabulary as the policy catalogue. */
+function DecisionTrace({ diagnostics }: Readonly<{
+  diagnostics: NonNullable<DecisionDocument['diagnostics']>;
+}>): JSX.Element {
+  return (
+    <section aria-label="Rule explanations">
+      <h3>Rule explanations</h3>
+      <p className="muted">
+        Current policy trial. This answer grants no access and is not retained.
+      </p>
+      <dl className="detail">
+        <div>
+          <dt>Policy revision</dt>
+          <dd>{diagnostics.policy_revision === null ? 'No stored policy' : <code>{diagnostics.policy_revision}</code>}</dd>
+        </div>
+      </dl>
+      {diagnostics.truncated && (
+        <Message tone="info">Some condition details were omitted. All rules still determined the decision.</Message>
+      )}
+      <DataTable
+        rows={diagnostics.rules}
+        rowKey={(rule) => rule.id}
+        empty={<EmptyState title="No rules." body="The tenant has no stored rules to explain." />}
+        columns={[
+          { key: 'id', header: 'Rule', cell: (rule) => <code>{rule.id}</code> },
+          { key: 'effect', header: 'Effect', cell: (rule) => <Badge tone={rule.effect === 'permit' ? 'ok' : 'bad'}>{rule.effect}</Badge> },
+          {
+            key: 'result', header: 'Outcome',
+            cell: (rule) => !rule.applicable ? 'Outside this request' : rule.matched ? 'Matched' : 'Did not match',
+          },
+          {
+            key: 'conditions', header: 'Condition details',
+            cell: (rule) => rule.conditions.length === 0 ? (rule.applicable ? 'No condition details' : 'Not evaluated') : (
+              <details>
+                <summary>{rule.conditions.length} condition results</summary>
+                <ul>
+                  {rule.conditions.map((condition) => (
+                    <li key={condition.path}>
+                      <code>{condition.path}</code> ({condition.kind}): {condition.matched ? 'matched' : 'did not match'}
+                      {condition.missing && ' — fact unavailable'}
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            ),
+          },
+        ]}
+      />
     </section>
   );
 }

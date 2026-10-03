@@ -2302,3 +2302,31 @@ claim consulted for a transformation. Consent memory includes the exact ASC
 expression, so changing a predicate or omit rule requires another decision.
 Omission and abort can still reveal a boolean fact after consent. Deployments
 should enable ASC only where that disclosure is intended.
+
+## Administrator authorization diagnostics (ast-dd1y.7.1)
+
+The policy trial endpoint adds an opt-in trace only after existing tenant reach,
+`admin.policies:read`, CSRF and rate-limit checks. It uses the same resolved facts
+and one policy snapshot as its decision. Public AuthZEN serialization never
+includes this trace, and normal enforcement never computes it. A SHA-256 digest
+of canonical policy content identifies the exact revision even when publication
+timestamps collide. The digest is available only to administrators who can read
+the document.
+
+Traces include rule IDs, effects, selector applicability, condition-position paths
+and boolean matched/missing outcomes. They omit request values/identities,
+attribute names, policy literals, group/role names, grants and reason strings.
+The existing decision context remains administrator-visible according to its
+existing contract. Missing means an absent property or unavailable/unrecognized
+ACR context; empty resolved groups/roles/grants are known empty sets, not missing
+context. A negated missing attribute retains legacy boolean semantics; a trace
+is diagnostic and confers no authority or new conditional-access semantics.
+
+Parser limits bound a trace to 128 rule entries and a shared 256 condition-node
+budget; omitted conditions set `truncated`, without affecting the result. The
+normal decision retains deny precedence and short-circuit behavior. Debug
+traversal is bounded by the existing 64 nodes/rule and depth 8. Responses use
+`Cache-Control: no-store`; diagnostics are not persisted or written to the audit
+trail. The `admin_policy_trial` enforcement-point marker identifies a simulation
+that made no access change; it does not claim correlation with a prior live
+login or enforcement event.

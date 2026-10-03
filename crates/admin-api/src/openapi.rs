@@ -512,6 +512,45 @@ fn idempotency_parameter() -> Value {
     })
 }
 
+fn policy_trial_schema() -> Value {
+    let condition = json!({
+        "type": "object",
+        "required": ["path", "kind", "matched", "missing"],
+        "properties": {
+            "path": {"type": "string"}, "kind": {"type": "string"},
+            "matched": {"type": "boolean"}, "missing": {"type": "boolean"}
+        }
+    });
+    let rule = json!({
+        "type": "object",
+        "required": ["id", "effect", "applicable", "matched", "conditions"],
+        "properties": {
+            "id": {"type": "string", "maxLength": 256},
+            "effect": {"type": "string", "enum": ["permit", "deny"]},
+            "applicable": {"type": "boolean"}, "matched": {"type": "boolean"},
+            "conditions": {"type": "array", "maxItems": 256, "items": condition}
+        }
+    });
+    let diagnostics = json!({
+        "type": "object",
+        "description": "Tenant-authorized administrator trace only; absent from public AuthZEN responses. No input values or policy literals. At most 128 rules and 256 condition nodes across all rules; truncated marks omitted nodes. policy_revision is a SHA-256 digest of the exact canonical document; policy_updated_at is Unix nanoseconds as a decimal string. enforcement_point identifies the administrative trial. No trace is retained.",
+        "required": ["policy_revision", "policy_updated_at", "enforcement_point", "rules", "truncated"],
+        "properties": {
+            "policy_revision": {"type": ["string", "null"]},
+            "policy_updated_at": {"type": ["string", "null"]},
+            "enforcement_point": {"type": "string"}, "truncated": {"type": "boolean"},
+            "rules": {"type": "array", "maxItems": 128, "items": rule}
+        }
+    });
+    json!({
+        "type": "object", "required": ["decision"],
+        "properties": {
+            "decision": {"type": "boolean"}, "context": {"type": "object"},
+            "diagnostics": diagnostics
+        }
+    })
+}
+
 fn responses(operation: &Operation) -> Value {
     if operation.id() == crate::SCIM_BULK_ID {
         return json!({
@@ -549,6 +588,8 @@ fn responses(operation: &Operation) -> Value {
                 }
             }
         })
+    } else if operation.id() == crate::POLICY_TRY_ID {
+        json!({"application/json": {"schema": policy_trial_schema()}})
     } else {
         json!({ "application/json": { "schema": { "type": "object" } } })
     };
