@@ -95,6 +95,8 @@ jobs:
         env:
           ASTERIUS_BIN: ${{ github.workspace }}/target/debug/asterius
         run: ./scripts/kubernetes-e2e.sh
+      - name: real structural schemas and namespace admission
+        run: bash scripts/kubernetes-crd-tests.sh
       - name: retain public evidence only
         uses: actions/upload-artifact@v4
         with:
