@@ -269,3 +269,39 @@ process-wide operator signing catalogue/OAuth session cache to 100 exact scoped
 credential contexts. Catalogue creation is serialized under a tenant-specific
 advisory lock; source-change producers therefore have a finite connector fanout.
 These operational bounds remain part of the proposed first profile.
+
+
+### Proposed reserved-incarnation deletion fence
+
+The additive JSON schema container follows [RFC7643§3.3](https://www.rfc-editor.org/rfc/rfc7643.html#section-3.3); this vendor capability is not a generic SCIM requirement.
+The first Asterius target advertises the exact `OutboundIncarnations:2.0`
+ServiceProviderConfig extension, verified during the authenticated preview.
+Target-side identity retention applies only to the closed
+`urn:asterius:outbound:<source-tenant>:<connector-uuid>:<user|group>:<source-uuid>:<generation-uuid>`
+namespace. Deleting a User/Group ownership row, changing that externalId, or
+marking its User deletion identity creates an atomic tenant/client/kind/externalId
+tombstone. Concurrent and late collection POSTs cannot reuse that incarnation;
+ordinary SCIM externalIds retain their existing delete/recreate semantics. An
+explicit new generation uses a distinct externalId. The target retains at most
+10,000 such keys per target tenant/client/kind and refuses further reserved
+retirement at capacity. These keys never expire automatically: elapsed time
+alone cannot prove an already-admitted request cannot still arrive. Whole target
+tenant teardown removes its credentials and retained keys and is outside
+connector reconciliation; restoring an old issuer/client authority context is
+not automatic recovery.
+
+Lifecycle approvals pin the exact source connector revision, credential generation,
+assignment generation, desired revision, target UUID and observed ETag for five
+minutes. Each target mutation rechecks that window against the database clock.
+A durable same-UUID DELETE admission may recover an observed404 without another
+mutation after expiry. A renewed explicit approval may carry only the historical
+DELETE admission for that same assignment generation and UUID; it grants no
+replacement deletion. Archive conditionally rewrites the already disabled User
+or empty Group even when its attributes match, advancing the target ETag before
+retiring local ownership so a prior admitted PUT cannot undo retirement. A lost
+archive PUT response that changed the target version remains a visible conflict;
+reconciliation and a new exact-version approval resolve it. A completed reviewed
+DELETE receipt can be explicitly archived without another target request. Explicit
+recreation verifies absence or fences an already inactive/empty old target,
+retains its history, and atomically queues a fresh locally owned incarnation.
+All these refinements remain Proposed; they add no approval or delivery claim.
