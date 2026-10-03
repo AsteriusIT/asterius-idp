@@ -169,6 +169,8 @@ fn operation_object(operation: &Operation) -> Value {
         "responses": responses(operation),
     });
 
+    simulation_documentation(operation, &mut object);
+
     if operation.id() == crate::TENANT_SETTINGS_UPDATE_ID {
         object["requestBody"] = json!({
             "required": true,
@@ -226,6 +228,49 @@ fn operation_object(operation: &Operation) -> Value {
     }
 
     object
+}
+
+fn simulation_documentation(operation: &Operation, object: &mut Value) {
+    if operation.id() == crate::POLICY_SIMULATE_ID {
+        object["security"] = json!([{ "consoleSession": [] }, { "adminToken": [
+            "admin.policies:read", "admin.users:read", "admin.clients:read", "admin.resource_servers:read"
+        ] }]);
+        object["x-asterius-additional-scopes"] = json!([
+            "admin.users:read",
+            "admin.clients:read",
+            "admin.resource_servers:read"
+        ]);
+        object["requestBody"] = json!({"required": true, "content": {"application/json": {"schema": {
+            "type": "object", "additionalProperties": false,
+            "required": ["user_id", "client_id", "resource_id", "resource_type", "action", "expected_policy_revision"],
+            "properties": {
+                "user_id": {"type": "string", "format": "uuid"},
+                "client_id": {"type": "string", "minLength": 1, "maxLength": 256},
+                "resource_id": {"type": "string", "minLength": 1, "maxLength": 256},
+                "resource_type": {"type": "string", "minLength": 1, "maxLength": 256},
+                "action": {"type": "string", "minLength": 1, "maxLength": 256},
+                "expected_policy_revision": {"type": ["string", "null"], "description": "SHA-256 revision from GET /policies; null requires no stored policy."},
+                "hypothetical_policy": {"type": "object"}, "hypothetical_context": {"type": "object"}
+            },
+            "description": "Bounded 128 KiB inspection. All references must exist in the routed tenant. Only policy and context properties may be hypothetical. Audited before lookup; never grants access or issues a token."
+        }}}});
+        object["responses"]["409"] =
+            error_response("Stored policy revision changed; refresh the snapshot.");
+        object["responses"]["400"] = error_response("Invalid simulation request.");
+        object["responses"]["404"] =
+            error_response("A referenced record is absent from the routed tenant.");
+        let mut schema = policy_trial_schema();
+        schema["required"] = json!(["decision", "simulation"]);
+        schema["properties"]["simulation"] = json!({"type": "object", "required": ["enforced", "current_policy_revision", "provenance"], "properties": {
+            "enforced": {"const": false}, "current_policy_revision": {"type": ["string", "null"]},
+            "provenance": {"type": "object", "properties": {
+                "subject": {"const": "tenant_user_and_client"}, "resource": {"const": "tenant_resource_registry"},
+                "groups_roles_grants_acr": {"const": "server_resolved"},
+                "policy": {"enum": ["stored", "hypothetical"]}, "context_properties": {"enum": ["absent", "hypothetical"]}
+            }}
+        }});
+        object["responses"]["200"]["content"]["application/json"]["schema"] = schema;
+    }
 }
 
 fn operation_parameters(operation: &Operation) -> Vec<Value> {

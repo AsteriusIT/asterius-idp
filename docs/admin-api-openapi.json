@@ -7296,6 +7296,321 @@
         "x-asterius-scope": "admin.policies:read"
       }
     },
+    "/admin/api/v1/policies/simulate": {
+      "post": {
+        "operationId": "policies.simulate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "description": "Bounded 128 KiB inspection. All references must exist in the routed tenant. Only policy and context properties may be hypothetical. Audited before lookup; never grants access or issues a token.",
+                "properties": {
+                  "action": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "client_id": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "expected_policy_revision": {
+                    "description": "SHA-256 revision from GET /policies; null requires no stored policy.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "hypothetical_context": {
+                    "type": "object"
+                  },
+                  "hypothetical_policy": {
+                    "type": "object"
+                  },
+                  "resource_id": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "resource_type": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "user_id": {
+                    "format": "uuid",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "user_id",
+                  "client_id",
+                  "resource_id",
+                  "resource_type",
+                  "action",
+                  "expected_policy_revision"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "context": {
+                      "type": "object"
+                    },
+                    "decision": {
+                      "type": "boolean"
+                    },
+                    "diagnostics": {
+                      "description": "Tenant-authorized administrator trace only; absent from public AuthZEN responses. No input values or policy literals. At most 128 rules and 256 condition nodes across all rules; truncated marks omitted nodes. policy_revision is a SHA-256 digest of the exact canonical document; policy_updated_at is Unix nanoseconds as a decimal string. enforcement_point identifies the administrative trial. No trace is retained.",
+                      "properties": {
+                        "enforcement_point": {
+                          "type": "string"
+                        },
+                        "policy_revision": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "policy_updated_at": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "rules": {
+                          "items": {
+                            "properties": {
+                              "applicable": {
+                                "type": "boolean"
+                              },
+                              "conditions": {
+                                "items": {
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string"
+                                    },
+                                    "matched": {
+                                      "type": "boolean"
+                                    },
+                                    "missing": {
+                                      "type": "boolean"
+                                    },
+                                    "path": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "path",
+                                    "kind",
+                                    "matched",
+                                    "missing"
+                                  ],
+                                  "type": "object"
+                                },
+                                "maxItems": 256,
+                                "type": "array"
+                              },
+                              "effect": {
+                                "enum": [
+                                  "permit",
+                                  "deny"
+                                ],
+                                "type": "string"
+                              },
+                              "id": {
+                                "maxLength": 256,
+                                "type": "string"
+                              },
+                              "matched": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "effect",
+                              "applicable",
+                              "matched",
+                              "conditions"
+                            ],
+                            "type": "object"
+                          },
+                          "maxItems": 128,
+                          "type": "array"
+                        },
+                        "truncated": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "policy_revision",
+                        "policy_updated_at",
+                        "enforcement_point",
+                        "rules",
+                        "truncated"
+                      ],
+                      "type": "object"
+                    },
+                    "simulation": {
+                      "properties": {
+                        "current_policy_revision": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "enforced": {
+                          "const": false
+                        },
+                        "provenance": {
+                          "properties": {
+                            "context_properties": {
+                              "enum": [
+                                "absent",
+                                "hypothetical"
+                              ]
+                            },
+                            "groups_roles_grants_acr": {
+                              "const": "server_resolved"
+                            },
+                            "policy": {
+                              "enum": [
+                                "stored",
+                                "hypothetical"
+                              ]
+                            },
+                            "resource": {
+                              "const": "tenant_resource_registry"
+                            },
+                            "subject": {
+                              "const": "tenant_user_and_client"
+                            }
+                          },
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "enforced",
+                        "current_policy_revision",
+                        "provenance"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "decision",
+                    "simulation"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid simulation request."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A referenced record is absent from the routed tenant."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Stored policy revision changed; refresh the snapshot."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.policies:read",
+              "admin.users:read",
+              "admin.clients:read",
+              "admin.resource_servers:read"
+            ]
+          }
+        ],
+        "summary": "Simulates a stored or hypothetical policy over actual tenant-owned user, client and resource references; additionally requires admin.users:read, admin.clients:read and admin.resource_servers:read",
+        "x-asterius-additional-scopes": [
+          "admin.users:read",
+          "admin.clients:read",
+          "admin.resource_servers:read"
+        ],
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.policies:read"
+      }
+    },
     "/admin/api/v1/policies/try": {
       "post": {
         "operationId": "policies.try",

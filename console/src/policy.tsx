@@ -1,3 +1,4 @@
+import { PolicySimulation } from './policy-simulation';
 import { PolicyHistory } from './policy-history';
 import { useUnsavedChanges } from './navigation-guard';
 /**
@@ -72,6 +73,7 @@ export interface PolicyDocument {
   readonly document: { readonly version: number; readonly rules?: readonly RuleDocument[] };
   readonly rule_count: number;
   readonly updated_at: string | null;
+  readonly revision: string | null;
 }
 
 /**
@@ -93,6 +95,11 @@ export interface DecisionDocument {
     readonly reason_user?: Reason;
     readonly acr_values?: readonly string[];
     readonly error?: unknown;
+  };
+  readonly simulation?: {
+    readonly enforced: false;
+    readonly current_policy_revision: string | null;
+    readonly provenance: { readonly policy: 'stored' | 'hypothetical'; readonly context_properties: 'absent' | 'hypothetical' };
   };
   readonly diagnostics?: {
     readonly policy_revision: string | null;
@@ -500,6 +507,7 @@ export function Policy({ session }: Readonly<{ session: Session }>): JSX.Element
 
       <PolicyHistory session={session} dirty={busy || draft !== baseline} onRestored={refresh} />
       <TestBench session={session} />
+      {load.kind === 'ready' && <PolicySimulation session={session} revision={load.policy.revision} draft={draft} />}
 
       {removing && (
         <ConfirmDialog
@@ -640,7 +648,7 @@ function TestBench({ session }: Readonly<{ session: Session }>): JSX.Element {
   );
 }
 
-function Verdict({ answer }: Readonly<{ answer: Answer }>): JSX.Element {
+export function Verdict({ answer }: Readonly<{ answer: Answer }>): JSX.Element {
   if (answer.kind === 'idle') {
     return <p className="muted">No request asked yet.</p>;
   }

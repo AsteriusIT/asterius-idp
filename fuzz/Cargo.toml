@@ -134,6 +134,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "admin_policy_simulation"
+path = "fuzz_targets/admin_policy_simulation.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "admin_stream_status"
 path = "fuzz_targets/admin_stream_status.rs"
 test = false
