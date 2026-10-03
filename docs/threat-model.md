@@ -2853,3 +2853,33 @@ cache and clock skew. The supported Kubernetes v1.35 profile has a ten-second
 success-cache ceiling; disposable acceptance measures old-token refusal after exp
 within that ceiling, instead of claiming immediate offline expiry. Baseline bindings
 and credentials remain independent.
+
+### Candidate Kubernetes online review boundary (`ast-dd1y.1.5`)
+
+This candidate is isolated pending normative human review and acceptance; it is
+not enabled in the shared local deployment. The API server authenticates to a
+small HTTPS adapter with a dedicated CA and exact client SPKI pin. The adapter
+uses a separate confidential private-key-JWT/DPoP reviewer credential for one
+pinned tenant and human-client route. Private successful client_credentials
+JTI receipts prevent historical workload/delegated/task credentials from being
+reinterpreted as this reviewer mode merely because their public subject matches
+the client ID.
+
+Human authentication verifies the exact issuer/audience/ES256 ID signature and
+complete signed-token digest recorded with its exact original grant, active
+user and stable public browser SID. Profile UUID and cluster revision bind
+configuration; relevant metadata changes terminally disable the mode and cannot
+revive old credentials on restore. Current expiry, logout, revocation and group
+removal narrow authority. Added groups never widen an old signed release.
+No bearer token, session heartbeat, arbitrary user extras, credential echo or
+positive identity cache is added by Asterius or the adapter. Online and JIT
+configuration is mutually exclusive; keeping an equivalent native offline OIDC
+authenticator would bypass the online check and is forbidden for this tuple.
+
+Kubernetes 1.35's outer success cache remains ten seconds even with the inner
+webhook cache disabled. Its detached lookup and upstream HTTP transport allow
+thirty seconds for a successful response already in flight; the conservative
+source-derived bound is forty seconds plus measured scheduling/transport margin.
+The local three-second review deadline does not establish a shorter wire-level
+bound. Actual delayed-response, outage and replica evidence is still required;
+healthy-network latency alone is not worst-case acceptance evidence.
