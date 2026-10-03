@@ -231,7 +231,11 @@ async fn handle(
     // DPoP binds to the resource's absolute URI, which is under the canonical
     // issuer (including `/t/{tenant}` for path-based tenancy), not merely the
     // web origin used by the CSRF comparison below.
-    let url = format!("{}{}", tenant.issuer.as_str(), parts.uri.path());
+    // Axum strips BASE_PATH when entering this nested router. Reconstruct our
+    // canonical mount once; OriginalUri also contains the tenancy prefix,
+    // which is already part of the issuer and must not be duplicated.
+    let path = format!("{}{}", crate::BASE_PATH, parts.uri.path());
+    let url = format!("{}{path}", tenant.issuer.as_str());
     let principal = authenticate(
         backend,
         state.tokens.as_deref(),
@@ -294,7 +298,7 @@ async fn handle(
         principal: &principal,
         headers: &headers,
         query: parts.uri.query().unwrap_or_default().to_owned(),
-        path: parts.uri.path().to_owned(),
+        path,
         nonce: parts.extensions.get::<asterius_web::Nonce>(),
         now,
     };
@@ -15820,6 +15824,58 @@ mod tests {
     }
 
     // ---- rate limiting -----------------------------------------------------
+
+    #[tokio::test]
+    async fn automation_verifier_receives_the_canonical_admin_mount() {
+        #[derive(Debug, Default)]
+        struct Capture(std::sync::Mutex<Option<(String, String)>>);
+
+        #[async_trait::async_trait]
+        impl AdminTokens for Capture {
+            async fn resolve(
+                &self,
+                _tenant: &Tenant,
+                presented: &crate::backend::PresentedToken<'_>,
+            ) -> Result<Option<crate::backend::TokenPrincipal>, DomainError> {
+                *self.0.lock().expect("test capture lock") =
+                    Some((presented.method.to_owned(), presented.url.to_owned()));
+                Ok(None)
+            }
+        }
+
+        let world = World::new();
+        let capture = Arc::new(Capture::default());
+        let api = AdminApi::new(&AdminState {
+            backend: Arc::new(world.handle.clone()),
+            ipsie_https_only_clients: Arc::default(),
+            ipsie_identity_only_clients: Arc::default(),
+            tokens: Some(capture.clone()),
+            rate_limit: RateLimit {
+                max: 10_000,
+                window: time::Duration::minutes(1),
+            },
+            reserved_tenant: None,
+        });
+        let mut request = request_for(&crate::CLIENTS_LIST)
+            .header("authorization", "DPoP test-token")
+            .header("dpop", "test-proof")
+            .body(Body::empty())
+            .expect("test request");
+        request.extensions_mut().insert(world.api_tenant.clone());
+        let response = api.into_router().oneshot(request).await.expect("response");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            *capture.0.lock().expect("test capture lock"),
+            Some((
+                "GET".to_owned(),
+                format!(
+                    "{}{}",
+                    world.api_tenant.issuer,
+                    crate::CLIENTS_LIST.full_path()
+                ),
+            )),
+        );
+    }
 
     #[tokio::test]
     async fn a_flood_from_one_address_is_throttled() {

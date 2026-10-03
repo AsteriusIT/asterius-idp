@@ -40,7 +40,11 @@ impl PgDeclarative {
     }
 }
 
-async fn lock(connection: &mut PgConnection, id: &Identity) -> Result<(), Error> {
+async fn lock(
+    connection: &mut PgConnection,
+    id: &Identity,
+    require_parent: bool,
+) -> Result<(), Error> {
     id.validate()?;
     if matches!(id.kind, Kind::Membership | Kind::Group) {
         sqlx::query("select declarative_lock($1,'group',$2)")
@@ -49,15 +53,21 @@ async fn lock(connection: &mut PgConnection, id: &Identity) -> Result<(), Error>
             .execute(&mut *connection)
             .await
             .map_err(storage)?;
-        sqlx::query(
+        let group = sqlx::query(
             "select group_id from managed_groups where tenant_id=$1 and group_id=$2 for update",
         )
         .bind(id.tenant.as_str())
         .bind(uuid_key(&id.keys[0])?)
         .fetch_optional(&mut *connection)
         .await
-        .map_err(storage)?
-        .ok_or(Error::NotFound)?;
+        .map_err(storage)?;
+        // A membership requires its live parent. Group creation uses a fresh
+        // UUID, so the advisory lock is sufficient until its row is inserted.
+        // Other operations check live rows after locking. In particular,
+        // deletion receipts remain usable after the parent group is removed.
+        if require_parent && id.kind == Kind::Membership && group.is_none() {
+            return Err(Error::NotFound);
+        }
     }
     sqlx::query("select declarative_lock($1,$2,$3)")
         .bind(id.tenant.as_str())
@@ -355,7 +365,7 @@ impl Management for PgDeclarative {
 
     async fn read(&self, id: &Identity) -> Result<Document, Error> {
         let mut tx = self.pool.begin().await.map_err(storage)?;
-        lock(&mut tx, id).await?;
+        lock(&mut tx, id, false).await?;
         let document = read_document(&mut tx, id, self.capabilities).await?;
         tx.commit().await.map_err(storage)?;
         Ok(document)
@@ -457,7 +467,7 @@ impl Management for PgDeclarative {
                         kind: *kind,
                         keys: serde_json::from_value(keys).map_err(|_| Error::Invalid)?,
                     };
-                    lock(&mut tx, &id).await?;
+                    lock(&mut tx, &id, false).await?;
                     let current:Option<(bool,uuid::Uuid)>=sqlx::query_as("select deleted,incarnation from declarative_owners where tenant_id=$1 and kind=$2 and keys=$3")
                         .bind(tenant.as_str()).bind(kind.as_str()).bind(json!(id.keys)).fetch_optional(&mut *tx).await.map_err(storage)?;
                     if current != Some((false, incarnation)) {
@@ -494,7 +504,7 @@ impl Management for PgDeclarative {
                     }
                     _ => identity_for(tenant, *kind, spec)?,
                 };
-                lock(&mut tx, &id).await?;
+                lock(&mut tx, &id, true).await?;
                 if !matches!(kind, Kind::Application | Kind::Tenant) {
                     match read_live(&mut tx, &id, self.capabilities).await {
                         Ok(_) => return Err(Error::LogicalKey),
@@ -518,7 +528,7 @@ impl Management for PgDeclarative {
                 if identity.tenant != *tenant {
                     return Err(Error::NotFound);
                 }
-                lock(&mut tx, identity).await?;
+                lock(&mut tx, identity, false).await?;
                 let (held_owner, protected) = metadata(&mut tx, identity).await?;
                 if let Mutation::Delete { expected, .. } = &mutation {
                     let receipt:bool=sqlx::query_scalar("select exists(select 1 from declarative_deletion_receipts where tenant_id=$1 and kind=$2 and keys=$3 and owner=$4 and expected_revision=$5)")
@@ -790,7 +800,7 @@ mod tests {
                 .public_jwk()
                 .expect("public JWK");
         let application=management.mutate(&tenant,owner,Mutation::Create{kind:Kind::Application,external_key:"application-config".to_owned(),spec:json!({"client_name":"Managed","redirect_uris":["https://rp.example/cb"],"jwks":{"keys":[public_key]},"resources":["https://default.example/"]}),deletion_protection:true}).await.expect("FAPI application").expect("document");
-        for document in [tenant_document, group, membership, policy, application] {
+        for document in [&tenant_document, &group, &membership, &policy, &application] {
             let imported = Identity::parse(&document.id).expect("import");
             let read = management
                 .read(&imported)
@@ -810,6 +820,66 @@ mod tests {
                 assert!(!encoded.contains(secret));
             }
         }
+        let member_id = Identity::parse(&membership.id).expect("membership identity");
+        let receipt = remove_managed(&management, &tenant, owner, &member_id).await;
+        remove_managed(&management, &tenant, owner, &group_id).await;
+        assert!(
+            management
+                .mutate(&tenant, owner, receipt)
+                .await
+                .expect("completed member deletion survives parent removal")
+                .is_none()
+        );
+        assert!(matches!(
+            management
+                .mutate(
+                    &tenant,
+                    owner,
+                    Mutation::Create {
+                        kind: Kind::Membership,
+                        external_key: "absent-parent".to_owned(),
+                        spec: membership.spec,
+                        deletion_protection: true,
+                    },
+                )
+                .await,
+            Err(Error::NotFound)
+        ));
         pool.close().await;
+    }
+
+    async fn remove_managed(
+        management: &PgDeclarative,
+        tenant: &TenantId,
+        owner: &str,
+        identity: &Identity,
+    ) -> Mutation {
+        let current = management.read(identity).await.expect("live document");
+        let unprotected = management
+            .mutate(
+                tenant,
+                owner,
+                Mutation::Replace {
+                    identity: identity.clone(),
+                    expected: current.revision,
+                    spec: current.spec,
+                    deletion_protection: false,
+                },
+            )
+            .await
+            .expect("disable deletion protection")
+            .expect("live document");
+        let deletion = Mutation::Delete {
+            identity: identity.clone(),
+            expected: unprotected.revision,
+        };
+        assert!(
+            management
+                .mutate(tenant, owner, deletion.clone())
+                .await
+                .expect("delete")
+                .is_none()
+        );
+        deletion
     }
 }
