@@ -231,7 +231,11 @@ async fn handle(
     // DPoP binds to the resource's absolute URI, which is under the canonical
     // issuer (including `/t/{tenant}` for path-based tenancy), not merely the
     // web origin used by the CSRF comparison below.
-    let url = format!("{}{}", tenant.issuer.as_str(), parts.uri.path());
+    // Axum strips BASE_PATH when entering this nested router. Reconstruct our
+    // canonical mount once; OriginalUri also contains the tenancy prefix,
+    // which is already part of the issuer and must not be duplicated.
+    let path = format!("{}{}", crate::BASE_PATH, parts.uri.path());
+    let url = format!("{}{path}", tenant.issuer.as_str());
     let principal = authenticate(
         backend,
         state.tokens.as_deref(),
@@ -245,6 +249,10 @@ async fn handle(
         },
     )
     .await?;
+
+    if operation.service_only() && principal.needs_csrf() {
+        return Err(AdminError::Forbidden);
+    }
 
     // 3. CSRF, for the console and for everything that is not a plain read. A
     //    `GET` cannot be the target of a forgery worth mounting, and a token
@@ -268,7 +276,7 @@ async fn handle(
     }
 
     // 5. At most once per key, for creations.
-    if operation.needs_idempotency_key() {
+    if operation.needs_idempotency_key() && !crate::declarative::is_route(operation.id()) {
         let key = headers
             .get(idempotency::HEADER)
             .and_then(|value| value.to_str().ok())
@@ -290,7 +298,7 @@ async fn handle(
         principal: &principal,
         headers: &headers,
         query: parts.uri.query().unwrap_or_default().to_owned(),
-        path: parts.uri.path().to_owned(),
+        path,
         nonce: parts.extensions.get::<asterius_web::Nonce>(),
         now,
     };
@@ -311,6 +319,9 @@ async fn route(
     context: &Handling<'_>,
     body: axum::body::Body,
 ) -> Result<Response, AdminError> {
+    if crate::declarative::is_route(id) {
+        return context.management(id, body).await;
+    }
     if is_overview(id) {
         return context.overview(id).await;
     }
@@ -418,6 +429,7 @@ async fn route_standard(
         crate::POLICY_UPDATE_ID => context.update_policy(body).await,
         crate::POLICY_DELETE_ID => context.delete_policy().await,
         crate::POLICY_TRY_ID => context.try_policy(body).await,
+        crate::POLICY_SIMULATE_ID => context.simulate_policy(body).await,
         crate::SSF_STREAMS_LIST_ID => context.list_streams().await,
         crate::SSF_STREAM_STATUS_UPDATE_ID => context.update_stream_status(body).await,
         crate::SSF_STREAM_VERIFY_ID => context.verify_stream(body).await,
@@ -435,6 +447,10 @@ async fn route_standard(
         crate::ID_JAG_SUBJECT_REMOVE_ID => context.remove_id_jag_subject(body).await,
         crate::SAML_SP_LIST_ID => context.list_saml_sp_trust().await,
         crate::OIDC_PROVIDER_CHECK_ID => context.check_oidc_provider(body).await,
+        crate::WORKLOAD_TRUSTS_LIST_ID => context.list_workload_trusts().await,
+        crate::WORKLOAD_TRUST_READ_ID => context.read_workload_trust().await,
+        crate::WORKLOAD_TRUST_PUT_ID => context.put_workload_trust(body).await,
+        crate::WORKLOAD_TRUST_DELETE_ID => context.delete_workload_trust(body).await,
         crate::OIDC_PROVIDERS_LIST_ID => context.list_oidc_providers().await,
         crate::OIDC_PROVIDERS_PUT_ID => context.put_oidc_provider(body).await,
         crate::OIDC_PROVIDERS_DELETE_ID => context.delete_oidc_provider(body).await,
@@ -3147,6 +3163,58 @@ impl Handling<'_> {
         ))
     }
 
+    async fn simulate_policy(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        policies::authorize_simulation(self.principal.held(), &self.tenant.id)?;
+        let body = axum::body::to_bytes(body, policies::MAX_BODY_BYTES * 2)
+            .await
+            .map_err(|_| AdminError::Invalid("the simulation body is too large".into()))?;
+        let simulation = policies::parse_simulation(&body)?;
+        // Record inspection intent before resolving private subject facts.
+        // Unlike a mutation, no irreversible act has occurred: if the trail
+        // cannot accept the record, return an outage and disclose no facts.
+        let event = AuditEvent::new(
+            self.tenant.id.clone(),
+            EventType::POLICY_SIMULATED,
+            Outcome::Success,
+            Actor::Admin(self.principal.audit_actor()),
+            self.now,
+        )
+        .subject(simulation.user.to_string())
+        .client(simulation.client.clone())
+        .detail(
+            Detail::new()
+                .label("operation", crate::POLICY_SIMULATE_ID)
+                .label("phase", "inspection_requested"),
+        );
+        self.state
+            .backend
+            .audit()
+            .record(event)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::POLICY_SIMULATE_ID, &error))?;
+        match self
+            .state
+            .backend
+            .policy_trial()
+            .simulate(&self.tenant.id, &simulation)
+            .await
+            .map_err(|error| match error {
+                DomainError::NotFound => AdminError::NotFound,
+                error => AdminError::from_storage(crate::POLICY_SIMULATE_ID, &error),
+            })? {
+            policies::SimulationOutcome::Stale => Err(AdminError::Conflict(
+                "the policy revision changed; refresh before simulating".into(),
+            )),
+            policies::SimulationOutcome::Decided {
+                decision,
+                current_revision,
+            } => Ok(json_no_store(
+                StatusCode::OK,
+                &policies::simulation_response(&simulation, &decision, current_revision.as_deref()),
+            )),
+        }
+    }
+
     /// The `{stream_id}` in this request's path: the segment after
     /// `streams`, which must be an identifier this server issues.
     ///
@@ -3565,6 +3633,100 @@ impl Handling<'_> {
                 other => AdminError::from_storage(crate::OIDC_PROVIDER_CHECK_ID, &other),
             })?;
         Ok(json_no_store(StatusCode::OK, &report))
+    }
+
+    fn workload_trust_in_path(&self) -> Result<&str, AdminError> {
+        self.path
+            .rsplit('/')
+            .next()
+            .filter(|id| asterius_domain::workload::valid_id(id))
+            .ok_or(AdminError::NotFound)
+    }
+    async fn list_workload_trusts(&self) -> Result<Response, AdminError> {
+        let registry = self
+            .state
+            .backend
+            .workload_trusts()
+            .ok_or(AdminError::NotFound)?;
+        let summaries = registry
+            .list(&self.tenant.id)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::WORKLOAD_TRUSTS_LIST_ID, &error))?;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({"trusts":summaries}),
+        ))
+    }
+    async fn read_workload_trust(&self) -> Result<Response, AdminError> {
+        let registry = self
+            .state
+            .backend
+            .workload_trusts()
+            .ok_or(AdminError::NotFound)?;
+        let summary = registry
+            .find(&self.tenant.id, self.workload_trust_in_path()?)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::WORKLOAD_TRUST_READ_ID, &error))?
+            .ok_or(AdminError::NotFound)?;
+        Ok(json_no_store(StatusCode::OK, &serde_json::json!(summary)))
+    }
+    async fn put_workload_trust(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Input {
+            expected_version: Option<i64>,
+            config: asterius_domain::workload::Config,
+        }
+        let bytes = axum::body::to_bytes(body, 96 * 1024)
+            .await
+            .map_err(|_| AdminError::Invalid("the workload trust body is too large".to_owned()))?;
+        let input: Input = serde_json::from_slice(&bytes)
+            .map_err(|_| AdminError::Invalid("invalid workload trust request".to_owned()))?;
+        let registry = self
+            .state
+            .backend
+            .workload_trusts()
+            .ok_or(AdminError::NotFound)?;
+        let summary = registry
+            .put(
+                &self.tenant.id,
+                self.workload_trust_in_path()?,
+                &input.config,
+                input.expected_version,
+                Actor::Admin(self.principal.audit_actor()),
+                self.now,
+            )
+            .await
+            .map_err(|error| AdminError::from_storage(crate::WORKLOAD_TRUST_PUT_ID, &error))?;
+        Ok(json_no_store(StatusCode::OK, &serde_json::json!(summary)))
+    }
+    async fn delete_workload_trust(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Input {
+            expected_version: i64,
+        }
+        let bytes = axum::body::to_bytes(body, 1024)
+            .await
+            .map_err(|_| AdminError::Invalid("the request body is too large".to_owned()))?;
+        let input: Input = serde_json::from_slice(&bytes)
+            .map_err(|_| AdminError::Invalid("invalid workload trust request".to_owned()))?;
+        let registry = self
+            .state
+            .backend
+            .workload_trusts()
+            .ok_or(AdminError::NotFound)?;
+        registry
+            .delete(
+                &self.tenant.id,
+                self.workload_trust_in_path()?,
+                input.expected_version,
+                Actor::Admin(self.principal.audit_actor()),
+                self.now,
+            )
+            .await
+            .map_err(|error| AdminError::from_storage(crate::WORKLOAD_TRUST_DELETE_ID, &error))?;
+        Ok(StatusCode::NO_CONTENT.into_response())
     }
 
     async fn list_oidc_providers(&self) -> Result<Response, AdminError> {
@@ -8106,6 +8268,285 @@ fn openapi_response() -> Response {
 /// Used by `asterius-server`'s wiring test.
 pub const CLIENT_ADDRESS_EXTENSION: &str = "asterius_admin_api::ClientAddress";
 
+impl Handling<'_> {
+    fn management_owner(&self) -> Result<String, AdminError> {
+        let Principal::Automation { subject, held } = self.principal else {
+            return Err(AdminError::Forbidden);
+        };
+        let crate::rbac::Held::Scopes { tenant, .. } = held else {
+            return Err(AdminError::Forbidden);
+        };
+        let issuer = tenant
+            .as_ref()
+            .or(self.state.reserved_tenant.as_ref())
+            .ok_or(AdminError::Forbidden)?;
+        serde_json::to_string(&[issuer.as_str(), subject.as_str()])
+            .map_err(|_| AdminError::Unavailable)
+    }
+
+    fn management_authority(
+        &self,
+        kind: asterius_domain::declarative::Kind,
+        target: &TenantId,
+        writing: bool,
+        creating: bool,
+    ) -> Result<(), AdminError> {
+        crate::declarative::authorize(self.principal, kind, target, writing, creating)
+    }
+
+    async fn management_spec(
+        &self,
+        kind: asterius_domain::declarative::Kind,
+        spec: &serde_json::Value,
+        identity: Option<&asterius_domain::declarative::Identity>,
+    ) -> Result<serde_json::Value, AdminError> {
+        if kind == asterius_domain::declarative::Kind::Application {
+            let object = spec.as_object().ok_or_else(|| {
+                AdminError::Invalid("application spec must be an object".to_owned())
+            })?;
+            if object.contains_key("client_secret")
+                || object.contains_key("client_secret_command")
+                || object.contains_key("private_key")
+                || object
+                    .get("compliance_profile")
+                    .is_some_and(|profile| profile != "fapi")
+            {
+                return Err(AdminError::Invalid(
+                    "declarative applications require public-key FAPI metadata".to_owned(),
+                ));
+            }
+            let bytes = serde_json::to_vec(spec).map_err(|_| AdminError::Unavailable)?;
+            let mut registration =
+                ClientRegistration::from_json(&bytes, self.state.backend.capabilities())
+                    .map_err(|error| clients::refusal(&error))?;
+            let resources = serde_json::to_vec(&serde_json::json!({"resources":spec["resources"]}))
+                .map_err(|_| AdminError::Unavailable)?;
+            registration.resources = clients::resource_allow_list(&resources)?;
+            if registration
+                .grant_types
+                .contains(&asterius_domain::entities::client::GrantType::JwtBearer)
+            {
+                let pinned = if let Some(identity) = identity {
+                    self.state.backend.clients().id_jag_pinned(
+                        &identity.tenant,
+                        &asterius_domain::ClientId::new(&identity.keys[0]),
+                    )
+                } else {
+                    false
+                };
+                if !pinned {
+                    return Err(AdminError::Invalid(
+                        "JWT bearer ID-JAG requires an existing operator-pinned client".to_owned(),
+                    ));
+                }
+            }
+            if let Some(identity) = identity {
+                let client = asterius_domain::ClientId::new(&identity.keys[0]);
+                self.require_https_redirects(&client, &registration)?;
+                self.require_identity_only(&client, &registration)?;
+            }
+            self.check_client_is_serviceable(&registration, "declarative.validate")
+                .await?;
+        }
+        crate::declarative::normalise(kind, spec)
+    }
+
+    // Keep the dynamic tenant/kind authority gate visible beside each dispatch branch.
+    #[allow(clippy::too_many_lines)]
+    async fn management(
+        &self,
+        operation: &str,
+        body: axum::body::Body,
+    ) -> Result<Response, AdminError> {
+        use asterius_domain::declarative::{Identity, Kind, Mutation};
+        let owner = self.management_owner()?;
+        if operation == "declarative.resolve" {
+            let mut fields = std::collections::BTreeMap::new();
+            for (key, value) in url::form_urlencoded::parse(self.query.as_bytes()) {
+                if !matches!(key.as_ref(), "kind" | "external_key")
+                    || fields
+                        .insert(key.into_owned(), value.into_owned())
+                        .is_some()
+                {
+                    return Err(AdminError::Invalid(
+                        "invalid logical identity query".to_owned(),
+                    ));
+                }
+            }
+            let kind: Kind = serde_json::from_value(serde_json::Value::String(
+                fields
+                    .remove("kind")
+                    .ok_or_else(|| AdminError::Invalid("kind is required".to_owned()))?,
+            ))
+            .map_err(|_| AdminError::Invalid("invalid kind".to_owned()))?;
+            self.management_authority(kind, &self.tenant.id, false, false)?;
+            let backend = self
+                .state
+                .backend
+                .management()
+                .ok_or(AdminError::Unavailable)?;
+            let key = fields
+                .remove("external_key")
+                .ok_or_else(|| AdminError::Invalid("external_key is required".to_owned()))?;
+            let document = backend
+                .resolve(&self.tenant.id, &owner, kind, &key)
+                .await
+                .map_err(crate::declarative::refusal)?;
+            return crate::declarative::response(&document);
+        }
+        if operation == "declarative.create" {
+            let request: crate::declarative::Create = self.parse_body(body).await?;
+            let target = if request.kind == Kind::Tenant {
+                TenantId::parse(
+                    request.spec["tenant_id"]
+                        .as_str()
+                        .ok_or_else(|| AdminError::Invalid("tenant_id is required".to_owned()))?,
+                )
+                .map_err(|_| AdminError::Invalid("invalid tenant_id".to_owned()))?
+            } else {
+                self.tenant.id.clone()
+            };
+            self.management_authority(request.kind, &target, true, true)?;
+            let backend = self
+                .state
+                .backend
+                .management()
+                .ok_or(AdminError::Unavailable)?;
+            let spec = self
+                .management_spec(request.kind, &request.spec, None)
+                .await?;
+            let document = backend
+                .mutate(
+                    &target,
+                    &owner,
+                    Mutation::Create {
+                        kind: request.kind,
+                        external_key: request.external_key,
+                        spec,
+                        deletion_protection: request.deletion_protection,
+                    },
+                )
+                .await
+                .map_err(crate::declarative::refusal)?
+                .ok_or(AdminError::Unavailable)?;
+            self.state.backend.tenant_directory_changed();
+            self.record(
+                EventType::ADMIN_CHANGED,
+                Detail::new()
+                    .label("operation", "declarative.create")
+                    .text("resource_id", document.id.clone()),
+            )
+            .await;
+            return crate::declarative::response(&document);
+        }
+        let base = format!("{}/declarative/v1/resources/", crate::BASE_PATH);
+        let import = self
+            .path
+            .strip_prefix(&base)
+            .and_then(|suffix| suffix.split('/').next())
+            .ok_or(AdminError::NotFound)?;
+        let identity = Identity::parse(import).map_err(crate::declarative::refusal)?;
+        if identity.tenant != self.tenant.id {
+            return Err(AdminError::NotFound);
+        }
+        let writing = !matches!(operation, "declarative.read" | "declarative.plan");
+        self.management_authority(identity.kind, &identity.tenant, writing, false)?;
+        let backend = self
+            .state
+            .backend
+            .management()
+            .ok_or(AdminError::Unavailable)?;
+        if operation == "declarative.read" {
+            return crate::declarative::response(
+                &backend
+                    .read(&identity)
+                    .await
+                    .map_err(crate::declarative::refusal)?,
+            );
+        }
+        let expected = crate::declarative::expected(self.headers)?;
+        if operation == "declarative.delete"
+            && identity.kind == Kind::Application
+            && self.state.backend.clients().id_jag_pinned(
+                &identity.tenant,
+                &asterius_domain::ClientId::new(&identity.keys[0]),
+            )
+        {
+            return Err(crate::declarative::refusal(
+                asterius_domain::declarative::Error::Dependency,
+            ));
+        }
+        if operation == "declarative.plan" {
+            let request: crate::declarative::Plan = self.parse_body(body).await?;
+            let spec = self
+                .management_spec(identity.kind, &request.spec, Some(&identity))
+                .await?;
+            let spec = backend
+                .normalise(&identity.tenant, identity.kind, &spec)
+                .await
+                .map_err(crate::declarative::refusal)?;
+            let held = backend
+                .read(&identity)
+                .await
+                .map_err(crate::declarative::refusal)?;
+            if held.revision != expected {
+                return Err(crate::declarative::refusal(
+                    asterius_domain::declarative::Error::Revision,
+                ));
+            }
+            let conflict = held
+                .owner
+                .as_deref()
+                .is_some_and(|held_owner| held_owner != owner)
+                || held
+                    .origin
+                    .iter()
+                    .any(|origin| origin["relation"] == "managed");
+            return Ok(json_no_store(
+                StatusCode::OK,
+                &serde_json::json!({"contract_version":1,"id":held.id,"revision":held.revision,"changed":held.spec!=spec,"owner_conflict":conflict,"spec":spec}),
+            ));
+        }
+        let mutation = match operation {
+            "declarative.replace" => {
+                let request: crate::declarative::Replace = self.parse_body(body).await?;
+                let spec = self
+                    .management_spec(identity.kind, &request.spec, Some(&identity))
+                    .await?;
+                Mutation::Replace {
+                    identity,
+                    expected,
+                    spec,
+                    deletion_protection: request.deletion_protection,
+                }
+            }
+            "declarative.adopt" => Mutation::Adopt { identity, expected },
+            "declarative.release" => Mutation::Release { identity, expected },
+            "declarative.delete" => Mutation::Delete { identity, expected },
+            _ => return Err(AdminError::NotFound),
+        };
+        let result = backend
+            .mutate(&self.tenant.id, &owner, mutation)
+            .await
+            .map_err(crate::declarative::refusal)?;
+        self.state.backend.tenant_directory_changed();
+        self.record(
+            EventType::ADMIN_CHANGED,
+            Detail::new()
+                .text("operation", operation)
+                .text("resource_id", import),
+        )
+        .await;
+        match result {
+            Some(document) => crate::declarative::response(&document),
+            None => Ok(json_no_store(
+                StatusCode::OK,
+                &serde_json::json!({"deleted":true}),
+            )),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -8172,6 +8613,7 @@ mod tests {
         /// (`ast-895`).
         passkeys: Mutex<std::collections::BTreeSet<String>>,
         events: Mutex<Vec<AuditEvent>>,
+        audit_fail: Mutex<bool>,
         counters: Mutex<BTreeMap<String, u32>>,
         claimed: Mutex<std::collections::BTreeSet<String>>,
         invalidations: Mutex<usize>,
@@ -8753,6 +9195,93 @@ mod tests {
     /// body can neither state that nor take it away.
     #[async_trait::async_trait]
     impl crate::backend::PolicyTrial for Handle {
+        async fn simulate(
+            &self,
+            tenant: &TenantId,
+            simulation: &policies::Simulation,
+        ) -> Result<policies::SimulationOutcome, DomainError> {
+            use asterius_domain::policy::{EvaluationRequest, Properties, Resource, Subject};
+            let current = asterius_domain::ports::PolicyStore::load(self, tenant).await?;
+            let revision = current
+                .as_ref()
+                .map(|policy| asterius_domain::policy::explanation::revision(&policy.rules));
+            if revision != simulation.expected_revision {
+                return Ok(policies::SimulationOutcome::Stale);
+            }
+            let exists = self
+                .0
+                .accounts
+                .lock()
+                .expect("fixture lock")
+                .iter()
+                .any(|user| &user.tenant == tenant && user.id == simulation.user);
+            let client_exists = self
+                .0
+                .clients
+                .lock()
+                .expect("fixture lock")
+                .iter()
+                .any(|client| &client.tenant == tenant && client.id == simulation.client);
+            let resource_exists = self
+                .0
+                .resource_servers
+                .lock()
+                .expect("fixture lock")
+                .iter()
+                .any(|(owner, resource)| {
+                    owner == tenant && resource.identifier.as_str() == simulation.resource
+                });
+            if !(exists && client_exists && resource_exists) {
+                return Err(DomainError::NotFound);
+            }
+            self.0
+                .trials
+                .lock()
+                .expect("fixture lock")
+                .push(simulation.user.to_string());
+            let groups = self
+                .0
+                .group_memberships
+                .lock()
+                .expect("fixture lock")
+                .iter()
+                .filter(|(owner, _, user)| owner == tenant && user == &simulation.user)
+                .map(|_| "engineering".to_owned())
+                .collect::<Vec<_>>();
+            let subject = Subject::new("user", "resolved-subject", Properties::empty())
+                .expect("fixture subject")
+                .with_groups(groups);
+            let request = EvaluationRequest::new(
+                subject,
+                simulation.action.clone(),
+                Resource::new(
+                    &simulation.resource_type,
+                    &simulation.resource,
+                    Properties::empty(),
+                )
+                .expect("validated reference"),
+                simulation.context.clone(),
+            );
+            let snapshot = simulation
+                .policy
+                .as_ref()
+                .map(|rules| asterius_domain::policy::StoredPolicy {
+                    rules: rules.clone(),
+                    updated_at: current
+                        .as_ref()
+                        .map_or(OffsetDateTime::UNIX_EPOCH, |policy| policy.updated_at),
+                })
+                .or(current);
+            Ok(policies::SimulationOutcome::Decided {
+                decision: Box::new(asterius_domain::policy::explanation::evaluate(
+                    snapshot.as_ref(),
+                    &request,
+                    "admin_policy_simulation",
+                )),
+                current_revision: revision,
+            })
+        }
+
         async fn decide(
             &self,
             tenant: &TenantId,
@@ -9061,6 +9590,11 @@ mod tests {
     #[async_trait::async_trait]
     impl AuditSink for Handle {
         async fn record(&self, event: AuditEvent) -> Result<(), DomainError> {
+            if *self.0.audit_fail.lock().expect("fixture lock") {
+                return Err(DomainError::Storage(Box::new(std::io::Error::other(
+                    "audit unavailable",
+                ))));
+            }
             self.0
                 .events
                 .lock()
@@ -11600,6 +12134,7 @@ mod tests {
         let path = operation
             .full_path()
             .replace("{tenant_id}", "acme")
+            .replace("{import_id}", "WyJhY21lIiwicG9saWN5IiwicG9saWN5Il0")
             .replace("{id}", "1")
             .replace("{kid}", SEEDED_KID)
             .replace("{client_id}", SEEDED_CLIENT_ID)
@@ -11762,6 +12297,7 @@ mod tests {
             // One Authorization API §6.1 request: the bench refuses a body
             // that does not name a subject, an action and a resource, so the
             // table walk has to send one that does (`ast-f7m.9`).
+            crate::POLICY_SIMULATE_ID => simulation_request(),
             crate::POLICY_TRY_ID => serde_json::json!({
                 "subject": {"type": "user", "id": "walked"},
                 "action": {"name": "read"},
@@ -12555,6 +13091,135 @@ mod tests {
 
         // Assert
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    fn simulation_request() -> serde_json::Value {
+        serde_json::json!({"user_id": seeded_user_id().as_uuid(), "client_id": SEEDED_CLIENT_ID,
+            "resource_id": SEEDED_RESOURCE, "resource_type": "api", "action": "read", "expected_policy_revision": null})
+    }
+
+    #[tokio::test]
+    async fn simulation_is_hypothetical_audited_and_never_saves_its_draft() {
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+        let mut body = simulation_request();
+        body["hypothetical_policy"] = serde_json::json!({"version": 1, "rules": [{"id": "draft", "effect": "permit", "when": {"group": "engineering"}}]});
+        let response = edit_policy(&world, &crate::POLICY_SIMULATE, &cookie, body).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        let result = body_of(response).await;
+        assert_eq!(result["decision"], true);
+        assert_eq!(result["simulation"]["enforced"], false);
+        assert_eq!(result["simulation"]["provenance"]["policy"], "hypothetical");
+        assert!(
+            world
+                .handle
+                .0
+                .policies
+                .lock()
+                .expect("fixture lock")
+                .is_empty()
+        );
+        let events = world.handle.0.events.lock().expect("fixture lock");
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_type == EventType::POLICY_SIMULATED)
+        );
+    }
+
+    #[tokio::test]
+    async fn simulation_does_not_resolve_facts_when_inspection_audit_fails() {
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+        *world.handle.0.audit_fail.lock().expect("fixture lock") = true;
+        assert_eq!(
+            edit_policy(
+                &world,
+                &crate::POLICY_SIMULATE,
+                &cookie,
+                simulation_request()
+            )
+            .await
+            .status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert!(
+            world
+                .handle
+                .0
+                .trials
+                .lock()
+                .expect("fixture lock")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn simulation_refuses_stale_snapshots_and_foreign_references() {
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+        let mut stale = simulation_request();
+        stale["expected_policy_revision"] = serde_json::json!(format!("sha256:{}", "0".repeat(64)));
+        assert_eq!(
+            edit_policy(&world, &crate::POLICY_SIMULATE, &cookie, stale)
+                .await
+                .status(),
+            StatusCode::CONFLICT
+        );
+        let mut unknown = simulation_request();
+        unknown["user_id"] = serde_json::json!(UserId::generate().as_uuid());
+        assert_eq!(
+            edit_policy(&world, &crate::POLICY_SIMULATE, &cookie, unknown)
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+        assert!(
+            world
+                .handle
+                .0
+                .trials
+                .lock()
+                .expect("fixture lock")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn simulation_requires_all_reference_read_scopes_before_inspection() {
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::UserSupport]);
+        assert_eq!(
+            edit_policy(
+                &world,
+                &crate::POLICY_SIMULATE,
+                &cookie,
+                simulation_request()
+            )
+            .await
+            .status(),
+            StatusCode::FORBIDDEN
+        );
+        assert!(
+            world
+                .handle
+                .0
+                .trials
+                .lock()
+                .expect("fixture lock")
+                .is_empty()
+        );
+        assert!(
+            !world
+                .handle
+                .0
+                .events
+                .lock()
+                .expect("fixture lock")
+                .iter()
+                .any(|event| event.event_type == EventType::POLICY_SIMULATED)
+        );
     }
 
     // ---- the dead-letter screen (`ast-0ju.9`) -----------------------------
@@ -13544,7 +14209,7 @@ mod tests {
                 matches!(
                     operation.authority().reach(),
                     Reach::Deployment | Reach::AutomationTenant
-                ),
+                ) || operation.service_only(),
                 "{} answered {} for a tenant admin",
                 operation.id(),
                 response.status()
@@ -13573,7 +14238,8 @@ mod tests {
             let allowed = !matches!(
                 authority.reach(),
                 Reach::Deployment | Reach::AutomationTenant
-            ) && role.grants(authority.scope());
+            ) && !operation.service_only()
+                && role.grants(authority.scope());
             assert_eq!(
                 response.status() == StatusCode::FORBIDDEN,
                 !allowed,
@@ -13730,7 +14396,8 @@ mod tests {
                 "{} is mounted with no handler",
                 operation.id()
             );
-            if operation.authority().reach() == Reach::AutomationTenant {
+            if operation.authority().reach() == Reach::AutomationTenant || operation.service_only()
+            {
                 assert_eq!(response.status(), StatusCode::FORBIDDEN);
             } else if registry_accepts_client_refusal(operation.id()) {
                 // This registry walk does not seed SAML keys or SP trusts,
@@ -15157,6 +15824,58 @@ mod tests {
     }
 
     // ---- rate limiting -----------------------------------------------------
+
+    #[tokio::test]
+    async fn automation_verifier_receives_the_canonical_admin_mount() {
+        #[derive(Debug, Default)]
+        struct Capture(std::sync::Mutex<Option<(String, String)>>);
+
+        #[async_trait::async_trait]
+        impl AdminTokens for Capture {
+            async fn resolve(
+                &self,
+                _tenant: &Tenant,
+                presented: &crate::backend::PresentedToken<'_>,
+            ) -> Result<Option<crate::backend::TokenPrincipal>, DomainError> {
+                *self.0.lock().expect("test capture lock") =
+                    Some((presented.method.to_owned(), presented.url.to_owned()));
+                Ok(None)
+            }
+        }
+
+        let world = World::new();
+        let capture = Arc::new(Capture::default());
+        let api = AdminApi::new(&AdminState {
+            backend: Arc::new(world.handle.clone()),
+            ipsie_https_only_clients: Arc::default(),
+            ipsie_identity_only_clients: Arc::default(),
+            tokens: Some(capture.clone()),
+            rate_limit: RateLimit {
+                max: 10_000,
+                window: time::Duration::minutes(1),
+            },
+            reserved_tenant: None,
+        });
+        let mut request = request_for(&crate::CLIENTS_LIST)
+            .header("authorization", "DPoP test-token")
+            .header("dpop", "test-proof")
+            .body(Body::empty())
+            .expect("test request");
+        request.extensions_mut().insert(world.api_tenant.clone());
+        let response = api.into_router().oneshot(request).await.expect("response");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            *capture.0.lock().expect("test capture lock"),
+            Some((
+                "GET".to_owned(),
+                format!(
+                    "{}{}",
+                    world.api_tenant.issuer,
+                    crate::CLIENTS_LIST.full_path()
+                ),
+            )),
+        );
+    }
 
     #[tokio::test]
     async fn a_flood_from_one_address_is_throttled() {

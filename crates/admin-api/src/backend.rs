@@ -95,6 +95,17 @@ use crate::clients::RegistrationGate;
 /// is an audited edit.
 #[async_trait::async_trait]
 pub trait PolicyTrial: std::fmt::Debug + Send + Sync {
+    /// Evaluate explicitly hypothetical inputs without issuing any authority.
+    /// Unsupported adapters fail closed; the deployment adapter checks actual
+    /// tenant references and the expected policy revision.
+    async fn simulate(
+        &self,
+        _tenant: &TenantId,
+        _simulation: &crate::policies::Simulation,
+    ) -> Result<crate::policies::SimulationOutcome, DomainError> {
+        Err(DomainError::NotFound)
+    }
+
     /// The decision this tenant's policy takes on `request`.
     ///
     /// # Errors
@@ -114,6 +125,11 @@ pub trait PolicyTrial: std::fmt::Debug + Send + Sync {
 /// What an admin API request needs from below the API.
 #[async_trait::async_trait]
 pub trait AdminBackend: std::fmt::Debug + Send + Sync {
+    /// Atomic live management adapter; unavailable backends fail closed.
+    fn management(&self) -> Option<Arc<dyn asterius_domain::declarative::Management>> {
+        None
+    }
+
     async fn update_flow_api(
         &self,
         _tenant: &TenantId,
@@ -614,6 +630,11 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
 
     /// Explicit tenant SAML SP trust. No browser SSO route uses this port yet.
     fn saml_sp_trust(&self) -> Option<Arc<dyn crate::saml::SpAdministration>> {
+        None
+    }
+
+    /// Operator-pinned workload trust; dedicated read/write authorities apply.
+    fn workload_trusts(&self) -> Option<Arc<dyn asterius_domain::workload::Registry>> {
         None
     }
 

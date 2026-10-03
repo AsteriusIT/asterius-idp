@@ -134,6 +134,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "admin_policy_simulation"
+path = "fuzz_targets/admin_policy_simulation.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "admin_stream_status"
 path = "fuzz_targets/admin_stream_status.rs"
 test = false
@@ -325,6 +332,13 @@ bench = false
 [[bin]]
 name = "csp_form_action"
 path = "fuzz_targets/csp_form_action.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "declarative_import_id"
+path = "fuzz_targets/declarative_import_id.rs"
 test = false
 doc = false
 bench = false
@@ -752,6 +766,13 @@ bench = false
 [[bin]]
 name = "webauthn_client_data"
 path = "fuzz_targets/webauthn_client_data.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "workload_token"
+path = "fuzz_targets/workload_token.rs"
 test = false
 doc = false
 bench = false

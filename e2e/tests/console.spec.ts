@@ -1210,6 +1210,34 @@ test('the policy editor refuses a bad document, saves a good one and answers the
   await expect(page.getByRole('status')).toContainText('The policy was removed.');
 });
 
+test('policy simulation uses actual references without saving a hypothetical draft', async ({ page }) => {
+  await signIn(page);
+  await openPolicy(page);
+  await page.getByRole('button', { name: 'Edit policy', exact: true }).click();
+  await page.getByLabel('The rule document, as the evaluator reads it').fill(JSON.stringify({
+    version: 1, rules: [{ id: 'hypothetical-only', effect: 'permit', actions: ['read'] }],
+  }));
+  const user = page.getByLabel('Tenant user', { exact: true });
+  const application = page.getByLabel('Application', { exact: true });
+  const resource = page.getByLabel('Registered resource', { exact: true });
+  for (const selector of [user, application, resource]) {
+    await expect.poll(() => selector.locator('option').count()).toBeGreaterThan(1);
+    await selector.selectOption({ index: 1 });
+  }
+  await page.getByLabel('Use the editor draft as hypothetical policy').check();
+  await page.getByRole('button', { name: 'Simulate', exact: true }).click();
+  await expect(page.getByText('Hypothetical result', { exact: false })).toBeVisible();
+  const result = page.getByRole('region', { name: 'Decision', exact: true });
+  await expect(result.locator('dl.detail').first().getByText('permit', { exact: true })).toBeVisible();
+  await expect(result.getByRole('region', { name: 'Rule explanations' }).getByRole('cell', { name: 'hypothetical-only', exact: true })).toBeVisible();
+  const stored = await page.evaluate(async () => {
+    const response = await fetch('api/v1/policies');
+    return await response.json() as { document: { rules: { id: string }[] } };
+  });
+  expect(stored.document.rules.some((rule) => rule.id === 'hypothetical-only')).toBe(false);
+  await page.getByRole('button', { name: 'Cancel editing', exact: true }).click();
+});
+
 test('the shared-signals, audit and policy screens have no accessibility violation', async (
   { page },
   testInfo,

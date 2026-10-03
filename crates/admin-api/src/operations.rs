@@ -157,6 +157,7 @@ pub struct Operation {
     authority: Authority,
     summary: &'static str,
     paginated: bool,
+    service_only: bool,
 }
 
 impl Operation {
@@ -184,6 +185,7 @@ impl Operation {
             authority,
             summary,
             paginated: false,
+            service_only: false,
         }
     }
 
@@ -212,6 +214,7 @@ impl Operation {
             authority,
             summary,
             paginated: false,
+            service_only: false,
         }
     }
 
@@ -244,7 +247,21 @@ impl Operation {
             authority,
             summary,
             paginated: false,
+            service_only: false,
         }
+    }
+
+    /// Restricts an operation to explicit client-credentials authentication.
+    /// Such routes implement their own durable logical request identity.
+    #[must_use]
+    pub const fn for_services(mut self) -> Self {
+        self.service_only = true;
+        self
+    }
+
+    #[must_use]
+    pub const fn service_only(&self) -> bool {
+        self.service_only
     }
 
     /// Marks a read as cursor-paginated, which the `OpenAPI` document turns into
@@ -312,6 +329,7 @@ impl Operation {
             // RFC 7644 clients do not send the admin API's custom header.
             // A provisioning POST uses the SCIM resource's uniqueness rules.
             && !matches!(self.authority.reach(), Reach::AutomationTenant)
+            && !self.service_only
     }
 
     /// The full path a client calls, including the API's base.

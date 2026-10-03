@@ -2354,6 +2354,1203 @@
         "x-asterius-scope": "admin.clients:write"
       }
     },
+    "/admin/api/v1/declarative/v1/resources": {
+      "get": {
+        "description": "Requires admin.session:read plus the addressed kind's read scope; mutation additionally requires kind write scope. Tenant create requires deployment reach. Ownership comes only from verified issuer/client credentials. The import ID is unpadded base64url of [tenant,kind,identity], or [tenant,membership,groupUUID,userUUID]. If-Match uses the exact strong 64-hex ETag. POST create retries use durable external_key, not Idempotency-Key. Plan/read/import never return credentials.",
+        "operationId": "declarative.resolve",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "kind",
+            "required": true,
+            "schema": {
+              "enum": [
+                "tenant",
+                "application",
+                "resource",
+                "group",
+                "membership",
+                "policy"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "external_key",
+            "required": true,
+            "schema": {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "owner_conflict / delete_protected / logical_key_conflict / dependency_conflict"
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "revision_conflict"
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "precondition_required"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          }
+        ],
+        "summary": "Resolves the authenticated owner's logical creation key; requires kind read scope",
+        "x-asterius-reach": "authenticated",
+        "x-asterius-scope": "admin.session:read",
+        "x-kind-scopes": {
+          "application": [
+            "admin.clients:read",
+            "admin.clients:write"
+          ],
+          "group": [
+            "admin.groups:read",
+            "admin.groups:write"
+          ],
+          "membership": [
+            "admin.memberships:read",
+            "admin.memberships:write"
+          ],
+          "policy": [
+            "admin.policies:read",
+            "admin.policies:write"
+          ],
+          "resource": [
+            "admin.resource_servers:read",
+            "admin.resource_servers:write"
+          ],
+          "tenant": [
+            "admin.tenants:read",
+            "admin.tenants:write"
+          ]
+        },
+        "x-service-only": true
+      },
+      "post": {
+        "description": "Requires admin.session:read plus the addressed kind's read scope; mutation additionally requires kind write scope. Tenant create requires deployment reach. Ownership comes only from verified issuer/client credentials. The import ID is unpadded base64url of [tenant,kind,identity], or [tenant,membership,groupUUID,userUUID]. If-Match uses the exact strong 64-hex ETag. POST create retries use durable external_key, not Idempotency-Key. Plan/read/import never return credentials.",
+        "operationId": "declarative.create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "deletion_protection": {
+                    "default": true,
+                    "type": "boolean"
+                  },
+                  "external_key": {
+                    "maxLength": 512,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": [
+                      "tenant",
+                      "application",
+                      "resource",
+                      "group",
+                      "membership",
+                      "policy"
+                    ],
+                    "type": "string"
+                  },
+                  "spec": {
+                    "description": "Kind-specific domain-validated desired document; maximum shared request body limit is 64 KiB. Application fields are public FAPI registration metadata plus resources; generated client secrets and private JWK material are rejected. Tenant fields: tenant_id, issuer, display_name, default_resource, custom_host, options.",
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "external_key",
+                  "spec"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "owner_conflict / delete_protected / logical_key_conflict / dependency_conflict"
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "revision_conflict"
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "precondition_required"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          }
+        ],
+        "summary": "Atomically creates live state and logical identity; requires kind read/write scopes",
+        "x-asterius-reach": "authenticated",
+        "x-asterius-scope": "admin.session:read",
+        "x-kind-scopes": {
+          "application": [
+            "admin.clients:read",
+            "admin.clients:write"
+          ],
+          "group": [
+            "admin.groups:read",
+            "admin.groups:write"
+          ],
+          "membership": [
+            "admin.memberships:read",
+            "admin.memberships:write"
+          ],
+          "policy": [
+            "admin.policies:read",
+            "admin.policies:write"
+          ],
+          "resource": [
+            "admin.resource_servers:read",
+            "admin.resource_servers:write"
+          ],
+          "tenant": [
+            "admin.tenants:read",
+            "admin.tenants:write"
+          ]
+        },
+        "x-service-only": true
+      }
+    },
+    "/admin/api/v1/declarative/v1/resources/{import_id}": {
+      "delete": {
+        "description": "Requires admin.session:read plus the addressed kind's read scope; mutation additionally requires kind write scope. Tenant create requires deployment reach. Ownership comes only from verified issuer/client credentials. The import ID is unpadded base64url of [tenant,kind,identity], or [tenant,membership,groupUUID,userUUID]. If-Match uses the exact strong 64-hex ETag. POST create retries use durable external_key, not Idempotency-Key. Plan/read/import never return credentials.",
+        "operationId": "declarative.delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "import_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "pattern": "^\"[0-9a-f]{64}\"$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "owner_conflict / delete_protected / logical_key_conflict / dependency_conflict"
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "revision_conflict"
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "precondition_required"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          }
+        ],
+        "summary": "Conditionally deletes unprotected owned resources; tenant deletion refused",
+        "x-asterius-reach": "authenticated",
+        "x-asterius-scope": "admin.session:read",
+        "x-kind-scopes": {
+          "application": [
+            "admin.clients:read",
+            "admin.clients:write"
+          ],
+          "group": [
+            "admin.groups:read",
+            "admin.groups:write"
+          ],
+          "membership": [
+            "admin.memberships:read",
+            "admin.memberships:write"
+          ],
+          "policy": [
+            "admin.policies:read",
+            "admin.policies:write"
+          ],
+          "resource": [
+            "admin.resource_servers:read",
+            "admin.resource_servers:write"
+          ],
+          "tenant": [
+            "admin.tenants:read",
+            "admin.tenants:write"
+          ]
+        },
+        "x-service-only": true
+      },
+      "get": {
+        "description": "Requires admin.session:read plus the addressed kind's read scope; mutation additionally requires kind write scope. Tenant create requires deployment reach. Ownership comes only from verified issuer/client credentials. The import ID is unpadded base64url of [tenant,kind,identity], or [tenant,membership,groupUUID,userUUID]. If-Match uses the exact strong 64-hex ETag. POST create retries use durable external_key, not Idempotency-Key. Plan/read/import never return credentials.",
+        "operationId": "declarative.read",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "import_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "owner_conflict / delete_protected / logical_key_conflict / dependency_conflict"
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "revision_conflict"
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "precondition_required"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          }
+        ],
+        "summary": "Reads canonical live state; requires kind read scope and service authentication",
+        "x-asterius-reach": "authenticated",
+        "x-asterius-scope": "admin.session:read",
+        "x-kind-scopes": {
+          "application": [
+            "admin.clients:read",
+            "admin.clients:write"
+          ],
+          "group": [
+            "admin.groups:read",
+            "admin.groups:write"
+          ],
+          "membership": [
+            "admin.memberships:read",
+            "admin.memberships:write"
+          ],
+          "policy": [
+            "admin.policies:read",
+            "admin.policies:write"
+          ],
+          "resource": [
+            "admin.resource_servers:read",
+            "admin.resource_servers:write"
+          ],
+          "tenant": [
+            "admin.tenants:read",
+            "admin.tenants:write"
+          ]
+        },
+        "x-service-only": true
+      },
+      "put": {
+        "description": "Requires admin.session:read plus the addressed kind's read scope; mutation additionally requires kind write scope. Tenant create requires deployment reach. Ownership comes only from verified issuer/client credentials. The import ID is unpadded base64url of [tenant,kind,identity], or [tenant,membership,groupUUID,userUUID]. If-Match uses the exact strong 64-hex ETag. POST create retries use durable external_key, not Idempotency-Key. Plan/read/import never return credentials.",
+        "operationId": "declarative.replace",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "import_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "pattern": "^\"[0-9a-f]{64}\"$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "deletion_protection": {
+                    "default": true,
+                    "type": "boolean"
+                  },
+                  "spec": {
+                    "description": "Kind-specific domain-validated desired document; maximum shared request body limit is 64 KiB. Application fields are public FAPI registration metadata plus resources; generated client secrets and private JWK material are rejected. Tenant fields: tenant_id, issuer, display_name, default_resource, custom_host, options.",
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "spec"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "owner_conflict / delete_protected / logical_key_conflict / dependency_conflict"
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "revision_conflict"
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "precondition_required"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          }
+        ],
+        "summary": "Conditionally replaces owned live state; requires kind read/write scopes",
+        "x-asterius-reach": "authenticated",
+        "x-asterius-scope": "admin.session:read",
+        "x-kind-scopes": {
+          "application": [
+            "admin.clients:read",
+            "admin.clients:write"
+          ],
+          "group": [
+            "admin.groups:read",
+            "admin.groups:write"
+          ],
+          "membership": [
+            "admin.memberships:read",
+            "admin.memberships:write"
+          ],
+          "policy": [
+            "admin.policies:read",
+            "admin.policies:write"
+          ],
+          "resource": [
+            "admin.resource_servers:read",
+            "admin.resource_servers:write"
+          ],
+          "tenant": [
+            "admin.tenants:read",
+            "admin.tenants:write"
+          ]
+        },
+        "x-service-only": true
+      }
+    },
+    "/admin/api/v1/declarative/v1/resources/{import_id}/adopt": {
+      "post": {
+        "description": "Requires admin.session:read plus the addressed kind's read scope; mutation additionally requires kind write scope. Tenant create requires deployment reach. Ownership comes only from verified issuer/client credentials. The import ID is unpadded base64url of [tenant,kind,identity], or [tenant,membership,groupUUID,userUUID]. If-Match uses the exact strong 64-hex ETag. POST create retries use durable external_key, not Idempotency-Key. Plan/read/import never return credentials.",
+        "operationId": "declarative.adopt",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "import_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "pattern": "^\"[0-9a-f]{64}\"$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "owner_conflict / delete_protected / logical_key_conflict / dependency_conflict"
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "revision_conflict"
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "precondition_required"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          }
+        ],
+        "summary": "Explicitly claims unowned live state without managed builder/SCIM origin",
+        "x-asterius-reach": "authenticated",
+        "x-asterius-scope": "admin.session:read",
+        "x-kind-scopes": {
+          "application": [
+            "admin.clients:read",
+            "admin.clients:write"
+          ],
+          "group": [
+            "admin.groups:read",
+            "admin.groups:write"
+          ],
+          "membership": [
+            "admin.memberships:read",
+            "admin.memberships:write"
+          ],
+          "policy": [
+            "admin.policies:read",
+            "admin.policies:write"
+          ],
+          "resource": [
+            "admin.resource_servers:read",
+            "admin.resource_servers:write"
+          ],
+          "tenant": [
+            "admin.tenants:read",
+            "admin.tenants:write"
+          ]
+        },
+        "x-service-only": true
+      }
+    },
+    "/admin/api/v1/declarative/v1/resources/{import_id}/plan": {
+      "post": {
+        "description": "Requires admin.session:read plus the addressed kind's read scope; mutation additionally requires kind write scope. Tenant create requires deployment reach. Ownership comes only from verified issuer/client credentials. The import ID is unpadded base64url of [tenant,kind,identity], or [tenant,membership,groupUUID,userUUID]. If-Match uses the exact strong 64-hex ETag. POST create retries use durable external_key, not Idempotency-Key. Plan/read/import never return credentials.",
+        "operationId": "declarative.plan",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "import_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "pattern": "^\"[0-9a-f]{64}\"$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "spec": {
+                    "description": "Kind-specific domain-validated desired document; maximum shared request body limit is 64 KiB. Application fields are public FAPI registration metadata plus resources; generated client secrets and private JWK material are rejected. Tenant fields: tenant_id, issuer, display_name, default_resource, custom_host, options.",
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "spec"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "owner_conflict / delete_protected / logical_key_conflict / dependency_conflict"
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "revision_conflict"
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "precondition_required"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          }
+        ],
+        "summary": "Validates a secret-free desired spec against live state; requires kind read scope",
+        "x-asterius-reach": "authenticated",
+        "x-asterius-scope": "admin.session:read",
+        "x-kind-scopes": {
+          "application": [
+            "admin.clients:read",
+            "admin.clients:write"
+          ],
+          "group": [
+            "admin.groups:read",
+            "admin.groups:write"
+          ],
+          "membership": [
+            "admin.memberships:read",
+            "admin.memberships:write"
+          ],
+          "policy": [
+            "admin.policies:read",
+            "admin.policies:write"
+          ],
+          "resource": [
+            "admin.resource_servers:read",
+            "admin.resource_servers:write"
+          ],
+          "tenant": [
+            "admin.tenants:read",
+            "admin.tenants:write"
+          ]
+        },
+        "x-service-only": true
+      }
+    },
+    "/admin/api/v1/declarative/v1/resources/{import_id}/release": {
+      "post": {
+        "description": "Requires admin.session:read plus the addressed kind's read scope; mutation additionally requires kind write scope. Tenant create requires deployment reach. Ownership comes only from verified issuer/client credentials. The import ID is unpadded base64url of [tenant,kind,identity], or [tenant,membership,groupUUID,userUUID]. If-Match uses the exact strong 64-hex ETag. POST create retries use durable external_key, not Idempotency-Key. Plan/read/import never return credentials.",
+        "operationId": "declarative.release",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "import_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "pattern": "^\"[0-9a-f]{64}\"$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "owner_conflict / delete_protected / logical_key_conflict / dependency_conflict"
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "revision_conflict"
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "precondition_required"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          }
+        ],
+        "summary": "Conditionally releases controller ownership while retaining the live resource",
+        "x-asterius-reach": "authenticated",
+        "x-asterius-scope": "admin.session:read",
+        "x-kind-scopes": {
+          "application": [
+            "admin.clients:read",
+            "admin.clients:write"
+          ],
+          "group": [
+            "admin.groups:read",
+            "admin.groups:write"
+          ],
+          "membership": [
+            "admin.memberships:read",
+            "admin.memberships:write"
+          ],
+          "policy": [
+            "admin.policies:read",
+            "admin.policies:write"
+          ],
+          "resource": [
+            "admin.resource_servers:read",
+            "admin.resource_servers:write"
+          ],
+          "tenant": [
+            "admin.tenants:read",
+            "admin.tenants:write"
+          ]
+        },
+        "x-service-only": true
+      }
+    },
     "/admin/api/v1/federation/keys": {
       "get": {
         "operationId": "federation.keys.list",
@@ -7292,6 +8489,321 @@
           }
         ],
         "summary": "Lists the last 100 published policy versions for this tenant",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.policies:read"
+      }
+    },
+    "/admin/api/v1/policies/simulate": {
+      "post": {
+        "operationId": "policies.simulate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "description": "Bounded 128 KiB inspection. All references must exist in the routed tenant. Only policy and context properties may be hypothetical. Audited before lookup; never grants access or issues a token.",
+                "properties": {
+                  "action": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "client_id": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "expected_policy_revision": {
+                    "description": "SHA-256 revision from GET /policies; null requires no stored policy.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "hypothetical_context": {
+                    "type": "object"
+                  },
+                  "hypothetical_policy": {
+                    "type": "object"
+                  },
+                  "resource_id": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "resource_type": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "user_id": {
+                    "format": "uuid",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "user_id",
+                  "client_id",
+                  "resource_id",
+                  "resource_type",
+                  "action",
+                  "expected_policy_revision"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "context": {
+                      "type": "object"
+                    },
+                    "decision": {
+                      "type": "boolean"
+                    },
+                    "diagnostics": {
+                      "description": "Tenant-authorized administrator trace only; absent from public AuthZEN responses. No input values or policy literals. At most 128 rules and 256 condition nodes across all rules; truncated marks omitted nodes. policy_revision is a SHA-256 digest of the exact canonical document; policy_updated_at is Unix nanoseconds as a decimal string. enforcement_point identifies the administrative trial. No trace is retained.",
+                      "properties": {
+                        "enforcement_point": {
+                          "type": "string"
+                        },
+                        "policy_revision": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "policy_updated_at": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "rules": {
+                          "items": {
+                            "properties": {
+                              "applicable": {
+                                "type": "boolean"
+                              },
+                              "conditions": {
+                                "items": {
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string"
+                                    },
+                                    "matched": {
+                                      "type": "boolean"
+                                    },
+                                    "missing": {
+                                      "type": "boolean"
+                                    },
+                                    "path": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "path",
+                                    "kind",
+                                    "matched",
+                                    "missing"
+                                  ],
+                                  "type": "object"
+                                },
+                                "maxItems": 256,
+                                "type": "array"
+                              },
+                              "effect": {
+                                "enum": [
+                                  "permit",
+                                  "deny"
+                                ],
+                                "type": "string"
+                              },
+                              "id": {
+                                "maxLength": 256,
+                                "type": "string"
+                              },
+                              "matched": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "effect",
+                              "applicable",
+                              "matched",
+                              "conditions"
+                            ],
+                            "type": "object"
+                          },
+                          "maxItems": 128,
+                          "type": "array"
+                        },
+                        "truncated": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "policy_revision",
+                        "policy_updated_at",
+                        "enforcement_point",
+                        "rules",
+                        "truncated"
+                      ],
+                      "type": "object"
+                    },
+                    "simulation": {
+                      "properties": {
+                        "current_policy_revision": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "enforced": {
+                          "const": false
+                        },
+                        "provenance": {
+                          "properties": {
+                            "context_properties": {
+                              "enum": [
+                                "absent",
+                                "hypothetical"
+                              ]
+                            },
+                            "groups_roles_grants_acr": {
+                              "const": "server_resolved"
+                            },
+                            "policy": {
+                              "enum": [
+                                "stored",
+                                "hypothetical"
+                              ]
+                            },
+                            "resource": {
+                              "const": "tenant_resource_registry"
+                            },
+                            "subject": {
+                              "const": "tenant_user_and_client"
+                            }
+                          },
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "enforced",
+                        "current_policy_revision",
+                        "provenance"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "decision",
+                    "simulation"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid simulation request."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A referenced record is absent from the routed tenant."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Stored policy revision changed; refresh the snapshot."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.policies:read",
+              "admin.users:read",
+              "admin.clients:read",
+              "admin.resource_servers:read"
+            ]
+          }
+        ],
+        "summary": "Simulates a stored or hypothetical policy over actual tenant-owned user, client and resource references; additionally requires admin.users:read, admin.clients:read and admin.resource_servers:read",
+        "x-asterius-additional-scopes": [
+          "admin.users:read",
+          "admin.clients:read",
+          "admin.resource_servers:read"
+        ],
         "x-asterius-reach": "tenant",
         "x-asterius-scope": "admin.policies:read"
       }
@@ -14547,6 +16059,332 @@
         "summary": "Revokes one verified identity bundle after fresh administrator assurance",
         "x-asterius-reach": "tenant",
         "x-asterius-scope": "admin.users:write"
+      }
+    },
+    "/admin/api/v1/workload-trusts": {
+      "get": {
+        "operationId": "workload.trusts.list",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.workload_trusts:read"
+            ]
+          }
+        ],
+        "summary": "Lists workload trust metadata and public fingerprints without key material",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.workload_trusts:read"
+      }
+    },
+    "/admin/api/v1/workload-trusts/{trust_id}": {
+      "delete": {
+        "operationId": "workload.trusts.delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "trust_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request conflicts with the current state, or its Idempotency-Key has already been used."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.workload_trusts:write"
+            ]
+          }
+        ],
+        "summary": "Conditionally deletes a workload trust and preserves assertion replay marks",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.workload_trusts:write"
+      },
+      "get": {
+        "operationId": "workload.trusts.read",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "trust_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.workload_trusts:read"
+            ]
+          }
+        ],
+        "summary": "Reads one tenant workload trust without key material",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.workload_trusts:read"
+      },
+      "put": {
+        "operationId": "workload.trusts.put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "trust_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request conflicts with the current state, or its Idempotency-Key has already been used."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.workload_trusts:write"
+            ]
+          }
+        ],
+        "summary": "Conditionally creates or replaces a pinned workload trust; default disabled",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.workload_trusts:write"
       }
     }
   },
