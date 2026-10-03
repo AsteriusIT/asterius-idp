@@ -378,10 +378,18 @@ impl AuthorizationCode<'_> {
         // could disagree, and the disagreement would be a role withdrawn
         // between them.
         let role_grant = issuance::role_grant(&grant, &targeting);
-        self.agent_policy.permits_bound(
-            tenant, client, &role_grant, &role_grant.resources,
-            GrantType::AuthorizationCode, self.now, binding.device_binding.as_ref(),
-        ).await.map_err(|refusal| Failure::Client(refusal.code, refusal.description))?;
+        self.agent_policy
+            .permits_bound(
+                tenant,
+                client,
+                &role_grant,
+                &role_grant.resources,
+                GrantType::AuthorizationCode,
+                self.now,
+                binding.device_binding.as_ref(),
+            )
+            .await
+            .map_err(|refusal| Failure::Client(refusal.code, refusal.description))?;
         let claimed = self
             .grants
             .claim_for_issuance(&binding.grant_id, self.now)

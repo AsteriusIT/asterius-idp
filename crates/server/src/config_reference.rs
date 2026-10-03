@@ -454,8 +454,18 @@ fn managed_devices() -> Section {
         blurb: "Optional managed-device-relay/v1 candidate. Empty roots leave device facts unavailable. Each source additionally requires explicit tenant registration and enablement. Device certificates confer no OAuth client authentication or hardware attestation.",
         after: "Configured roots require behind_proxy, trusted immediate proxy CIDRs and the authenticated proxy_hop table. The edge must verify device TLS key possession, strip caller-supplied device certificate headers, and forward only the actual verified leaf over its authenticated backend TLS connection. Duplicate or concatenated leaf fields are rejected.",
         keys: vec![
-            key("certificate_header", "string", crate::managed_devices::DEFAULT_DEVICE_CERTIFICATE_HEADER.to_owned(), "Dedicated stripped device leaf field. Must differ from the OAuth mTLS certificate field. Trusted IP alone is insufficient: the backend connection must also prove the exact pinned proxy client key."),
-            key("trust_anchors", "table of tenant id to PEM path", "none".to_owned(), "Dedicated tenant device CA roots; never OAuth or outbound roots. CA-only bundles are bounded to256KiB and32 certificates. Explicit clientAuth end-entity leaf, validity and aws-lc/webpki chain validation are required. Changing device/proxy CA bundles or proxy pins changes the private proof trust revision."),
+            key(
+                "certificate_header",
+                "string",
+                crate::managed_devices::DEFAULT_DEVICE_CERTIFICATE_HEADER.to_owned(),
+                "Dedicated stripped device leaf field. Must differ from the OAuth mTLS certificate field. Trusted IP alone is insufficient: the backend connection must also prove the exact pinned proxy client key.",
+            ),
+            key(
+                "trust_anchors",
+                "table of tenant id to PEM path",
+                "none".to_owned(),
+                "Dedicated tenant device CA roots; never OAuth or outbound roots. CA-only bundles are bounded to256KiB and32 certificates. Explicit clientAuth end-entity leaf, validity and aws-lc/webpki chain validation are required. Changing device/proxy CA bundles or proxy pins changes the private proof trust revision.",
+            ),
         ],
     }
 }
@@ -467,10 +477,30 @@ fn managed_device_proxy_hop() -> Section {
         blurb: "Optional dedicated backend TLS when the selected device profile is enabled. Every connection to this listener requires a proxy client certificate chaining to the dedicated proxy CA and matching an exact operator leaf pin. Unconfigured plain HTTP never establishes device possession evidence.",
         after: "Rotate the exact proxy leaf pins and dedicated CA bundle explicitly and restart all replicas with the same configuration. The device fact deadline includes both device and proxy certificate expiry. An authenticated edge can fabricate device evidence: it is an explicit trust root, not hardware attestation.",
         keys: vec![
-            key("certificate", "PEM path", "required when table exists".to_owned(), "Backend listener server certificate chain. The edge must validate this chain and intended server name."),
-            key("private_key", "PEM path", "required when table exists".to_owned(), "Backend listener private key; existing TLS1.2/1.3 and FAPI cipher suites are retained."),
-            key("trust_anchors", "PEM path", "required when table exists".to_owned(), "Dedicated CA-only roots for proxy client TLS, separate from each tenant device CA."),
-            key("client_fingerprints", "array of lower-case SHA256 hex strings", "required when table exists".to_owned(), "One to32 distinct exact proxy client leaf pins; a CA-valid client outside these pins cannot send any request into the authenticated backend."),
+            key(
+                "certificate",
+                "PEM path",
+                "required when table exists".to_owned(),
+                "Backend listener server certificate chain. The edge must validate this chain and intended server name.",
+            ),
+            key(
+                "private_key",
+                "PEM path",
+                "required when table exists".to_owned(),
+                "Backend listener private key; existing TLS1.2/1.3 and FAPI cipher suites are retained.",
+            ),
+            key(
+                "trust_anchors",
+                "PEM path",
+                "required when table exists".to_owned(),
+                "Dedicated CA-only roots for proxy client TLS, separate from each tenant device CA.",
+            ),
+            key(
+                "client_fingerprints",
+                "array of lower-case SHA256 hex strings",
+                "required when table exists".to_owned(),
+                "One to32 distinct exact proxy client leaf pins; a CA-valid client outside these pins cannot send any request into the authenticated backend.",
+            ),
         ],
     }
 }

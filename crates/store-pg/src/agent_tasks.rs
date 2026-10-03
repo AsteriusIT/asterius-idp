@@ -602,7 +602,8 @@ impl Signer for TaskSigner<'_> {
         typ: &'static str,
         claims: &serde_json::Value,
     ) -> Result<asterius_domain::CompactJws, DomainError> {
-        self.sign_identity_bound(tenant, grant, None, algorithm, typ, claims).await
+        self.sign_identity_bound(tenant, grant, None, algorithm, typ, claims)
+            .await
     }
 
     async fn sign_identity_bound(
@@ -1035,7 +1036,8 @@ impl Signer for PreparedTaskSigner<'_> {
         typ: &'static str,
         claims: &serde_json::Value,
     ) -> Result<asterius_domain::CompactJws, DomainError> {
-        self.sign_identity_bound(tenant, grant, None, algorithm, typ, claims).await
+        self.sign_identity_bound(tenant, grant, None, algorithm, typ, claims)
+            .await
     }
 
     async fn sign_identity_bound(

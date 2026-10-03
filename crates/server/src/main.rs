@@ -356,12 +356,13 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
             TenantState::new(directory.clone(), &config.server).with_themes(themes.clone()),
             &config,
         )?;
-        let device_roots = Arc::new(asterius_server::managed_devices::TenantDeviceRoots::load(&config.managed_devices)
-            .map_err(|error| format!("cannot load managed-device trust anchors: {error}"))?);
-        let device_anchors = device_roots.revisions();
-        let tenant_state = tenant_state.with_managed_devices(
-            Arc::new(config.managed_devices.clone()), device_roots,
+        let device_roots = Arc::new(
+            asterius_server::managed_devices::TenantDeviceRoots::load(&config.managed_devices)
+                .map_err(|error| format!("cannot load managed-device trust anchors: {error}"))?,
         );
+        let device_anchors = device_roots.revisions();
+        let tenant_state = tenant_state
+            .with_managed_devices(Arc::new(config.managed_devices.clone()), device_roots);
         let operations = operational_routes(&store, &config, metrics);
 
         // Client-facing endpoints: the ones that need an authenticated client
@@ -596,10 +597,18 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
         )?;
 
         let served = if let Some(hop) = &config.managed_devices.proxy_hop {
-            asterius_server::http::server::serve_authenticated_proxy(&config.server, hop, app, shutdown_signal())
-                .await.map_err(|error| format!("server stopped: {error}"))
+            asterius_server::http::server::serve_authenticated_proxy(
+                &config.server,
+                hop,
+                app,
+                shutdown_signal(),
+            )
+            .await
+            .map_err(|error| format!("server stopped: {error}"))
         } else {
-            serve(&config.server, app, shutdown_signal()).await.map_err(|error| format!("server stopped: {error}"))
+            serve(&config.server, app, shutdown_signal())
+                .await
+                .map_err(|error| format!("server stopped: {error}"))
         };
 
         // Stopped after the listener, not before: a request already in flight

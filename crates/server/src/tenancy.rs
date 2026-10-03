@@ -243,7 +243,10 @@ pub struct TenantState {
     /// cannot be talked into looking at a certificate.
     pub mtls: Option<Arc<crate::mtls::MtlsConfig>>,
     /// Dedicated device PKI and separate verified-proxy certificate field.
-    pub devices: Option<(Arc<crate::managed_devices::DeviceConfig>, Arc<crate::managed_devices::TenantDeviceRoots>)>,
+    pub devices: Option<(
+        Arc<crate::managed_devices::DeviceConfig>,
+        Arc<crate::managed_devices::TenantDeviceRoots>,
+    )>,
 }
 
 impl TenantState {
@@ -390,10 +393,15 @@ pub async fn layer(State(state): State<TenantState>, mut request: Request, next:
     // must verify the TLS handshake, strip spoofed input and protect this hop.
     if let Some((config, roots)) = &state.devices
         && let Some(anchors) = roots.for_tenant(&resolved.tenant.id)
-        && let Some(hop) = request.extensions().get::<Arc<crate::managed_devices::VerifiedProxyHop>>()
+        && let Some(hop) = request
+            .extensions()
+            .get::<Arc<crate::managed_devices::VerifiedProxyHop>>()
         && let Some(proof) = anchors.verify_proxy_leaf(
             crate::managed_devices::DeviceProxyRequest {
-                hop, peer, headers: request.headers(), trusted_proxies: &state.trusted_proxies,
+                hop,
+                peer,
+                headers: request.headers(),
+                trusted_proxies: &state.trusted_proxies,
                 header_name: &config.certificate_header,
             },
             time::OffsetDateTime::now_utc(),

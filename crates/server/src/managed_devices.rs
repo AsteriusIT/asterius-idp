@@ -3,8 +3,8 @@
 //! caller's field and forward only the actual verified leaf over a protected hop.
 //! DER parsing, enrollment fingerprint matching and chain validation alone do
 //! not prove possession. This adapter is not hardware attestation.
-use asterius_domain::managed_devices::LeafFingerprint;
 use asterius_domain::TenantId;
+use asterius_domain::managed_devices::LeafFingerprint;
 use axum::http::HeaderMap;
 use ipnet::IpNet;
 use rustls::pki_types::{CertificateDer, pem::PemObject as _};
@@ -30,7 +30,11 @@ pub struct DeviceConfig {
 }
 impl Default for DeviceConfig {
     fn default() -> Self {
-        Self { certificate_header: DEFAULT_DEVICE_CERTIFICATE_HEADER.to_owned(), trust_anchors: BTreeMap::new(), proxy_hop: None }
+        Self {
+            certificate_header: DEFAULT_DEVICE_CERTIFICATE_HEADER.to_owned(),
+            trust_anchors: BTreeMap::new(),
+            proxy_hop: None,
+        }
     }
 }
 
@@ -64,14 +68,23 @@ impl VerifiedProxyHop {
         connection: &rustls::ServerConnection,
         pins: &[LeafFingerprint],
     ) -> Option<Self> {
-        if connection.is_handshaking() { return None; }
+        if connection.is_handshaking() {
+            return None;
+        }
         let leaf = connection.peer_certificates()?.first()?;
         let digest = hex::encode(Sha256::digest(leaf.as_ref()));
-        if !pins.iter().any(|pin| pin.as_str() == digest) { return None; }
+        if !pins.iter().any(|pin| pin.as_str() == digest) {
+            return None;
+        }
         let (remaining, certificate) = x509_parser::parse_x509_certificate(leaf.as_ref()).ok()?;
         let now = OffsetDateTime::now_utc();
-        let expires_at = OffsetDateTime::from_unix_timestamp(certificate.validity().not_after.timestamp()).ok()?;
-        if !remaining.is_empty() || certificate.validity().not_before.timestamp() > now.unix_timestamp() || expires_at <= now {
+        let expires_at =
+            OffsetDateTime::from_unix_timestamp(certificate.validity().not_after.timestamp())
+                .ok()?;
+        if !remaining.is_empty()
+            || certificate.validity().not_before.timestamp() > now.unix_timestamp()
+            || expires_at <= now
+        {
             return None;
         }
         Some(Self { expires_at })
@@ -95,7 +108,8 @@ pub struct DeviceProxyRequest<'a> {
 
 impl std::fmt::Debug for DeviceProxyRequest<'_> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("DeviceProxyRequest")
+        formatter
+            .debug_struct("DeviceProxyRequest")
             .field("hop", &self.hop)
             .field("peer", &self.peer)
             .field("headers", &"[redacted]")
@@ -118,23 +132,36 @@ impl DeviceTrustRoots {
         use std::io::Read as _;
         let file = std::fs::File::open(path)?;
         let mut bytes = Vec::new();
-        file.take(u64::try_from(MAX_ANCHOR_BYTES + 1).map_err(|_| DeviceAnchorError::Invalid)?).read_to_end(&mut bytes)?;
-        if bytes.len() > MAX_ANCHOR_BYTES { return Err(DeviceAnchorError::Invalid); }
+        file.take(u64::try_from(MAX_ANCHOR_BYTES + 1).map_err(|_| DeviceAnchorError::Invalid)?)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > MAX_ANCHOR_BYTES {
+            return Err(DeviceAnchorError::Invalid);
+        }
         let certificates = CertificateDer::pem_slice_iter(&bytes)
-            .collect::<Result<Vec<_>, _>>().map_err(|_| DeviceAnchorError::Invalid)?;
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| DeviceAnchorError::Invalid)?;
         if certificates.is_empty() || certificates.len() > MAX_ANCHORS {
             return Err(DeviceAnchorError::Invalid);
         }
         let mut roots = Vec::with_capacity(certificates.len());
         for der in certificates {
-            if der.len() > asterius_oidc::mtls::MAX_CERTIFICATE_LEN { return Err(DeviceAnchorError::Invalid); }
+            if der.len() > asterius_oidc::mtls::MAX_CERTIFICATE_LEN {
+                return Err(DeviceAnchorError::Invalid);
+            }
             let (remaining, certificate) = x509_parser::parse_x509_certificate(&der)
                 .map_err(|_| DeviceAnchorError::Invalid)?;
-            let ca = certificate.basic_constraints().map_err(|_| DeviceAnchorError::Invalid)?;
-            let usage = certificate.key_usage().map_err(|_| DeviceAnchorError::Invalid)?;
-            if !remaining.is_empty() || ca.is_none_or(|extension| !extension.value.ca)
+            let ca = certificate
+                .basic_constraints()
+                .map_err(|_| DeviceAnchorError::Invalid)?;
+            let usage = certificate
+                .key_usage()
+                .map_err(|_| DeviceAnchorError::Invalid)?;
+            if !remaining.is_empty()
+                || ca.is_none_or(|extension| !extension.value.ca)
                 || usage.is_some_and(|extension| !extension.value.key_cert_sign())
-            { return Err(DeviceAnchorError::Invalid); }
+            {
+                return Err(DeviceAnchorError::Invalid);
+            }
             webpki::anchor_from_trusted_cert(&der).map_err(|_| DeviceAnchorError::Invalid)?;
             roots.push(der.as_ref().to_vec());
         }
@@ -144,20 +171,32 @@ impl DeviceTrustRoots {
         digest.update(b"asterius/managed-device-relay/v1/anchors\0");
         for root in &roots {
             // Every root was bounded at 16KiB, so its length fits u64.
-            digest.update(u64::try_from(root.len()).map_err(|_| DeviceAnchorError::Invalid)?.to_be_bytes());
+            digest.update(
+                u64::try_from(root.len())
+                    .map_err(|_| DeviceAnchorError::Invalid)?
+                    .to_be_bytes(),
+            );
             digest.update(root);
         }
         let revision = LeafFingerprint::parse(&hex::encode(digest.finalize()))
             .map_err(|_| DeviceAnchorError::Invalid)?;
         let certificates = roots.iter().cloned().map(CertificateDer::from).collect();
-        Ok(Self { anchors: crate::mtls::TrustAnchors::from_der(roots), certificates, revision })
+        Ok(Self {
+            anchors: crate::mtls::TrustAnchors::from_der(roots),
+            certificates,
+            revision,
+        })
     }
 
-    pub(crate) fn certificates(&self) -> &[CertificateDer<'static>] { &self.certificates }
+    pub(crate) fn certificates(&self) -> &[CertificateDer<'static>] {
+        &self.certificates
+    }
 
     /// This is operator-derived, never a digest supplied by a browser or relay.
     #[must_use]
-    pub fn revision(&self) -> &LeafFingerprint { &self.revision }
+    pub fn revision(&self) -> &LeafFingerprint {
+        &self.revision
+    }
 
     /// Verify a trusted proxy's actual leaf with explicit clientAuth/end-entity
     /// usage, lifetime and chain. The source/enrollment/user/app match happens
@@ -168,22 +207,46 @@ impl DeviceTrustRoots {
         request: DeviceProxyRequest<'_>,
         now: OffsetDateTime,
     ) -> Option<VerifiedDeviceLeaf> {
-        let DeviceProxyRequest { hop, peer, headers, trusted_proxies, header_name } = request;
+        let DeviceProxyRequest {
+            hop,
+            peer,
+            headers,
+            trusted_proxies,
+            header_name,
+        } = request;
         // Presence of this private type is established only by the TLS adapter.
-        if hop.expires_at <= now { return None; }
-        let presented = crate::mtls::device_from_proxy_header(peer, headers, trusted_proxies, header_name)?;
-        let (remaining, certificate) = x509_parser::parse_x509_certificate(presented.leaf.as_der()).ok()?;
+        if hop.expires_at <= now {
+            return None;
+        }
+        let presented =
+            crate::mtls::device_from_proxy_header(peer, headers, trusted_proxies, header_name)?;
+        let (remaining, certificate) =
+            x509_parser::parse_x509_certificate(presented.leaf.as_der()).ok()?;
         let ca = certificate.basic_constraints().ok()?;
         let usage = certificate.extended_key_usage().ok()??;
-        if !remaining.is_empty() || certificate.subject() == certificate.issuer()
-            || ca.is_some_and(|extension| extension.value.ca) || !usage.value.client_auth
-        { return None; }
-        let expires_at = OffsetDateTime::from_unix_timestamp(certificate.validity().not_after.timestamp()).ok()?;
-        if expires_at <= now || !self.anchors.accepts(&presented.leaf, &presented.intermediates, now) {
+        if !remaining.is_empty()
+            || certificate.subject() == certificate.issuer()
+            || ca.is_some_and(|extension| extension.value.ca)
+            || !usage.value.client_auth
+        {
+            return None;
+        }
+        let expires_at =
+            OffsetDateTime::from_unix_timestamp(certificate.validity().not_after.timestamp())
+                .ok()?;
+        if expires_at <= now
+            || !self
+                .anchors
+                .accepts(&presented.leaf, &presented.intermediates, now)
+        {
             return None;
         }
         let leaf = LeafFingerprint::parse(&hex::encode(presented.leaf.thumbprint())).ok()?;
-        Some(VerifiedDeviceLeaf { leaf, anchor: self.revision.clone(), expires_at: expires_at.min(hop.expires_at) })
+        Some(VerifiedDeviceLeaf {
+            leaf,
+            anchor: self.revision.clone(),
+            expires_at: expires_at.min(hop.expires_at),
+        })
     }
 }
 
@@ -202,11 +265,17 @@ impl std::fmt::Debug for VerifiedDeviceLeaf {
 }
 impl VerifiedDeviceLeaf {
     #[must_use]
-    pub fn leaf(&self) -> &LeafFingerprint { &self.leaf }
+    pub fn leaf(&self) -> &LeafFingerprint {
+        &self.leaf
+    }
     #[must_use]
-    pub fn anchor(&self) -> &LeafFingerprint { &self.anchor }
+    pub fn anchor(&self) -> &LeafFingerprint {
+        &self.anchor
+    }
     #[must_use]
-    pub const fn expires_at(&self) -> OffsetDateTime { self.expires_at }
+    pub const fn expires_at(&self) -> OffsetDateTime {
+        self.expires_at
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -217,37 +286,62 @@ impl TenantDeviceRoots {
     /// # Errors
     /// A bad configured bundle fails startup instead of silently losing trust.
     pub fn load(config: &DeviceConfig) -> Result<Self, DeviceAnchorError> {
-        let hop_revision = config.proxy_hop.as_ref().map(|hop| {
-            let roots = DeviceTrustRoots::load(&hop.trust_anchors)?;
-            let mut pins: Vec<_> = hop.client_fingerprints.iter().map(LeafFingerprint::as_str).collect();
-            pins.sort_unstable();
-            pins.dedup();
-            if pins.is_empty() || pins.len() > MAX_ANCHORS { return Err(DeviceAnchorError::Invalid); }
-            let mut hash = Sha256::new();
-            hash.update(b"asterius/device-proxy-hop/v1\0");
-            hash.update(roots.revision().as_str());
-            for pin in pins { hash.update(pin); }
-            Ok(hex::encode(hash.finalize()))
-        }).transpose()?;
-        if !config.trust_anchors.is_empty() && hop_revision.is_none() { return Err(DeviceAnchorError::Invalid); }
-        let roots = config.trust_anchors.iter().map(|(tenant, path)| {
-            let mut roots = DeviceTrustRoots::load(path)?;
-            if let Some(hop) = &hop_revision {
+        let hop_revision = config
+            .proxy_hop
+            .as_ref()
+            .map(|hop| {
+                let roots = DeviceTrustRoots::load(&hop.trust_anchors)?;
+                let mut pins: Vec<_> = hop
+                    .client_fingerprints
+                    .iter()
+                    .map(LeafFingerprint::as_str)
+                    .collect();
+                pins.sort_unstable();
+                pins.dedup();
+                if pins.is_empty() || pins.len() > MAX_ANCHORS {
+                    return Err(DeviceAnchorError::Invalid);
+                }
                 let mut hash = Sha256::new();
-                hash.update(b"asterius/managed-device-relay/v1/complete-trust\0");
+                hash.update(b"asterius/device-proxy-hop/v1\0");
                 hash.update(roots.revision().as_str());
-                hash.update(hop);
-                roots.revision = LeafFingerprint::parse(&hex::encode(hash.finalize()))
-                    .map_err(|_| DeviceAnchorError::Invalid)?;
-            }
-            Ok((tenant.clone(), Arc::new(roots)))
-        }).collect::<Result<_, DeviceAnchorError>>()?;
+                for pin in pins {
+                    hash.update(pin);
+                }
+                Ok(hex::encode(hash.finalize()))
+            })
+            .transpose()?;
+        if !config.trust_anchors.is_empty() && hop_revision.is_none() {
+            return Err(DeviceAnchorError::Invalid);
+        }
+        let roots = config
+            .trust_anchors
+            .iter()
+            .map(|(tenant, path)| {
+                let mut roots = DeviceTrustRoots::load(path)?;
+                if let Some(hop) = &hop_revision {
+                    let mut hash = Sha256::new();
+                    hash.update(b"asterius/managed-device-relay/v1/complete-trust\0");
+                    hash.update(roots.revision().as_str());
+                    hash.update(hop);
+                    roots.revision = LeafFingerprint::parse(&hex::encode(hash.finalize()))
+                        .map_err(|_| DeviceAnchorError::Invalid)?;
+                }
+                Ok((tenant.clone(), Arc::new(roots)))
+            })
+            .collect::<Result<_, DeviceAnchorError>>()?;
         Ok(Self(roots))
     }
     #[must_use]
-    pub fn for_tenant(&self, tenant: &TenantId) -> Option<&Arc<DeviceTrustRoots>> { self.0.get(tenant) }
+    pub fn for_tenant(&self, tenant: &TenantId) -> Option<&Arc<DeviceTrustRoots>> {
+        self.0.get(tenant)
+    }
     #[must_use]
     pub fn revisions(&self) -> Arc<BTreeMap<String, LeafFingerprint>> {
-        Arc::new(self.0.iter().map(|(tenant, roots)| (tenant.as_str().to_owned(), roots.revision().clone())).collect())
+        Arc::new(
+            self.0
+                .iter()
+                .map(|(tenant, roots)| (tenant.as_str().to_owned(), roots.revision().clone()))
+                .collect(),
+        )
     }
 }

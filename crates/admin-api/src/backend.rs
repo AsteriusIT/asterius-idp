@@ -126,8 +126,12 @@ pub trait PolicyTrial: std::fmt::Debug + Send + Sync {
 #[async_trait::async_trait]
 pub trait AdminBackend: std::fmt::Debug + Send + Sync {
     /// Managed-device registries are distinct from OAuth client certificates.
-    fn device_registry(&self) -> Option<Arc<dyn asterius_domain::managed_devices::Registry>> { None }
-    fn device_relay(&self) -> Option<Arc<dyn asterius_domain::managed_devices::Relay>> { None }
+    fn device_registry(&self) -> Option<Arc<dyn asterius_domain::managed_devices::Registry>> {
+        None
+    }
+    fn device_relay(&self) -> Option<Arc<dyn asterius_domain::managed_devices::Relay>> {
+        None
+    }
 
     /// Read-only evidence; absent adapters do not synthesize healthy reports.
     fn governance_reports(
@@ -839,7 +843,9 @@ pub struct VerifiedMachineCredential {
 // Clone only the verified private metadata envelope; Secret remains non-Clone.
 impl Clone for VerifiedMachineCredential {
     fn clone(&self) -> Self {
-        Self { jti:asterius_domain::Secret::new(self.jti.expose().clone()) }
+        Self {
+            jti: asterius_domain::Secret::new(self.jti.expose().clone()),
+        }
     }
 }
 impl VerifiedMachineCredential {
@@ -848,12 +854,19 @@ impl VerifiedMachineCredential {
     /// successful-issuance receipt and current grant on their transaction.
     pub fn from_verified_jti(jti: &str) -> Result<Self, DomainError> {
         if jti.is_empty() || jti.len() > 256 || !jti.bytes().all(|byte| byte.is_ascii_graphic()) {
-            return Err(DomainError::invalid("token", "invalid verified token identifier"));
+            return Err(DomainError::invalid(
+                "token",
+                "invalid verified token identifier",
+            ));
         }
-        Ok(Self { jti: asterius_domain::Secret::new(jti.to_owned()) })
+        Ok(Self {
+            jti: asterius_domain::Secret::new(jti.to_owned()),
+        })
     }
     #[must_use]
-    pub fn jti(&self) -> &str { self.jti.expose() }
+    pub fn jti(&self) -> &str {
+        self.jti.expose()
+    }
 }
 
 /// A resolved automation caller.

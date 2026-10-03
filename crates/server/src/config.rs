@@ -1468,13 +1468,22 @@ impl RawConfig {
         let managed_devices = validate_managed_devices(self.managed_devices, &tenants, &mut errors);
         if !managed_devices.trust_anchors.is_empty() || managed_devices.proxy_hop.is_some() {
             if managed_devices.proxy_hop.is_none() || server.trusted_proxies.is_empty() {
-                errors.problem("managed_devices.proxy_hop", "requires authenticated proxy TLS material and trusted immediate proxy CIDRs");
+                errors.problem(
+                    "managed_devices.proxy_hop",
+                    "requires authenticated proxy TLS material and trusted immediate proxy CIDRs",
+                );
             }
             if server.mode != TransportMode::BehindProxy {
-                errors.problem("managed_devices", "device possession requires the trusted TLS proxy profile");
+                errors.problem(
+                    "managed_devices",
+                    "device possession requires the trusted TLS proxy profile",
+                );
             }
             if managed_devices.certificate_header == mtls.certificate_header {
-                errors.problem("managed_devices.certificate_header", "must differ from OAuth client authentication header");
+                errors.problem(
+                    "managed_devices.certificate_header",
+                    "must differ from OAuth client authentication header",
+                );
             }
         }
 
@@ -1601,12 +1610,18 @@ fn validate_managed_devices(
     let proxy_hop = raw.proxy_hop.map(|hop| {
         let mut client_fingerprints = Vec::new();
         if hop.client_fingerprints.is_empty() || hop.client_fingerprints.len() > 32 {
-            errors.problem("managed_devices.proxy_hop.client_fingerprints", "requires between one and32 exact SHA256 proxy client leaf pins");
+            errors.problem(
+                "managed_devices.proxy_hop.client_fingerprints",
+                "requires between one and32 exact SHA256 proxy client leaf pins",
+            );
         }
         for pin in hop.client_fingerprints {
             match asterius_domain::managed_devices::LeafFingerprint::parse(&pin) {
                 Ok(pin) if !client_fingerprints.contains(&pin) => client_fingerprints.push(pin),
-                _ => errors.problem("managed_devices.proxy_hop.client_fingerprints", "pins must be distinct lower-case SHA256 hex digests"),
+                _ => errors.problem(
+                    "managed_devices.proxy_hop.client_fingerprints",
+                    "pins must be distinct lower-case SHA256 hex digests",
+                ),
             }
         }
         crate::managed_devices::ProxyHopConfig {
@@ -1616,7 +1631,11 @@ fn validate_managed_devices(
             client_fingerprints,
         }
     });
-    crate::managed_devices::DeviceConfig { certificate_header, trust_anchors, proxy_hop }
+    crate::managed_devices::DeviceConfig {
+        certificate_header,
+        trust_anchors,
+        proxy_hop,
+    }
 }
 
 /// Turns the `[login]` table into the two limits the sign-in paths apply.
@@ -3619,7 +3638,10 @@ pub fn declared_keys() -> BTreeMap<&'static str, Vec<String>> {
         ("dpop", accepted_keys::<RawDpop>()),
         ("mtls", accepted_keys::<RawMtls>()),
         ("managed_devices", accepted_keys::<RawManagedDevices>()),
-        ("managed_devices.proxy_hop", accepted_keys::<RawDeviceProxyHop>()),
+        (
+            "managed_devices.proxy_hop",
+            accepted_keys::<RawDeviceProxyHop>(),
+        ),
         ("authzen", accepted_keys::<RawAuthzen>()),
     ]
     .into_iter()

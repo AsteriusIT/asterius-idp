@@ -152,14 +152,23 @@ impl AdminApi {
             let operation = *operation;
             let state = state.clone();
             let handler = move |request: Request| async move {
-                if operation.id()==crate::KUBERNETES_REVIEW_ID {
-                    match tokio::time::timeout(std::time::Duration::from_secs(3),dispatch(operation,state,request)).await {
+                if operation.id() == crate::KUBERNETES_REVIEW_ID {
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(3),
+                        dispatch(operation, state, request),
+                    )
+                    .await
+                    {
                         Ok(response) => response,
-                        Err(_) => json_no_store(StatusCode::OK,&serde_json::json!(
-                            asterius_domain::kubernetes_online::TokenReviewResponse::denied())),
+                        Err(_) => json_no_store(
+                            StatusCode::OK,
+                            &serde_json::json!(
+                                asterius_domain::kubernetes_online::TokenReviewResponse::denied()
+                            ),
+                        ),
                     }
                 } else {
-                    dispatch(operation,state,request).await
+                    dispatch(operation, state, request).await
                 }
             };
             let method_router = match operation.method() {
@@ -2302,39 +2311,87 @@ impl Handling<'_> {
         Ok(json_no_store(StatusCode::OK, &result))
     }
 
-    async fn read_kubernetes_online(&self) -> Result<Response,AdminError> {
+    async fn read_kubernetes_online(&self) -> Result<Response, AdminError> {
         let client = self.client_in_path("/kubernetes/online")?;
-        let port = self.state.backend.kubernetes_online().ok_or(AdminError::Unavailable)?;
-        let profile = port.profile(&self.tenant.id,&client).await
-            .map_err(|e|group_error(crate::KUBERNETES_ONLINE_READ_ID,e))?.ok_or(AdminError::NotFound)?;
-        Ok(json_no_store(StatusCode::OK,&serde_json::json!(profile)))
+        let port = self
+            .state
+            .backend
+            .kubernetes_online()
+            .ok_or(AdminError::Unavailable)?;
+        let profile = port
+            .profile(&self.tenant.id, &client)
+            .await
+            .map_err(|e| group_error(crate::KUBERNETES_ONLINE_READ_ID, e))?
+            .ok_or(AdminError::NotFound)?;
+        Ok(json_no_store(StatusCode::OK, &serde_json::json!(profile)))
     }
 
-    async fn update_kubernetes_online(&self, body: axum::body::Body)
-        -> Result<Response,AdminError> {
+    async fn update_kubernetes_online(
+        &self,
+        body: axum::body::Body,
+    ) -> Result<Response, AdminError> {
         let client = self.client_in_path("/kubernetes/online")?;
-        let change: asterius_domain::kubernetes_online::ProfileChange = self.parse_body(body).await?;
-        let port = self.state.backend.kubernetes_online().ok_or(AdminError::Unavailable)?;
+        let change: asterius_domain::kubernetes_online::ProfileChange =
+            self.parse_body(body).await?;
+        let port = self
+            .state
+            .backend
+            .kubernetes_online()
+            .ok_or(AdminError::Unavailable)?;
         let actor = asterius_domain::Actor::Admin(self.principal.audit_actor());
-        let profile = port.replace_profile(&self.tenant.id,&client,&actor,&change).await
-            .map_err(|e|group_error(crate::KUBERNETES_ONLINE_UPDATE_ID,e))?;
-        Ok(json_no_store(StatusCode::OK,&serde_json::json!(profile)))
+        let profile = port
+            .replace_profile(&self.tenant.id, &client, &actor, &change)
+            .await
+            .map_err(|e| group_error(crate::KUBERNETES_ONLINE_UPDATE_ID, e))?;
+        Ok(json_no_store(StatusCode::OK, &serde_json::json!(profile)))
     }
 
-    async fn review_kubernetes_identity(&self, body: axum::body::Body)
-        -> Result<Response,AdminError> {
-        use asterius_domain::kubernetes_online::{TokenReviewRequest,TokenReviewResponse};
-        let Principal::Automation {subject,held,..} = self.principal else { return Err(AdminError::Forbidden); };
-        let crate::rbac::Held::Scopes {tenant:Some(realm),..} = held else { return Err(AdminError::Forbidden); };
-        if realm!=&self.tenant.id { return Err(AdminError::Forbidden); }
+    async fn review_kubernetes_identity(
+        &self,
+        body: axum::body::Body,
+    ) -> Result<Response, AdminError> {
+        use asterius_domain::kubernetes_online::{TokenReviewRequest, TokenReviewResponse};
+        let Principal::Automation { subject, held, .. } = self.principal else {
+            return Err(AdminError::Forbidden);
+        };
+        let crate::rbac::Held::Scopes {
+            tenant: Some(realm),
+            ..
+        } = held
+        else {
+            return Err(AdminError::Forbidden);
+        };
+        if realm != &self.tenant.id {
+            return Err(AdminError::Forbidden);
+        }
         let client = self.client_in_path("/kubernetes/reviews")?;
-        let denied = || Ok(json_no_store(StatusCode::OK,&serde_json::json!(TokenReviewResponse::denied())));
-        let Ok(bytes) = axum::body::to_bytes(body,asterius_domain::kubernetes_online::MAX_REQUEST_BYTES).await else { return denied(); };
-        let Ok(request) = TokenReviewRequest::parse(&bytes) else { return denied(); };
-        let Some(port) = self.state.backend.kubernetes_online() else { return denied(); };
-        let response = port.review(self.tenant,&asterius_domain::ClientId::new(subject.clone()),&client,&request)
-            .await.unwrap_or_else(|_|TokenReviewResponse::denied());
-        Ok(json_no_store(StatusCode::OK,&serde_json::json!(response)))
+        let denied = || {
+            Ok(json_no_store(
+                StatusCode::OK,
+                &serde_json::json!(TokenReviewResponse::denied()),
+            ))
+        };
+        let Ok(bytes) =
+            axum::body::to_bytes(body, asterius_domain::kubernetes_online::MAX_REQUEST_BYTES).await
+        else {
+            return denied();
+        };
+        let Ok(request) = TokenReviewRequest::parse(&bytes) else {
+            return denied();
+        };
+        let Some(port) = self.state.backend.kubernetes_online() else {
+            return denied();
+        };
+        let response = port
+            .review(
+                self.tenant,
+                &asterius_domain::ClientId::new(subject.clone()),
+                &client,
+                &request,
+            )
+            .await
+            .unwrap_or_else(|_| TokenReviewResponse::denied());
+        Ok(json_no_store(StatusCode::OK, &serde_json::json!(response)))
     }
 
     async fn update_kubernetes_profile(
@@ -3814,58 +3871,195 @@ impl Handling<'_> {
 
     fn device_id_in_path(&self, relay: bool) -> Result<uuid::Uuid, AdminError> {
         let mut segments = self.path.rsplit('/');
-        let segment = if relay { segments.nth(1) } else { segments.next() };
-        segment.and_then(|s| uuid::Uuid::parse_str(s).ok()).filter(|id| !id.is_nil()).ok_or(AdminError::NotFound)
+        let segment = if relay {
+            segments.nth(1)
+        } else {
+            segments.next()
+        };
+        segment
+            .and_then(|s| uuid::Uuid::parse_str(s).ok())
+            .filter(|id| !id.is_nil())
+            .ok_or(AdminError::NotFound)
     }
     async fn list_device_sources(&self) -> Result<Response, AdminError> {
-        let registry = self.state.backend.device_registry().ok_or(AdminError::NotFound)?;
-        let sources = registry.sources(&self.tenant.id).await.map_err(|e| device_storage_error(crate::DEVICE_SOURCES_LIST_ID, &e))?;
-        Ok(json_no_store(StatusCode::OK, &serde_json::json!({"sources":sources})))
+        let registry = self
+            .state
+            .backend
+            .device_registry()
+            .ok_or(AdminError::NotFound)?;
+        let sources = registry
+            .sources(&self.tenant.id)
+            .await
+            .map_err(|e| device_storage_error(crate::DEVICE_SOURCES_LIST_ID, &e))?;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({"sources":sources}),
+        ))
     }
-    async fn save_device_source(&self, body: axum::body::Body, replace: bool) -> Result<Response, AdminError> {
-        let bytes = axum::body::to_bytes(body, asterius_domain::managed_devices::MAX_UPDATE_BYTES).await.map_err(|_| AdminError::Invalid("device source body exceeds its limit".into()))?;
-        let change = asterius_domain::managed_devices::SourceChange::parse(&bytes).map_err(|_| AdminError::Invalid("invalid device source".into()))?;
-        if replace != change.expected_revision.is_some() { return Err(AdminError::Invalid("source revision does not match the operation".into())); }
-        let id = if replace { Some(self.device_id_in_path(false)?) } else { None };
-        let registry = self.state.backend.device_registry().ok_or(AdminError::NotFound)?;
-        let source = registry.save_source(&self.tenant.id, id, &change, Actor::Admin(self.principal.audit_actor()), self.now).await.map_err(|e| device_storage_error(crate::DEVICE_SOURCE_UPDATE_ID, &e))?;
-        Ok(json_no_store(if replace { StatusCode::OK } else { StatusCode::CREATED }, &serde_json::json!(source)))
+    async fn save_device_source(
+        &self,
+        body: axum::body::Body,
+        replace: bool,
+    ) -> Result<Response, AdminError> {
+        let bytes = axum::body::to_bytes(body, asterius_domain::managed_devices::MAX_UPDATE_BYTES)
+            .await
+            .map_err(|_| AdminError::Invalid("device source body exceeds its limit".into()))?;
+        let change = asterius_domain::managed_devices::SourceChange::parse(&bytes)
+            .map_err(|_| AdminError::Invalid("invalid device source".into()))?;
+        if replace != change.expected_revision.is_some() {
+            return Err(AdminError::Invalid(
+                "source revision does not match the operation".into(),
+            ));
+        }
+        let id = if replace {
+            Some(self.device_id_in_path(false)?)
+        } else {
+            None
+        };
+        let registry = self
+            .state
+            .backend
+            .device_registry()
+            .ok_or(AdminError::NotFound)?;
+        let source = registry
+            .save_source(
+                &self.tenant.id,
+                id,
+                &change,
+                Actor::Admin(self.principal.audit_actor()),
+                self.now,
+            )
+            .await
+            .map_err(|e| device_storage_error(crate::DEVICE_SOURCE_UPDATE_ID, &e))?;
+        Ok(json_no_store(
+            if replace {
+                StatusCode::OK
+            } else {
+                StatusCode::CREATED
+            },
+            &serde_json::json!(source),
+        ))
     }
     async fn list_devices(&self) -> Result<Response, AdminError> {
-        let after = query_value(&self.query, "after").map(|s| uuid::Uuid::parse_str(&s)).transpose().map_err(|_| AdminError::Invalid("invalid device cursor".into()))?;
-        let limit: u16 = query_value(&self.query, "limit").map_or(Ok(50), |s| s.parse()).map_err(|_| AdminError::Invalid("invalid device page limit".into()))?;
-        if !(1..=100).contains(&limit) { return Err(AdminError::Invalid("device page limit must be between 1 and 100".into())); }
-        let registry = self.state.backend.device_registry().ok_or(AdminError::NotFound)?;
-        let devices = registry.devices(&self.tenant.id, None, after, limit).await.map_err(|e| device_storage_error(crate::DEVICES_LIST_ID, &e))?;
-        Ok(json_no_store(StatusCode::OK, &serde_json::json!({"devices":devices})))
+        let after = query_value(&self.query, "after")
+            .map(|s| uuid::Uuid::parse_str(&s))
+            .transpose()
+            .map_err(|_| AdminError::Invalid("invalid device cursor".into()))?;
+        let limit: u16 = query_value(&self.query, "limit")
+            .map_or(Ok(50), |s| s.parse())
+            .map_err(|_| AdminError::Invalid("invalid device page limit".into()))?;
+        if !(1..=100).contains(&limit) {
+            return Err(AdminError::Invalid(
+                "device page limit must be between 1 and 100".into(),
+            ));
+        }
+        let registry = self
+            .state
+            .backend
+            .device_registry()
+            .ok_or(AdminError::NotFound)?;
+        let devices = registry
+            .devices(&self.tenant.id, None, after, limit)
+            .await
+            .map_err(|e| device_storage_error(crate::DEVICES_LIST_ID, &e))?;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({"devices":devices}),
+        ))
     }
     async fn remove_device(&self, body: axum::body::Body) -> Result<Response, AdminError> {
         #[derive(serde::Deserialize)]
         #[serde(deny_unknown_fields)]
-        struct Input { expected_revision: uuid::Uuid }
-        let bytes = axum::body::to_bytes(body, 1024).await.map_err(|_| AdminError::Invalid("device removal body exceeds its limit".into()))?;
-        let input: Input = serde_json::from_slice(&bytes).map_err(|_| AdminError::Invalid("invalid device removal".into()))?;
-        let registry = self.state.backend.device_registry().ok_or(AdminError::NotFound)?;
-        registry.remove(&self.tenant.id, self.device_id_in_path(false)?, input.expected_revision, asterius_domain::managed_devices::RemovalAuthority::Administrator(Actor::Admin(self.principal.audit_actor())), self.now).await.map_err(|e| device_storage_error(crate::DEVICE_REMOVE_ID, &e))?;
+        struct Input {
+            expected_revision: uuid::Uuid,
+        }
+        let bytes = axum::body::to_bytes(body, 1024)
+            .await
+            .map_err(|_| AdminError::Invalid("device removal body exceeds its limit".into()))?;
+        let input: Input = serde_json::from_slice(&bytes)
+            .map_err(|_| AdminError::Invalid("invalid device removal".into()))?;
+        let registry = self
+            .state
+            .backend
+            .device_registry()
+            .ok_or(AdminError::NotFound)?;
+        registry
+            .remove(
+                &self.tenant.id,
+                self.device_id_in_path(false)?,
+                input.expected_revision,
+                asterius_domain::managed_devices::RemovalAuthority::Administrator(Actor::Admin(
+                    self.principal.audit_actor(),
+                )),
+                self.now,
+            )
+            .await
+            .map_err(|e| device_storage_error(crate::DEVICE_REMOVE_ID, &e))?;
         Ok(StatusCode::NO_CONTENT.into_response())
     }
-    fn device_relay_credential(&self) -> Result<asterius_domain::managed_devices::RelayCredential, AdminError> {
-        let Principal::Automation { subject, .. } = &self.principal else { return Err(AdminError::NotFound); };
-        let jti = self.principal.verified_machine_jti().ok_or(AdminError::NotFound)?;
-        asterius_domain::managed_devices::RelayCredential::from_verified(asterius_domain::ClientId::new(subject.clone()), jti).map_err(|_| AdminError::NotFound)
+    fn device_relay_credential(
+        &self,
+    ) -> Result<asterius_domain::managed_devices::RelayCredential, AdminError> {
+        let Principal::Automation { subject, .. } = &self.principal else {
+            return Err(AdminError::NotFound);
+        };
+        let jti = self
+            .principal
+            .verified_machine_jti()
+            .ok_or(AdminError::NotFound)?;
+        asterius_domain::managed_devices::RelayCredential::from_verified(
+            asterius_domain::ClientId::new(subject.clone()),
+            jti,
+        )
+        .map_err(|_| AdminError::NotFound)
     }
     async fn enroll_device(&self, body: axum::body::Body) -> Result<Response, AdminError> {
-        let bytes = axum::body::to_bytes(body, asterius_domain::managed_devices::MAX_UPDATE_BYTES).await.map_err(|_| AdminError::Invalid("device enrollment body exceeds its limit".into()))?;
-        let request = asterius_domain::managed_devices::EnrollmentRequest::parse(&bytes).map_err(|_| AdminError::Invalid("invalid device enrollment".into()))?;
-        let relay = self.state.backend.device_relay().ok_or(AdminError::NotFound)?;
-        let id = relay.enroll(&self.tenant.id, self.device_id_in_path(true)?, &self.device_relay_credential()?, &request, self.now).await.map_err(|e| device_storage_error(crate::DEVICE_ENROLL_ID, &e))?;
-        Ok(json_no_store(StatusCode::CREATED, &serde_json::json!({"id":id})))
+        let bytes = axum::body::to_bytes(body, asterius_domain::managed_devices::MAX_UPDATE_BYTES)
+            .await
+            .map_err(|_| AdminError::Invalid("device enrollment body exceeds its limit".into()))?;
+        let request = asterius_domain::managed_devices::EnrollmentRequest::parse(&bytes)
+            .map_err(|_| AdminError::Invalid("invalid device enrollment".into()))?;
+        let relay = self
+            .state
+            .backend
+            .device_relay()
+            .ok_or(AdminError::NotFound)?;
+        let id = relay
+            .enroll(
+                &self.tenant.id,
+                self.device_id_in_path(true)?,
+                &self.device_relay_credential()?,
+                &request,
+                self.now,
+            )
+            .await
+            .map_err(|e| device_storage_error(crate::DEVICE_ENROLL_ID, &e))?;
+        Ok(json_no_store(
+            StatusCode::CREATED,
+            &serde_json::json!({"id":id}),
+        ))
     }
     async fn ingest_device_posture(&self, body: axum::body::Body) -> Result<Response, AdminError> {
-        let bytes = axum::body::to_bytes(body, asterius_domain::managed_devices::MAX_UPDATE_BYTES).await.map_err(|_| AdminError::Invalid("device posture body exceeds its limit".into()))?;
-        let update = asterius_domain::managed_devices::Update::parse(&bytes, self.now).map_err(|_| AdminError::Invalid("invalid device posture update".into()))?;
-        let relay = self.state.backend.device_relay().ok_or(AdminError::NotFound)?;
-        relay.ingest(&self.tenant.id, self.device_id_in_path(true)?, &self.device_relay_credential()?, &update, self.now).await.map_err(|e| device_storage_error(crate::DEVICE_POSTURE_ID, &e))?;
+        let bytes = axum::body::to_bytes(body, asterius_domain::managed_devices::MAX_UPDATE_BYTES)
+            .await
+            .map_err(|_| AdminError::Invalid("device posture body exceeds its limit".into()))?;
+        let update = asterius_domain::managed_devices::Update::parse(&bytes, self.now)
+            .map_err(|_| AdminError::Invalid("invalid device posture update".into()))?;
+        let relay = self
+            .state
+            .backend
+            .device_relay()
+            .ok_or(AdminError::NotFound)?;
+        relay
+            .ingest(
+                &self.tenant.id,
+                self.device_id_in_path(true)?,
+                &self.device_relay_credential()?,
+                &update,
+                self.now,
+            )
+            .await
+            .map_err(|e| device_storage_error(crate::DEVICE_POSTURE_ID, &e))?;
         Ok(StatusCode::NO_CONTENT.into_response())
     }
 
@@ -20208,7 +20402,9 @@ fn device_storage_error(operation: &'static str, error: &DomainError) -> AdminEr
     match error {
         DomainError::NotFound => AdminError::NotFound,
         DomainError::Conflict(message) => AdminError::Conflict(message.clone()),
-        DomainError::Invalid { .. } => AdminError::Invalid("invalid managed-device operation".into()),
+        DomainError::Invalid { .. } => {
+            AdminError::Invalid("invalid managed-device operation".into())
+        }
         other => AdminError::from_storage(operation, other),
     }
 }
