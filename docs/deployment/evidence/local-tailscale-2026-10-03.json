@@ -1,0 +1,57 @@
+{
+  "date": "2026-10-03",
+  "task": "ast-h6fx",
+  "source_commit": "de43918a",
+  "binary_sha256": "7207b3b84d1e1b5b090cb57b036a38688ff6c2d0194acbea4810d60a8da78b92",
+  "image": "asterius-idp:local-ast-h6fx-7207b3b84d1e",
+  "image_id": "sha256:c60df40816c408ae22e93cb0444cbe0c6048e149455e825dc30040b4129ac37d",
+  "base": "gcr.io/distroless/cc-debian13@sha256:54df941ed0d06a1bd95ef5e0ce391fd8d9f94b64782dc9a60062727849ee3f97",
+  "tailscale_version": "1.102.3",
+  "canonical_host": "desktop-cpbptqn-1.tailacbb15.ts.net",
+  "context": "kind-asterius-local",
+  "namespace": "asterius",
+  "source_postgresql": "18.4",
+  "isolated_restore_postgresql": "16",
+  "private_backup_format": [
+    "custom",
+    "plain"
+  ],
+  "private_backup_mode": "0600",
+  "custom_backup_bytes": 395597,
+  "isolated_restore": "pass",
+  "new_migrations": [
+    162
+  ],
+  "successful_migrations": 108,
+  "actual_restricted_image_readiness": "pass",
+  "shared_ready_replicas": 1,
+  "preserved_users": 2,
+  "preserved_password_credentials": 2,
+  "preserved_totp_credentials": 1,
+  "preserved_passkeys": 0,
+  "exact_accounts_password_totp_equality": true,
+  "private_serve_ports": [
+    443,
+    8443,
+    8444
+  ],
+  "existing_serve_routes_preserved": true,
+  "funnel_enabled": false,
+  "strict_external_tls": "pass",
+  "strict_ingress_tls": "pass",
+  "discovery_demo_admin_canonical": "pass",
+  "account_console_cookie_redirects_canonical": "pass",
+  "actual_chromium_password_to_existing_totp_challenge": "pass",
+  "totp_completion_executed": false,
+  "browser_failed_http_responses": 0,
+  "bridge_header_security": "pass",
+  "rust_recompiled": false,
+  "old_image_postmigration_readiness": false,
+  "rollback_requires_database_restore": true,
+  "bridge_refusals": {
+    "wrong_host": 421,
+    "body_bound": 413,
+    "identity_spoof": 303
+  },
+  "durable_private_backup": true
+}
