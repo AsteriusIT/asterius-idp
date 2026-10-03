@@ -20,6 +20,7 @@
 //! authorization to forget.
 
 mod governance;
+mod governance_reports;
 
 use asterius_domain::entities::session::{SessionId, SessionRevocation};
 use asterius_domain::{
@@ -327,6 +328,8 @@ async fn route(
 ) -> Result<Response, AdminError> {
     if id.starts_with("temporary_kubernetes.") {
         return context.temporary_kubernetes(id, body).await;
+    if id == "governance.findings" {
+        return context.governance_findings().await;
     }
     if id.starts_with("governance.") {
         return context.governance(id, body).await;

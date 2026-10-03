@@ -10,7 +10,36 @@ This uses private Tailscale Serve on port 443. Funnel is disabled. Existing Serv
 routes on 8443 and 8444 remain unchanged. Tailnet access does not confer an
 Asterius role: the existing admin password and TOTP challenge still apply.
 
-## Verified deployment
+## Current verified deployment
+
+The follow-up 2026-10-03 update uses the corrected binary composed in local main
+`94835e14`, SHA-256
+`b5196af3f01c2b6b3762f6fbc03e2d55eeecaaa5abf40603a6fa93071b09d777`,
+in `asterius-idp:local-ast-hb5b-b5196af3f01c`, image ID
+`sha256:5c83731d00ad570a383117fddf422c6472de01743e07b14c8a57d0b1b07c7c39`.
+This includes temporary privileges, standing-access reviews and the corrected
+final checks of temporary authority deadlines. Before rollout, the composed
+runtime passed 182 targeted tests, 112 fuzz targets and ten real HTTPS/browser
+verification groups. The binary was reused without another Rust build.
+
+A fresh private backup of the current database, canonical configuration, secrets,
+deployment and Serve state is retained in
+`~/.local/share/asterius/backups/ast-hb5b-20261003T183648Z-13b6d59f`.
+The isolated restored database and restricted image passed readiness, both tenant
+discovery documents and protected account/console redirects. Migrations 0163 and
+0165 were applied, bringing both isolated and live databases to 110 successful
+migrations. Exact account, password-credential and encrypted TOTP rows remained
+identical to the pre-upgrade snapshot. Current configuration, secret values,
+Kubernetes security contexts and all three private Serve routes are unchanged.
+
+The live deployment has one ready replica. HTTPS certificate verification passed
+for readiness, both canonical discovery documents and account/console redirects.
+The previous validated 8.4 image remains available with the private backups;
+image-only rollback after these migrations is not a validated recovery procedure.
+The user's TOTP challenge was not completed by the agent.
+See [the follow-up deployment evidence](evidence/local-update-2026-10-03.json).
+
+## Previous verified deployment
 
 The 2026-10-03 update uses the previously verified binary from `de43918a`, SHA-256
 `7207b3b84d1e1b5b090cb57b036a38688ff6c2d0194acbea4810d60a8da78b92`, in local
@@ -77,6 +106,25 @@ hostname; a credential enrolled for `auth.asterius.local` cannot authenticate on
 the unrelated `ts.net` hostname. Existing passkey records must never be rewritten
 to pretend otherwise. New passkeys can be enrolled after an ordinary authenticated
 login on the canonical hostname. Existing passwords and TOTP remain usable.
+
+## Preparing a later verified local update
+
+`scripts/local-verified-upgrade-probe.py` takes an independently validated binary,
+its exact SHA-256 and source commit. It captures fresh current database,
+configuration, deployment, secret and Serve backups in a new private directory,
+builds the same pinned runtime image, and restores into a nonce database.
+The restricted image must become ready, preserve the exact account, credential
+and TOTP rows, serve both canonical discovery documents and return canonical
+protected account/console redirects. It also checks the expected migration count
+and the required temporary-entitlement/access-review migrations 0163 and 0165.
+The probe removes only its own container and database and seals retained backup
+files to 0600. It performs no live rollout or Serve change.
+
+The original `ast-h6fx` snapshots contain the issuer configuration from before
+the tailnet migration. A subsequent rollout must retain its own fresh snapshots
+of the current canonical configuration rather than substitute those older files.
+Use only a corrected binary whose real runtime acceptance has completed before
+loading and selecting the candidate image in the shared cluster.
 
 ## Recovery
 

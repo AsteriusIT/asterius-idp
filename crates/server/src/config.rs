@@ -362,6 +362,23 @@ pub struct LdapSourceConfig {
     pub group_member_attribute: Option<String>,
 }
 
+impl LdapSourceConfig {
+    /// Same identity used by one-shot synchronization; no secret contributes.
+    #[must_use]
+    pub fn source_key(&self) -> String {
+        asterius_domain::sha256_hex(
+            format!(
+                "{}\n{}\n{}\n{}",
+                self.url,
+                self.base_dn,
+                self.bind_dn,
+                self.group_base_dn.as_deref().unwrap_or_default()
+            )
+            .as_bytes(),
+        )
+    }
+}
+
 /// Operator-provided bearer credential source for one upstream transmitter.
 /// Only the path is held in configuration; the token is read for a management
 /// call, zeroized afterwards, and never stored in the stream table.

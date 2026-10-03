@@ -15,6 +15,7 @@ pub mod capabilities;
 pub mod credentials;
 pub mod entities;
 pub mod error;
+pub mod governance_reports;
 pub mod groups;
 pub mod ids;
 pub mod issuance;

@@ -386,6 +386,7 @@ impl SsfUpstreamRuntime {
 /// This deployment, as the admin API sees it.
 #[derive(Clone)]
 pub struct Deployment {
+    governance_ldap_sources: std::collections::BTreeMap<String, String>,
     rate_limit_policy: Option<(
         asterius_domain::LoginLimits,
         asterius_domain::EndpointLimits,
@@ -417,6 +418,15 @@ impl std::fmt::Debug for Deployment {
 }
 
 impl Deployment {
+    /// Exact operator source identities, without bind credentials or network probes.
+    #[must_use]
+    pub fn with_governance_ldap_sources(
+        mut self,
+        sources: std::collections::BTreeMap<String, String>,
+    ) -> Self {
+        self.governance_ldap_sources = sources;
+        self
+    }
     /// Publishes the same ceilings enforced by the protocol and sign-in limiters.
     #[must_use]
     pub const fn with_rate_limit_policy(
@@ -453,6 +463,7 @@ impl Deployment {
     #[must_use]
     pub fn new(parts: DeploymentParts) -> Self {
         Self {
+            governance_ldap_sources: std::collections::BTreeMap::new(),
             rate_limit_policy: None,
             store: parts.store,
             tenants: parts.tenants,
@@ -3639,6 +3650,15 @@ impl AdminBackend for Deployment {
     fn access_reviews(&self) -> Option<Arc<dyn asterius_domain::access_reviews::AccessReviews>> {
         Some(Arc::new(asterius_store_pg::PgAccessReviews::new(
             self.store.pool().clone(),
+        )))
+    }
+
+    fn governance_reports(
+        &self,
+    ) -> Option<Arc<dyn asterius_domain::governance_reports::GovernanceReports>> {
+        Some(Arc::new(asterius_store_pg::PgGovernanceReports::new(
+            self.store.pool().clone(),
+            self.governance_ldap_sources.clone(),
         )))
     }
 
