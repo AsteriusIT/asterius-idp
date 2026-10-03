@@ -12,7 +12,11 @@ parser.add_argument("--binary", required=True)
 parser.add_argument("--sha256", required=True)
 parser.add_argument("--source-commit", required=True)
 parser.add_argument("--expected-migrations", type=int, default=110)
+parser.add_argument("--required-migration", type=int, action="append")
 options=parser.parse_args()
+required_migrations=options.required_migration or [163,165]
+assert required_migrations and len(set(required_migrations))==len(required_migrations)
+assert all(0 < version <= 9999 for version in required_migrations)
 assert re.fullmatch(r"ast-[a-z0-9]+", options.task)
 assert re.fullmatch(r"[0-9a-f]{64}", options.sha256)
 assert re.fullmatch(r"[0-9a-f]{8,40}", options.source_commit)
@@ -80,8 +84,8 @@ try:
  assert after==baseline,'Identity rows changed on isolated upgrade'
  migrations=run(local+['psql','-U','asterius','-d',db,'-Atc','select count(*) from _sqlx_migrations where success']).decode().strip()
  assert int(migrations)==options.expected_migrations,migrations
- applied=run(local+['psql','-U','asterius','-d',db,'-Atc',"select count(*) from _sqlx_migrations where success and version in (163,165)"]).decode().strip()
- assert applied=='2', 'Required migrations missing'
+ applied=run(local+['psql','-U','asterius','-d',db,'-Atc',"select count(*) from _sqlx_migrations where success and version in ("+','.join(map(str,required_migrations))+")"]).decode().strip()
+ assert int(applied)==len(required_migrations), 'Required migrations missing'
  for tenant in ['admin','demo']:
   data=json.load(urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:9474/t/'+tenant+'/.well-known/openid-configuration',headers={'Host':'desktop-cpbptqn-1.tailacbb15.ts.net'})))
   assert data['issuer']=='https://desktop-cpbptqn-1.tailacbb15.ts.net/t/'+tenant
@@ -98,7 +102,7 @@ try:
     location=response.headers['Location']
     resolved=urllib.parse.urljoin('https://desktop-cpbptqn-1.tailacbb15.ts.net/t/'+tenant+'/'+suffix,location)
     assert resolved.startswith('https://desktop-cpbptqn-1.tailacbb15.ts.net/t/'+tenant+'/'), 'Noncanonical protected redirect'
- evidence={'task':options.task,'source_commit':options.source_commit,'binary_sha256':hashlib.sha256(bin).hexdigest(),'image':image,'image_id':imageid,'isolated_restore':'pass','restricted_image_readiness':'pass','isolated_canonical_discovery':'pass','isolated_protected_entrypoint_redirects':'pass','exact_account_credential_totp_equality':True,'successful_migrations':int(migrations),'required_migrations':[163,165],'private_backup':'~/.local/share/asterius/backups/'+private.name,'private_backup_mode':'0700/0600'}
+ evidence={'task':options.task,'source_commit':options.source_commit,'binary_sha256':hashlib.sha256(bin).hexdigest(),'image':image,'image_id':imageid,'isolated_restore':'pass','restricted_image_readiness':'pass','isolated_canonical_discovery':'pass','isolated_protected_entrypoint_redirects':'pass','exact_account_credential_totp_equality':True,'successful_migrations':int(migrations),'required_migrations':required_migrations,'private_backup':'~/.local/share/asterius/backups/'+private.name,'private_backup_mode':'0700/0600'}
  (private/'probe-evidence.json').write_text(json.dumps(evidence,indent=2)+'\n')
  print(json.dumps(evidence))
 finally:

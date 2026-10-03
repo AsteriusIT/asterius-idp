@@ -1,0 +1,30 @@
+{
+  "task": "ast-96u1",
+  "source_commit": "ccd98d6e",
+  "binary_sha256": "bf8fc000e345a4428f25c8fa13703e383189c96b56adc7120252ffbca9b4b03d",
+  "image": "asterius-idp:local-ast-96u1-bf8fc000e345",
+  "image_id": "sha256:cd6ea8fdb62680da0995a8e980bd9e07b4d51a5deb75cac3bded27b00f1122e7",
+  "isolated_restore": "pass",
+  "restricted_image_readiness": "pass",
+  "isolated_canonical_discovery": "pass",
+  "isolated_protected_entrypoint_redirects": "pass",
+  "exact_account_credential_totp_equality": true,
+  "successful_migrations": 111,
+  "required_migrations": [
+    163,
+    165,
+    170
+  ],
+  "private_backup": "~/.local/share/asterius/backups/ast-96u1-20261003T213751Z-5ab867ed",
+  "private_backup_mode": "0700/0600",
+  "live_rollout": "pass",
+  "live_tls_readyz": "pass",
+  "live_canonical_discovery": "pass",
+  "live_protected_entrypoint_redirects": "pass",
+  "live_exact_account_credential_totp_equality": true,
+  "configuration_secret_data_security_contexts_unchanged": true,
+  "tailscale_private_serve_unchanged": true,
+  "durable_bridge_active": true,
+  "previous_image": "asterius-idp:local-ast-496l-c79b1caedc1c",
+  "rollback": "Image-only downgrade is unvalidated; recovery requires deliberate database/config/image restore from protected backup, losing subsequent writes."
+}
