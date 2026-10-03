@@ -790,3 +790,10 @@ path = "fuzz_targets/workload_token.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "access_review_requests"
+path = "fuzz_targets/access_review_requests.rs"
+test = false
+doc = false
+bench = false

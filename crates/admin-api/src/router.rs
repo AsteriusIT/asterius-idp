@@ -19,6 +19,8 @@
 //! authority its own [`Operation`] declares, so there is no per-handler
 //! authorization to forget.
 
+mod governance;
+
 use asterius_domain::entities::session::{SessionId, SessionRevocation};
 use asterius_domain::{
     Activation, Actor, AuditEvent, Client, ClientComplianceProfile, ClientRegistration,
@@ -319,6 +321,7 @@ async fn route(
     context: &Handling<'_>,
     body: axum::body::Body,
 ) -> Result<Response, AdminError> {
+    if id.starts_with("governance.") { return context.governance(id,body).await; }
     if crate::declarative::is_route(id) {
         return context.management(id, body).await;
     }
@@ -1543,6 +1546,7 @@ impl Handling<'_> {
                 match reach {
                     crate::rbac::Reach::Deployment => everywhere.insert(scope.to_owned()),
                     crate::rbac::Reach::Tenant
+                    | crate::rbac::Reach::ConsoleTenant
                     | crate::rbac::Reach::Authenticated
                     | crate::rbac::Reach::AutomationTenant => here.insert(scope.to_owned()),
                 };

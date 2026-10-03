@@ -7,6 +7,7 @@ import { AuditExplorer } from './audit';
 import { Branding } from './branding';
 import { AuthorizationDetailsTypes } from './authorizationDetailsTypes';
 import { Roles } from './appRoles';
+import { AccessReviews } from './access-reviews';
 import { Clients } from './clients';
 import { AppSidebar } from './components/app-sidebar';
 import { AppTopbar } from './components/app-topbar';
@@ -181,6 +182,7 @@ function RouteScreen({
   session: Session;
 }>): JSX.Element {
   if (route === 'health') return <WorkspaceHealth session={session} />;
+  if (route === 'access-reviews') return <AccessReviews session={session} />;
   if (route === 'roles') return <Roles session={session} client={paramsOf(fragment).get('client')} />;
   if (route === 'users') {
     return <Users session={session} />;

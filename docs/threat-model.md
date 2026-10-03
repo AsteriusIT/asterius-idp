@@ -2674,3 +2674,31 @@ cannot promote another denial; offline JWT consumers retain their existing
 expiry/online-revocation limits. No instant withdrawal or device attestation
 claim is made. See [the operator guide](conditional-access.md) for exact sources,
 limits and deployment capacity.
+
+## Standing-access review authority
+
+Governance snapshots explain direct and managed-group application-role sources,
+with bounded read-only temporary activation lifecycle provenance. They do not
+constitute the held roles of an arbitrary token or establish delegation, scope
+or proof authority. Snapshot creation rejects incomplete bounded inventories.
+The recorded database observation time and historical snapshot remain evidence;
+independent authorities can subsequently change through their own lifecycle.
+
+The five supported removal targets are exact membership, user tenant/client role
+and group tenant/client role assignments. A reviewer cannot submit an actor or
+access snapshot. Only a verified same-realm console principal reaches governance
+routes; service scopes and a deployment administrator's foreign reserved-realm
+session do not create a human reviewer. Initial owners and assigned reviewers
+must remain active tenant administrators. Writes additionally require the normal
+console CSRF gate and a fresh phishing-resistant session proof.
+
+Removal checks live assignment generation, ownership revision, source account,
+role catalogue and group context. Deletion/recreation cannot reuse a generation;
+new group members invalidate a group-role snapshot. Deadline checks follow lock
+acquisition. SCIM, builder and declarative controller ownership is protected even
+when the controller's own deletion protection is disabled. Governance does not
+impersonate the controller. The chosen lifecycle withdrawal and application
+result share a transaction with durable audit append; an audit failure must
+rollback both. Decisions and applying them are distinct commands. Retries return
+the durable result while still requiring current assigned reviewer authority.
+No scheduler silently revokes access and no notification transport is enabled.

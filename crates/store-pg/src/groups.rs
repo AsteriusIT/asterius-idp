@@ -34,7 +34,31 @@ impl PgGroups {
         add: bool,
     ) -> Result<bool, DomainError> {
         let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
-        lock_revision(&mut tx, tenant, id, None).await?;
+        let changed = Self::membership_on(&mut tx, tenant, id, user, now, add).await?;
+        tx.commit().await.map_err(to_domain_error)?;
+        Ok(changed)
+    }
+
+    /// Removes one membership on the caller transaction using ordinary group lifecycle rules.
+    pub async fn remove_member_on(
+        connection: &mut PgConnection,
+        tenant: &TenantId,
+        id: GroupId,
+        user: UserId,
+        now: OffsetDateTime,
+    ) -> Result<bool, DomainError> {
+        Self::membership_on(connection, tenant, id, user, now, false).await
+    }
+
+    async fn membership_on(
+        connection: &mut PgConnection,
+        tenant: &TenantId,
+        id: GroupId,
+        user: UserId,
+        now: OffsetDateTime,
+        add: bool,
+    ) -> Result<bool, DomainError> {
+        lock_revision(&mut *connection, tenant, id, None).await?;
         let changed = if add {
             sqlx::query(
                 "insert into group_memberships (tenant_id, group_id, user_id, created_at)
@@ -44,7 +68,7 @@ impl PgGroups {
             .bind(id.as_uuid())
             .bind(user.as_uuid())
             .bind(now)
-            .execute(&mut *tx)
+            .execute(&mut *connection)
             .await
             .map_err(to_domain_error)?
             .rows_affected()
@@ -52,7 +76,7 @@ impl PgGroups {
         } else {
             sqlx::query("delete from group_memberships where tenant_id = $1 and group_id = $2 and user_id = $3")
                 .bind(tenant.as_str()).bind(id.as_uuid()).bind(user.as_uuid())
-                .execute(&mut *tx).await.map_err(to_domain_error)?.rows_affected() == 1
+                .execute(&mut *connection).await.map_err(to_domain_error)?.rows_affected() == 1
         };
         if changed {
             sqlx::query(
@@ -62,13 +86,13 @@ impl PgGroups {
             .bind(tenant.as_str())
             .bind(id.as_uuid())
             .bind(now)
-            .execute(&mut *tx)
+            .execute(&mut *connection)
             .await
             .map_err(to_domain_error)?;
         }
-        tx.commit().await.map_err(to_domain_error)?;
         Ok(changed)
     }
+
 }
 
 #[derive(sqlx::FromRow)]

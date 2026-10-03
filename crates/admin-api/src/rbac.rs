@@ -44,6 +44,9 @@ use asterius_domain::{Role, RoleScope, TenantId};
 /// How far an operation reaches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reach {
+    /// A human console identity of this exact realm; deployment reach does not
+    /// invent an owner or reviewer account in another tenant.
+    ConsoleTenant,
     /// One tenant: the one the request was routed to. A caller holding
     /// authority over that tenant, or over the deployment, is admitted.
     Tenant,
@@ -156,6 +159,7 @@ impl Held {
             let deployment_wide = role.scope() == RoleScope::Deployment;
             let in_reach = match required.reach() {
                 Reach::AutomationTenant => false,
+                Reach::ConsoleTenant => held_in == tenant,
                 // "Some kind of administrator", wherever they administer: the
                 // two routes with this reach are about the caller themselves.
                 Reach::Authenticated => true,
@@ -179,6 +183,7 @@ impl Held {
     ) -> bool {
         let in_reach = match required.reach() {
             // A token bound to one tenant cannot administer the deployment.
+            Reach::ConsoleTenant => false,
             Reach::Deployment => held_in.is_none(),
             Reach::AutomationTenant => held_in == Some(tenant),
             Reach::Tenant | Reach::Authenticated => {
@@ -399,5 +404,29 @@ mod tests {
         assert!(!scoped.satisfies(required, &tenant("other")));
         assert!(!deployment.satisfies(required, &tenant("acme")));
         assert!(!console.satisfies(required, &tenant("acme")));
+    }
+}
+
+#[cfg(test)]
+mod governance_tests {
+    use super::*;
+    #[test]
+    fn governance_requires_the_actual_console_realm_even_for_deployment_authority(){
+        let own=TenantId::new("reserved");let other=TenantId::new("other");
+        let held=Held::Roles {tenant:own.clone(),roles:vec![Role::DeploymentAdmin]};
+        let required=Authority::new(Reach::ConsoleTenant,"admin.governance:write");
+        assert!(held.satisfies(required,&own));assert!(!held.satisfies(required,&other));
+        let service=Held::Scopes {tenant:None,scopes:vec!["admin.governance:write".into()]};
+        assert!(!service.satisfies(required,&own));
+    }
+    #[test]
+    fn reviewer_configuration_never_gives_auditors_or_support_write_authority(){
+        let tenant=TenantId::new("same");
+        let read=Authority::new(Reach::ConsoleTenant,"admin.governance:read");
+        let write=Authority::new(Reach::ConsoleTenant,"admin.governance:write");
+        let auditor=Held::Roles {tenant:tenant.clone(),roles:vec![Role::SecurityAuditor]};
+        let support=Held::Roles {tenant:tenant.clone(),roles:vec![Role::UserSupport]};
+        assert!(auditor.satisfies(read,&tenant));assert!(!auditor.satisfies(write,&tenant));
+        assert!(!support.satisfies(read,&tenant));assert!(!support.satisfies(write,&tenant));
     }
 }

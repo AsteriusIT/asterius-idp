@@ -6,6 +6,7 @@
 //! never depend on a database driver, an HTTP framework or an async runtime.
 #![forbid(unsafe_code)]
 
+pub mod access_reviews;
 pub mod administration;
 pub mod agent_tasks;
 pub mod audit;
