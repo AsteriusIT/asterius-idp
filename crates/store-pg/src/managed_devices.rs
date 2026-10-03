@@ -884,6 +884,10 @@ async fn require_relay_credential_on(
 
 /// Capture only on the stable PAR row AND its current browser arrival. The
 /// caller supplies a verifier-owned certificate, never a browser fingerprint.
+#[expect(
+    clippy::too_many_lines,
+    reason = "Keep original possession deadline and exact interaction/session/source locks in one atomic capture transition"
+)]
 pub(crate) async fn capture_interaction(
     pool: &PgPool,
     tenant: &TenantId,

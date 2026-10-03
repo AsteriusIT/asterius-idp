@@ -1025,6 +1025,10 @@ fn device_preparation(
 
 #[async_trait::async_trait]
 impl super::authorize::ConditionalAuthorization for ConditionalAccess {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep existing-session assurance remedies and device-only interaction lookahead together without releasing hypothetical authority"
+    )]
     async fn prepare(
         &self,
         tenant: &Tenant,
