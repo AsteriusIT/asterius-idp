@@ -36,9 +36,19 @@ with socket.socket() as sock:
 with socket.socket() as sock:
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind(('0.0.0.0', 9470))
+with socket.socket() as sock:
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(('0.0.0.0', 9471))
+with socket.socket() as sock:
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(('0.0.0.0', 9472))
 PYPORT
 
 cleanup() {
+  if [ -f "$run_dir/adapter-secondary.pid" ]; then
+    secondary_pid=$(cat "$run_dir/adapter-secondary.pid")
+    kill -TERM "$secondary_pid" 2>/dev/null || true
+  fi
   if [ -f "$run_dir/adapter.log" ]; then cp -f "$run_dir/adapter.log" /tmp/ast-dd1y15-adapter-last.log; chmod 600 /tmp/ast-dd1y15-adapter-last.log; fi
   if [ -f "$run_dir/server.log" ]; then cp -f "$run_dir/server.log" /tmp/ast-dd1y15-server-last.log; chmod 600 /tmp/ast-dd1y15-server-last.log; fi
   # These names were verified absent before the fixture. No ambient kube context is used.

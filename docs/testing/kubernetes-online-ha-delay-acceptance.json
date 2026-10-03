@@ -1,0 +1,62 @@
+{
+  "status": "pass",
+  "controls": [
+    "owner_csrf_cas_and_reviewer_read_only",
+    "real_par_pkce_code_and_refresh_digest_registration",
+    "real_password_session_rotation_preserves_public_sid",
+    "route_audience_service_only_dpop_selected_reviewer_tenant_and_wire_authority",
+    "reviewer_exact_cc_receipt_revocation_and_independent_grant",
+    "review_is_read_only",
+    "real_mtls_and_exact_spki",
+    "two_production_adapters_opaque_tls_failover_uncached_native_identity",
+    "opaque_delayed_completed_response_and_outer_cache_bound",
+    "past_native_lookup_timeout_never_late_caches_completed_positive",
+    "actual_kube_exact_grant_revocation_and_other_grant_survival",
+    "signed_groups_intersect_current_membership_and_addition_cannot_widen",
+    "real_user_disable_live_review",
+    "real_browser_logout_live_review",
+    "complete_three_second_route_timeout_under_owned_table_lock",
+    "owned_primary_database_outage_uncached_native_fail_closed_and_recovery",
+    "all_adapter_outage_no_native_oidc_fallback",
+    "terminal_metadata_restore_and_revision_aba_denial"
+  ],
+  "measured_revoke_seconds": 10.232,
+  "limits": [
+    "seeded browser/session proofs; no new WebAuthn ceremony",
+    "opaque25s completed-response hold plus outer cache measured; entire40s worst-case boundary not saturated",
+    "two adapter replicas tested; primary-database replication and signature/storage races not tested"
+  ],
+  "measurements": [
+    {
+      "measurement": "delayed_wire_and_outer_cache",
+      "stale_arrival_seconds": 25.002,
+      "last_native_positive_seconds": 34.913,
+      "native_denial_seconds": 35.214,
+      "revocation_seconds": 3.521,
+      "revocation_to_denial_seconds": 31.693
+    },
+    {
+      "measurement": "late_completed_response_after_native_timeout",
+      "timeout_seconds": 30.004,
+      "late_release_seconds": 35,
+      "late_positive_cached": false
+    },
+    {
+      "measurement": "native_warm_revoke_seconds",
+      "seconds": 10.232
+    }
+  ],
+  "rust_source_commit": "372a51de",
+  "go_transport_commit": "0ae022c8",
+  "binary_sha256": "11f0d89427097dd2d4797311abea5e0fb26b973838fa3bebb70e531f453785ca",
+  "kubernetes_version": "1.35.0",
+  "adapter_count": 2,
+  "webhook_inner_cache_ttl_seconds": 0,
+  "outer_cache_ttl_seconds": 10,
+  "transport": "opaque TCP/TLS passthrough; original API-server certificate verified by each production adapter",
+  "tls_terminated_or_claims_modified": false,
+  "adapter_deadline_seconds": 3,
+  "human_delivery_review": "pending",
+  "owned_cleanup": "no owned cluster/container/listener/nonce database remains",
+  "literal_40_second_edge_saturated": false
+}
