@@ -839,3 +839,10 @@ path = "fuzz_targets/workload_token.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "kubernetes_token_review"
+path = "fuzz_targets/kubernetes_token_review.rs"
+test = false
+doc = false
+bench = false

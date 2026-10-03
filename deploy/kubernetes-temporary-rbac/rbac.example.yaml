@@ -1,0 +1,57 @@
+# Operator-owned ceiling and dedicated empty binding. Replace pins out of band.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: asterius-temporary-rbac
+  namespace: incident
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: approved-secret-read
+  namespace: incident
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["incident-context"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: asterius-temporary-secret-read
+  namespace: incident
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: approved-secret-read
+subjects: []
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: asterius-temporary-controller
+  namespace: incident
+rules:
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    resourceNames: ["asterius-temporary-secret-read"]
+    verbs: ["get", "patch"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles"]
+    resourceNames: ["approved-secret-read"]
+    verbs: ["bind"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: asterius-temporary-controller
+  namespace: incident
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: asterius-temporary-controller
+subjects:
+  - kind: ServiceAccount
+    name: asterius-temporary-rbac
+    namespace: incident

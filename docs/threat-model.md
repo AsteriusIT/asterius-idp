@@ -2822,3 +2822,64 @@ No scheduler silently revokes access and no notification transport is enabled.
 The console-only governance reports recheck current same-tenant administrator or security-auditor read authority in a repeatable-read, read-only transaction. Closed query fields and tenant/section-bound keyset cursors cannot select another tenant or arbitrary SQL. Each request inspects at most 100 records and returns at most 50 findings; an empty scan may still expose continuation. Evidence includes bounded public source identifiers, never credentials, session handles or vendor external identifiers.
 
 A retained session is incomplete activity history, not evidence that an upstream account was deleted. Missing SCIM registrations and LDAP source configuration are distinct from explicit SCIM tombstones and complete LDAP snapshot absence; no report asserts network reachability. Local administrative accounts remain possible recovery accounts. Managed group evidence preserves SCIM, LDAP, builder and controller provenance and proposes review through the existing owner lifecycle. Historical campaign coverage requires matching current assignment generation, ownership revision and the complete account/group/catalogue/client context, including updates that prevent status ABA. Oversized contexts remain uncertain. Temporary entitlement configuration and built-in administrative roles are reported separately from standing campaign coverage. Reports provide no mutation, notification or automatic cleanup port.
+
+### Temporary Kubernetes identity and native RBAC
+
+The owner-CAS mapping binds an exact same-tenant DPoP machine reader to one
+entitlement and current public-subject Kubernetes profile. Machine reads cannot
+configure eligibility, approve requests, choose a subject, or borrow reserved-realm
+Console authority. Projections contain bounded current public subjects and deadlines;
+overflow refuses incomplete authority. Configuration/client/profile invalidation is
+terminal until an explicit new owner revision.
+
+A final fenced ID signature may include closed `asterius_jit` provenance only for
+an actual released client role supplied exclusively by a live temporary activation.
+Standing role overlap does not supply this private identity. The signer resolves the
+actual human nondelegated single-resource grant, exact permissions and frozen proof
+on its held publication connection, caps exp and rechecks deadlines after cryptography.
+Posted private provenance is refused. Structured CEL pins the reviewed complete tuple
+and maps it to `asterius-jit:<mapping-revision>:<public-sub>`; ordinary tokens retain
+the separate baseline prefix. Unknown generations cannot reuse a stale native binding.
+
+The independently reviewed Kubernetes Role is the controller's ceiling. Its
+ServiceAccount can GET/PATCH one named/UID-pinned RoleBinding and bind one fixed
+namespaced Role; no create/delete, Role write, ClusterRole bind or impersonation is
+granted. Healthy reconciliation removes revoked/expired subjects within a measured
+window. During controller outage native bindings may linger, but old JIT credentials
+expire at their signed activation-capped deadline and newly ordinary credentials
+cannot match that identity. Offline revocation during outage retains only the bounded
+already issued JWT residual plus the independently verified successful-authentication
+cache and clock skew. The supported Kubernetes v1.35 profile has a ten-second
+success-cache ceiling; disposable acceptance measures old-token refusal after exp
+within that ceiling, instead of claiming immediate offline expiry. Baseline bindings
+and credentials remain independent.
+
+### Candidate Kubernetes online review boundary (`ast-dd1y.1.5`)
+
+This candidate is isolated pending normative human review and acceptance; it is
+not enabled in the shared local deployment. The API server authenticates to a
+small HTTPS adapter with a dedicated CA and exact client SPKI pin. The adapter
+uses a separate confidential private-key-JWT/DPoP reviewer credential for one
+pinned tenant and human-client route. Private successful client_credentials
+JTI receipts prevent historical workload/delegated/task credentials from being
+reinterpreted as this reviewer mode merely because their public subject matches
+the client ID.
+
+Human authentication verifies the exact issuer/audience/ES256 ID signature and
+complete signed-token digest recorded with its exact original grant, active
+user and stable public browser SID. Profile UUID and cluster revision bind
+configuration; relevant metadata changes terminally disable the mode and cannot
+revive old credentials on restore. Current expiry, logout, revocation and group
+removal narrow authority. Added groups never widen an old signed release.
+No bearer token, session heartbeat, arbitrary user extras, credential echo or
+positive identity cache is added by Asterius or the adapter. Online and JIT
+configuration is mutually exclusive; keeping an equivalent native offline OIDC
+authenticator would bypass the online check and is forbidden for this tuple.
+
+Kubernetes 1.35's outer success cache remains ten seconds even with the inner
+webhook cache disabled. Its detached lookup and upstream HTTP transport allow
+thirty seconds for a successful response already in flight; the conservative
+source-derived bound is forty seconds plus measured scheduling/transport margin.
+The local three-second review deadline does not establish a shorter wire-level
+bound. Actual delayed-response, outage and replica evidence is still required;
+healthy-network latency alone is not worst-case acceptance evidence.

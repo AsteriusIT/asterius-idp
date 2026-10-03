@@ -37,6 +37,12 @@ pub struct PolicyPublicationFence {
     transaction: sqlx::Transaction<'static, sqlx::Postgres>,
 }
 impl PolicyPublicationFence {
+    /// Read current authority on this connection while its tenant publication lock is held.
+    /// Callers must not commit independently or acquire an incompatible writer lock.
+    pub fn connection(&mut self) -> &mut sqlx::PgConnection {
+        &mut self.transaction
+    }
+
     /// Release only after the downstream signing decorator committed its work.
     pub async fn commit(self) -> Result<(), DomainError> {
         self.transaction.commit().await.map_err(to_domain_error)

@@ -1,0 +1,45 @@
+{
+  "task": "ast-496l",
+  "source_commit": "4066e08f",
+  "binary_sha256": "c79b1caedc1ce9ff655b7d2c2adbc1498f26c7a501a50a4d66b3fe3b957c5cbd",
+  "image": "asterius-idp:local-ast-496l-c79b1caedc1c",
+  "image_id": "sha256:9d87b09c6657558a09d5f685d698676356b7eaeab612400a54851934109edb2c",
+  "isolated_restore": "pass",
+  "restricted_image_readiness": "pass",
+  "isolated_canonical_discovery": "pass",
+  "isolated_protected_entrypoint_redirects": "pass",
+  "exact_account_credential_totp_equality": true,
+  "successful_migrations": 110,
+  "private_backup": "~/.local/share/asterius/backups/ast-496l-20261003T191746Z-201a6c4f",
+  "private_backup_mode": "0700/0600",
+  "required_migrations": [
+    163,
+    165
+  ],
+  "date": "2026-10-03",
+  "live_rollout": "ready",
+  "ready_replicas": 1,
+  "live_pod_image_id": "sha256:9d87b09c6657558a09d5f685d698676356b7eaeab612400a54851934109edb2c",
+  "live_migrations": 110,
+  "strict_tls_readiness_discovery": "pass",
+  "strict_tls_account_console_redirects": "pass",
+  "live_exact_account_credential_totp_equality": true,
+  "config_and_secret_data_unchanged": true,
+  "private_serve_routes_unchanged": true,
+  "bridge_unchanged_active": true,
+  "kubernetes_security_context_unchanged": true,
+  "anonymous_governance_report": {
+    "status": 401,
+    "code": "unauthenticated"
+  },
+  "runtime_acceptance_before_rollout": {
+    "targeted_tests_passed": 73,
+    "fuzz_targets_passed": 113,
+    "real_https_browser_controls_passed": 18
+  },
+  "isolated_resources_removed": true,
+  "private_duplicate_build_staging_removed": true,
+  "no_rust_rebuild": true,
+  "previous_image_retained": "asterius-idp:local-ast-hb5b-b5196af3f01c",
+  "totp_challenge_completed": false
+}

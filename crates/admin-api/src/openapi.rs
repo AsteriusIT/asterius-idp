@@ -205,6 +205,8 @@ fn operation_object(operation: &Operation) -> Value {
     kubernetes_documentation(operation, &mut object);
     conditional_documentation(operation, &mut object);
     temporary_entitlement_documentation(operation, &mut object);
+    temporary_kubernetes_documentation(operation, &mut object);
+    kubernetes_online_documentation(operation, &mut object);
     invitation_documentation(operation, &mut object);
     agent_task_documentation(operation, &mut object);
     theme_documentation(operation, &mut object);
@@ -1151,6 +1153,66 @@ fn temporary_entitlement_documentation(operation: &Operation, object: &mut Value
     }
     object["requestBody"] =
         json!({"required":true,"content":{"application/json":{"schema":schema}}});
+}
+
+fn kubernetes_online_documentation(operation: &Operation, object: &mut Value) {
+    if !matches!(operation.id(), crate::KUBERNETES_ONLINE_READ_ID | crate::KUBERNETES_ONLINE_UPDATE_ID | crate::KUBERNETES_REVIEW_ID) {
+        return;
+    }
+    object["description"] = json!("Opt-in primary-backed online Kubernetes authentication. Exact current human public-subject confidential ES256 profile, stable public SID and original signed-token digest bind one grant. Metadata changes terminally disable the mode and invalidate its UUID revision. Online and JIT modes cannot be enabled together. No incoming identity fields establish authority, no session heartbeat occurs, and no bearer token is stored. The complete review deadline is three seconds; errors and late results never release an identity. Kubernetes 1.35 still has a global ten-second success cache plus up to thirty seconds of detached upstream lookup: conservative source-derived revocation bound is forty seconds plus measured scheduling/transport margin, not instant revocation.");
+    let profile = json!({"type":"object","additionalProperties":false,"required":["reviewer_client_id","revision","enabled"],"properties":{
+        "reviewer_client_id":{"type":"string","minLength":1,"maxLength":2048},
+        "revision":{"type":"string","format":"uuid"},"enabled":{"type":"boolean"}
+    }});
+    if operation.id() == crate::KUBERNETES_REVIEW_ID {
+        object["security"] = json!([{"adminToken":[asterius_domain::kubernetes_online::REVIEW_SCOPE]}]);
+        object["description"] = json!(format!("{} Dedicated same-tenant reviewer only: DPoP, private-key JWT and exclusive client_credentials registration are required, together with the private exact successful CC issuance receipt. Console and deployment-wide credentials are refused. The route selects the tenant and human client; requested audiences cannot select either.", object["description"].as_str().unwrap_or_default()));
+        object["requestBody"] = json!({"required":true,"content":{"application/json":{"schema":{
+            "type":"object","additionalProperties":false,"required":["apiVersion","kind","spec"],"description":"At most 65536 UTF-8 bytes; duplicate JSON members rejected. Only absent or exact zero-value metadata/status are accepted and ignored.",
+            "properties":{"apiVersion":{"const":"authentication.k8s.io/v1"},"kind":{"const":"TokenReview"},
+                "metadata":{"type":"object","additionalProperties":false,"properties":{"creationTimestamp":{"type":"null"}}},
+                "status":{"type":"object","additionalProperties":false,"required":["user"],"properties":{"user":{"type":"object","additionalProperties":false}}},
+                "spec":{"type":"object","additionalProperties":false,"required":["token","audiences"],"properties":{
+                    "token":{"type":"string","minLength":1,"maxLength":16384,"pattern":"^[!-~]+$","writeOnly":true},
+                    "audiences":{"type":"array","minItems":1,"maxItems":16,"uniqueItems":true,"items":{"type":"string","minLength":1,"maxLength":2048}}
+                }}
+            }
+        }}}});
+        object["responses"]["200"]["description"] = json!("Closed TokenReview v1. A refusal has authenticated:false without user or audiences. A positive response releases only the validated stable username, at most 100 distinct current-and-issued groups and the route audience; no spec/token/extra/email.");
+    } else {
+        object["responses"]["200"]["content"]["application/json"]["schema"] = profile;
+        if operation.id() == crate::KUBERNETES_ONLINE_UPDATE_ID {
+            object["responses"]["409"] = error_response("Exact profile revision conflict or mutually exclusive JIT mode enabled.");
+            object["requestBody"] = json!({"required":true,"content":{"application/json":{"schema":{
+                "type":"object","additionalProperties":false,"required":["reviewer_client_id","enabled"],"properties":{
+                    "reviewer_client_id":{"type":"string","minLength":1,"maxLength":2048},"enabled":{"type":"boolean"},
+                    "expected_revision":{"type":["string","null"],"format":"uuid","description":"Omitted/null expects no saved profile. Existing configuration requires its exact current revision."}
+                }
+            }}}});
+        }
+    }
+}
+
+fn temporary_kubernetes_documentation(operation: &Operation, object: &mut Value) {
+    if !operation.id().starts_with("temporary_kubernetes.") {
+        return;
+    }
+    object["description"] = json!(
+        "Current complete projection is limited to one immutable owner-approved controller/entitlement/current public-subject Kubernetes profile. No actor, username, role or namespace is accepted from the controller. Subjects use the exact stable public subject and distinct asterius-jit mapping-revision prefix; pending, revoked, stale, disabled and expired approvals contribute no authority. A snapshot is limited to 100 subjects and refuses overflow; its RFC3339 database observed_at and exclusive deadlines bound freshness. Healthy reconciliation bounds revocation latency. During controller failure, signed temporary-only ID provenance and activation-capped exp bound residual access; ordinary tokens retain their separate baseline username and cannot reuse stale JIT bindings. Owner GET additionally returns a structured AuthenticationConfiguration example for the exact reviewed tuple; legacy OIDC flags cannot implement this mapping."
+    );
+    object["responses"]["409"] =
+        error_response("Binding revision conflict or complete projection exceeds bound.");
+    if operation.id() == crate::TEMPORARY_KUBERNETES_PROJECT_ID {
+        object["security"] = json!([{"adminToken":[]}]);
+    } else {
+        object["security"] = json!([{"consoleSession":[]}]);
+    }
+    if operation.id() == crate::TEMPORARY_KUBERNETES_BINDING_WRITE_ID {
+        object["requestBody"] = json!({"required":true,"content":{"application/json":{"schema":{
+            "type":"object","additionalProperties":false,"required":["controller_client_id","expected_revision","enabled"],
+            "properties":{"controller_client_id":{"type":"string","minLength":1,"maxLength":200},"expected_revision":{"type":["string","null"],"format":"uuid"},"enabled":{"type":"boolean"}}
+        }}}});
+    }
 }
 
 #[cfg(test)]

@@ -43,6 +43,7 @@ mod initial_access_tokens;
 mod invitations;
 mod key_store;
 mod keys;
+pub mod kubernetes_online;
 mod ldap_sync;
 mod native_sso;
 mod notifications;

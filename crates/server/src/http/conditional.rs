@@ -64,6 +64,7 @@ pub(crate) struct ConditionalAccess {
     capabilities: Capabilities,
     kek: Arc<dyn asterius_jose::Kek>,
     audit: Arc<dyn AuditSink>,
+    device_anchors: Arc<std::collections::BTreeMap<String,asterius_domain::managed_devices::LeafFingerprint>>,
 }
 
 #[derive(Clone, Copy)]
@@ -72,6 +73,7 @@ struct Principal<'a> {
     subject: Option<&'a str>,
     authentication: Option<&'a GrantAuthentication>,
     grant: Option<&'a Grant>,
+    device: Option<&'a Fact>,
 }
 
 impl ConditionalAccess {
@@ -86,7 +88,14 @@ impl ConditionalAccess {
             capabilities,
             kek,
             audit,
+            device_anchors: Arc::new(std::collections::BTreeMap::new()),
         }
+    }
+
+    pub(crate) fn with_device_anchors(mut self,
+        anchors: Arc<std::collections::BTreeMap<String,asterius_domain::managed_devices::LeafFingerprint>>) -> Self {
+        self.device_anchors=anchors;
+        self
     }
 
     /// Necessary before grant side effects; the signing boundary rechecks it.
@@ -97,6 +106,14 @@ impl ConditionalAccess {
         grant: &Grant,
         kind: GrantType,
         now: OffsetDateTime,
+    ) -> Result<bool, DomainError> {
+        self.check_grant_fact(tenant, client, grant, kind, now, None).await
+    }
+
+    #[expect(clippy::too_many_arguments, reason = "Exact issuance context and the separately verified device fact must remain explicit")]
+    async fn check_grant_fact(
+        &self, tenant: &Tenant, client: &Client, grant: &Grant,
+        kind: GrantType, now: OffsetDateTime, device: Option<&Fact>,
     ) -> Result<bool, DomainError> {
         if grant.tenant != tenant.id || client.tenant != tenant.id || grant.client != client.id {
             return Err(DomainError::invalid(
@@ -124,6 +141,7 @@ impl ConditionalAccess {
                 .map(asterius_domain::SubjectId::as_str),
             authentication,
             grant: Some(grant),
+            device,
         };
         self.check(tenant, client, action(kind), input, now).await
     }
@@ -239,6 +257,9 @@ impl ConditionalAccess {
             .read(&tenant.id, &client.id)
             .await?;
         let mut facts = Self::connection_facts(scope, now);
+        if let Some(device) = input.device {
+            facts.insert(FactName::DeviceCompliance, device.clone());
+        }
         if let Some(sensitivity) = classification.as_ref().and_then(|value| value.sensitivity) {
             facts.insert(
                 FactName::ApplicationSensitivity,
@@ -613,6 +634,21 @@ impl super::agent_issuance::ConditionalGuard for ConditionalAccess {
     ) -> Result<bool, DomainError> {
         self.check_grant(tenant, client, grant, kind, now).await
     }
+    async fn permits_bound(
+        &self, tenant: &Tenant, client: &Client, grant: &Grant,
+        kind: GrantType, now: OffsetDateTime,
+        binding: Option<&asterius_domain::managed_devices::DeviceBinding>,
+    ) -> Result<bool, DomainError> {
+        let mut fence = PgPolicies::new(self.store.pool().clone())
+            .signing_fence(&tenant.id, &tenant.issuer).await?;
+        let device = asterius_store_pg::PgManagedDevices::resolve_for_grant_on(
+            fence.connection(), &tenant.id, grant, binding,
+            self.device_anchors.get(tenant.id.as_str()),
+        ).await?;
+        let permitted = self.check_grant_fact(tenant, client, grant, kind, now, Some(&device)).await?;
+        fence.commit().await?;
+        Ok(permitted)
+    }
 }
 
 /// Uses one policy snapshot for both the base PDP and its application guard.
@@ -737,6 +773,7 @@ impl asterius_domain::ports::PolicyEngine for ConditionalPolicyEngine {
                 subject: Some(question.subject.id()),
                 authentication,
                 grant: exact,
+                device: None,
             };
             let resolved = self
                 .access
@@ -963,6 +1000,7 @@ impl super::authorize::ConditionalAuthorization for ConditionalAccess {
                 subject: Some(subject.as_str()),
                 authentication: Some(&authentication),
                 grant: None,
+                device: None,
             };
             let request = self
                 .resolve(tenant, &client, "authorize", &policy, scope, input, now)
@@ -1020,6 +1058,7 @@ impl super::authorize::ConditionalAuthorization for ConditionalAccess {
                 .map(asterius_domain::SubjectId::as_str),
             authentication: grant.authentication.as_ref(),
             grant: Some(grant),
+            device: None,
         };
         self.check(tenant, client, "authorize", input, now).await
     }
@@ -1109,6 +1148,23 @@ fn signed_roles_current(
         }
     }
     true
+}
+
+// Registration opt-in alone cannot release a role omitted from this actual ID token.
+fn identity_role_released(
+    claims: &serde_json::Value,
+    identity: &asterius_domain::temporary_kubernetes::KubernetesJitIdentity,
+) -> bool {
+    claims
+        .get("resource_access")
+        .and_then(|access| access.get(&identity.client_id))
+        .and_then(|access| access.get("roles"))
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|roles| {
+            roles
+                .iter()
+                .any(|role| role.as_str() == Some(identity.role.as_str()))
+        })
 }
 
 impl<'a> ConditionalSigner<'a> {
@@ -1250,7 +1306,19 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
         typ: &'static str,
         claims: &serde_json::Value,
     ) -> Result<asterius_domain::CompactJws, DomainError> {
-        if grant.tenant != *tenant
+        self.sign_identity_bound(tenant,grant,None,algorithm,typ,claims).await
+    }
+    async fn sign_identity_bound(
+        &self,
+        tenant: &asterius_domain::TenantId,
+        grant: &Grant,
+        binding: Option<&asterius_domain::managed_devices::DeviceBinding>,
+        algorithm: Option<asterius_domain::SigningAlgorithm>,
+        typ: &'static str,
+        claims: &serde_json::Value,
+    ) -> Result<asterius_domain::CompactJws, DomainError> {
+        if claims.get("asterius_jit").is_some()
+            || grant.tenant != *tenant
             || claims.get("iss").and_then(serde_json::Value::as_str)
                 != Some(self.tenant.issuer.as_str())
             || !matches!(typ, "JWT" | "dpop+id_token")
@@ -1266,22 +1334,97 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
         }
         if let Some(prepared) = self.prepare(tenant, algorithm).await? {
             return prepared
-                .sign_identity(tenant, grant, algorithm, typ, claims)
+                .sign_identity_bound(tenant, grant, binding, algorithm, typ, claims)
                 .await;
         }
-        let transaction = self.fence(tenant).await?;
+        let mut transaction = self.fence(tenant).await?;
+        let device = asterius_store_pg::PgManagedDevices::resolve_for_grant_on(
+            transaction.connection(), tenant, grant, binding,
+            self.access.device_anchors.get(tenant.as_str()),
+        ).await?;
         let held = self.current_roles(tenant, grant, claims).await?;
+        let mut identity_claims = claims.clone();
+        let identity =
+            asterius_store_pg::PgTemporaryEntitlements::kubernetes_identity_for_grant_on(
+                transaction.connection(),
+                tenant,
+                grant,
+                &held,
+            )
+            .await?
+            .filter(|identity| identity_role_released(claims, identity));
+        let online = asterius_store_pg::kubernetes_online::enabled_on(
+            transaction.connection(),tenant,&grant.client).await?;
+        if online {
+            if identity.is_some() || typ!="JWT" || algorithm!=Some(asterius_domain::SigningAlgorithm::Es256) {
+                return Err(DomainError::invalid("kubernetes_online","plain ES256 online identity required"));
+            }
+            let issued = identity_claims.get("iat").and_then(serde_json::Value::as_i64)
+                .ok_or_else(|| DomainError::invalid("id_token","integer issue time required"))?;
+            let expiry = identity_claims.get("exp").and_then(serde_json::Value::as_i64)
+                .ok_or_else(|| DomainError::invalid("id_token","integer expiry required"))?;
+            identity_claims["exp"]=serde_json::json!(expiry.min(issued.saturating_add(300)));
+        }
+        if let Some(identity) = &identity {
+            if algorithm != Some(asterius_domain::SigningAlgorithm::Es256) {
+                return Err(DomainError::invalid(
+                    "id_token",
+                    "temporary cluster identity requires ES256",
+                ));
+            }
+            let expiry = identity_claims
+                .get("exp")
+                .and_then(serde_json::Value::as_i64)
+                .ok_or_else(|| DomainError::invalid("id_token", "integer expiry required"))?;
+            let issued_at = identity_claims
+                .get("iat")
+                .and_then(serde_json::Value::as_i64)
+                .ok_or_else(|| DomainError::invalid("id_token", "integer issue time required"))?;
+            let capped = expiry
+                .min(identity.expires_at)
+                .min(issued_at.saturating_add(300));
+            if capped <= OffsetDateTime::now_utc().unix_timestamp() {
+                return Err(DomainError::invalid(
+                    "id_token",
+                    "temporary identity expired",
+                ));
+            }
+            identity_claims["exp"] = serde_json::json!(capped);
+            identity_claims["asterius_jit"] = serde_json::to_value(identity)
+                .map_err(|error| DomainError::Storage(Box::new(error)))?;
+        }
         let signed = self
             .inner
             .get()
-            .sign_identity(tenant, grant, algorithm, typ, claims)
+            .sign_identity_bound(tenant, grant, binding, algorithm, typ, &identity_claims)
             .await?;
-        if !signed_roles_current(claims, &held, &grant.client, OffsetDateTime::now_utc()) {
+        if !signed_roles_current(
+            &identity_claims,
+            &held,
+            &grant.client,
+            OffsetDateTime::now_utc(),
+        ) || identity.as_ref().is_some_and(|identity| {
+            let now = OffsetDateTime::now_utc();
+            identity.expires_at <= now.unix_timestamp()
+                || asterius_domain::RoleName::parse(&identity.role).map_or(true, |role| {
+                    !held.role_current_at(&grant.client, &role, now)
+                })
+        }) {
             return Err(DomainError::invalid(
                 "temporary_entitlement",
                 "temporary authority expired during signing",
             ));
         }
+        // Device facts retain their original deadline across awaited signing.
+        let client = self.access.store.scope(tenant.clone()).clients(self.access.capabilities)
+            .find(&grant.client).await?.ok_or(DomainError::NotFound)?;
+        let kind = if binding.is_some() { GrantType::AuthorizationCode } else { GrantType::RefreshToken };
+        if !self.access.check_grant_fact(&self.tenant, &client, grant, kind,
+            OffsetDateTime::now_utc(), Some(&device)).await? {
+            return Err(DomainError::invalid("conditional_access", "identity device authority expired during signing"));
+        }
+        asterius_store_pg::kubernetes_online::record_signed_on(
+            transaction.connection(),tenant,grant,&signed,&identity_claims).await?;
         transaction.commit().await?;
         Ok(signed)
     }
@@ -1299,7 +1442,11 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
                 .sign_access(tenant, issuance, algorithm, typ, claims)
                 .await;
         }
-        let transaction = self.fence(tenant).await?;
+        let mut transaction = self.fence(tenant).await?;
+        let device = asterius_store_pg::PgManagedDevices::resolve_for_grant_on(
+            transaction.connection(), tenant, issuance.grant, issuance.device_binding,
+            self.access.device_anchors.get(tenant.as_str()),
+        ).await?;
         let client = self
             .access
             .store
@@ -1369,12 +1516,13 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
         // the original transaction, never from an unrelated elevated session.
         if !self
             .access
-            .check_grant(
+            .check_grant_fact(
                 &self.tenant,
                 &client,
                 &narrowed,
                 issuance.kind,
                 OffsetDateTime::now_utc(),
+                Some(&device),
             )
             .await?
         {
@@ -1384,16 +1532,23 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
             ));
         }
         let held = self.current_roles(tenant, &narrowed, claims).await?;
+        let kind = issuance.kind;
         let signed = self
             .inner
             .get()
             .sign_access(tenant, issuance, algorithm, typ, claims)
             .await?;
+        asterius_store_pg::kubernetes_online::record_reviewer_token_on(
+            transaction.connection(),tenant,issuance,claims).await?;
         if !signed_roles_current(claims, &held, &narrowed.client, OffsetDateTime::now_utc()) {
             return Err(DomainError::invalid(
                 "temporary_entitlement",
                 "temporary authority expired during signing",
             ));
+        }
+        if !self.access.check_grant_fact(&self.tenant, &client, &narrowed, kind,
+            OffsetDateTime::now_utc(), Some(&device)).await? {
+            return Err(DomainError::invalid("conditional_access", "device authority expired during signing"));
         }
         transaction.commit().await?;
         Ok(signed)
@@ -1404,6 +1559,34 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn temporary_identity_requires_role_release_in_actual_id_token() {
+        let identity = asterius_domain::temporary_kubernetes::KubernetesJitIdentity {
+            binding_revision: uuid::Uuid::from_u128(1),
+            entitlement_id: uuid::Uuid::from_u128(2),
+            client_id: "app".into(),
+            resource: "https://api.example".into(),
+            permissions: vec!["read".into()],
+            role: "incident-reader".into(),
+            cluster: "incident".into(),
+            namespace: "incident".into(),
+            profile_revision: 1,
+            expires_at: 30,
+        };
+        assert!(identity_role_released(
+            &json!({"resource_access":{"app":{"roles":["incident-reader"]}}}),
+            &identity
+        ));
+        for claims in [
+            json!({}),
+            json!({"roles":["incident-reader"]}),
+            json!({"resource_access":{"other":{"roles":["incident-reader"]}}}),
+            json!({"resource_access":{"app":{"roles":["reader"]}}}),
+        ] {
+            assert!(!identity_role_released(&claims, &identity));
+        }
+    }
+
     #[test]
     fn temporary_signed_roles_require_current_authority_and_exclusive_expiry() {
         let client = asterius_domain::ClientId::new("app");
