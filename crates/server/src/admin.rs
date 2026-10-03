@@ -261,12 +261,25 @@ impl AdminTokens for AutomationTokens {
             return Ok(None);
         }
 
-        let scopes = verified
+        let scopes: std::collections::BTreeSet<String> = verified
             .claim_str("scope")
             .unwrap_or_default()
             .split_ascii_whitespace()
             .map(str::to_owned)
             .collect();
+        // These dedicated scopes require an exact private receipt created only
+        // after successful client-credentials signing, not merely a client-shaped sub.
+        if scopes.contains("admin.kubernetes_reviews:read")
+            && !self.status.reviewer_token_current(&issuer.id, &client_id, jti).await?
+        {
+            return Ok(None);
+        }
+        if (scopes.contains(asterius_domain::managed_devices::ENROLLMENT_SCOPE)
+            || scopes.contains(asterius_domain::managed_devices::POSTURE_SCOPE))
+            && !self.status.device_relay_token_current(&issuer.id, &client_id, jti).await?
+        {
+            return Ok(None);
+        }
         let tenant = if self.reserved_tenant.as_ref() == Some(&issuer.id) {
             None
         } else {
@@ -289,6 +302,14 @@ trait AutomationTokenStatus: std::fmt::Debug + Send + Sync {
         query: &asterius_domain::agent_tasks::TokenQuery,
     ) -> Result<bool, DomainError> {
         Ok(query.approval.is_none())
+    }
+
+    async fn reviewer_token_current(&self, _tenant: &TenantId, _client: &ClientId, _jti: &str) -> Result<bool, DomainError> {
+        Ok(false)
+    }
+
+    async fn device_relay_token_current(&self, _tenant: &TenantId, _client: &ClientId, _jti: &str) -> Result<bool, DomainError> {
+        Ok(false)
     }
 
     async fn is_denylisted(&self, tenant: &TenantId, jti: &str) -> Result<bool, DomainError>;
@@ -318,6 +339,15 @@ impl AutomationTokenStatus for PgAutomationTokenStatus {
             .grants()
             .task_token_active(query)
             .await
+    }
+
+    async fn reviewer_token_current(&self, tenant: &TenantId, client: &ClientId, jti: &str) -> Result<bool, DomainError> {
+        asterius_store_pg::kubernetes_online::PgKubernetesOnline::new(self.store.pool().clone())
+            .reviewer_token_current(tenant, client, jti).await
+    }
+
+    async fn device_relay_token_current(&self, tenant: &TenantId, client: &ClientId, jti: &str) -> Result<bool, DomainError> {
+        asterius_store_pg::PgManagedDevices::relay_token_current_in(self.store.pool(), tenant, client, jti).await
     }
 
     async fn is_denylisted(&self, tenant: &TenantId, jti: &str) -> Result<bool, DomainError> {

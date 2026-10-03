@@ -488,9 +488,15 @@ impl PgManagedDevices {
     /// # Errors
     /// Storage failure never acquires service authority.
     pub async fn relay_token_current(&self, tenant: &TenantId, client: &ClientId, jti: &str) -> Result<bool, DomainError> {
-        let mut connection = self.pool.acquire().await.map_err(to_domain_error)?;
+        Self::relay_token_current_in(&self.pool, tenant, client, jti).await
+    }
+
+    /// Verify a private successful-issuance receipt before accepting relay authority.
+    pub async fn relay_token_current_in(pool: &PgPool, tenant: &TenantId, client: &ClientId, jti: &str) -> Result<bool, DomainError> {
+        let mut connection = pool.acquire().await.map_err(to_domain_error)?;
         relay_token_current_on(&mut connection, tenant, client, jti).await
     }
+
 }
 
 async fn relay_token_current_on(
