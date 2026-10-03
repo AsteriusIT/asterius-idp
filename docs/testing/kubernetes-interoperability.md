@@ -90,3 +90,25 @@ without disclosing rendezvous paths or queries. Origin validation remains strict
 
 CI publishes only `artifacts/kubernetes-e2e.json`; no JWTs, refresh tokens,
 credential-store contents, client keys or admin kubeconfigs are artifacts.
+
+## Recorded controlled run
+
+[The public evidence](kubernetes-interoperability-evidence.json) records all 15
+checks on 2026-10-03, with the tested binary hash and source revisions. The final
+composed Rust gate passed 65 targeted tests, fmt and clippy; new PostgreSQL
+regressions remain ignored locally and are explicitly selected by CI.
+
+| Boundary | Observed delay |
+| --- | ---: |
+| Group removal, denial after genuine refresh | 0.364 s |
+| Account disable, genuine refresh denied | 0.310 s |
+| Disabled account's held offline JWT, native refusal at signed expiry | 296.760 s |
+| Local logout's held offline JWT, native refusal at signed expiry | 300.051 s |
+| Emergency rotation, new credential accepted after native key-cache propagation | 196.315 s |
+
+The rotation measurement begins with the first post-cooldown refreshed
+credential, after a separate 31-second broker JWKS cooldown. These are observations
+for this controlled run, rather than tighter guarantees than the configured
+five-minute JWT/JWKS lifetimes. The launcher completed successfully and removed
+its own cluster, sidecars, Secret Service and database; the existing local cluster
+was not reconfigured. CI owns repetition of this broad composition.
