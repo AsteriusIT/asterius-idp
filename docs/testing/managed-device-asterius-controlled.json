@@ -30,10 +30,10 @@
     "revoked_exact_cc_grant_invalidates_relay_authority"
   ],
   "passed": 26,
-  "binary_source_commit": "372a51de",
-  "binary_sha256": "11f0d89427097dd2d4797311abea5e0fb26b973838fa3bebb70e531f453785ca",
-  "migration_count": 114,
-  "observed_at": "2026-10-03T22:00:34Z",
+  "binary_source_commit": "d3f395c5",
+  "binary_sha256": "6c8cd8c81dc7ab3f144aba650321074bf19ece522e637a1295cf2cdbf3a1b95a",
+  "migration_count": 115,
+  "observed_at": "2026-10-03T23:14:22Z",
   "human_authentication": {
     "refresh": "seeded offline refresh grants",
     "authorization_code": "actual Chromium password and UV WebAuthn registration/assertion via virtual CTAP2 authenticator; signed ID amr pop+user verified; no seeded authentication class proof"
@@ -50,7 +50,7 @@
     "scripts/managed-devices/proxy.mjs": "9e2a5be152f904fae4a5e7cffe95e25572b92d2e26968f996db6ab22798cf5bc",
     "scripts/managed-devices/prepare-pki.sh": "a41730f257eac2ef1e6093b249a59c8b8d573a64e63f99d2fa4614fe6971ea73"
   },
-  "removal_to_refusal_seconds": 0.357,
+  "removal_to_refusal_seconds": 0.367,
   "stale_time_test": "controlled_database_timestamp_perturbation_not_real_300_second_wait",
   "source_admission": "existing exact-realm tenant administrator role/session policy and CSRF; no additional UV requirement",
   "candidate_gate": {
@@ -64,5 +64,18 @@
   "additional_assertions": [
     "source PUT omitted revision returns400",
     "source PUT null revision returns400"
-  ]
+  ],
+  "previous_runtime_baseline": {
+    "binary_source_commit": "372a51de",
+    "binary_sha256": "11f0d89427097dd2d4797311abea5e0fb26b973838fa3bebb70e531f453785ca",
+    "migration_count": 114,
+    "observed_at": "2026-10-03T22:00:34Z",
+    "passed": 26,
+    "removal_to_refusal_seconds": 0.357
+  },
+  "final_identity_grant_fence": {
+    "normal_original_code_issuance": "passed on corrected composed binary",
+    "concurrent_withdrawal_regression": "separate ignored PostgreSQL tests; reserved for CI, not run by this HTTP/browser fixture",
+    "owned_resources": "all owned database, private PKI directory and three listeners cleaned"
+  }
 }
