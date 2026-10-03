@@ -1,0 +1,10 @@
+/terraform-provider-asterius
+/bin/
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfplan
+*.pem
+*.der
+*.key
+*.log
