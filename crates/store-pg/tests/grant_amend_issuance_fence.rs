@@ -42,10 +42,20 @@ async fn grant_amend_issuance_fence_refuses_stale_revision_but_preserves_claim_a
         .create(&original)
         .await
         .expect("create exact grant");
-    repository
+    let claimed = repository
         .claim(&original.id, now)
         .await
-        .expect("claim stamps authority without changing revision");
+        .expect("claim stamps authority without changing generation");
+    assert_eq!(claimed.id(), &original.id);
+    let after_claim = repository
+        .find(&original.id)
+        .await
+        .expect("load claimed grant")
+        .expect("grant");
+    assert_eq!(
+        after_claim.authority_revision, original.authority_revision,
+        "first claim changes bookkeeping time but preserves authority generation"
+    );
     let mut narrowed = original.clone();
     narrowed.scopes = ["openid".to_owned()].into();
     let mut signing = PgPolicies::new(pool.clone())

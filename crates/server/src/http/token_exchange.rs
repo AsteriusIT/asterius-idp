@@ -271,6 +271,8 @@ struct Ceiling {
     user: Option<asterius_domain::UserId>,
     /// The grant the subject token was minted from, when there is one.
     parent: Option<GrantId>,
+    /// Private exact source revision captured before any ceiling is copied.
+    parent_derivation: Option<asterius_domain::ParentDerivation>,
     /// The scopes the exchanged token may not exceed.
     scopes: BTreeSet<String>,
     /// The RFC 8707 resources the exchanged token may not exceed. Empty means
@@ -554,6 +556,8 @@ impl TokenExchange<'_> {
         grant.scopes = scopes.clone();
         grant.resources.insert(tenant.issuer.as_str().to_owned());
         grant.parent = Some(source_grant.id.clone());
+        grant.parent_derivation =
+            Some(asterius_domain::ParentDerivation::from_grant(&source_grant));
         grant.session = Some(SessionId::new(binding.session_digest.clone()));
         grant.authentication = source_grant.authentication.clone();
         grant.claimed_at = Some(self.now);
@@ -854,6 +858,9 @@ impl TokenExchange<'_> {
         grant.resources = subject.resources.clone();
         grant.actor_chain = chain.clone();
         grant.parent = subject.parent.clone();
+        grant
+            .parent_derivation
+            .clone_from(&subject.parent_derivation);
         // Claimed at birth: the row exists because a credential is being taken
         // from it, and a `Pending` grant here would be collected by the sweep
         // that deletes abandoned ones while its token was still live.
@@ -1007,6 +1014,7 @@ impl TokenExchange<'_> {
                     subject,
                     user: None,
                     parent: None,
+                    parent_derivation: None,
                     scopes: BTreeSet::new(),
                     resources: BTreeSet::new(),
                     chain: Vec::new(),
@@ -1096,7 +1104,9 @@ impl TokenExchange<'_> {
             };
             resources = resources.intersection(&token_resources).cloned().collect();
         }
+        let parent_derivation = Some(asterius_domain::ParentDerivation::from_grant(&parent));
         Ok(Ceiling {
+            parent_derivation,
             subject: subject.or_else(|| parent.subject.clone()),
             user: parent.user,
             parent: Some(parent.id),

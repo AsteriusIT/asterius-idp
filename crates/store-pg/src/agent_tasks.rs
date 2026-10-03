@@ -309,9 +309,14 @@ impl PgAgentTasks {
             if !required || grant.user.is_some() || grant.parent.is_some() {
                 return Err(invalid());
             }
-            let root:Uuid=sqlx::query_scalar("select root_grant_id from agent_tasks where tenant_id=$1 and task_id=$2 and initiating_client_id=$3")
+            let (root, revision): (Uuid, Uuid) = sqlx::query_as("select t.root_grant_id,g.authority_revision from agent_tasks t join grants g on g.tenant_id=t.tenant_id and g.grant_id=t.root_grant_id where t.tenant_id=$1 and t.task_id=$2 and t.initiating_client_id=$3")
                 .bind(grant.tenant.as_str()).bind(task).bind(grant.client.as_str()).fetch_optional(&self.pool).await.map_err(to_domain_error)?.ok_or_else(invalid)?;
-            grant.parent = Some(asterius_domain::GrantId::new(root.to_string()));
+            let root = asterius_domain::GrantId::new(root.to_string());
+            grant.parent_derivation = Some(asterius_domain::ParentDerivation::from_stored(
+                root.clone(),
+                revision,
+            ));
+            grant.parent = Some(root);
         }
         let lookup = grant.parent.as_ref().unwrap_or(&grant.id);
         let row=sqlx::query("select t.task_id,t.root_grant_id,t.approval_revision,t.expires_at,t.revoked_at,t.permissions,g.authorization_details as source_details from agent_tasks t join agent_task_grants b using(tenant_id,task_id,root_grant_id,approval_revision) join grants g on g.tenant_id=b.tenant_id and g.grant_id=b.grant_id where b.tenant_id=$1 and b.grant_id=$2")
@@ -412,11 +417,6 @@ async fn principal_locks(
     expected.push(recipient.to_string());
     expected.sort();
     expected.dedup();
-    let active:bool=sqlx::query_scalar("select exists(select 1 from (select user_id from users where tenant_id=$1 and user_id=$2 and status='active' for share) u)")
-        .bind(tenant.as_str()).bind(owner).fetch_one(&mut *connection).await.map_err(to_domain_error)?;
-    if !active {
-        return Err(invalid());
-    }
     let clients=sqlx::query("select client_id,is_agent,agent_owner_user_id from clients where tenant_id=$1 and client_id=any($2) and status='active' order by client_id for share")
         .bind(tenant.as_str()).bind(&expected).fetch_all(connection).await.map_err(to_domain_error)?;
     if clients.len() != expected.len()
@@ -425,6 +425,11 @@ async fn principal_locks(
                 && row.get::<Option<Uuid>, _>("agent_owner_user_id") != Some(*owner)
         })
     {
+        return Err(invalid());
+    }
+    let active:bool=sqlx::query_scalar("select exists(select 1 from (select user_id from users where tenant_id=$1 and user_id=$2 and status='active' for share) u)")
+        .bind(tenant.as_str()).bind(owner).fetch_one(&mut *connection).await.map_err(to_domain_error)?;
+    if !active {
         return Err(invalid());
     }
     let initiator = clients
@@ -955,6 +960,8 @@ impl TaskSigner<'_> {
         .execute(&mut *tx)
         .await
         .map_err(to_domain_error)?;
+        let authority =
+            crate::PgGrantRepository::lock_issuance_authority_on(&mut tx, tenant, grant).await?;
         let token = self
             .inner
             .sign(tenant, algorithm, typ, &signed_claims)
@@ -965,7 +972,8 @@ impl TaskSigner<'_> {
             .fetch_one(&mut *tx)
             .await
             .map_err(to_domain_error)?;
-        if expires <= commit_clock || deadline <= commit_clock {
+        if expires <= commit_clock || deadline <= commit_clock || !authority.active_at(commit_clock)
+        {
             return Err(invalid());
         }
         let event = AuditEvent::new(
