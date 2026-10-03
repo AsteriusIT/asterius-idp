@@ -60,6 +60,8 @@ pub(crate) struct Authentication<'a> {
     pub acr: &'a AcrPolicy,
     /// How long a new session lives.
     pub lifetimes: Lifetimes,
+    /// Conditional reauthentication may count only methods proved now.
+    pub fresh_assurance: bool,
 }
 
 /// A session the browser may now carry.
@@ -118,7 +120,11 @@ pub(crate) async fn establish(
         // browser's step-up or silently switch the account in its interaction.
         // Local credentials retain the established fresh-login fallback.
         if session.user == user {
-            let methods = merged(&session.amr, &proved);
+            let methods = if context.fresh_assurance {
+                proved.clone()
+            } else {
+                merged(&session.amr, &proved)
+            };
             let acr = context
                 .acr
                 .assign(&methods, &requested.essential_acr, &requested.acr_values);
@@ -298,6 +304,7 @@ mod tests {
                 tenant: &tenant,
                 acr: &AcrPolicy::default(),
                 lifetimes: Lifetimes::default(),
+                fresh_assurance: false,
             },
             Stage::StepUp,
             Some(&digest),
@@ -328,6 +335,7 @@ mod tests {
                 tenant: &tenant,
                 acr: &AcrPolicy::default(),
                 lifetimes: Lifetimes::default(),
+                fresh_assurance: false,
             },
             Stage::StepUp,
             None,
@@ -341,6 +349,71 @@ mod tests {
         assert!(matches!(result, Establishment::Established(_)));
         assert_eq!(sessions.begins.load(Ordering::SeqCst), 1);
         assert_eq!(sessions.rotations.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn fresh_assurance_cannot_borrow_an_old_passkey_from_a_password_submission() {
+        let now = OffsetDateTime::UNIX_EPOCH;
+        let tenant = TenantId::new("demo");
+        let user = uuid::Uuid::from_u128(1);
+        let original = Session::begin(
+            tenant.clone(),
+            &SessionId::generate(),
+            user,
+            vec![
+                AuthenticationMethod::Passkey,
+                AuthenticationMethod::UserVerified,
+            ],
+            now,
+            Lifetimes::default(),
+        );
+        let digest = original.id_digest.clone();
+        let sessions = Sessions {
+            existing: Some(original),
+            begins: AtomicUsize::new(0),
+            rotations: AtomicUsize::new(0),
+        };
+        let requested = Requirements {
+            essential_acr: vec!["phr".to_owned()],
+            ..Requirements::default()
+        };
+        for (proved, fresh, succeeds) in [
+            (vec![AuthenticationMethod::Password], true, false),
+            (
+                vec![
+                    AuthenticationMethod::Passkey,
+                    AuthenticationMethod::UserVerified,
+                ],
+                true,
+                true,
+            ),
+            (vec![AuthenticationMethod::Password], false, true),
+        ] {
+            let rotations = sessions.rotations.load(Ordering::SeqCst);
+            let outcome = establish(
+                Authentication {
+                    sessions: &sessions,
+                    tenant: &tenant,
+                    acr: &AcrPolicy::default(),
+                    lifetimes: Lifetimes::default(),
+                    fresh_assurance: fresh,
+                },
+                Stage::StepUp,
+                Some(&digest),
+                user,
+                proved,
+                &requested,
+                now,
+            )
+            .await
+            .expect("controlled available store");
+            assert_eq!(matches!(outcome, Establishment::Established(_)), succeeds);
+            assert_eq!(
+                sessions.rotations.load(Ordering::SeqCst),
+                rotations + usize::from(succeeds)
+            );
+            assert_eq!(sessions.begins.load(Ordering::SeqCst), 0);
+        }
     }
 
     /// OIDC Core §2: `amr` is the methods used. A step-up adds to them, so a

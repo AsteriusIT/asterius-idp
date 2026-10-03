@@ -128,7 +128,10 @@ original pushed client, `authorize` action and policy revision. Existing
 essential ACR requirements intersect with the remedy, and the stricter age
 bound wins. Verified completion rechecks the current policy before creating or
 amending the grant. `prompt=none` cannot create interaction or bypass a required
-step-up. Noninteractive grants return a generic refusal without sensitive
+step-up. Conditional fresh reauthentication counts only methods proved in the
+current ceremony; it cannot refresh an old passkey proof by entering a password.
+Custom combined-factor ladders requiring several fresh ceremonies are refused
+until the server can record freshness for each factor. Noninteractive grants return a generic refusal without sensitive
 policy/directory details.
 
 Publication fences cover first insert, update and deletion: a prepared
@@ -136,7 +139,10 @@ signature observes one complete policy publication. Every issuance boundary,
 including code, refresh, device, CIBA, exchange and specialized workload/native
 paths, receives the same conditional guard; final signing checks the actual
 narrowed token scopes and audiences. Task binding and server-owned implicit
-resources continue through every signer decorator.
+resources continue through every signer decorator. Authorization completion
+checks its current snapshot before creating the grant; it does not lock policy
+publication until code redemption. Configure both `authorize` and
+`authorization_code` when the policy must also govern later code redemption.
 
 Changing policy does not recall an offline JWT already accepted by a resource
 server. Online AuthZEN evaluates current policy, and existing revocation/SSF
@@ -158,3 +164,9 @@ classification/publication CAS, unavailable-device NOT/ANY, report-only, actual
 connection zones, publication/signature races, current AuthZEN policy and
 original refresh-authentication-age controls. Its seeded refresh authentication
 is a controlled input, not evidence of a live human login.
+
+The local verification record is [conditional-access-evidence.json](testing/conditional-access-evidence.json).
+It includes actual FAPI/DPoP issuance and AuthZEN controls, concurrent signing,
+publication races, and real Chromium password/WebAuthn authorization and token
+verification. The seeded refresh-age input and uninstrumented fuzz smoke are
+identified separately.

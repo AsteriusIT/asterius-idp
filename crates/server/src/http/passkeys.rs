@@ -806,6 +806,31 @@ struct VerifiedAssertion<'a> {
 /// has been decided and a session is being made of it. Nothing here can refuse
 /// an assertion that verified except the account state, which is not part of
 /// §7.2 at all.
+fn bound_requirements(
+    record: &asterius_domain::InteractionRecord,
+    state: &asterius_web::interaction::StoredState,
+) -> Result<Requirements, &'static str> {
+    let mut requested = record
+        .client_request()
+        .map(|request| Requirements::from_parameters(&request.parameters))
+        .unwrap_or_default();
+    if let Some(binding) = &state.conditional {
+        if record.client_request().is_none_or(|request| {
+            request.client.as_str() != binding.client || binding.action != "authorize"
+        }) {
+            return Err("conditional authentication binding unavailable");
+        }
+        binding.apply(&mut requested.essential_acr, &mut requested.max_age);
+    }
+
+    Ok(requested)
+}
+
+// Keep the verified assertion, bound requirements and persisted session in one transition.
+#[expect(
+    clippy::too_many_lines,
+    reason = "Verified assertion completion must apply its original conditional binding before session persistence"
+)]
 async fn session_from_assertion(
     context: &PasskeyLoginContext<'_>,
     presented: &InteractionId,
@@ -872,10 +897,10 @@ async fn session_from_assertion(
     // the client did not ask for and the requirement would fail on the token it
     // claims to satisfy. A first-party interaction has no client request and
     // asks for nothing (`ast-2vk.7`).
-    let requested = record
-        .client_request()
-        .map(|request| Requirements::from_parameters(&request.parameters))
-        .unwrap_or_default();
+    let requested = match bound_requirements(record, &state) {
+        Ok(requested) => requested,
+        Err(message) => return login_refused(message),
+    };
 
     // A session id the browser has never held before, for the reason
     // `interaction::sign_in` gives: an id it held before authenticating is one
@@ -888,6 +913,10 @@ async fn session_from_assertion(
             tenant: &context.tenant.id,
             acr: context.acr,
             lifetimes: context.lifetimes,
+            fresh_assurance: state
+                .conditional
+                .as_ref()
+                .is_some_and(|binding| binding.max_age == Some(0)),
         },
         state.stage,
         record.session.as_deref(),

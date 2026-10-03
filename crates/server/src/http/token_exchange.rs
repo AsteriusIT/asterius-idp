@@ -238,8 +238,12 @@ impl From<DomainError> for Failure {
                 "invalid_grant",
                 "task authority is not active or does not cover this request",
             ),
-            DomainError::Invalid { field: "conditional_access", .. } => Self::Client(
-                "access_denied", "access policy does not permit this request",
+            DomainError::Invalid {
+                field: "conditional_access",
+                ..
+            } => Self::Client(
+                "access_denied",
+                "access policy does not permit this request",
             ),
             other => Self::Server(other),
         }
@@ -614,7 +618,11 @@ impl TokenExchange<'_> {
             .signer
             .sign_access(
                 &tenant.id,
-                asterius_domain::keys::AccessIssuance { grant: &grant, kind: GrantType::TokenExchange, implicit_resources: &[] },
+                asterius_domain::keys::AccessIssuance {
+                    grant: &grant,
+                    kind: GrantType::TokenExchange,
+                    implicit_resources: &[],
+                },
                 access.required_algorithm(),
                 access.typ(),
                 access.claims(),
@@ -1762,7 +1770,17 @@ impl TokenExchange<'_> {
         }
         let signed = self
             .signer
-            .sign_access(&tenant.id, asterius_domain::keys::AccessIssuance { grant: &conditional_grant, kind: GrantType::TokenExchange, implicit_resources: &[] }, None, "oauth-id-jag+jwt", &claims)
+            .sign_access(
+                &tenant.id,
+                asterius_domain::keys::AccessIssuance {
+                    grant: &conditional_grant,
+                    kind: GrantType::TokenExchange,
+                    implicit_resources: &[],
+                },
+                None,
+                "oauth-id-jag+jwt",
+                &claims,
+            )
             .await?;
         let response = (
             axum::http::StatusCode::OK,

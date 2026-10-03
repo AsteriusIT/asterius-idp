@@ -366,11 +366,15 @@ fn operation_parameters(operation: &Operation) -> Vec<Value> {
 }
 
 fn conditional_documentation(operation: &Operation, object: &mut Value) {
-    if matches!(operation.id(), crate::CONDITIONAL_SETTINGS_READ_ID | crate::CONDITIONAL_SETTINGS_UPDATE_ID) {
+    if matches!(
+        operation.id(),
+        crate::CONDITIONAL_SETTINGS_READ_ID | crate::CONDITIONAL_SETTINGS_UPDATE_ID
+    ) {
         object["responses"]["200"]["content"]["application/json"]["schema"] = json!({"type":"object","required":["sensitivity","revision"],"additionalProperties":false,"properties":{"sensitivity":{"enum":[null,"standard","sensitive","critical"]},"revision":{"type":["string","null"],"format":"uuid"}}});
         if operation.id() == crate::CONDITIONAL_SETTINGS_UPDATE_ID {
             object["requestBody"] = json!({"required":true,"content":{"application/json":{"schema":{"type":"object","additionalProperties":false,"required":["sensitivity","expected_revision"],"properties":{"sensitivity":{"enum":[null,"standard","sensitive","critical"]},"expected_revision":{"type":["string","null"],"format":"uuid"}},"description":"Administrative application classification. Both keys required; null revision expects no saved settings. Exact UUID CAS; stale updates are 409. This source is independent of dynamic client registration and PEP attributes."}}}});
-            object["responses"]["409"] = error_response("The saved classification revision changed.");
+            object["responses"]["409"] =
+                error_response("The saved classification revision changed.");
         }
     }
     if operation.id() == crate::POLICY_UPDATE_ID {
@@ -393,7 +397,9 @@ fn conditional_documentation(operation: &Operation, object: &mut Value) {
             },
             "description":"64 KiB whole policy; at most 128 rules across base and conditional scopes. Conditional selectors reference registered clients and supported server enforcement actions, with no overlap. Every referenced trusted fact is mandatory before ANY/NOT. New predicates are closed and available only inside conditional scopes: application_sensitivity, network_zone, authentication_age_at_most (60..86400 seconds), device_compliance. Unknown/stale sources deny active scopes; report_only emits diagnostics. Named zones must be defined; assurance remedies must be configured attainable ACR levels. Never derives trusted facts from PEP properties."
         }}}});
-        object["responses"]["409"] = error_response("Policy revision changed, or conditional publication lacks an exact precondition.");
+        object["responses"]["409"] = error_response(
+            "Policy revision changed, or conditional publication lacks an exact precondition.",
+        );
     }
 }
 

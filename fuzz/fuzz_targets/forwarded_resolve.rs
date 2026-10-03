@@ -44,7 +44,11 @@ fuzz_target!(|data: &[u8]| {
     assert!(from_proxy.ip.is_ipv4() || from_proxy.ip.is_ipv6());
 
     let strict = forwarded::resolve_conditional(peer, &headers, &trusted);
-    assert_eq!(strict.ip, Some(peer), "an untrusted peer forged conditional origin");
+    assert_eq!(
+        strict.ip,
+        Some(peer),
+        "an untrusted peer forged conditional origin"
+    );
     let _ = forwarded::resolve_conditional(trusted_peer, &headers, &trusted);
     let mut single = headers.clone();
     single.remove("forwarded");

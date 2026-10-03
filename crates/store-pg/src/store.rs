@@ -42,7 +42,10 @@ impl Store {
         // an independent connection for current facts/audit. Reserve room for
         // those reads rather than letting signers starve their own pool.
         let slots = (pool.options().get_max_connections().saturating_sub(1) / 2).max(1);
-        Self { pool, signing_admission: std::sync::Arc::new(tokio::sync::Semaphore::new(slots as usize)) }
+        Self {
+            pool,
+            signing_admission: std::sync::Arc::new(tokio::sync::Semaphore::new(slots as usize)),
+        }
     }
 
     /// Shared across tenant/request clones; acquire before any signing fence.

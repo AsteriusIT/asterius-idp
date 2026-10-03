@@ -90,7 +90,7 @@ jobs:
       - name: operator fixture prerequisites and focused Go checks
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y python3-cryptography
+          sudo apt-get install -y python3-cryptography postgresql-client
           cd providers/terraform
           go test ./internal/operator ./internal/client -run '^Test' -count=1
           go vet ./internal/operator ./internal/client ./cmd/asterius-operator
@@ -102,6 +102,13 @@ jobs:
         env:
           ASTERIUS_BIN: ${{ github.workspace }}/target/debug/asterius
         run: ./scripts/kubernetes-e2e.sh
+      - name: conditional boundaries, concurrent signatures and browser step-up
+        env:
+          ASTERIUS_BIN: ${{ github.workspace }}/target/debug/asterius
+          ASTERIUS_ACCEPTANCE_DB_CONTAINER: ${{ job.services.postgres.id }}
+        run: |
+          bash scripts/conditional-access-acceptance.sh
+          python3 scripts/conditional/browser_acceptance.py
       - name: real structural schemas and namespace admission
         run: bash scripts/kubernetes-crd-tests.sh
       - name: real operator reconciliation and tenant isolation

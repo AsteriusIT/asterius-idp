@@ -452,7 +452,8 @@ impl TaskSigner<'_> {
         typ: &'static str,
         claims: &serde_json::Value,
     ) -> Result<asterius_domain::CompactJws, DomainError> {
-        self.sign_unbound_with(tenant, None, algorithm, typ, claims).await
+        self.sign_unbound_with(tenant, None, algorithm, typ, claims)
+            .await
     }
 
     // Preserve the exact issuance through the non-task client fence so inner
@@ -475,8 +476,14 @@ impl TaskSigner<'_> {
         }
         .ok_or_else(invalid)?;
         let mut tx = self.tasks.pool.begin().await.map_err(to_domain_error)?;
-        sqlx::query("select tenant_id from tenants where tenant_id=$1 and status='active' for share")
-            .bind(tenant.as_str()).fetch_optional(&mut *tx).await.map_err(to_domain_error)?.ok_or_else(invalid)?;
+        sqlx::query(
+            "select tenant_id from tenants where tenant_id=$1 and status='active' for share",
+        )
+        .bind(tenant.as_str())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(to_domain_error)?
+        .ok_or_else(invalid)?;
 
         sqlx::query("select client_id from clients where tenant_id=$1 and client_id=$2 and status='active' for share")
             .bind(tenant.as_str()).bind(client).fetch_optional(&mut *tx).await.map_err(to_domain_error)?.ok_or_else(invalid)?;
@@ -509,7 +516,9 @@ impl TaskSigner<'_> {
             return Err(invalid());
         }
         if let Some(issuance) = issuance {
-            if issuance.grant.task.is_some() { return Err(invalid()); }
+            if issuance.grant.task.is_some() {
+                return Err(invalid());
+            }
             let lookup = issuance.grant.parent.as_ref().unwrap_or(&issuance.grant.id);
             let lookup = Uuid::parse_str(lookup.as_str()).map_err(|_| invalid())?;
             // First approval backfills historical descendants under the root
@@ -523,7 +532,9 @@ impl TaskSigner<'_> {
                     .bind(tenant.as_str()).bind(root).fetch_optional(&mut *tx).await.map_err(to_domain_error)?.ok_or_else(invalid)?;
                 let bound: bool = sqlx::query_scalar("select exists(select 1 from agent_task_grants where tenant_id=$1 and grant_id=$2)")
                     .bind(tenant.as_str()).bind(lookup).fetch_one(&mut *tx).await.map_err(to_domain_error)?;
-                if bound { return Err(invalid()); }
+                if bound {
+                    return Err(invalid());
+                }
             } else if issuance.grant.parent.is_some() {
                 // Missing/cyclic/deeper-than-supported ancestry cannot fall
                 // back to a standalone client credential.
@@ -531,7 +542,11 @@ impl TaskSigner<'_> {
             }
         }
         let token = match issuance {
-            Some(issuance) => self.inner.sign_access(tenant, issuance, algorithm, typ, claims).await?,
+            Some(issuance) => {
+                self.inner
+                    .sign_access(tenant, issuance, algorithm, typ, claims)
+                    .await?
+            }
             None => self.inner.sign(tenant, algorithm, typ, claims).await?,
         };
         tx.commit().await.map_err(to_domain_error)?;
@@ -637,13 +652,17 @@ impl TaskSigner<'_> {
         if typ == "oauth-id-jag+jwt" {
             // ID-JAG has no task lineage protocol. Its source client must remain
             // non-task, while the inner policy receives its exact grant context.
-            return self.sign_unbound_with(tenant, Some(issuance), algorithm, typ, claims).await;
+            return self
+                .sign_unbound_with(tenant, Some(issuance), algorithm, typ, claims)
+                .await;
         }
         let lookup = grant.parent.as_ref().unwrap_or(&grant.id);
         let hint=sqlx::query("select t.task_id,t.owner_user_id,t.initiating_client_id,t.root_grant_id from agent_tasks t join agent_task_grants b using(tenant_id,task_id,root_grant_id,approval_revision) where b.tenant_id=$1 and b.grant_id=$2")
             .bind(tenant.as_str()).bind(Uuid::parse_str(lookup.as_str()).map_err(|_|invalid())?).fetch_optional(&self.tasks.pool).await.map_err(to_domain_error)?;
         let Some(hint) = hint else {
-            return self.sign_unbound_with(tenant, Some(issuance), algorithm, typ, claims).await;
+            return self
+                .sign_unbound_with(tenant, Some(issuance), algorithm, typ, claims)
+                .await;
         };
         let task_id: Uuid = hint.try_get("task_id").map_err(to_domain_error)?;
         let root: Uuid = hint.try_get("root_grant_id").map_err(to_domain_error)?;

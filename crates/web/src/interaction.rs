@@ -270,10 +270,21 @@ impl ConditionalBinding {
     /// Intersects requirements; never weakens a client's existing essential ACR.
     pub fn apply(&self, essential: &mut Vec<String>, max_age: &mut Option<u32>) {
         if let Some(acr) = &self.acr {
-            if essential.is_empty() { essential.extend(self.acceptable_acr.iter().cloned()); if essential.is_empty() { essential.push(acr.clone()); } }
-            else { essential.retain(|existing| self.acceptable_acr.contains(existing)); if essential.is_empty() { essential.push("urn:asterius:unattainable-conditional-requirement".to_owned()); } }
+            if essential.is_empty() {
+                essential.extend(self.acceptable_acr.iter().cloned());
+                if essential.is_empty() {
+                    essential.push(acr.clone());
+                }
+            } else {
+                essential.retain(|existing| self.acceptable_acr.contains(existing));
+                if essential.is_empty() {
+                    essential.push("urn:asterius:unattainable-conditional-requirement".to_owned());
+                }
+            }
         }
-        if let Some(age) = self.max_age { *max_age = Some(max_age.map_or(age, |existing| existing.min(age))); }
+        if let Some(age) = self.max_age {
+            *max_age = Some(max_age.map_or(age, |existing| existing.min(age)));
+        }
     }
 }
 
@@ -1287,7 +1298,14 @@ mod conditional_binding_tests {
     use super::*;
     #[test]
     fn conditional_requirements_intersect_existing_assurance_and_age() {
-        let binding = ConditionalBinding { client: "app".to_owned(), action: "authorize".to_owned(), policy_revision: "revision".to_owned(), acr: Some("strong".to_owned()), acceptable_acr: vec!["strong".to_owned(), "stronger".to_owned()], max_age: Some(60) };
+        let binding = ConditionalBinding {
+            client: "app".to_owned(),
+            action: "authorize".to_owned(),
+            policy_revision: "revision".to_owned(),
+            acr: Some("strong".to_owned()),
+            acceptable_acr: vec!["strong".to_owned(), "stronger".to_owned()],
+            max_age: Some(60),
+        };
         let mut essential = vec!["weak".to_owned(), "stronger".to_owned()];
         let mut age = Some(30);
         binding.apply(&mut essential, &mut age);
@@ -1295,8 +1313,20 @@ mod conditional_binding_tests {
         assert_eq!(age, Some(30));
         let mut impossible = vec!["weak".to_owned()];
         binding.apply(&mut impossible, &mut age);
-        assert_eq!(impossible, ["urn:asterius:unattainable-conditional-requirement"]);
-        let state = StoredState { conditional: Some(binding), ..StoredState::default() };
-        assert_eq!(serde_json::from_value::<StoredState>(serde_json::to_value(&state).expect("valid state")).expect("round trip"), state);
+        assert_eq!(
+            impossible,
+            ["urn:asterius:unattainable-conditional-requirement"]
+        );
+        let state = StoredState {
+            conditional: Some(binding),
+            ..StoredState::default()
+        };
+        assert_eq!(
+            serde_json::from_value::<StoredState>(
+                serde_json::to_value(&state).expect("valid state")
+            )
+            .expect("round trip"),
+            state
+        );
     }
 }

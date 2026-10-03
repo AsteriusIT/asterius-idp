@@ -154,7 +154,12 @@ impl Properties {
             return Err(RequestError::TooManyProperties);
         }
         for (name, value) in members {
-            if name.is_empty() || name.len() > MAX_PROPERTY_NAME || name == "trusted" || name.starts_with("trusted.") || name.starts_with("asterius.trusted.") {
+            if name.is_empty()
+                || name.len() > MAX_PROPERTY_NAME
+                || name == "trusted"
+                || name.starts_with("trusted.")
+                || name.starts_with("asterius.trusted.")
+            {
                 return Err(RequestError::PropertyName);
             }
             let mut nodes = 0usize;

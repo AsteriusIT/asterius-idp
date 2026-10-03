@@ -102,6 +102,13 @@ network['conditional_scopes'][0]['network_zones'] = {'loopback':['127.0.0.0/8']}
 assert publish(network) == 200
 assert app.mint()[0] == 200, 'real peer supplies network zone'
 passed('current_connection_zone')
+# More simultaneous real requests than database connections must finish without
+# the two nested signing transactions starving their own source/audit reads.
+from concurrent.futures import ThreadPoolExecutor
+with ThreadPoolExecutor(max_workers=12) as executor:
+    outcomes = list(executor.map(lambda _: Client(issuer,'app',root/'client.pem','conditional-fixture',root/'cert.pem').mint()[0], range(24)))
+assert outcomes == [200] * 24, 'bounded signing admission under concurrent load'
+passed('concurrent_composed_signatures')
 # Snapshot before an actual policy writer, followed by issuance waiting on the
 # publication fence: no signed result may escape the committed deny.
 assert publish(allow) == 200

@@ -409,7 +409,10 @@ impl RuleSet {
     /// the PDP is safe on the day it is mounted.
     #[must_use]
     pub const fn deny_all() -> Self {
-        Self { rules: Vec::new(), conditional_scopes: Vec::new() }
+        Self {
+            rules: Vec::new(),
+            conditional_scopes: Vec::new(),
+        }
     }
 
     /// Parses a document.
@@ -442,7 +445,11 @@ impl RuleSet {
     }
 
     fn from_json_inner(document: &Value, conditional: bool) -> Result<Self, PolicyDocumentError> {
-        if serde_json::to_vec(document).map_err(|_| PolicyDocumentError::Malformed("unencodable document"))?.len() > MAX_DOCUMENT_BYTES {
+        if serde_json::to_vec(document)
+            .map_err(|_| PolicyDocumentError::Malformed("unencodable document"))?
+            .len()
+            > MAX_DOCUMENT_BYTES
+        {
             return Err(PolicyDocumentError::TooLarge);
         }
         let object = document
@@ -480,27 +487,58 @@ impl RuleSet {
             rules.push(rule);
         }
 
-        if !conditional && rules.iter().filter_map(|rule| rule.when.as_ref()).any(super::conditional::contains_trusted) {
-            return Err(PolicyDocumentError::Malformed("trusted predicates require an explicit conditional scope"));
+        if !conditional
+            && rules
+                .iter()
+                .filter_map(|rule| rule.when.as_ref())
+                .any(super::conditional::contains_trusted)
+        {
+            return Err(PolicyDocumentError::Malformed(
+                "trusted predicates require an explicit conditional scope",
+            ));
         }
         let mut conditional_scopes = Vec::new();
         if let Some(value) = object.get("conditional_scopes") {
             if conditional {
-                return Err(PolicyDocumentError::Malformed("nested conditional scopes are forbidden"));
+                return Err(PolicyDocumentError::Malformed(
+                    "nested conditional scopes are forbidden",
+                ));
             }
-            let scopes = value.as_array().filter(|scopes| scopes.len() <= 64).ok_or(PolicyDocumentError::Malformed("conditional_scopes must be an array of at most 64 scopes"))?;
+            let scopes = value.as_array().filter(|scopes| scopes.len() <= 64).ok_or(
+                PolicyDocumentError::Malformed(
+                    "conditional_scopes must be an array of at most 64 scopes",
+                ),
+            )?;
             for value in scopes {
                 let scope = super::conditional::ConditionalScope::parse(value)?;
-                if conditional_scopes.iter().any(|other: &super::conditional::ConditionalScope| other.id == scope.id || (!other.clients.is_disjoint(&scope.clients) && !other.actions.is_disjoint(&scope.actions))) {
-                    return Err(PolicyDocumentError::Malformed("conditional scopes overlap or repeat identities"));
+                if conditional_scopes
+                    .iter()
+                    .any(|other: &super::conditional::ConditionalScope| {
+                        other.id == scope.id
+                            || (!other.clients.is_disjoint(&scope.clients)
+                                && !other.actions.is_disjoint(&scope.actions))
+                    })
+                {
+                    return Err(PolicyDocumentError::Malformed(
+                        "conditional scopes overlap or repeat identities",
+                    ));
                 }
                 conditional_scopes.push(scope);
             }
         }
-        if rules.len() + conditional_scopes.iter().map(|scope| scope.rules.rules().len()).sum::<usize>() > MAX_RULES {
+        if rules.len()
+            + conditional_scopes
+                .iter()
+                .map(|scope| scope.rules.rules().len())
+                .sum::<usize>()
+            > MAX_RULES
+        {
             return Err(PolicyDocumentError::TooManyRules);
         }
-        Ok(Self { rules, conditional_scopes })
+        Ok(Self {
+            rules,
+            conditional_scopes,
+        })
     }
 
     /// The rules, in the order they were written.
@@ -534,7 +572,12 @@ impl RuleSet {
             "rules": self.rules.iter().map(rule_to_json).collect::<Vec<_>>(),
         });
         if !self.conditional_scopes.is_empty() {
-            document["conditional_scopes"] = Value::Array(self.conditional_scopes.iter().map(super::conditional::ConditionalScope::to_json).collect());
+            document["conditional_scopes"] = Value::Array(
+                self.conditional_scopes
+                    .iter()
+                    .map(super::conditional::ConditionalScope::to_json)
+                    .collect(),
+            );
         }
         document
     }
@@ -789,7 +832,11 @@ fn parse_condition(
             &format!("{path}.acr_at_least"),
             "an acr value",
         )?)),
-        _ => super::conditional::TrustedPredicate::parse(name, body)?.map(Condition::Trusted).ok_or_else(|| PolicyDocumentError::condition(path, "no condition of that name exists")),
+        _ => super::conditional::TrustedPredicate::parse(name, body)?
+            .map(Condition::Trusted)
+            .ok_or_else(|| {
+                PolicyDocumentError::condition(path, "no condition of that name exists")
+            }),
     }
 }
 

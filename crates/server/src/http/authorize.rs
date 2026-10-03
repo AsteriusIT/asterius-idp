@@ -52,8 +52,20 @@ use time::OffsetDateTime;
 /// Server policy adapter; browser parameters never construct these requirements.
 #[async_trait::async_trait]
 pub trait ConditionalAuthorization: std::fmt::Debug + Send + Sync {
-    async fn prepare(&self, tenant: &Tenant, client: &ClientId, session: Option<&Session>, now: OffsetDateTime) -> Result<Option<asterius_web::interaction::ConditionalBinding>, asterius_domain::DomainError>;
-    async fn permits(&self, tenant: &Tenant, client: &asterius_domain::Client, grant: &asterius_domain::Grant, now: OffsetDateTime) -> Result<bool, asterius_domain::DomainError>;
+    async fn prepare(
+        &self,
+        tenant: &Tenant,
+        client: &ClientId,
+        session: Option<&Session>,
+        now: OffsetDateTime,
+    ) -> Result<Option<asterius_web::interaction::ConditionalBinding>, asterius_domain::DomainError>;
+    async fn permits(
+        &self,
+        tenant: &Tenant,
+        client: &asterius_domain::Client,
+        grant: &asterius_domain::Grant,
+        now: OffsetDateTime,
+    ) -> Result<bool, asterius_domain::DomainError>;
 }
 
 /// What the handler needs.
@@ -126,6 +138,10 @@ impl std::fmt::Debug for AuthorizeContext<'_> {
 ///
 /// `parameters` are the query or form pairs, whichever verb was used — OIDC
 /// Core §3.1.2.1 permits both and they carry the same two values.
+#[expect(
+    clippy::too_many_lines,
+    reason = "The pushed request, consent and bound conditional step-up form one authorization state transition"
+)]
 pub async fn authorize(
     context: AuthorizeContext<'_>,
     parameters: &[(String, String)],
@@ -190,13 +206,27 @@ pub async fn authorize(
     // towards displaying one.
     let mut requirements = requirements(&context, &stored);
     let binding = match &context.conditional {
-        Some(guard) => match guard.prepare(context.tenant, &stored.client, context.session, now).await {
+        Some(guard) => match guard
+            .prepare(context.tenant, &stored.client, context.session, now)
+            .await
+        {
             Ok(binding) => binding,
-            Err(error) => { tracing::warn!(%error, "conditional authorization refused"); return refuse(&context, &stored, Unmet::UnmetAuthenticationRequirements, now).await; }
+            Err(error) => {
+                tracing::warn!(%error, "conditional authorization refused");
+                return refuse(
+                    &context,
+                    &stored,
+                    Unmet::UnmetAuthenticationRequirements,
+                    now,
+                )
+                .await;
+            }
         },
         None => None,
     };
-    if let Some(binding) = &binding { binding.apply(&mut requirements.essential_acr, &mut requirements.max_age); }
+    if let Some(binding) = &binding {
+        binding.apply(&mut requirements.essential_acr, &mut requirements.max_age);
+    }
     // The `sub` this client sees for the session's user, resolved whenever
     // there is a usable session. It used to be resolved only for an
     // `id_token_hint`, on the grounds that a lookup per browser hit is not
@@ -278,7 +308,17 @@ pub async fn authorize(
     // and none of them is a question the interaction can re-decide, because the
     // browser's cookie is not something it resolves.
     match decision {
-        Interaction::StepUp => begin_at(&context, &id.digest(), Stage::StepUp, None, binding.clone(), now).await,
+        Interaction::StepUp => {
+            begin_at(
+                &context,
+                &id.digest(),
+                Stage::StepUp,
+                None,
+                binding.clone(),
+                now,
+            )
+            .await;
+        }
         // Two arrivals at one stage, because from here they are the same fact:
         // the person is signed in and the only thing that might still be owed
         // is a decision.
@@ -307,10 +347,26 @@ pub async fn authorize(
             } else {
                 None
             };
-            begin_at(&context, &id.digest(), Stage::Consent, username, binding.clone(), now).await;
+            begin_at(
+                &context,
+                &id.digest(),
+                Stage::Consent,
+                username,
+                binding.clone(),
+                now,
+            )
+            .await;
         }
         Interaction::Login | Interaction::SelectAccount | Interaction::Register => {
-            begin_at(&context, &id.digest(), Stage::Login, None, binding.clone(), now).await;
+            begin_at(
+                &context,
+                &id.digest(),
+                Stage::Login,
+                None,
+                binding.clone(),
+                now,
+            )
+            .await;
         }
         Interaction::Refuse(_) => {}
     }

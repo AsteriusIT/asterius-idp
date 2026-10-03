@@ -2857,8 +2857,12 @@ impl DeploymentUsers {
 
 #[async_trait::async_trait]
 impl AdminBackend for Deployment {
-    fn conditional_settings(&self) -> Option<Arc<dyn asterius_domain::policy::conditional::ConditionalSettings>> {
-        Some(Arc::new(asterius_store_pg::PgConditionalSettings::new(self.store.pool().clone())))
+    fn conditional_settings(
+        &self,
+    ) -> Option<Arc<dyn asterius_domain::policy::conditional::ConditionalSettings>> {
+        Some(Arc::new(asterius_store_pg::PgConditionalSettings::new(
+            self.store.pool().clone(),
+        )))
     }
 
     fn management(&self) -> Option<Arc<dyn asterius_domain::declarative::Management>> {

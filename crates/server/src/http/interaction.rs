@@ -963,6 +963,10 @@ struct SuccessfulAuthentication<'a> {
     now: OffsetDateTime,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "Verified authentication and the original conditional binding must pass the same session/step-up/consent transition"
+)]
 async fn authenticated(
     context: &InteractionContext<'_>,
     presented: &InteractionId,
@@ -1002,8 +1006,14 @@ async fn authenticated(
         .map(|request| Requirements::from_parameters(&request.parameters))
         .unwrap_or_default();
     if let Some(binding) = &state.conditional {
-        if record.client_request().is_none_or(|request| request.client.as_str() != binding.client || binding.action != "authorize") {
-            return error_page(context, StatusCode::BAD_REQUEST, InteractionError::NotAvailable);
+        if record.client_request().is_none_or(|request| {
+            request.client.as_str() != binding.client || binding.action != "authorize"
+        }) {
+            return error_page(
+                context,
+                StatusCode::BAD_REQUEST,
+                InteractionError::NotAvailable,
+            );
         }
         binding.apply(&mut requested.essential_acr, &mut requested.max_age);
     }
@@ -1020,6 +1030,10 @@ async fn authenticated(
             tenant: &context.tenant.id,
             acr: context.acr,
             lifetimes: context.lifetimes,
+            fresh_assurance: state
+                .conditional
+                .as_ref()
+                .is_some_and(|binding| binding.max_age == Some(0)),
         },
         state.stage,
         record.session.as_deref(),
@@ -2020,9 +2034,12 @@ async fn mint(
     }
     if let Some(guard) = &context.conditional {
         match guard.permits(context.tenant, &client, &grant, now).await {
-            Ok(true) => {},
+            Ok(true) => {}
             Ok(false) => return Err("access_denied"),
-            Err(error) => { tracing::warn!(%error, "conditional completion refused"); return Err("access_denied"); }
+            Err(error) => {
+                tracing::warn!(%error, "conditional completion refused");
+                return Err("access_denied");
+            }
         }
     }
     let amendment = amended(context, &request.parameters, &mut grant, user, now).await?;

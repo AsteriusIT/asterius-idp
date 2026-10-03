@@ -200,8 +200,12 @@ impl From<DomainError> for Failure {
                 "invalid_grant",
                 "task authority is not active or does not cover this request",
             ),
-            DomainError::Invalid { field: "conditional_access", .. } => Self::Client(
-                "access_denied", "access policy does not permit this request",
+            DomainError::Invalid {
+                field: "conditional_access",
+                ..
+            } => Self::Client(
+                "access_denied",
+                "access policy does not permit this request",
             ),
             other => Self::Server(other),
         }
