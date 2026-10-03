@@ -121,6 +121,7 @@ struct AuthorityRow {
     claimed_at: Option<OffsetDateTime>,
     revoked_at: Option<OffsetDateTime>,
     expires_at: Option<OffsetDateTime>,
+    updated_at: OffsetDateTime,
 }
 
 /// The grant repository for one tenant.
@@ -178,6 +179,7 @@ impl PgGrantRepository {
         }
         let mut parent = child.clone();
         parent.id = parent_id.clone();
+        parent.updated_at = row.updated_at;
         parent.client = ClientId::new(row.client_id);
         parent.parent = row.parent_grant_id.map(|id| GrantId::new(id.to_string()));
         Self::lock_issuance_authority_on(connection, tenant, &parent).await
@@ -257,9 +259,25 @@ impl PgGrantRepository {
                 || locked.user_id != expected.user_id
                 || locked.subject != expected.subject
                 || locked.parent_grant_id != expected.parent_grant_id
+                || locked.updated_at != expected.updated_at
             {
                 return Err(authority_invalid());
             }
+        }
+        // Match the loaded grant revision using PostgreSQL's same timestamptz
+        // encoding as insertion. Claim only stamps claimed_at; target narrowing
+        // and task preparation leave this durable permission/auth revision intact.
+        let same_revision: bool = sqlx::query_scalar(
+            "select updated_at=$3 from grants where tenant_id=$1 and grant_id=$2",
+        )
+        .bind(tenant.as_str())
+        .bind(uuid(&grant.id)?)
+        .bind(grant.updated_at)
+        .fetch_one(&mut *connection)
+        .await
+        .map_err(to_domain_error)?;
+        if !same_revision {
+            return Err(authority_invalid());
         }
         let now: OffsetDateTime = sqlx::query_scalar("select clock_timestamp()")
             .fetch_one(&mut *connection)
@@ -1183,9 +1201,9 @@ async fn authority_row_on(
     lock: bool,
 ) -> Result<Option<AuthorityRow>, DomainError> {
     let query = if lock {
-        "select grant_id,client_id,user_id,subject,parent_grant_id,claimed_at,revoked_at,expires_at from grants where tenant_id=$1 and grant_id=$2 for share"
+        "select grant_id,client_id,user_id,subject,parent_grant_id,claimed_at,revoked_at,expires_at,updated_at from grants where tenant_id=$1 and grant_id=$2 for share"
     } else {
-        "select grant_id,client_id,user_id,subject,parent_grant_id,claimed_at,revoked_at,expires_at from grants where tenant_id=$1 and grant_id=$2"
+        "select grant_id,client_id,user_id,subject,parent_grant_id,claimed_at,revoked_at,expires_at,updated_at from grants where tenant_id=$1 and grant_id=$2"
     };
     sqlx::query_as(query)
         .bind(tenant.as_str())
