@@ -15276,6 +15276,25 @@ mod tests {
             // This fixture intentionally supplies neither settings nor trust ports;
             // valid requests must reach that precise unavailable boundary.
             assert_eq!(status, StatusCode::NOT_FOUND);
+        } else if matches!(
+            operation.id(),
+            "outbound_scim.list"
+                | "outbound_scim.credentials"
+                | "outbound_scim.assignments"
+                | "outbound_scim.read"
+                | "outbound_scim.create"
+                | "outbound_scim.configure"
+                | "outbound_scim.select"
+                | "outbound_scim.unselect"
+                | "outbound_scim.reconcile"
+                | "outbound_scim.preview"
+                | "outbound_scim.dry_run"
+                | "outbound_scim.lifecycle_read"
+                | "outbound_scim.lifecycle"
+        ) {
+            // Optional outbound ports are intentionally absent in this fixture.
+            // A mounted handler must identify absence rather than mask it as an outage.
+            assert_eq!(status, StatusCode::NOT_FOUND);
         } else if operation.id() == crate::KUBERNETES_PROFILE_READ_ID {
             // This fixture has no cluster profile persisted.
             assert_eq!(status, StatusCode::NOT_FOUND);
@@ -15312,6 +15331,42 @@ mod tests {
     /// Every mounted route has a handler. Without this the `match` in
     /// [`handle`] would answer 503 for a route somebody registered and forgot
     /// to wire, which looks like an outage rather than a mistake.
+    #[tokio::test]
+    async fn absent_outbound_scim_ports_do_not_bypass_console_authority() {
+        let world = World::new();
+        let administrator = world.sign_in("acme", &[Role::TenantAdmin]);
+        let unprivileged = world.sign_in("acme", &[]);
+        let foreign = world.sign_in("asterius-admin", &[Role::DeploymentAdmin]);
+        for operation in [
+            &crate::OUTBOUND_SCIM_LIST,
+            &crate::OUTBOUND_SCIM_READ,
+            &crate::OUTBOUND_SCIM_CREDENTIALS,
+            &crate::OUTBOUND_SCIM_ASSIGNMENTS,
+            &crate::OUTBOUND_SCIM_LIFECYCLE_READ,
+        ] {
+            assert_eq!(
+                world.get(operation, &administrator).await.status(),
+                StatusCode::NOT_FOUND
+            );
+            assert_eq!(
+                world.get(operation, &unprivileged).await.status(),
+                StatusCode::FORBIDDEN
+            );
+            assert_eq!(
+                world.get(operation, &foreign).await.status(),
+                StatusCode::FORBIDDEN
+            );
+        }
+        let no_role_write = world
+            .send(
+                as_console(&crate::OUTBOUND_SCIM_CREATE, &unprivileged)
+                    .body(Body::from("{}"))
+                    .expect("controlled request"),
+            )
+            .await;
+        assert_eq!(no_role_write.status(), StatusCode::FORBIDDEN);
+    }
+
     #[tokio::test]
     async fn every_registered_operation_has_a_handler() {
         // Arrange
