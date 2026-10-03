@@ -2750,7 +2750,11 @@ cumulative step-up cannot refresh an earlier proof or extend an activation.
 
 Tenant publication fences serialize authority mutation with final access and
 role-bearing ID-token signing. Current exact-grant roles and deadlines are
-rechecked before signing, and temporary-only roles cap the issued expiry.
+rechecked before and after asynchronous signing work, and temporary-only roles
+cap the issued expiry. The original local proof has a separate private freshness
+deadline: it is rechecked for issuance and policy evaluation without changing
+JWT TTL. A final clock update removes expired temporary roles and recomputes
+both active base and conditional PDP decisions after asynchronous audit work.
 Catalogue tombstones, UUID revisions and eligibility generations prevent
 disable/re-enable and delete/recreate from restoring an old activation. Live
 checks use database time even before the bounded expiration worker runs.

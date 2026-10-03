@@ -245,6 +245,10 @@ pub struct HeldRoles {
     /// Server-resolved exclusive deadlines for roles supplied by activations.
     /// Standing authority never receives a temporary deadline.
     pub temporary_deadlines: BTreeMap<ClientId, BTreeMap<RoleName, OffsetDateTime>>,
+    /// Exclusive activation deadlines above cap JWT lifetime. This separate,
+    /// private proof deadline only bounds current evaluation and issuance.
+    /// It comes from the exact grant's verified original local proof.
+    pub temporary_proof_expires_at: Option<OffsetDateTime>,
 }
 
 impl HeldRoles {
@@ -258,6 +262,7 @@ impl HeldRoles {
             tenant: BTreeSet::new(),
             clients: BTreeMap::new(),
             temporary_deadlines: BTreeMap::new(),
+            temporary_proof_expires_at: None,
         }
     }
 
@@ -290,12 +295,49 @@ impl HeldRoles {
                 .map(|roles| (client.clone(), roles.clone()))
                 .into_iter()
                 .collect(),
+            temporary_proof_expires_at: self.temporary_proof_expires_at,
             temporary_deadlines: self
                 .temporary_deadlines
                 .get(client)
                 .map(|deadlines| (client.clone(), deadlines.clone()))
                 .into_iter()
                 .collect(),
+        }
+    }
+
+    /// Whether a marked temporary role remains usable at the final clock.
+    /// Unmarked roles retain their independent standing authority.
+    #[must_use]
+    pub fn role_current_at(&self, client: &ClientId, role: &RoleName, now: OffsetDateTime) -> bool {
+        self.clients
+            .get(client)
+            .is_some_and(|roles| roles.contains(role))
+            && self
+                .temporary_deadlines
+                .get(client)
+                .and_then(|roles| roles.get(role))
+                .is_none_or(|deadline| {
+                    now < *deadline
+                        && self
+                            .temporary_proof_expires_at
+                            .is_some_and(|proof| now <= proof)
+                })
+    }
+
+    /// Remove temporary-only authority that expired during asynchronous work.
+    /// This never removes an independently held standing role.
+    pub fn retain_current_temporary_roles(&mut self, now: OffsetDateTime) {
+        let proof_current = self
+            .temporary_proof_expires_at
+            .is_some_and(|proof| now <= proof);
+        for (client, deadlines) in &self.temporary_deadlines {
+            if let Some(roles) = self.clients.get_mut(client) {
+                roles.retain(|role| {
+                    deadlines
+                        .get(role)
+                        .is_none_or(|deadline| proof_current && now < *deadline)
+                });
+            }
         }
     }
 
