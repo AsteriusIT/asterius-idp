@@ -33,7 +33,7 @@ The modern IDP decisions use descriptive filenames to avoid concurrent numbering
 
 | Decision | Status |
 | --- | --- |
-| [Kubernetes human access](kubernetes-human-access.md) | Approved design; interoperability pending |
+| [Kubernetes human access](kubernetes-human-access.md) | Approved design; controlled signature interoperability verified |
 | [External workload trust](external-workload-trust.md) | Approved design; runtime and direct secretless bootstrap tracked separately |
 | [Declarative management v1](declarative-management-contract.md) | Accepted architecture; runtime tracked in ast-dd1y.3.2 |
 | [Trusted conditional access](trusted-conditional-access-context.md) | Decided; enforcement tracked separately |
