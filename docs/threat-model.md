@@ -2428,3 +2428,12 @@ no adoption authority. Updates/deletes bind to refreshed revisions, ownership
 conflicts fail, and protection must be disabled in a separate apply. Acceptance
 uses a dedicated disposable database and actual TLS/DPoP client-credentials
 requests; no provider installation or acceptance run deploys production state.
+
+### Kubernetes workload exchange
+
+Kubernetes exchange consumes assertion digests atomically with grants and source
+provenance. External JWTs remain subject credentials, independently of FAPI
+client authentication. The pod-deletion bound is offline freshness plus output
+TTL; granting TokenRequest creation authority is an explicit Kubernetes RBAC
+choice. Exact registered RFC9396 actions and locations cannot exceed the trust
+ceiling. See [the runtime and renewal recipe](kubernetes-workload-exchange.md).

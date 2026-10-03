@@ -270,6 +270,8 @@ impl Config {
 
 #[derive(Debug, Clone)]
 pub struct Verified {
+    pub client: ClientId,
+    pub provider: Provider,
     pub tenant: TenantId,
     pub trust_id: String,
     pub trust_version: i64,
@@ -381,5 +383,74 @@ mod tests {
                 .validate(&TenantId::new("acme"), "inventory")
                 .is_err()
         );
+    }
+}
+
+/// Exact action/location ceilings for the registered RFC 9396 workload dialect.
+pub fn validate_actions(
+    details: &[Value],
+    allowed: &BTreeSet<String>,
+    targets: &BTreeSet<String>,
+) -> Result<(), DomainError> {
+    if details.len() > 16 {
+        return Err(invalid());
+    }
+    for element in details {
+        let object = element.as_object().ok_or_else(invalid)?;
+        if object
+            .keys()
+            .any(|key| !matches!(key.as_str(), "type" | "actions" | "locations"))
+            || object.get("type").and_then(Value::as_str) != Some("urn:asterius:workload-actions")
+        {
+            return Err(invalid());
+        }
+        let actions = object
+            .get("actions")
+            .and_then(Value::as_array)
+            .filter(|actions| !actions.is_empty() && actions.len() <= 64)
+            .ok_or_else(invalid)?;
+        if actions.iter().any(|action| {
+            !action
+                .as_str()
+                .is_some_and(|action| allowed.contains(action))
+        }) {
+            return Err(invalid());
+        }
+        let locations = object
+            .get("locations")
+            .and_then(Value::as_array)
+            .filter(|locations| locations.len() == 1)
+            .ok_or_else(invalid)?;
+        if locations.iter().any(|location| {
+            !location
+                .as_str()
+                .is_some_and(|location| targets.contains(location))
+        }) {
+            return Err(invalid());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod action_tests {
+    use super::*;
+    #[test]
+    fn workload_actions_never_widen_or_escape_the_resource() {
+        let allowed = BTreeSet::from(["read".to_owned()]);
+        let targets = BTreeSet::from(["https://api.example/".to_owned()]);
+        let element = serde_json::json!({"type":"urn:asterius:workload-actions","actions":["read"],"locations":["https://api.example/"]});
+        assert!(validate_actions(std::slice::from_ref(&element), &allowed, &targets).is_ok());
+        for (field, value) in [
+            ("actions", serde_json::json!(["write"])),
+            ("locations", serde_json::json!(["https://other.example/"])),
+            ("type", serde_json::json!("other")),
+            ("extra", serde_json::json!(true)),
+        ] {
+            let mut bad = element.clone();
+            bad[field] = value;
+            assert!(validate_actions(&[bad], &allowed, &targets).is_err());
+        }
+        assert!(validate_actions(&[], &allowed, &targets).is_ok());
     }
 }

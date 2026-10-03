@@ -15,6 +15,9 @@ fuzz_target!(|bytes: &[u8]| {
         assert!(bytes.len() <= 65536);
         assert!(!keys.fingerprints().is_empty() && keys.fingerprints().len() <= 16);
     }
+    if let Ok(token) = std::str::from_utf8(bytes) {
+        let _ = asterius_jose::workload::issuer_hint(token);
+    }
     if let Ok(token) = std::str::from_utf8(bytes)
         && let Ok(parsed) = asterius_jose::workload::Parsed::parse(token)
     {

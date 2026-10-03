@@ -96,6 +96,35 @@ fn strict(bytes: &[u8], max: usize, strings: usize) -> Result<Value, Invalid> {
     Ok(value)
 }
 
+/// Bounded issuer routing only. A hint never establishes authenticity.
+// fuzz-target: workload_token
+pub fn issuer_hint(token: &str) -> Result<String, Invalid> {
+    if token.is_empty() || token.len() > MAX_ASSERTION_BYTES {
+        return Err(Invalid);
+    }
+    let mut pieces = token.split('.');
+    let _header = pieces.next().ok_or(Invalid)?;
+    let payload = pieces.next().ok_or(Invalid)?;
+    let _signature = pieces.next().ok_or(Invalid)?;
+    if pieces.next().is_some() {
+        return Err(Invalid);
+    }
+    let decoded = B64.decode(payload).map_err(|_| Invalid)?;
+    if decoded.len() > MAX_ASSERTION_BYTES {
+        return Err(Invalid);
+    }
+    // Routing accepts the existing local token shape. This bounded serde
+    // decoder has its standard nesting limit; the external verifier separately
+    // enforces the stricter duplicate/depth/string/4KiB workload profile.
+    let claims: Value = serde_json::from_slice(&decoded).map_err(|_| Invalid)?;
+    claims
+        .get("iss")
+        .and_then(Value::as_str)
+        .filter(|issuer| !issuer.is_empty() && issuer.len() <= 1024)
+        .map(ToOwned::to_owned)
+        .ok_or(Invalid)
+}
+
 /// Untrusted routing fields cannot establish issuer trust or authorization.
 pub struct Parsed<'a> {
     token: &'a str,

@@ -12,7 +12,7 @@
 //! authority, and the client policy that says whether this agent may delegate
 //! at all.
 //!
-//! # The subject token has to be *this* server's, and still alive
+//! # Local subject tokens have to be this server's, and still alive
 //!
 //! §2.1 lets a subject token be anything the AS understands. This one
 //! understands its own, and only while they are authority:
@@ -29,6 +29,12 @@
 //! the same answer to a client — "that token is not one you can exchange" —
 //! and telling them apart turns this endpoint into an oracle for whether a
 //! stolen token has been revoked yet.
+//!
+//! The separate [`workload`] profile also accepts an external Kubernetes JWT
+//! subject from an explicitly enabled tenant trust. It authenticates the client
+//! independently, validates exact provider claims, and commits replay consumption
+//! with the bounded DPoP child grant. Local-issuer tokens never fall back to that
+//! verifier; see `docs/adr/external-workload-trust.md` for its approved contract.
 //!
 //! # Who may exchange a token
 //!
@@ -101,7 +107,15 @@ const SUBJECT_REFUSED: &str = "the subject token cannot be exchanged";
 /// Built per request, for the reason [`crate::http::client_credentials`] is:
 /// the clock reading and the proven DPoP key are facts about *this* request,
 /// and [`GrantHandler::handle`] receives neither.
+#[derive(Debug)]
+pub struct WorkloadContext<'a> {
+    pub verifier: &'a dyn asterius_domain::workload::Verifier,
+    pub store: &'a asterius_store_pg::PgWorkloadTrusts,
+    pub types: &'a dyn asterius_domain::AuthorizationDetailsTypeRepository,
+}
+
 pub struct TokenExchange<'a> {
+    pub workloads: Option<WorkloadContext<'a>>,
     /// Operator-approved cross-domain relationships for this routed tenant.
     pub id_jag_approvals: &'a [crate::config::IdJagApproval],
     /// Native SSO is a distinct exchange profile with an approved app pair.
@@ -146,6 +160,12 @@ pub struct TokenExchange<'a> {
 }
 
 impl<'a> TokenExchange<'a> {
+    #[must_use]
+    pub fn with_workloads(mut self, workloads: Option<WorkloadContext<'a>>) -> Self {
+        self.workloads = workloads;
+        self
+    }
+
     /// This grant, on another grant's repositories, clock reading and proven
     /// key.
     ///
@@ -166,6 +186,7 @@ impl<'a> TokenExchange<'a> {
         native_sso_approvals: &'a [crate::config::NativeSsoApproval],
     ) -> Self {
         Self {
+            workloads: None,
             id_jag_approvals,
             native_sso_approvals,
             native_sso: code.native_sso,
@@ -258,15 +279,17 @@ impl GrantHandler for TokenExchange<'_> {
         }
         match self.issue(tenant, client, params).await {
             Ok(issued) => {
-                self.record(
-                    tenant,
-                    client,
-                    Outcome::Success,
-                    Some(&issued.grant),
-                    &issued.chain,
-                    issued.subject.as_ref(),
-                )
-                .await;
+                if !issued.workload {
+                    self.record(
+                        tenant,
+                        client,
+                        Outcome::Success,
+                        Some(&issued.grant),
+                        &issued.chain,
+                        issued.subject.as_ref(),
+                    )
+                    .await;
+                }
                 issued.response
             }
             Err(failure) => {
@@ -287,6 +310,7 @@ impl GrantHandler for TokenExchange<'_> {
 
 /// A completed exchange, and what the trail needs to describe it.
 struct Issued {
+    workload: bool,
     response: Response,
     grant: Grant,
     chain: Vec<Value>,
@@ -638,6 +662,7 @@ impl TokenExchange<'_> {
             body["refresh_token"] = json!(refresh);
         }
         Ok(Issued {
+            workload: false,
             response: (axum::http::StatusCode::OK, Json(body)).into_response(),
             grant,
             chain: Vec::new(),
@@ -671,13 +696,10 @@ impl TokenExchange<'_> {
             .map_err(|refusal| Failure::Client(refusal.code, refusal.description))
     }
 
-    /// The exchange itself, with failures as `Err` so the checks read in order.
-    async fn issue(
+    fn exchange_constraint(
         &self,
-        tenant: &Tenant,
         client: &Client,
-        params: &Parameters,
-    ) -> Result<Issued, Failure> {
+    ) -> Result<asterius_oidc::tokens::access::Confirmation, Failure> {
         // ADR-0002 and RFC 9449 §5.2. Checked before anything the client sent
         // is read, and restricted to DPoP: an exchanged token is a delegation
         // travelling between processes, and the binding that follows it there
@@ -691,7 +713,7 @@ impl TokenExchange<'_> {
                  certificate",
             ));
         }
-        let confirmation = self.constraint.confirmation(client).map_err(|error| {
+        self.constraint.confirmation(client).map_err(|error| {
             match error {
                 issuance::ConstraintError::ProofRequired => {
                     Failure::Dpop(dpop::Refusal::missing_proof())
@@ -705,11 +727,30 @@ impl TokenExchange<'_> {
                 ),
                 issuance::ConstraintError::Unusable(error) => Failure::Server(error),
             }
-        })?;
+        })
+    }
+
+    /// The exchange itself, with failures as `Err` so the checks read in order.
+    async fn issue(
+        &self,
+        tenant: &Tenant,
+        client: &Client,
+        params: &Parameters,
+    ) -> Result<Issued, Failure> {
+        let confirmation = self.exchange_constraint(client)?;
 
         let request = token_exchange::parse(params)
             .map_err(|error| Failure::Client(error.code(), describe(&error)))?;
 
+        if request.subject_token_type == SubjectTokenType::Jwt
+            && asterius_jose::workload::issuer_hint(request.subject_token)
+                .map_err(|_| subject_refused())?
+                != tenant.issuer.as_str()
+        {
+            return self
+                .issue_workload(tenant, client, params, &request, confirmation)
+                .await;
+        }
         let subject = self.subject(tenant, client, &request).await?;
 
         // §4.1 and the agent policy's `max_delegation_depth`, or §5's
@@ -801,6 +842,7 @@ impl TokenExchange<'_> {
             .await?;
 
         Ok(Issued {
+            workload: false,
             response: Self::response(access_token.as_str(), &targeting.scopes, lifetime),
             grant,
             chain,
@@ -1610,3 +1652,5 @@ impl TokenExchange<'_> {
         Ok((response, subject, audience.to_owned()))
     }
 }
+
+mod workload;

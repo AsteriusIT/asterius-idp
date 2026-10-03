@@ -1,0 +1,8 @@
+{
+  "type":"object", "required":["type","actions","locations"], "additionalProperties":false,
+  "properties":{
+    "type":{"enum":["urn:asterius:workload-actions"]},
+    "actions":{"type":"array","maxItems":64,"items":{"type":"string","maxLength":128}},
+    "locations":{"type":"array","maxItems":1,"items":{"type":"string","maxLength":1024}}
+  }
+}

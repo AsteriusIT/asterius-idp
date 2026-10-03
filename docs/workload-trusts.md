@@ -2,7 +2,7 @@
 
 Workload trusts validate external Kubernetes TokenRequest and GitHub Actions
 assertions independently of browser identity providers and confidential OAuth
-client authentication. They do not enable token exchange by themselves. Existing
+client authentication. Enabled Kubernetes trusts support [the workload exchange profile](kubernetes-workload-exchange.md) when the Token Exchange capability is enabled. Existing
 FAPI client authentication and sender constraints remain mandatory for the
 subsequent exchange implementation. The approved contract is
 [external-workload-trust.md](adr/external-workload-trust.md).

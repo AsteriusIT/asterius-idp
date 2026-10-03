@@ -394,6 +394,13 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
         )?);
 
         let client_endpoints = Arc::new(ClientEndpoints {
+            workloads: Some(Arc::new(asterius_server::workload::ExternalWorkloads::new(
+                Arc::new(asterius_store_pg::PgWorkloadTrusts::new(
+                    store.pool().clone(),
+                )),
+                Arc::clone(&outbound),
+                Arc::new(PgAuditSink::new(store.pool().clone())),
+            ))),
             upstream_identity_resolver: Some(Arc::new(
                 asterius_server::http::upstream_oidc::StoreUpstreamIdentityResolver::new(
                     store.clone(),
