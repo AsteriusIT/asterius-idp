@@ -173,7 +173,9 @@ algorithm = "ES256"
             evidence = json.loads(result)
             evidence.update({'binary_sha256': owned['binary_sha256'], 'certificate_sha256': owned['certificate_sha256'],
                              'owned_namespace_only': True, 'internet_reachability_claimed': False,
-                             'public_exposure': False})
+                             'public_exposure': False,
+                             'source_successful_migrations': int(sql(source_db, 'select count(*) from _sqlx_migrations where success;')),
+                             'target_successful_migrations': int(sql(target_db, 'select count(*) from _sqlx_migrations where success;'))})
             print(json.dumps(evidence))
     finally:
         for database in reversed(databases):
