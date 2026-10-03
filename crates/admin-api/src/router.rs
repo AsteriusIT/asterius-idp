@@ -13276,7 +13276,7 @@ mod tests {
         Body::from(bytes)
     }
 
-    fn registry_governance_body(operation_id: &str) -> Option<serde_json::Value> {
+    fn registry_profile_body(operation_id: &str) -> Option<serde_json::Value> {
         Some(match operation_id {
             "governance.ownership.configure" => serde_json::json!({
                 "target":{"kind":"membership","group_id":SEEDED_GROUP_ID,"user_id":SEEDED_USER_ID},
@@ -13289,6 +13289,14 @@ mod tests {
                 serde_json::json!({"decision":"retain","reason":"Registry fixture review"})
             }
 
+            crate::WORKLOAD_TRUST_PUT_ID => registry_workload_trust_body(),
+            crate::WORKLOAD_TRUST_DELETE_ID => serde_json::json!({"expected_version":1}),
+            crate::KUBERNETES_PROFILE_UPDATE_ID => {
+                serde_json::json!({"cluster_id":"registry-fixture","namespace":"default","group_ids":[],"revision":0})
+            }
+            crate::CONDITIONAL_SETTINGS_UPDATE_ID => {
+                serde_json::json!({"sensitivity":"standard","expected_revision":null})
+            }
             _ => return None,
         })
     }
@@ -13303,18 +13311,10 @@ mod tests {
         if operation.id() == crate::THEME_LOGO_UPLOAD_ID {
             return test_logo_body();
         }
-        if let Some(document) = registry_governance_body(operation.id()) {
+        if let Some(document) = registry_profile_body(operation.id()) {
             return Body::from(document.to_string());
         }
         let document = match operation.id() {
-            crate::WORKLOAD_TRUST_PUT_ID => registry_workload_trust_body(),
-            crate::WORKLOAD_TRUST_DELETE_ID => serde_json::json!({"expected_version":1}),
-            crate::KUBERNETES_PROFILE_UPDATE_ID => {
-                serde_json::json!({"cluster_id":"registry-fixture","namespace":"default","group_ids":[],"revision":0})
-            }
-            crate::CONDITIONAL_SETTINGS_UPDATE_ID => {
-                serde_json::json!({"sensitivity":"standard","expected_revision":null})
-            }
             crate::TENANT_CREATE_ID => serde_json::json!({
                 "tenant_id": "brand-new",
                 "issuer": format!("{ORIGIN}/t/brand-new"),
