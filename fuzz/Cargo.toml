@@ -428,6 +428,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "governance_report_query"
+path = "fuzz_targets/governance_report_query.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "grant_management"
 path = "fuzz_targets/grant_management.rs"
 test = false

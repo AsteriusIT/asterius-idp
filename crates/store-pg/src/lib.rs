@@ -8,6 +8,8 @@
 #![forbid(unsafe_code)]
 
 mod access_reviews;
+mod governance_reports;
+pub use governance_reports::PgGovernanceReports;
 mod admin_seed;
 mod agent_task_lifecycle;
 mod agent_task_views;

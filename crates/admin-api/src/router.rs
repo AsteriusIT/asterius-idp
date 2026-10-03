@@ -20,6 +20,7 @@
 //! authorization to forget.
 
 mod governance;
+mod governance_reports;
 
 use asterius_domain::entities::session::{SessionId, SessionRevocation};
 use asterius_domain::{
@@ -325,6 +326,9 @@ async fn route(
     context: &Handling<'_>,
     body: axum::body::Body,
 ) -> Result<Response, AdminError> {
+    if id == "governance.findings" {
+        return context.governance_findings().await;
+    }
     if id.starts_with("governance.") {
         return context.governance(id, body).await;
     }

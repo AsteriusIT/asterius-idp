@@ -2162,7 +2162,17 @@ pub const GOVERNANCE_REVIEW_READ: Operation = Operation::read(
     "Reads one current or historical review; requires a same-realm console session",
 );
 
+/// Bounded current provenance and review proposals; no cleanup operation.
+pub const GOVERNANCE_FINDINGS: Operation = Operation::read(
+    "governance.findings",
+    "/governance/findings",
+    S::Get,
+    A::new(R::ConsoleTenant, "admin.governance:read"),
+    "Reports missing ownership, source disconnection, activity uncertainty and overdue privileged reviews without changing access",
+);
+
 static REGISTRY: &[Operation] = &[
+    GOVERNANCE_FINDINGS,
     GOVERNANCE_REVIEW_READ,
     GOVERNANCE_REVIEWERS,
     GOVERNANCE_OWNERSHIP_LIST,
