@@ -1,0 +1,39 @@
+# Argo CD 3.5.3. Store the client secret separately, never in this ConfigMap.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-cm
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/part-of: argocd
+data:
+  url: ${APPLICATION_ORIGIN}
+  admin.enabled: "false"
+  users.anonymous.enabled: "false"
+  oidc.config: |
+    name: Asterius
+    issuer: ${ISSUER}
+    clientID: ${CLIENT_ID}
+    clientSecret: $asterius-oidc:client-secret
+    allowedAudiences: ["${CLIENT_ID}"]
+    skipAudienceCheckWhenTokenHasNoAudience: false
+    requestedScopes: ["openid", "email"]
+    requestedIDTokenClaims: {}
+    enableUserInfoGroups: false
+    enablePKCEAuthentication: true
+    refreshTokenThreshold: 0s
+    rootCA: |
+${SOURCE_CA_INDENTED}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-rbac-cm
+  namespace: ${NAMESPACE}
+data:
+  policy.default: ""
+  scopes: '["sub"]'
+  policy.csv: |
+    p, role:asterius-observer, applications, get, ${PROJECT}/*, allow
+    p, role:asterius-observer, projects, get, ${PROJECT}, allow
+    g, ${ALLOWED_SUB}, role:asterius-observer

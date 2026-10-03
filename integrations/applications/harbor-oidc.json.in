@@ -1,0 +1,13 @@
+{
+  "auth_mode": "oidc_auth",
+  "oidc_name": "Asterius",
+  "oidc_endpoint": "${ISSUER}",
+  "oidc_client_id": "${CLIENT_ID}",
+  "oidc_scope": "openid,email",
+  "oidc_verify_cert": true,
+  "oidc_auto_onboard": true,
+  "oidc_user_claim": "sub",
+  "oidc_groups_claim": "",
+  "oidc_admin_group": "",
+  "oidc_logout": false
+}
