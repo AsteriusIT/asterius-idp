@@ -183,7 +183,15 @@ async fn grant_issuance_fence_waiter_rechecks_database_clock_and_ancestry() {
     sqlx::query("update grants set expires_at=clock_timestamp()-interval '1 second' where tenant_id='issuance' and grant_id=$1").bind(id).execute(&mut *writer).await.expect("expire during wait");
     writer.commit().await.expect("expiry wins");
     assert!(waiter.await.expect("waiter").is_err());
-    sqlx::query("update grants set expires_at=clock_timestamp()+interval '1 hour',parent_grant_id=grant_id where tenant_id='issuance' and grant_id=$1").bind(id).execute(&f.pool).await.expect("cycle fixture");
+    // Parentage is immutable on UPDATE. Insert a separate corrupt lineage
+    // instead of bypassing the production parent immutability trigger.
+    let mut cyclic = f.grant.clone();
+    cyclic.id = asterius_domain::GrantId::new(Uuid::new_v4().to_string());
+    cyclic.parent = Some(cyclic.id.clone());
+    PgGrantRepository::new(f.pool.clone(), f.tenant.clone())
+        .create(&cyclic)
+        .await
+        .expect("initial self-referencing fixture");
     let mut signing = PgPolicies::new(f.pool.clone())
         .signing_fence(&f.tenant, &f.issuer)
         .await
@@ -194,7 +202,7 @@ async fn grant_issuance_fence_waiter_rechecks_database_clock_and_ancestry() {
             PgGrantRepository::lock_issuance_authority_on(
                 signing.connection(),
                 &f.tenant,
-                &f.grant
+                &cyclic
             )
         )
         .await
