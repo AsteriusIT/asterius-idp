@@ -4,7 +4,13 @@ mod lifecycle;
 mod records;
 mod resolution;
 use crate::error::to_domain_error;
-use asterius_domain::temporary_entitlements::*;
+use asterius_domain::temporary_entitlements::{
+    AccountEntitlements, Activation, ActiveTemporaryRole, AssuranceProof, CancelRequest,
+    DecideRequest, Decision, Eligibility, EligibilityChange, Entitlement, EntitlementConfiguration,
+    EntitlementRequest, RequestActivation, RequestStatus, RevokeActivation, SessionActor,
+    TemporaryEntitlementProvenance, TemporaryEntitlementProvenanceSnapshot, TemporaryEntitlements,
+    TemporaryRoleSnapshot, assurance_current, resource_permissions_exact, validate_reason,
+};
 use asterius_domain::{
     Actor, AuditEvent, AuthenticationMethod, Detail, DomainError, EventType, Outcome, TenantId,
     TenantSettings, UserId,
@@ -167,12 +173,11 @@ async fn remember(
     actor: &UserId,
     operation: &str,
     key: Uuid,
-    payload: &serde_json::Value,
-    response: &serde_json::Value,
+    content: (&serde_json::Value, &serde_json::Value),
     now: OffsetDateTime,
 ) -> Result<(), DomainError> {
     sqlx::query("insert into temporary_entitlement_replays(tenant_id,actor_user_id,operation,idempotency_key,payload,response,created_at) values($1,$2,$3,$4,$5,$6,$7)")
-        .bind(tenant.as_str()).bind(actor.as_uuid()).bind(operation).bind(key).bind(payload).bind(response).bind(now).execute(tx).await.map_err(to_domain_error)?;
+        .bind(tenant.as_str()).bind(actor.as_uuid()).bind(operation).bind(key).bind(content.0).bind(content.1).bind(now).execute(tx).await.map_err(to_domain_error)?;
     Ok(())
 }
 fn encode<T: serde::Serialize>(value: &T) -> Result<serde_json::Value, DomainError> {

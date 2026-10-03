@@ -1,5 +1,9 @@
 use super::records::{ELIGIBILITY, ENTITLEMENT, entitlement, owner};
-use super::*;
+use super::{
+    DomainError, Eligibility, EligibilityChange, Entitlement, EntitlementConfiguration,
+    OffsetDateTime, PgConnection, PgTemporaryEntitlements, TenantId, UserId, Uuid, audit,
+    current_acr, decode, to_domain_error,
+};
 
 impl PgTemporaryEntitlements {
     pub(super) async fn list_configurations(

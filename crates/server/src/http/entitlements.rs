@@ -1,6 +1,9 @@
 //! Ordinary browser-session temporary privilege lifecycle; no API bearer authority.
 use super::account::{self, AccountContext};
-use asterius_domain::temporary_entitlements::*;
+use asterius_domain::temporary_entitlements::{
+    AccountEntitlements, ActivationStatus, CancelRequest, DecideRequest, RequestActivation,
+    RequestStatus, RevokeActivation, SessionActor, TemporaryEntitlements,
+};
 use asterius_domain::{DomainError, FirstPartyDestination, RateLimit, RateLimitStore, UserId};
 use asterius_web::{Document, pages};
 use axum::http::{HeaderMap, StatusCode};
@@ -29,6 +32,7 @@ pub enum Command {
     Revoke(RevokeActivation),
 }
 // fuzz-target: temporary_entitlement_command
+#[must_use]
 pub fn parse_command(action: &str, body: &[u8]) -> Option<(String, Command)> {
     if body.len() > account::MAX_BODY {
         return None;
@@ -77,17 +81,14 @@ pub async fn page(
         user: UserId::new(session.user),
         session_digest: session.id_digest.clone(),
     };
-    let data = match context
+    let Ok(data) = context
         .store
         .account(&context.account.tenant.id, &actor)
         .await
-    {
-        Ok(data) => data,
-        Err(_) => {
-            // Storage errors may contain user-controlled lifecycle values.
-            tracing::error!("cannot read temporary entitlements");
-            return account::error_page(&context.account, StatusCode::SERVICE_UNAVAILABLE);
-        }
+    else {
+        // Storage errors may contain user-controlled lifecycle values.
+        tracing::error!("cannot read temporary entitlements");
+        return account::error_page(&context.account, StatusCode::SERVICE_UNAVAILABLE);
     };
     render(context, &session, &data, message)
 }

@@ -257,7 +257,7 @@ pub struct TemporaryEntitlementProvenanceSnapshot {
 }
 
 /// Frozen methods and their policy incarnation are distinct from cumulative AMR.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct AssuranceProof<'a> {
     pub at: Option<OffsetDateTime>,
     pub revision: Option<&'a str>,
@@ -479,7 +479,7 @@ mod tests {
         let encoded = serde_json::to_value(&record).unwrap();
         let decoded: Entitlement = serde_json::from_value(encoded).unwrap();
         assert_eq!(decoded.revision, record.revision);
-        for (seconds, eligibility) in [(0, 86400), (3601, 86400), (900, 0), (900, 2592001)] {
+        for (seconds, eligibility) in [(0, 86400), (3601, 86400), (900, 0), (900, 2_592_001)] {
             let mut c = configuration();
             c.max_duration_seconds = seconds;
             c.max_eligibility_seconds = eligibility;
@@ -559,7 +559,7 @@ mod tests {
     #[test]
     fn rejects_empty_oversized_and_control_reasons() {
         for value in [
-            "".to_owned(),
+            String::new(),
             "  ".to_owned(),
             "a".repeat(1025),
             "a\nreason".to_owned(),

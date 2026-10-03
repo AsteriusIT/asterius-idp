@@ -1,7 +1,12 @@
 use super::records::{
     ACTIVATION, ELIGIBILITY, ENTITLEMENT, REQUEST, activation, entitlement, owner, request,
 };
-use super::*;
+use super::{
+    AccountEntitlements, Activation, CancelRequest, DecideRequest, Decision, DomainError,
+    EntitlementRequest, OffsetDateTime, PgConnection, PgTemporaryEntitlements, RequestActivation,
+    RequestStatus, RevokeActivation, SessionActor, TenantId, UserId, Uuid, audit, decode, encode,
+    remember, replay, session, to_domain_error, validate_reason,
+};
 
 async fn eligible(
     tx: &mut PgConnection,
@@ -76,8 +81,7 @@ impl PgTemporaryEntitlements {
             &actor.user,
             "request",
             c.idempotency_key,
-            &payload,
-            &encode(&result)?,
+            (&payload, &encode(&result)?),
             now,
         )
         .await?;
@@ -139,26 +143,7 @@ impl PgTemporaryEntitlements {
             ));
         }
         if c.decision == Decision::Approve {
-            let existing:Option<(Uuid,)> = sqlx::query_as("select a.activation_id from temporary_entitlement_activations a join temporary_entitlement_requests r on r.tenant_id=a.tenant_id and r.request_id=a.request_id join temporary_entitlement_eligibility el on el.tenant_id=r.tenant_id and el.eligibility_id=r.eligibility_id where a.tenant_id=$1 and a.entitlement_id=$2 and a.user_id=$3 and a.revoked_at is null and a.expires_at>$4 and el.revoked_at is null and el.revision=r.eligibility_revision and r.policy_revision=$5").bind(tenant.as_str()).bind(r.entitlement_id).bind(r.requester_user_id).bind(now).bind(e.revision).fetch_optional(&mut *tx).await.map_err(to_domain_error)?;
-            if existing.is_some() {
-                return Err(DomainError::Conflict(
-                    "an activation is already active".into(),
-                ));
-            }
-            let activation_id = Uuid::new_v4();
-            let expires_at =
-                (now + time::Duration::seconds(i64::from(r.duration_seconds))).min(end);
-            sqlx::query("insert into temporary_entitlement_activations(tenant_id,activation_id,request_id,entitlement_id,user_id,activated_at,expires_at) values($1,$2,$3,$4,$5,$6,$7)")
-                .bind(tenant.as_str()).bind(activation_id).bind(r.request_id).bind(r.entitlement_id).bind(r.requester_user_id).bind(now).bind(expires_at).execute(&mut *tx).await.map_err(to_domain_error)?;
-            audit(
-                &mut tx,
-                tenant,
-                Some(&actor.user),
-                "activated",
-                activation_id,
-                now,
-            )
-            .await?;
+            activate(&mut tx, tenant, &actor.user, &r, e.revision, end, now).await?;
         }
         let status = if c.decision == Decision::Approve {
             "approved"
@@ -186,8 +171,7 @@ impl PgTemporaryEntitlements {
             &actor.user,
             "decide",
             c.idempotency_key,
-            &payload,
-            &encode(&result)?,
+            (&payload, &encode(&result)?),
             now,
         )
         .await?;
@@ -242,8 +226,7 @@ impl PgTemporaryEntitlements {
             &actor.user,
             "cancel",
             c.idempotency_key,
-            &payload,
-            &encode(&result)?,
+            (&payload, &encode(&result)?),
             now,
         )
         .await?;
@@ -309,8 +292,7 @@ impl PgTemporaryEntitlements {
             actor,
             operation,
             c.idempotency_key,
-            &payload,
-            &encode(&result)?,
+            (&payload, &encode(&result)?),
             now,
         )
         .await?;
@@ -394,4 +376,36 @@ async fn read_many<T: serde::de::DeserializeOwned>(
         .await
         .map_err(to_domain_error)?;
     rows.into_iter().map(|r| decode(r.0)).collect()
+}
+
+/// Create the one bounded activation under the caller's publication fence.
+async fn activate(
+    connection: &mut PgConnection,
+    tenant: &TenantId,
+    actor: &UserId,
+    request: &EntitlementRequest,
+    revision: Uuid,
+    end: OffsetDateTime,
+    now: OffsetDateTime,
+) -> Result<(), DomainError> {
+    let existing:Option<(Uuid,)> = sqlx::query_as("select a.activation_id from temporary_entitlement_activations a join temporary_entitlement_requests r on r.tenant_id=a.tenant_id and r.request_id=a.request_id join temporary_entitlement_eligibility el on el.tenant_id=r.tenant_id and el.eligibility_id=r.eligibility_id where a.tenant_id=$1 and a.entitlement_id=$2 and a.user_id=$3 and a.revoked_at is null and a.expires_at>$4 and el.revoked_at is null and el.revision=r.eligibility_revision and r.policy_revision=$5").bind(tenant.as_str()).bind(request.entitlement_id).bind(request.requester_user_id).bind(now).bind(revision).fetch_optional(&mut *connection).await.map_err(to_domain_error)?;
+    if existing.is_some() {
+        return Err(DomainError::Conflict(
+            "an activation is already active".into(),
+        ));
+    }
+    let activation_id = Uuid::new_v4();
+    let expires_at = (now + time::Duration::seconds(i64::from(request.duration_seconds))).min(end);
+    sqlx::query("insert into temporary_entitlement_activations(tenant_id,activation_id,request_id,entitlement_id,user_id,activated_at,expires_at) values($1,$2,$3,$4,$5,$6,$7)")
+                .bind(tenant.as_str()).bind(activation_id).bind(request.request_id).bind(request.entitlement_id).bind(request.requester_user_id).bind(now).bind(expires_at).execute(&mut *connection).await.map_err(to_domain_error)?;
+    audit(
+        connection,
+        tenant,
+        Some(actor),
+        "activated",
+        activation_id,
+        now,
+    )
+    .await?;
+    Ok(())
 }

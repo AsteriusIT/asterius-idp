@@ -21,7 +21,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import ec, utils
+from cryptography.hazmat.primitives.asymmetric import ec, ed25519, utils
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scim'))
 from dpop_fixture import FixtureClient, b64, sign
 root, database, issuer = sys.argv[1:]
@@ -44,9 +44,9 @@ jwk = {'kty':'EC','crv':'P-256','x':b64(numbers.x.to_bytes(32,'big')),'y':b64(nu
 def sql(statement):
     return subprocess.run(['psql', database, '-X', '-At', '-v', 'ON_ERROR_STOP=1', '-c', statement], check=True, capture_output=True, text=True).stdout.strip()
 sql(f"""insert into resource_servers(tenant_id,identifier,scopes) values
-('temporary',{quote(resource)},array['openid','read','write']),('temporary',{quote(foreign_resource)},array['openid','read']),('temporary',{quote(api)},null),('temporary',{quote(pdp)},array['openid','authzen.evaluate','write']);
-insert into clients(tenant_id,client_id,client_name,token_endpoint_auth_method,grant_types,response_types,redirect_uris,scopes,resources,jwks,roles_in_id_token) values
-('temporary','app','Temporary application','private_key_jwt',array['authorization_code','refresh_token','client_credentials'],array['code'],array[{quote(callback)}],array['openid','read','write','authzen.evaluate'],array[{quote(resource)},{quote(foreign_resource)},{quote(pdp)}],{quote(json.dumps({'keys':[jwk]}))}::jsonb,true);
+('temporary',{quote(resource)},array['openid','offline_access','read','write']),('temporary',{quote(foreign_resource)},array['openid','offline_access','read']),('temporary',{quote(api)},null),('temporary',{quote(pdp)},array['openid','authzen.evaluate','write']);
+insert into clients(tenant_id,client_id,client_name,token_endpoint_auth_method,grant_types,response_types,redirect_uris,scopes,resources,jwks,roles_in_id_token,id_token_signed_response_alg) values
+('temporary','app','Temporary application','private_key_jwt',array['authorization_code','refresh_token','client_credentials'],array['code'],array[{quote(callback)}],array['openid','offline_access','read','write','authzen.evaluate'],array[{quote(resource)},{quote(foreign_resource)},{quote(pdp)}],{quote(json.dumps({'keys':[jwk]}))}::jsonb,true,'ES256');
 insert into clients(tenant_id,client_id,client_name,token_endpoint_auth_method,grant_types,response_types,redirect_uris,scopes,resources,jwks) values
 ('temporary','controller','Controlled administration','private_key_jwt',array['client_credentials'],array[]::text[],array[]::text[],array['admin.app_roles:read','admin.app_roles:write'],array[{quote(api)}],{quote(json.dumps({'keys':[jwk]}))}::jsonb);
 insert into client_roles(tenant_id,client_id,name) values('temporary','app','incident-responder'),('temporary','app','pdp-check');""")
@@ -114,7 +114,7 @@ owner, requester, approver, stranger = [browsers[name] for name in ids]
 status, _, session = owner.admin('GET', '/session')
 assert status == 200, 'verified console session'
 owner.csrf = session['csrf_token']
-status, _, settings = owner.admin('GET', '/settings')
+status, _, settings = owner.admin('GET', '/tenants/temporary/settings')
 assert status == 200, 'current tenant assurance policy'
 revision = hashlib.sha256(json.dumps(settings['acr_policy'], sort_keys=True, separators=(',',':'), ensure_ascii=False).encode()).hexdigest()
 for name in ids:
@@ -135,11 +135,11 @@ assert owner.admin('GET',path)[2]['revision'] == entitlement['revision']
 checks=['console_owner_csrf_cas_and_ordinary_boundary']
 if os.environ.get('ASTERIUS_TEMPORARY_BROWSER_SCRIPT'):
     browser_input = root / 'temporary-browser.json'
-    browser_input.write_text(json.dumps({'issuer':issuer,'origin':origin,'owner_session':raw['owner'],'owner_user_id':ids['owner'],'requester_cookie':raw['requester'],'reader_session':raw['stranger'],'client_id':'app','resource':resource,'role_name':'incident-responder','permissions':['read'],'entitlement_id':entitlement_id}))
+    browser_input.write_text(json.dumps({'issuer':issuer,'origin':origin,'owner_session':raw['owner'],'owner_user_id':ids['owner'],'requester_cookie':raw['requester'],'reader_session':raw['stranger'],'client_id':'app','resource':resource,'role_name':'incident-responder','permissions':['read'],'entitlement_id':entitlement_id,'screenshot_path':os.environ.get('ASTERIUS_TEMPORARY_SCREENSHOT_PATH')}))
     browser_input.chmod(0o600)
     try:
         result = subprocess.run(['node',os.environ['ASTERIUS_TEMPORARY_BROWSER_SCRIPT'],str(browser_input)],capture_output=True,text=True,timeout=120)
-        assert result.returncode==0, 'real Chromium temporary owner/read-only UI acceptance'
+        assert result.returncode==0, 'real Chromium temporary owner/read-only UI acceptance: '+result.stderr.strip()[:512]
         browser_result = json.loads(result.stdout.strip())
         assert browser_result['status']=='pass'
         checks.append('real_chromium_owner_and_read_only_ui')
@@ -202,20 +202,26 @@ def userinfo(token):
     finally:
         client.token=previous
 
-def claims(token, audience):
+def claims(token, audience, algorithm="EdDSA"):
     header, payload, signature=token.split('.')
     decode=lambda value:base64.urlsafe_b64decode(value+'='*(-len(value)%4))
     protected=json.loads(decode(header)); result=json.loads(decode(payload))
-    assert protected['alg']=='ES256', 'pinned signature algorithm'
+    assert protected['alg']==algorithm, 'pinned signature algorithm'
     public=next(item for item in keys['keys'] if item['kid']==protected['kid'])
-    point=ec.EllipticCurvePublicNumbers(int.from_bytes(decode(public['x']),'big'),int.from_bytes(decode(public['y']),'big'),ec.SECP256R1()).public_key()
+    signed=(header+'.'+payload).encode()
     raw_signature=decode(signature)
-    point.verify(utils.encode_dss_signature(int.from_bytes(raw_signature[:32],'big'),int.from_bytes(raw_signature[32:],'big')),(header+'.'+payload).encode(),ec.ECDSA(hashes.SHA256()))
+    if algorithm=='ES256':
+        assert public['kty']=='EC' and public['crv']=='P-256'
+        point=ec.EllipticCurvePublicNumbers(int.from_bytes(decode(public['x']),'big'),int.from_bytes(decode(public['y']),'big'),ec.SECP256R1()).public_key()
+        point.verify(utils.encode_dss_signature(int.from_bytes(raw_signature[:32],'big'),int.from_bytes(raw_signature[32:],'big')),signed,ec.ECDSA(hashes.SHA256()))
+    else:
+        assert algorithm=='EdDSA' and public['kty']=='OKP' and public['crv']=='Ed25519'
+        ed25519.Ed25519PublicKey.from_public_bytes(decode(public['x'])).verify(raw_signature,signed)
     assert result['iss']==issuer and audience in ([result['aud']] if isinstance(result['aud'],str) else result['aud'])
     assert result['exp']>time.time(), 'valid signed expiry'
     return result
 
-def code_tokens(selected_resource=resource, scopes='openid read'):
+def code_tokens(selected_resource=resource, scopes='openid offline_access read'):
     verifier=secrets.token_urlsafe(32); state=secrets.token_urlsafe(24); nonce=secrets.token_urlsafe(24)
     status, _, pushed=client.authenticated('/par',{'response_type':'code','redirect_uri':callback,'scope':scopes,'resource':selected_resource,'state':state,'nonce':nonce,'code_challenge_method':'S256','code_challenge':b64(hashlib.sha256(verifier.encode()).digest())})
     assert status==201, 'real authenticated PAR'
@@ -239,7 +245,7 @@ def code_tokens(selected_resource=resource, scopes='openid read'):
     assert parameters.get('state')==[state] and 'code' in parameters, 'authorization callback state'
     status, _, issued=client.authenticated('/token',{'grant_type':'authorization_code','code':parameters['code'][0],'redirect_uri':callback,'code_verifier':verifier})
     assert status==200 and issued['token_type'].lower()=='dpop', 'real proof-bound code issuance'
-    identity=claims(issued['id_token'],'app'); assert identity['nonce']==nonce
+    identity=claims(issued['id_token'],'app','ES256'); assert identity['nonce']==nonce
     return issued, claims(issued['access_token'],selected_resource), identity
 
 def privileged(claim): return 'incident-responder' in claim.get('resource_access',{}).get('app',{}).get('roles',[])
@@ -281,20 +287,12 @@ _, access, identity=code_tokens()
 assert not privileged(access) and not privileged(identity), 'expiry denies without reconciliation'
 assert any(item['status']=='expired' for item in activations())
 checks.append('database_clock_expiry_without_background_cleanup')
-assert owner.request('GET',origin+'/t/temporary-foreign/admin/api/v1/temporary-entitlements/'+entitlement_id)[0] in (403,404), 'foreign tenant ownership not exposed'
-# Marking the exact client as an agent invalidates its policy; restoring the
-# flag cannot restore an old activation or approval revision.
-request_id=submit(30)
-sql("update clients set is_agent=true where tenant_id='temporary' and client_id='app';")
-sql("update clients set is_agent=false where tenant_id='temporary' and client_id='app';")
-assert owner.admin('GET',path)[2]['enabled'] is False, 'agent catalogue ABA terminal'
-assert approver.command('decide',{'request_id':request_id,'decision':'approve','idempotency_key':str(uuid.uuid4())})[0]==404
-checks.append('foreign_tenant_and_agent_catalogue_aba_refusals')
+assert owner.request('GET',origin+'/t/temporary-foreign/admin/api/v1/temporary-entitlements/'+entitlement_id)[0]==401, 'foreign tenant session is anonymous and ownership not exposed'
 # The online PDP has its own explicitly approved resource/permission tuple.
 # A business-resource activation cannot be borrowed as PDP authority.
 pdp_configuration={**configuration,'resource':pdp,'role_name':'pdp-check','permissions':['authzen.evaluate']}
 status, _, pdp_entitlement=owner.admin('POST','/temporary-entitlements',pdp_configuration)
-assert status==201
+assert status==201, 'current PDP fixture configuration'
 pdp_path='/temporary-entitlements/'+pdp_entitlement['entitlement_id']
 now=int(time.time())
 assert owner.admin('POST',pdp_path+'/eligibilities',{'user_id':ids['requester'],'not_before':now-1,'expires_at':now+600,'expected_revision':None})[0]==200
@@ -308,7 +306,8 @@ question={'subject':{'type':'user','id':ids['requester']},'action':{'name':'read
 def evaluate(token):
     previous=client.token; client.token=token
     try:
-        status, _, result=client.request('POST',pdp,question,{'Content-Type':'application/json'})
+        actual_question={**question,'subject':{'type':'user','id':claims(token,pdp)['sub']}}
+        status, _, result=client.request('POST',pdp,actual_question,{'Content-Type':'application/json'})
         assert status==200, 'real online current-role PDP evaluation'
         return result['decision']
     finally: client.token=previous
@@ -327,4 +326,12 @@ pdp_activation=next(item for item in owner.admin('GET',pdp_path+'/activations')[
 assert owner.admin('POST',pdp_path+'/activations/'+pdp_activation['activation_id']+'/revoke',{'activation_id':pdp_activation['activation_id'],'reason':'PDP control complete','idempotency_key':str(uuid.uuid4())})[0]==200
 assert evaluate(pdp_issued['access_token']) is False, 'same credential observes committed PDP revocation'
 checks.append('real_active_pdp_exact_permission_current_role_and_revocation')
+# Marking the exact client as an agent invalidates its policy; restoring the
+# flag cannot restore an old activation or approval revision.
+request_id=submit(30)
+sql("update clients set is_agent=true where tenant_id='temporary' and client_id='app';")
+sql("update clients set is_agent=false where tenant_id='temporary' and client_id='app';")
+assert owner.admin('GET',path)[2]['enabled'] is False, 'agent catalogue ABA terminal'
+assert approver.command('decide',{'request_id':request_id,'decision':'approve','idempotency_key':str(uuid.uuid4())})[0]==404
+checks.append('foreign_tenant_and_agent_catalogue_aba_refusals')
 print(json.dumps({'fixture':'real_https_seeded_frozen_proof_code_refresh_lifecycle','status':'pass','checks':checks},sort_keys=True))

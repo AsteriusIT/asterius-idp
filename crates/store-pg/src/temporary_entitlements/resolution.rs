@@ -1,4 +1,9 @@
-use super::*;
+use super::{
+    ActiveTemporaryRole, AssuranceProof, DomainError, OffsetDateTime, PgConnection,
+    PgTemporaryEntitlements, TemporaryEntitlementProvenance,
+    TemporaryEntitlementProvenanceSnapshot, TemporaryRoleSnapshot, TenantId, UserId, Uuid,
+    assurance_current, current_acr, resource_permissions_exact, to_domain_error,
+};
 use asterius_domain::{ClientId, Grant, RoleName};
 type ResolvedRoleRow = (
     Uuid,
@@ -136,7 +141,7 @@ impl PgTemporaryEntitlements {
 impl PgTemporaryEntitlements {
     /// Read current lifecycle provenance inside the caller's transaction.
     /// Keeps the same tenant publication fence as review/apply; never constructs
-    /// HeldRoles and never infers grant scopes or authentication from history.
+    /// `HeldRoles` and never infers grant scopes or authentication from history.
     pub async fn provenance_for_user_on(
         connection: &mut PgConnection,
         tenant: &TenantId,
