@@ -383,7 +383,7 @@ create table scim_outbound_incarnation_tombstones (
 );
 create function scim_outbound_reserved_external(value text,kind text)
 returns boolean language sql immutable as $$
-    select coalesce(value ~ ('^urn:asterius:outbound:[^:]{1,64}:' ||
+    select coalesce(value ~ ('^urn:asterius:outbound:[a-z0-9][a-z0-9_-]{0,63}:' ||
       '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:' || kind || ':' ||
       '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:' ||
       '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'),false)
