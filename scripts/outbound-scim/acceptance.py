@@ -150,7 +150,7 @@ algorithm = "ES256"
                 'client_id': client, 'secret': secret, 'credential_generation': generation, 'next_credential_generation': next_generation, 'next_public_jwk': next_jwk,
                 'tls_key': str(owned['root'] / 'key.pem'), 'tls_certificate': str(owned['root'] / 'cert.pem'),
                 'fault_file': str(owned['root'] / 'fault.json'), 'relay_evidence': str(owned['root'] / 'relay.jsonl'),
-                'cookie_file': str(owned['root'] / 'verified-session.json')}))
+                'cookie_file': str(owned['root'] / 'verified-session.json'), 'operator_key': str(owned['root'] / 'operator.der')}))
             result = command(['node', str(Path(__file__).with_name('acceptance.mjs')), str(payload)], timeout=300)
             evidence = json.loads(result)
             evidence.update({'binary_sha256': owned['binary_sha256'], 'certificate_sha256': owned['certificate_sha256'],
