@@ -197,6 +197,22 @@ export async function mutate(
   }, path);
 }
 
+/** Publish the exact policy snapshot reviewed by the operator. */
+export async function replacePolicy(session: Session, document: unknown, revision: string | null): Promise<unknown> {
+  if (revision !== null && !/^sha256:[0-9a-f]{64}$/.test(revision)) {
+    throw new Error('Read the current policy revision before publishing.');
+  }
+  return request(API_BASE + 'policies', {
+    method: 'PUT',
+    headers: {
+      [CSRF_HEADER]: session.csrf_token,
+      'Content-Type': 'application/json',
+      ...(revision === null ? { 'If-None-Match': '*' } : { 'If-Match': `"${revision}"` }),
+    },
+    body: JSON.stringify(document),
+  }, 'policies');
+}
+
 /** Uploads same-origin bytes to a state-changing API endpoint. */
 export async function upload(path: string, session: Session, file: File): Promise<unknown> {
   return request(API_BASE + path, {

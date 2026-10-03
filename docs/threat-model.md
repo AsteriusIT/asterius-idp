@@ -2674,3 +2674,17 @@ cannot promote another denial; offline JWT consumers retain their existing
 expiry/online-revocation limits. No instant withdrawal or device attestation
 claim is made. See [the operator guide](conditional-access.md) for exact sources,
 limits and deployment capacity.
+
+### Conditional access simulation and rollout
+
+Administrative examples use a closed bounded dialect separate from PEP properties
+and production adapters. Only assurance, relative authentication age, sensitivity,
+network zones and device state can be hypothetical; directory facts, sources and
+expiry cannot be supplied. No selected transaction means trusted assurance/age/network
+are absent. Tenant records and four read authorities resolve before inspection.
+Responses expose availability/source and condition paths, without directory values
+or predicate literals. Active scopes only restrict; report-only cannot grant a base
+denial. Console publication/history restoration use the reviewed revision and explicit
+confirmation; the atomic store guard protects conditional changes outside the console.
+Sensitivity updates compare the reviewed UUID. Conflicts preserve drafts and never
+retry automatically against newer state. See [operator controls](conditional-access-operations.md).

@@ -3301,9 +3301,15 @@ impl Handling<'_> {
             policies::SimulationOutcome::Decided {
                 decision,
                 current_revision,
+                conditional,
             } => Ok(json_no_store(
                 StatusCode::OK,
-                &policies::simulation_response(&simulation, &decision, current_revision.as_deref()),
+                &policies::simulation_response(
+                    &simulation,
+                    &decision,
+                    current_revision.as_deref(),
+                    &conditional,
+                ),
             )),
         }
     }
@@ -9373,13 +9379,29 @@ mod tests {
                         .map_or(OffsetDateTime::UNIX_EPOCH, |policy| policy.updated_at),
                 })
                 .or(current);
+            let now = OffsetDateTime::UNIX_EPOCH;
+            let trusted = asterius_domain::policy::conditional::TrustedAccessContext {
+                tenant: tenant.clone(),
+                subject: Some("resolved-subject".to_owned()),
+                client: simulation.client.clone(),
+                action: simulation.enforcement_action.clone(),
+                evaluated_at: now,
+                policy_revision: revision.clone().unwrap_or_else(|| "absent".to_owned()),
+                acr_revision: "fixture-acr".to_owned(),
+                client_revision: "fixture-client".to_owned(),
+                facts: policies::conditional_simulation::current_facts(None, now),
+            };
+            let (decision, conditional) = policies::conditional_simulation::evaluate(
+                snapshot.as_ref(),
+                &request,
+                trusted,
+                simulation.trusted_examples.as_ref(),
+                &asterius_domain::AcrPolicy::default(),
+            );
             Ok(policies::SimulationOutcome::Decided {
-                decision: Box::new(asterius_domain::policy::explanation::evaluate(
-                    snapshot.as_ref(),
-                    &request,
-                    "admin_policy_simulation",
-                )),
+                decision: Box::new(decision),
                 current_revision: revision,
+                conditional,
             })
         }
 

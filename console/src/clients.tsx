@@ -55,6 +55,7 @@ import { FlowOrigin } from './flow-origin';
  * (ADR-0009). Every control is an ordinary form element, every handler is
  * attached by React, and nothing is fetched from anywhere but this origin.
  */
+import { ClientConditionalAccess } from './client-conditional-access';
 import { OneTimeSecret } from './components/one-time-secret';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from './components/ui/tabs';
 import { FormSelect } from './components/ui/select';
@@ -581,6 +582,7 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
           onSave={() => saveResources(editing.document.client_id)}
         /></TabsContent>}
         {editing.kind === 'existing' && <TabsContent value="configuration">
+          <ClientConditionalAccess session={session} clientID={editing.document.client_id} />
           <Panel title="Application configuration JSON">
             <p>This reflects the last saved registration. Save edits before copying it. Private signing keys, proof keys, and client secrets are never included.</p>
             {discovery !== null ? <JsonView value={clientConfiguration(editing.document, discovery)} label="Saved client configuration" />

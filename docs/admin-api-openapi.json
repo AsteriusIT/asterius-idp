@@ -9103,7 +9103,7 @@
             "application/json": {
               "schema": {
                 "additionalProperties": false,
-                "description": "Bounded 128 KiB inspection. All references must exist in the routed tenant. Only policy and context properties may be hypothetical. Audited before lookup; never grants access or issues a token.",
+                "description": "Bounded 128 KiB inspection. All references must exist in the routed tenant. Policy, descriptive context and explicitly labelled trusted examples may be hypothetical; directory facts remain server resolved. No selected user transaction means assurance, authentication age and network evidence are absent. Audited before lookup; never grants access or issues a token.",
                 "properties": {
                   "action": {
                     "maxLength": 256,
@@ -9113,6 +9113,22 @@
                   "client_id": {
                     "maxLength": 256,
                     "minLength": 1,
+                    "type": "string"
+                  },
+                  "enforcement_action": {
+                    "default": "access_evaluation",
+                    "description": "Server enforcement boundary, separate from resource action.",
+                    "enum": [
+                      "authorize",
+                      "authorization_code",
+                      "refresh_token",
+                      "device_code",
+                      "ciba",
+                      "token_exchange",
+                      "client_credentials",
+                      "jwt_bearer",
+                      "access_evaluation"
+                    ],
                     "type": "string"
                   },
                   "expected_policy_revision": {
@@ -9126,6 +9142,220 @@
                     "type": "object"
                   },
                   "hypothetical_policy": {
+                    "type": "object"
+                  },
+                  "hypothetical_trusted_context": {
+                    "additionalProperties": false,
+                    "description": "Administrative what-if examples only. Cannot override groups, roles or grants or assert a production source. Missing states never carry a value.",
+                    "maxProperties": 5,
+                    "properties": {
+                      "application_sensitivity": {
+                        "oneOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "availability": {
+                                "enum": [
+                                  "absent",
+                                  "stale",
+                                  "unavailable",
+                                  "invalid"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "availability"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "availability": {
+                                "const": "known"
+                              },
+                              "value": {
+                                "enum": [
+                                  "standard",
+                                  "sensitive",
+                                  "critical"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "availability",
+                              "value"
+                            ],
+                            "type": "object"
+                          }
+                        ]
+                      },
+                      "assurance": {
+                        "oneOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "availability": {
+                                "enum": [
+                                  "absent",
+                                  "stale",
+                                  "unavailable",
+                                  "invalid"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "availability"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "availability": {
+                                "const": "known"
+                              },
+                              "value": {
+                                "description": "An attainable level in this tenant's current ACR ladder; unsupported values are invalid evidence.",
+                                "maxLength": 256,
+                                "minLength": 1,
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "availability",
+                              "value"
+                            ],
+                            "type": "object"
+                          }
+                        ]
+                      },
+                      "authentication_age": {
+                        "oneOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "availability": {
+                                "enum": [
+                                  "absent",
+                                  "stale",
+                                  "unavailable",
+                                  "invalid"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "availability"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "availability": {
+                                "const": "known"
+                              },
+                              "value": {
+                                "maximum": 604800,
+                                "minimum": 0,
+                                "type": "integer"
+                              }
+                            },
+                            "required": [
+                              "availability",
+                              "value"
+                            ],
+                            "type": "object"
+                          }
+                        ]
+                      },
+                      "device_compliance": {
+                        "oneOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "availability": {
+                                "enum": [
+                                  "absent",
+                                  "stale",
+                                  "unavailable",
+                                  "invalid"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "availability"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "availability": {
+                                "const": "known"
+                              },
+                              "value": {
+                                "enum": [
+                                  "compliant",
+                                  "non_compliant",
+                                  "unknown"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "availability",
+                              "value"
+                            ],
+                            "type": "object"
+                          }
+                        ]
+                      },
+                      "network_zone": {
+                        "oneOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "availability": {
+                                "enum": [
+                                  "absent",
+                                  "stale",
+                                  "unavailable",
+                                  "invalid"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "availability"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "availability": {
+                                "const": "known"
+                              },
+                              "value": {
+                                "items": {
+                                  "maxLength": 128,
+                                  "minLength": 1,
+                                  "pattern": "^[A-Za-z0-9_.-]+$",
+                                  "type": "string"
+                                },
+                                "maxItems": 64,
+                                "type": "array",
+                                "uniqueItems": true
+                              }
+                            },
+                            "required": [
+                              "availability",
+                              "value"
+                            ],
+                            "type": "object"
+                          }
+                        ]
+                      }
+                    },
                     "type": "object"
                   },
                   "resource_id": {
@@ -9262,6 +9492,117 @@
                     },
                     "simulation": {
                       "properties": {
+                        "conditional": {
+                          "description": "Inspection only: reports active restrictions and report-only results, without returning fact values, policy literals or directory contents.",
+                          "properties": {
+                            "acr_revision": {
+                              "type": "string"
+                            },
+                            "active_would_permit": {
+                              "type": "boolean"
+                            },
+                            "client_revision": {
+                              "type": "string"
+                            },
+                            "enforcement_action": {
+                              "enum": [
+                                "authorize",
+                                "authorization_code",
+                                "refresh_token",
+                                "device_code",
+                                "ciba",
+                                "token_exchange",
+                                "client_credentials",
+                                "jwt_bearer",
+                                "access_evaluation"
+                              ]
+                            },
+                            "evaluated_policy_revision": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "facts": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "availability": {
+                                    "enum": [
+                                      "known",
+                                      "absent",
+                                      "stale",
+                                      "unavailable",
+                                      "invalid"
+                                    ]
+                                  },
+                                  "hypothetical": {
+                                    "type": "boolean"
+                                  },
+                                  "name": {
+                                    "type": "string"
+                                  },
+                                  "source": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "name",
+                                  "availability",
+                                  "source",
+                                  "hypothetical"
+                                ],
+                                "type": "object"
+                              },
+                              "type": "array"
+                            },
+                            "legacy_would_permit": {
+                              "type": "boolean"
+                            },
+                            "policy_revision": {
+                              "type": "string"
+                            },
+                            "scopes": {
+                              "items": {
+                                "properties": {
+                                  "assurance_remedy": {
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ]
+                                  },
+                                  "conditions": {
+                                    "type": "array"
+                                  },
+                                  "id": {
+                                    "type": "string"
+                                  },
+                                  "missing_required_evidence": {
+                                    "type": "boolean"
+                                  },
+                                  "mode": {
+                                    "enum": [
+                                      "active",
+                                      "report_only"
+                                    ]
+                                  },
+                                  "required_facts": {
+                                    "items": {
+                                      "type": "string"
+                                    },
+                                    "type": "array"
+                                  },
+                                  "would_decision": {
+                                    "type": "boolean"
+                                  }
+                                },
+                                "type": "object"
+                              },
+                              "type": "array"
+                            }
+                          },
+                          "type": "object"
+                        },
                         "current_policy_revision": {
                           "type": [
                             "string",
@@ -9279,7 +9620,7 @@
                                 "hypothetical"
                               ]
                             },
-                            "groups_roles_grants_acr": {
+                            "groups_roles_grants": {
                               "const": "server_resolved"
                             },
                             "policy": {
@@ -9293,6 +9634,9 @@
                             },
                             "subject": {
                               "const": "tenant_user_and_client"
+                            },
+                            "trusted_transaction_evidence": {
+                              "const": "explicit_fact_sources"
                             }
                           },
                           "type": "object"
