@@ -185,3 +185,26 @@ default intentionally retains old signing behavior and is not device enforcement
 This source checkpoint is uncompiled and unvalidated while the shared Rust slot
 is occupied. No certificate verifier, interaction transfer, persistent sidecar,
 mounted endpoint, or device policy enforcement is claimed by this checkpoint.
+
+
+The next candidate checkpoint adds migration0164 and
+`PgManagedDevices::resolve_for_grant_on(connection, tenant, grant, binding,
+current_anchor)`. It never checks out another pool connection. It binds the
+exact local grant user and client, current source authority/generation, current
+enrollment generation, user/application liveness and allowlist, leaf and current
+anchor fingerprint. It reads the database clock after locks and returns the
+existing typed conditional `Fact`; its expiry is the minimum of posture
+observation+300 seconds, source expiry, leaf expiry and original proof expiry.
+Future observations, missing management/compliance and absent evidence cannot
+become a known fact. Callers retain all locks through signing and recheck the
+fact clock after awaited operations. The source HTTP adapter uses the existing
+DPoP protected automation ingress; independent relay client authentication may
+be private_key_jwt or OAuth mTLS, but a certificate-only API access token is not
+accepted by that existing DPoP ingress. No sender constraint is substituted for
+client authentication.
+
+Code issuance and redemption candidate transactions now store and consume a
+private sidecar beside the exact code digest. Redemption uses the existing
+single-winner code spend and `DELETE RETURNING` of its sidecar in the same
+transaction. The interaction-capture/transfer and removal writers are not yet
+implemented; this remains incomplete source, without checks or runtime evidence.
