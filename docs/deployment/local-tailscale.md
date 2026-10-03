@@ -12,7 +12,33 @@ Asterius role: the existing admin password and TOTP challenge still apply.
 
 ## Current verified deployment
 
-The latest 2026-10-03 image includes the read-only **Governance findings** screen
+The latest 2026-10-03 image includes the exact session-rotation correction from
+local main `ccd98d6e`, alongside governance findings, access reviews and temporary
+privileges. It uses binary SHA-256
+`bf8fc000e345a4428f25c8fa13703e383189c96b56adc7120252ffbca9b4b03d`,
+image `asterius-idp:local-ast-96u1-bf8fc000e345`, and image ID
+`sha256:cd6ea8fdb62680da0995a8e980bd9e07b4d51a5deb75cac3bded27b00f1122e7`.
+The rotation change passed composed strict linting, 92 targeted tests, 115
+composed fuzz parser builds, owned full-schema SQL controls and a real controlled
+rotation/refresh path before its local main merge. This main binary was rebuilt
+successfully, then tested in the restricted runtime image against a restored
+local database. The new optional protocol candidates remain isolated.
+
+The fresh protected recovery snapshot is
+`~/.local/share/asterius/backups/ast-96u1-20261003T213751Z-5ab867ed`
+(directory 0700, files 0600). Both isolated restore and live upgrade preserved
+exact account, credential and encrypted TOTP rows. Both databases have 111
+successful migrations, including 0170 for private grant/session lineage.
+Configuration and secret data, security contexts, durable loopback bridge and
+private Serve routes are unchanged. The live deployment is ready; strict TLS
+readiness, canonical discovery and protected account/console redirects pass.
+No fresh successful TOTP ceremony is claimed by this deployment check.
+The prior image and snapshots remain available; image-only downgrade is
+unvalidated. See [the session update evidence](evidence/local-session-rotation-update-2026-10-03.json).
+
+## Previous governance report update
+
+The earlier 2026-10-03 image added the read-only **Governance findings** screen
 in addition to temporary privileges, access reviews and the deadline correction.
 It uses local main `4066e08f`, verified binary SHA-256
 `c79b1caedc1ce9ff655b7d2c2adbc1498f26c7a501a50a4d66b3fe3b957c5cbd`,
