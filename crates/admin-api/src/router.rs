@@ -246,6 +246,10 @@ async fn handle(
     )
     .await?;
 
+    if operation.service_only() && principal.needs_csrf() {
+        return Err(AdminError::Forbidden);
+    }
+
     // 3. CSRF, for the console and for everything that is not a plain read. A
     //    `GET` cannot be the target of a forgery worth mounting, and a token
     //    call carries no ambient credential to forge with. A probe
@@ -268,7 +272,7 @@ async fn handle(
     }
 
     // 5. At most once per key, for creations.
-    if operation.needs_idempotency_key() {
+    if operation.needs_idempotency_key() && !crate::declarative::is_route(operation.id()) {
         let key = headers
             .get(idempotency::HEADER)
             .and_then(|value| value.to_str().ok())
@@ -311,6 +315,9 @@ async fn route(
     context: &Handling<'_>,
     body: axum::body::Body,
 ) -> Result<Response, AdminError> {
+    if crate::declarative::is_route(id) {
+        return context.management(id, body).await;
+    }
     if is_overview(id) {
         return context.overview(id).await;
     }
@@ -8157,6 +8164,285 @@ fn openapi_response() -> Response {
 /// Used by `asterius-server`'s wiring test.
 pub const CLIENT_ADDRESS_EXTENSION: &str = "asterius_admin_api::ClientAddress";
 
+impl Handling<'_> {
+    fn management_owner(&self) -> Result<String, AdminError> {
+        let Principal::Automation { subject, held } = self.principal else {
+            return Err(AdminError::Forbidden);
+        };
+        let crate::rbac::Held::Scopes { tenant, .. } = held else {
+            return Err(AdminError::Forbidden);
+        };
+        let issuer = tenant
+            .as_ref()
+            .or(self.state.reserved_tenant.as_ref())
+            .ok_or(AdminError::Forbidden)?;
+        serde_json::to_string(&[issuer.as_str(), subject.as_str()])
+            .map_err(|_| AdminError::Unavailable)
+    }
+
+    fn management_authority(
+        &self,
+        kind: asterius_domain::declarative::Kind,
+        target: &TenantId,
+        writing: bool,
+        creating: bool,
+    ) -> Result<(), AdminError> {
+        crate::declarative::authorize(self.principal, kind, target, writing, creating)
+    }
+
+    async fn management_spec(
+        &self,
+        kind: asterius_domain::declarative::Kind,
+        spec: &serde_json::Value,
+        identity: Option<&asterius_domain::declarative::Identity>,
+    ) -> Result<serde_json::Value, AdminError> {
+        if kind == asterius_domain::declarative::Kind::Application {
+            let object = spec.as_object().ok_or_else(|| {
+                AdminError::Invalid("application spec must be an object".to_owned())
+            })?;
+            if object.contains_key("client_secret")
+                || object.contains_key("client_secret_command")
+                || object.contains_key("private_key")
+                || object
+                    .get("compliance_profile")
+                    .is_some_and(|profile| profile != "fapi")
+            {
+                return Err(AdminError::Invalid(
+                    "declarative applications require public-key FAPI metadata".to_owned(),
+                ));
+            }
+            let bytes = serde_json::to_vec(spec).map_err(|_| AdminError::Unavailable)?;
+            let mut registration =
+                ClientRegistration::from_json(&bytes, self.state.backend.capabilities())
+                    .map_err(|error| clients::refusal(&error))?;
+            let resources = serde_json::to_vec(&serde_json::json!({"resources":spec["resources"]}))
+                .map_err(|_| AdminError::Unavailable)?;
+            registration.resources = clients::resource_allow_list(&resources)?;
+            if registration
+                .grant_types
+                .contains(&asterius_domain::entities::client::GrantType::JwtBearer)
+            {
+                let pinned = if let Some(identity) = identity {
+                    self.state.backend.clients().id_jag_pinned(
+                        &identity.tenant,
+                        &asterius_domain::ClientId::new(&identity.keys[0]),
+                    )
+                } else {
+                    false
+                };
+                if !pinned {
+                    return Err(AdminError::Invalid(
+                        "JWT bearer ID-JAG requires an existing operator-pinned client".to_owned(),
+                    ));
+                }
+            }
+            if let Some(identity) = identity {
+                let client = asterius_domain::ClientId::new(&identity.keys[0]);
+                self.require_https_redirects(&client, &registration)?;
+                self.require_identity_only(&client, &registration)?;
+            }
+            self.check_client_is_serviceable(&registration, "declarative.validate")
+                .await?;
+        }
+        crate::declarative::normalise(kind, spec)
+    }
+
+    // Keep the dynamic tenant/kind authority gate visible beside each dispatch branch.
+    #[allow(clippy::too_many_lines)]
+    async fn management(
+        &self,
+        operation: &str,
+        body: axum::body::Body,
+    ) -> Result<Response, AdminError> {
+        use asterius_domain::declarative::{Identity, Kind, Mutation};
+        let owner = self.management_owner()?;
+        if operation == "declarative.resolve" {
+            let mut fields = std::collections::BTreeMap::new();
+            for (key, value) in url::form_urlencoded::parse(self.query.as_bytes()) {
+                if !matches!(key.as_ref(), "kind" | "external_key")
+                    || fields
+                        .insert(key.into_owned(), value.into_owned())
+                        .is_some()
+                {
+                    return Err(AdminError::Invalid(
+                        "invalid logical identity query".to_owned(),
+                    ));
+                }
+            }
+            let kind: Kind = serde_json::from_value(serde_json::Value::String(
+                fields
+                    .remove("kind")
+                    .ok_or_else(|| AdminError::Invalid("kind is required".to_owned()))?,
+            ))
+            .map_err(|_| AdminError::Invalid("invalid kind".to_owned()))?;
+            self.management_authority(kind, &self.tenant.id, false, false)?;
+            let backend = self
+                .state
+                .backend
+                .management()
+                .ok_or(AdminError::Unavailable)?;
+            let key = fields
+                .remove("external_key")
+                .ok_or_else(|| AdminError::Invalid("external_key is required".to_owned()))?;
+            let document = backend
+                .resolve(&self.tenant.id, &owner, kind, &key)
+                .await
+                .map_err(crate::declarative::refusal)?;
+            return crate::declarative::response(&document);
+        }
+        if operation == "declarative.create" {
+            let request: crate::declarative::Create = self.parse_body(body).await?;
+            let target = if request.kind == Kind::Tenant {
+                TenantId::parse(
+                    request.spec["tenant_id"]
+                        .as_str()
+                        .ok_or_else(|| AdminError::Invalid("tenant_id is required".to_owned()))?,
+                )
+                .map_err(|_| AdminError::Invalid("invalid tenant_id".to_owned()))?
+            } else {
+                self.tenant.id.clone()
+            };
+            self.management_authority(request.kind, &target, true, true)?;
+            let backend = self
+                .state
+                .backend
+                .management()
+                .ok_or(AdminError::Unavailable)?;
+            let spec = self
+                .management_spec(request.kind, &request.spec, None)
+                .await?;
+            let document = backend
+                .mutate(
+                    &target,
+                    &owner,
+                    Mutation::Create {
+                        kind: request.kind,
+                        external_key: request.external_key,
+                        spec,
+                        deletion_protection: request.deletion_protection,
+                    },
+                )
+                .await
+                .map_err(crate::declarative::refusal)?
+                .ok_or(AdminError::Unavailable)?;
+            self.state.backend.tenant_directory_changed();
+            self.record(
+                EventType::ADMIN_CHANGED,
+                Detail::new()
+                    .label("operation", "declarative.create")
+                    .text("resource_id", document.id.clone()),
+            )
+            .await;
+            return crate::declarative::response(&document);
+        }
+        let base = format!("{}/declarative/v1/resources/", crate::BASE_PATH);
+        let import = self
+            .path
+            .strip_prefix(&base)
+            .and_then(|suffix| suffix.split('/').next())
+            .ok_or(AdminError::NotFound)?;
+        let identity = Identity::parse(import).map_err(crate::declarative::refusal)?;
+        if identity.tenant != self.tenant.id {
+            return Err(AdminError::NotFound);
+        }
+        let writing = !matches!(operation, "declarative.read" | "declarative.plan");
+        self.management_authority(identity.kind, &identity.tenant, writing, false)?;
+        let backend = self
+            .state
+            .backend
+            .management()
+            .ok_or(AdminError::Unavailable)?;
+        if operation == "declarative.read" {
+            return crate::declarative::response(
+                &backend
+                    .read(&identity)
+                    .await
+                    .map_err(crate::declarative::refusal)?,
+            );
+        }
+        let expected = crate::declarative::expected(self.headers)?;
+        if operation == "declarative.delete"
+            && identity.kind == Kind::Application
+            && self.state.backend.clients().id_jag_pinned(
+                &identity.tenant,
+                &asterius_domain::ClientId::new(&identity.keys[0]),
+            )
+        {
+            return Err(crate::declarative::refusal(
+                asterius_domain::declarative::Error::Dependency,
+            ));
+        }
+        if operation == "declarative.plan" {
+            let request: crate::declarative::Plan = self.parse_body(body).await?;
+            let spec = self
+                .management_spec(identity.kind, &request.spec, Some(&identity))
+                .await?;
+            let spec = backend
+                .normalise(&identity.tenant, identity.kind, &spec)
+                .await
+                .map_err(crate::declarative::refusal)?;
+            let held = backend
+                .read(&identity)
+                .await
+                .map_err(crate::declarative::refusal)?;
+            if held.revision != expected {
+                return Err(crate::declarative::refusal(
+                    asterius_domain::declarative::Error::Revision,
+                ));
+            }
+            let conflict = held
+                .owner
+                .as_deref()
+                .is_some_and(|held_owner| held_owner != owner)
+                || held
+                    .origin
+                    .iter()
+                    .any(|origin| origin["relation"] == "managed");
+            return Ok(json_no_store(
+                StatusCode::OK,
+                &serde_json::json!({"contract_version":1,"id":held.id,"revision":held.revision,"changed":held.spec!=spec,"owner_conflict":conflict,"spec":spec}),
+            ));
+        }
+        let mutation = match operation {
+            "declarative.replace" => {
+                let request: crate::declarative::Replace = self.parse_body(body).await?;
+                let spec = self
+                    .management_spec(identity.kind, &request.spec, Some(&identity))
+                    .await?;
+                Mutation::Replace {
+                    identity,
+                    expected,
+                    spec,
+                    deletion_protection: request.deletion_protection,
+                }
+            }
+            "declarative.adopt" => Mutation::Adopt { identity, expected },
+            "declarative.release" => Mutation::Release { identity, expected },
+            "declarative.delete" => Mutation::Delete { identity, expected },
+            _ => return Err(AdminError::NotFound),
+        };
+        let result = backend
+            .mutate(&self.tenant.id, &owner, mutation)
+            .await
+            .map_err(crate::declarative::refusal)?;
+        self.state.backend.tenant_directory_changed();
+        self.record(
+            EventType::ADMIN_CHANGED,
+            Detail::new()
+                .text("operation", operation)
+                .text("resource_id", import),
+        )
+        .await;
+        match result {
+            Some(document) => crate::declarative::response(&document),
+            None => Ok(json_no_store(
+                StatusCode::OK,
+                &serde_json::json!({"deleted":true}),
+            )),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -11744,6 +12030,7 @@ mod tests {
         let path = operation
             .full_path()
             .replace("{tenant_id}", "acme")
+            .replace("{import_id}", "WyJhY21lIiwicG9saWN5IiwicG9saWN5Il0")
             .replace("{id}", "1")
             .replace("{kid}", SEEDED_KID)
             .replace("{client_id}", SEEDED_CLIENT_ID)
@@ -13818,7 +14105,7 @@ mod tests {
                 matches!(
                     operation.authority().reach(),
                     Reach::Deployment | Reach::AutomationTenant
-                ),
+                ) || operation.service_only(),
                 "{} answered {} for a tenant admin",
                 operation.id(),
                 response.status()
@@ -13847,7 +14134,8 @@ mod tests {
             let allowed = !matches!(
                 authority.reach(),
                 Reach::Deployment | Reach::AutomationTenant
-            ) && role.grants(authority.scope());
+            ) && !operation.service_only()
+                && role.grants(authority.scope());
             assert_eq!(
                 response.status() == StatusCode::FORBIDDEN,
                 !allowed,
@@ -14004,7 +14292,8 @@ mod tests {
                 "{} is mounted with no handler",
                 operation.id()
             );
-            if operation.authority().reach() == Reach::AutomationTenant {
+            if operation.authority().reach() == Reach::AutomationTenant || operation.service_only()
+            {
                 assert_eq!(response.status(), StatusCode::FORBIDDEN);
             } else if registry_accepts_client_refusal(operation.id()) {
                 // This registry walk does not seed SAML keys or SP trusts,

@@ -2857,6 +2857,14 @@ impl DeploymentUsers {
 
 #[async_trait::async_trait]
 impl AdminBackend for Deployment {
+    fn management(&self) -> Option<Arc<dyn asterius_domain::declarative::Management>> {
+        Some(Arc::new(asterius_store_pg::PgDeclarative::new(
+            self.store.pool().clone(),
+            self.capabilities,
+            Arc::clone(&self.kek),
+        )))
+    }
+
     async fn update_flow_api(
         &self,
         tenant: &TenantId,

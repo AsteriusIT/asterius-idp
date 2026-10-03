@@ -199,6 +199,7 @@ fn operation_object(operation: &Operation) -> Value {
                     "allow_ephemeral_subjects": {"type": "boolean"} }
         });
     }
+    declarative_documentation(operation, &mut object);
     client_resources_documentation(operation, &mut object);
     kubernetes_documentation(operation, &mut object);
     invitation_documentation(operation, &mut object);
@@ -282,6 +283,18 @@ fn operation_parameters(operation: &Operation) -> Vec<Value> {
             "required": true,
             "schema": { "type": "string" },
         }));
+    }
+    if crate::declarative::is_route(operation.id()) {
+        if !matches!(
+            operation.id(),
+            "declarative.create" | "declarative.read" | "declarative.resolve"
+        ) {
+            parameters.push(json!({"name":"If-Match","in":"header","required":true,"schema":{"type":"string","pattern":"^\"[0-9a-f]{64}\"$"}}));
+        }
+        if operation.id() == "declarative.resolve" {
+            parameters.push(json!({"name":"kind","in":"query","required":true,"schema":{"type":"string","enum":["tenant","application","resource","group","membership","policy"]}}));
+            parameters.push(json!({"name":"external_key","in":"query","required":true,"schema":{"type":"string","minLength":1,"maxLength":512}}));
+        }
     }
     if operation.is_paginated() {
         parameters.push(json!({ "$ref": "#/components/parameters/cursor" }));
@@ -768,6 +781,52 @@ fn path_parameters(path: &str) -> Vec<&str> {
     path.split('/')
         .filter_map(|segment| segment.strip_prefix('{')?.strip_suffix('}'))
         .collect()
+}
+
+fn declarative_documentation(operation: &Operation, object: &mut Value) {
+    if !crate::declarative::is_route(operation.id()) {
+        return;
+    }
+    object["security"] = json!([{"adminToken":[]}]);
+    object["x-service-only"] = json!(true);
+    object["x-kind-scopes"] = json!({
+        "tenant":["admin.tenants:read","admin.tenants:write"],
+        "application":["admin.clients:read","admin.clients:write"],
+        "resource":["admin.resource_servers:read","admin.resource_servers:write"],
+        "group":["admin.groups:read","admin.groups:write"],
+        "membership":["admin.memberships:read","admin.memberships:write"],
+        "policy":["admin.policies:read","admin.policies:write"]
+    });
+    object["description"] = json!(
+        "Requires admin.session:read plus the addressed kind's read scope; mutation additionally requires kind write scope. Tenant create requires deployment reach. Ownership comes only from verified issuer/client credentials. The import ID is unpadded base64url of [tenant,kind,identity], or [tenant,membership,groupUUID,userUUID]. If-Match uses the exact strong 64-hex ETag. POST create retries use durable external_key, not Idempotency-Key. Plan/read/import never return credentials."
+    );
+    for (status, code) in [
+        (
+            "409",
+            "owner_conflict / delete_protected / logical_key_conflict / dependency_conflict",
+        ),
+        ("412", "revision_conflict"),
+        ("428", "precondition_required"),
+    ] {
+        object["responses"][status] = json!({"description":code,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/Error"}}}});
+    }
+    if matches!(
+        operation.id(),
+        "declarative.create" | "declarative.replace" | "declarative.plan"
+    ) {
+        let mut properties = json!({"spec":{"type":"object","description":"Kind-specific domain-validated desired document; maximum shared request body limit is 64 KiB. Application fields are public FAPI registration metadata plus resources; generated client secrets and private JWK material are rejected. Tenant fields: tenant_id, issuer, display_name, default_resource, custom_host, options."}});
+        let required = if operation.id() == "declarative.create" {
+            properties["kind"] = json!({"type":"string","enum":["tenant","application","resource","group","membership","policy"]});
+            properties["external_key"] = json!({"type":"string","minLength":1,"maxLength":512});
+            json!(["kind", "external_key", "spec"])
+        } else {
+            json!(["spec"])
+        };
+        if operation.id() != "declarative.plan" {
+            properties["deletion_protection"] = json!({"type":"boolean","default":true});
+        }
+        object["requestBody"] = json!({"required":true,"content":{"application/json":{"schema":{"type":"object","additionalProperties":false,"required":required,"properties":properties}}}});
+    }
 }
 
 #[cfg(test)]
