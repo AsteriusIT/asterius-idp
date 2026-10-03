@@ -2089,7 +2089,90 @@ pub const SCIM_BULK: Operation = Operation::mutation(
     "SCIM Bulk is unsupported by this service",
 );
 
+pub const GOVERNANCE_OWNERSHIP_LIST: Operation = Operation::read(
+    "governance.ownership.list",
+    "/governance/ownership",
+    S::Get,
+    A::new(R::ConsoleTenant, "admin.governance:read"),
+    "Lists current explicit standing-assignment owners and reviewers; requires a same-realm console session, and mutations require fresh phishing-resistant authentication",
+);
+pub const GOVERNANCE_OWNERSHIP_CONFIGURE: Operation = Operation::mutation(
+    "governance.ownership.configure",
+    "/governance/ownership",
+    M::Put,
+    A::new(R::ConsoleTenant, "admin.governance:write"),
+    "Configures ownership with optimistic revision and current same-tenant human authority; requires a same-realm console session, and mutations require fresh phishing-resistant authentication",
+);
+pub const GOVERNANCE_REVIEW_LIST: Operation = Operation::read(
+    "governance.review.list",
+    "/governance/reviews",
+    S::Get,
+    A::new(R::ConsoleTenant, "admin.governance:read"),
+    "Lists tenant review history; requires a same-realm console session, and mutations require fresh phishing-resistant authentication",
+);
+pub const GOVERNANCE_REVIEW_START: Operation = Operation::mutation(
+    "governance.review.start",
+    "/governance/reviews",
+    M::Post,
+    A::new(R::ConsoleTenant, "admin.governance:write"),
+    "Snapshots selected current assignments with effective provenance and an explicit reviewer; requires a same-realm console session, and mutations require fresh phishing-resistant authentication",
+);
+pub const GOVERNANCE_REVIEW_ITEMS: Operation = Operation::read(
+    "governance.review.items",
+    "/governance/reviews/{review_id}/items",
+    S::Get,
+    A::new(R::ConsoleTenant, "admin.governance:read"),
+    "Reads immutable review evidence and application results; requires a same-realm console session, and mutations require fresh phishing-resistant authentication",
+);
+pub const GOVERNANCE_REVIEW_DECIDE: Operation = Operation::mutation(
+    "governance.review.decide",
+    "/governance/reviews/{review_id}/items/{item_id}/decision",
+    M::Put,
+    A::new(R::ConsoleTenant, "admin.governance:write"),
+    "Records an assigned reviewers retain or remove decision without changing access; requires a same-realm console session, and mutations require fresh phishing-resistant authentication",
+);
+pub const GOVERNANCE_REVIEW_APPLY: Operation = Operation::mutation(
+    "governance.review.apply",
+    "/governance/reviews/{review_id}/items/{item_id}/apply",
+    M::Post,
+    A::new(R::ConsoleTenant, "admin.governance:write"),
+    "Applies the recorded decision atomically after rechecking live authority and provenance; requires a same-realm console session, and mutations require fresh phishing-resistant authentication",
+);
+pub const GOVERNANCE_REVIEW_CANCEL: Operation = Operation::mutation(
+    "governance.review.cancel",
+    "/governance/reviews/{review_id}/cancel",
+    M::Post,
+    A::new(R::ConsoleTenant, "admin.governance:write"),
+    "Cancels the creators open review without changing access; requires a same-realm console session, and mutations require fresh phishing-resistant authentication",
+);
+
+pub const GOVERNANCE_REVIEWERS: Operation = Operation::read(
+    "governance.reviewers",
+    "/governance/reviewers",
+    S::Get,
+    A::new(R::ConsoleTenant, "admin.governance:read"),
+    "Lists current active tenant administrators eligible for explicit human owner/reviewer assignment; requires a same-realm console session",
+);
+
+pub const GOVERNANCE_REVIEW_READ: Operation = Operation::read(
+    "governance.review.read",
+    "/governance/reviews/{review_id}",
+    S::Get,
+    A::new(R::ConsoleTenant, "admin.governance:read"),
+    "Reads one current or historical review; requires a same-realm console session",
+);
+
 static REGISTRY: &[Operation] = &[
+    GOVERNANCE_REVIEW_READ,
+    GOVERNANCE_REVIEWERS,
+    GOVERNANCE_OWNERSHIP_LIST,
+    GOVERNANCE_OWNERSHIP_CONFIGURE,
+    GOVERNANCE_REVIEW_LIST,
+    GOVERNANCE_REVIEW_START,
+    GOVERNANCE_REVIEW_ITEMS,
+    GOVERNANCE_REVIEW_DECIDE,
+    GOVERNANCE_REVIEW_APPLY,
+    GOVERNANCE_REVIEW_CANCEL,
     DECLARATIVE_READ,
     DECLARATIVE_RESOLVE,
     DECLARATIVE_CREATE,

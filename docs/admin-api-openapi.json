@@ -5701,6 +5701,1220 @@
         "x-asterius-scope": "admin.flows:read"
       }
     },
+    "/admin/api/v1/governance/ownership": {
+      "get": {
+        "description": "Human identity must belong to the addressed tenant. Owner/reviewer configuration never grants administrative authority. Writes additionally require current active tenant-administrator authority, fresh phishing-resistant console proof and normal CSRF protection. Reasons and historical snapshots remain private. Decisions do not change access until explicit application. Stale or externally managed sources are refused; independent standing and temporary sources remain intact. Notification transport is disabled.",
+        "operationId": "governance.ownership.list",
+        "parameters": [
+          {
+            "description": "Exact last row UUID from the previous page; rows are ordered by UUID within this tenant.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Rows per page; values outside one to one hundred are refused.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Lists current explicit standing-assignment owners and reviewers; requires a same-realm console session, and mutations require fresh phishing-resistant authentication",
+        "x-asterius-reach": "console_tenant",
+        "x-asterius-scope": "admin.governance:read",
+        "x-console-only": true,
+        "x-fresh-phishing-resistant-write": false
+      },
+      "put": {
+        "description": "Human identity must belong to the addressed tenant. Owner/reviewer configuration never grants administrative authority. Writes additionally require current active tenant-administrator authority, fresh phishing-resistant console proof and normal CSRF protection. Reasons and historical snapshots remain private. Decisions do not change access until explicit application. Stale or externally managed sources are refused; independent standing and temporary sources remain intact. Notification transport is disabled.",
+        "operationId": "governance.ownership.configure",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "description": "Omitted/null revision expects no saved ownership. Existing ownership requires its exact current revision; stale writes return 409.",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "expected_revision": {
+                    "format": "uuid",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "owner_user_id": {
+                    "format": "uuid",
+                    "not": {
+                      "const": "00000000-0000-0000-0000-000000000000"
+                    },
+                    "type": "string"
+                  },
+                  "reviewers": {
+                    "items": {
+                      "format": "uuid",
+                      "not": {
+                        "const": "00000000-0000-0000-0000-000000000000"
+                      },
+                      "type": "string"
+                    },
+                    "maxItems": 20,
+                    "minItems": 1,
+                    "type": "array",
+                    "uniqueItems": true
+                  },
+                  "target": {
+                    "oneOf": [
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "group_id": {
+                            "format": "uuid",
+                            "not": {
+                              "const": "00000000-0000-0000-0000-000000000000"
+                            },
+                            "type": "string"
+                          },
+                          "kind": {
+                            "const": "membership"
+                          },
+                          "user_id": {
+                            "format": "uuid",
+                            "not": {
+                              "const": "00000000-0000-0000-0000-000000000000"
+                            },
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "group_id",
+                          "user_id"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "kind": {
+                            "const": "user_tenant_role"
+                          },
+                          "name": {
+                            "pattern": "^[a-z0-9][a-z0-9._:-]{0,63}$",
+                            "type": "string"
+                          },
+                          "user_id": {
+                            "format": "uuid",
+                            "not": {
+                              "const": "00000000-0000-0000-0000-000000000000"
+                            },
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "user_id",
+                          "name"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "client_id": {
+                            "maxLength": 2048,
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "kind": {
+                            "const": "user_client_role"
+                          },
+                          "name": {
+                            "pattern": "^[a-z0-9][a-z0-9._:-]{0,63}$",
+                            "type": "string"
+                          },
+                          "user_id": {
+                            "format": "uuid",
+                            "not": {
+                              "const": "00000000-0000-0000-0000-000000000000"
+                            },
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "user_id",
+                          "client_id",
+                          "name"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "group_id": {
+                            "format": "uuid",
+                            "not": {
+                              "const": "00000000-0000-0000-0000-000000000000"
+                            },
+                            "type": "string"
+                          },
+                          "kind": {
+                            "const": "group_tenant_role"
+                          },
+                          "name": {
+                            "pattern": "^[a-z0-9][a-z0-9._:-]{0,63}$",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "group_id",
+                          "name"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "client_id": {
+                            "maxLength": 2048,
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "group_id": {
+                            "format": "uuid",
+                            "not": {
+                              "const": "00000000-0000-0000-0000-000000000000"
+                            },
+                            "type": "string"
+                          },
+                          "kind": {
+                            "const": "group_client_role"
+                          },
+                          "name": {
+                            "pattern": "^[a-z0-9][a-z0-9._:-]{0,63}$",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "group_id",
+                          "client_id",
+                          "name"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "target",
+                  "owner_user_id",
+                  "reviewers",
+                  "enabled"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request conflicts with the current state, or its Idempotency-Key has already been used."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Configures ownership with optimistic revision and current same-tenant human authority; requires a same-realm console session, and mutations require fresh phishing-resistant authentication",
+        "x-asterius-reach": "console_tenant",
+        "x-asterius-scope": "admin.governance:write",
+        "x-console-only": true,
+        "x-fresh-phishing-resistant-write": true
+      }
+    },
+    "/admin/api/v1/governance/reviewers": {
+      "get": {
+        "description": "Human identity must belong to the addressed tenant. Owner/reviewer configuration never grants administrative authority. Writes additionally require current active tenant-administrator authority, fresh phishing-resistant console proof and normal CSRF protection. Reasons and historical snapshots remain private. Decisions do not change access until explicit application. Stale or externally managed sources are refused; independent standing and temporary sources remain intact. Notification transport is disabled.",
+        "operationId": "governance.reviewers",
+        "parameters": [
+          {
+            "description": "Exact last row UUID from the previous page; rows are ordered by UUID within this tenant.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Rows per page; values outside one to one hundred are refused.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Lists current active tenant administrators eligible for explicit human owner/reviewer assignment; requires a same-realm console session",
+        "x-asterius-reach": "console_tenant",
+        "x-asterius-scope": "admin.governance:read",
+        "x-console-only": true,
+        "x-fresh-phishing-resistant-write": false
+      }
+    },
+    "/admin/api/v1/governance/reviews": {
+      "get": {
+        "description": "Human identity must belong to the addressed tenant. Owner/reviewer configuration never grants administrative authority. Writes additionally require current active tenant-administrator authority, fresh phishing-resistant console proof and normal CSRF protection. Reasons and historical snapshots remain private. Decisions do not change access until explicit application. Stale or externally managed sources are refused; independent standing and temporary sources remain intact. Notification transport is disabled.",
+        "operationId": "governance.review.list",
+        "parameters": [
+          {
+            "description": "Exact last row UUID from the previous page; rows are ordered by UUID within this tenant.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Rows per page; values outside one to one hundred are refused.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Lists tenant review history; requires a same-realm console session, and mutations require fresh phishing-resistant authentication",
+        "x-asterius-reach": "console_tenant",
+        "x-asterius-scope": "admin.governance:read",
+        "x-console-only": true,
+        "x-fresh-phishing-resistant-write": false
+      },
+      "post": {
+        "description": "Human identity must belong to the addressed tenant. Owner/reviewer configuration never grants administrative authority. Writes additionally require current active tenant-administrator authority, fresh phishing-resistant console proof and normal CSRF protection. Reasons and historical snapshots remain private. Decisions do not change access until explicit application. Stale or externally managed sources are refused; independent standing and temporary sources remain intact. Notification transport is disabled.",
+        "operationId": "governance.review.start",
+        "parameters": [
+          {
+            "description": "A caller-chosen key, unique per creation. A repeat is refused with 409 rather than executed a second time.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "description": "Deadline must be future and within ninety days of database time. Every selected source must exist and its configured reviewer must remain eligible. Group snapshots refuse more than one hundred affected users or incomplete provenance.",
+                "properties": {
+                  "due_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "ownership_ids": {
+                    "items": {
+                      "format": "uuid",
+                      "not": {
+                        "const": "00000000-0000-0000-0000-000000000000"
+                      },
+                      "type": "string"
+                    },
+                    "maxItems": 200,
+                    "minItems": 1,
+                    "type": "array",
+                    "uniqueItems": true
+                  },
+                  "reviewer_id": {
+                    "format": "uuid",
+                    "not": {
+                      "const": "00000000-0000-0000-0000-000000000000"
+                    },
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "ownership_ids",
+                  "reviewer_id",
+                  "due_at"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request conflicts with the current state, or its Idempotency-Key has already been used."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Snapshots selected current assignments with effective provenance and an explicit reviewer; requires a same-realm console session, and mutations require fresh phishing-resistant authentication",
+        "x-asterius-idempotent": true,
+        "x-asterius-reach": "console_tenant",
+        "x-asterius-scope": "admin.governance:write",
+        "x-console-only": true,
+        "x-fresh-phishing-resistant-write": true
+      }
+    },
+    "/admin/api/v1/governance/reviews/{review_id}": {
+      "get": {
+        "description": "Human identity must belong to the addressed tenant. Owner/reviewer configuration never grants administrative authority. Writes additionally require current active tenant-administrator authority, fresh phishing-resistant console proof and normal CSRF protection. Reasons and historical snapshots remain private. Decisions do not change access until explicit application. Stale or externally managed sources are refused; independent standing and temporary sources remain intact. Notification transport is disabled.",
+        "operationId": "governance.review.read",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "review_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Reads one current or historical review; requires a same-realm console session",
+        "x-asterius-reach": "console_tenant",
+        "x-asterius-scope": "admin.governance:read",
+        "x-console-only": true,
+        "x-fresh-phishing-resistant-write": false
+      }
+    },
+    "/admin/api/v1/governance/reviews/{review_id}/cancel": {
+      "post": {
+        "description": "Human identity must belong to the addressed tenant. Owner/reviewer configuration never grants administrative authority. Writes additionally require current active tenant-administrator authority, fresh phishing-resistant console proof and normal CSRF protection. Reasons and historical snapshots remain private. Decisions do not change access until explicit application. Stale or externally managed sources are refused; independent standing and temporary sources remain intact. Notification transport is disabled.",
+        "operationId": "governance.review.cancel",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "review_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A caller-chosen key, unique per creation. A repeat is refused with 409 rather than executed a second time.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "maxProperties": 0,
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request conflicts with the current state, or its Idempotency-Key has already been used."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Cancels the creators open review without changing access; requires a same-realm console session, and mutations require fresh phishing-resistant authentication",
+        "x-asterius-idempotent": true,
+        "x-asterius-reach": "console_tenant",
+        "x-asterius-scope": "admin.governance:write",
+        "x-console-only": true,
+        "x-fresh-phishing-resistant-write": true
+      }
+    },
+    "/admin/api/v1/governance/reviews/{review_id}/items": {
+      "get": {
+        "description": "Human identity must belong to the addressed tenant. Owner/reviewer configuration never grants administrative authority. Writes additionally require current active tenant-administrator authority, fresh phishing-resistant console proof and normal CSRF protection. Reasons and historical snapshots remain private. Decisions do not change access until explicit application. Stale or externally managed sources are refused; independent standing and temporary sources remain intact. Notification transport is disabled.",
+        "operationId": "governance.review.items",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "review_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Exact last row UUID from the previous page; rows are ordered by UUID within this tenant.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Rows per page; values outside one to one hundred are refused.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Reads immutable review evidence and application results; requires a same-realm console session, and mutations require fresh phishing-resistant authentication",
+        "x-asterius-reach": "console_tenant",
+        "x-asterius-scope": "admin.governance:read",
+        "x-console-only": true,
+        "x-fresh-phishing-resistant-write": false
+      }
+    },
+    "/admin/api/v1/governance/reviews/{review_id}/items/{item_id}/apply": {
+      "post": {
+        "description": "Human identity must belong to the addressed tenant. Owner/reviewer configuration never grants administrative authority. Writes additionally require current active tenant-administrator authority, fresh phishing-resistant console proof and normal CSRF protection. Reasons and historical snapshots remain private. Decisions do not change access until explicit application. Stale or externally managed sources are refused; independent standing and temporary sources remain intact. Notification transport is disabled.",
+        "operationId": "governance.review.apply",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "review_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A caller-chosen key, unique per creation. A repeat is refused with 409 rather than executed a second time.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "maxProperties": 0,
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request conflicts with the current state, or its Idempotency-Key has already been used."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Applies the recorded decision atomically after rechecking live authority and provenance; requires a same-realm console session, and mutations require fresh phishing-resistant authentication",
+        "x-asterius-idempotent": true,
+        "x-asterius-reach": "console_tenant",
+        "x-asterius-scope": "admin.governance:write",
+        "x-console-only": true,
+        "x-fresh-phishing-resistant-write": true
+      }
+    },
+    "/admin/api/v1/governance/reviews/{review_id}/items/{item_id}/decision": {
+      "put": {
+        "description": "Human identity must belong to the addressed tenant. Owner/reviewer configuration never grants administrative authority. Writes additionally require current active tenant-administrator authority, fresh phishing-resistant console proof and normal CSRF protection. Reasons and historical snapshots remain private. Decisions do not change access until explicit application. Stale or externally managed sources are refused; independent standing and temporary sources remain intact. Notification transport is disabled.",
+        "operationId": "governance.review.decide",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "review_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "description": "An assigned reviewer records one immutable decision and printable nonempty reason. This command does not mutate access.",
+                "properties": {
+                  "decision": {
+                    "enum": [
+                      "retain",
+                      "remove"
+                    ]
+                  },
+                  "reason": {
+                    "maxLength": 1000,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "decision",
+                  "reason"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request conflicts with the current state, or its Idempotency-Key has already been used."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          }
+        ],
+        "summary": "Records an assigned reviewers retain or remove decision without changing access; requires a same-realm console session, and mutations require fresh phishing-resistant authentication",
+        "x-asterius-reach": "console_tenant",
+        "x-asterius-scope": "admin.governance:write",
+        "x-console-only": true,
+        "x-fresh-phishing-resistant-write": true
+      }
+    },
     "/admin/api/v1/groups": {
       "get": {
         "operationId": "groups.list",

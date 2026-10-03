@@ -7,6 +7,7 @@
 //! [ADR-0001](../../../docs/adr/0001-modular-monolith.md).
 #![forbid(unsafe_code)]
 
+mod access_reviews;
 mod admin_seed;
 mod agent_task_lifecycle;
 mod agent_task_views;
@@ -82,6 +83,7 @@ pub use temporary_entitlements::PgTemporaryEntitlements;
 mod users;
 mod verified_claims;
 
+pub use access_reviews::PgAccessReviews;
 pub use admin_seed::{DeploymentAdmin, PgAdminSeed, Seeded};
 pub use aggregated_claims::{PgAggregatedClaims, StoredClaimSource};
 pub use application_roles::PgApplicationRoles;

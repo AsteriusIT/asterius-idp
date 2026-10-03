@@ -125,6 +125,11 @@ pub trait PolicyTrial: std::fmt::Debug + Send + Sync {
 /// What an admin API request needs from below the API.
 #[async_trait::async_trait]
 pub trait AdminBackend: std::fmt::Debug + Send + Sync {
+    /// Human standing-access review commands; missing backends fail closed.
+    fn access_reviews(&self) -> Option<Arc<dyn asterius_domain::access_reviews::AccessReviews>> {
+        None
+    }
+
     /// Bounded current task provenance; absent adapters expose no snapshots.
     fn agent_tasks(&self) -> Option<Arc<dyn asterius_domain::agent_task_views::Administration>> {
         None

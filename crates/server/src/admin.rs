@@ -3636,6 +3636,12 @@ impl AdminBackend for Deployment {
             .await
     }
 
+    fn access_reviews(&self) -> Option<Arc<dyn asterius_domain::access_reviews::AccessReviews>> {
+        Some(Arc::new(asterius_store_pg::PgAccessReviews::new(
+            self.store.pool().clone(),
+        )))
+    }
+
     fn groups(&self) -> Arc<dyn asterius_domain::GroupDirectory> {
         Arc::new(asterius_store_pg::PgGroups::new(self.store.pool().clone()))
     }
