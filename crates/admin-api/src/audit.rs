@@ -291,16 +291,44 @@ pub async fn render_detail(
                     ("diagnostic_id", DetailValue::Text(id)) => uuid::Uuid::parse_str(id).ok(),
                     _ => None,
                 });
+            let expires =
+                event
+                    .detail
+                    .iter()
+                    .find_map(|(key, value)| match (key.as_str(), value) {
+                        ("diagnostic_expires_at", DetailValue::Number(until)) => Some(*until),
+                        _ => None,
+                    });
+            let digest = event
+                .detail
+                .iter()
+                .find_map(|(key, value)| match (key.as_str(), value) {
+                    ("diagnostic_digest", DetailValue::Fingerprint(digest)) => {
+                        Some(digest.as_str())
+                    }
+                    _ => None,
+                });
             match id {
                 None => json!({"status": "not_recorded"}),
+                Some(_) if expires.is_some_and(|until| until <= now.unix_timestamp()) => {
+                    json!({"status": "expired"})
+                }
                 Some(id) => match query.diagnostics(tenant, id, now).await? {
                     Some(evidence) => {
-                        json!({"status": "recorded", "expires_at": timestamp(evidence.expires_at), "snapshot": evidence.diagnostics})
+                        let actual_digest = asterius_domain::audit::redaction::fingerprint(
+                            &asterius_domain::audit::query::canonical_diagnostics(
+                                &evidence.diagnostics,
+                            ),
+                        );
+                        if digest != Some(actual_digest.as_str())
+                            || expires != Some(evidence.expires_at.unix_timestamp())
+                        {
+                            json!({"status": "unavailable", "reason": "integrity_mismatch"})
+                        } else {
+                            json!({"status": "recorded", "expires_at": timestamp(evidence.expires_at), "snapshot": evidence.diagnostics})
+                        }
                     }
-                    None => {
-                        let expired = event.detail.iter().any(|(key, value)| matches!((key.as_str(), value), ("diagnostic_expires_at", DetailValue::Number(until)) if *until <= now.unix_timestamp()));
-                        json!({"status": if expired {"expired"} else {"unavailable"}})
-                    }
+                    None => json!({"status": "unavailable"}),
                 },
             }
         }
@@ -771,6 +799,81 @@ mod tests {
                 .take(limit.min(MAX_PAGE) as usize)
                 .collect())
         }
+    }
+
+    #[derive(Debug)]
+    struct Snapshot {
+        evidence: asterius_domain::audit::query::DiagnosticEvidence,
+        reads: std::sync::atomic::AtomicUsize,
+    }
+    #[async_trait::async_trait]
+    impl AuditQuery for Snapshot {
+        async fn query(
+            &self,
+            _: &TenantId,
+            _: &AuditFilter,
+            _: Option<i64>,
+            _: u32,
+        ) -> Result<Vec<TrailEntry>, DomainError> {
+            Ok(vec![])
+        }
+        async fn diagnostics(
+            &self,
+            _: &TenantId,
+            _: uuid::Uuid,
+            _: OffsetDateTime,
+        ) -> Result<Option<asterius_domain::audit::query::DiagnosticEvidence>, DomainError>
+        {
+            self.reads
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(Some(self.evidence.clone()))
+        }
+    }
+
+    #[tokio::test]
+    async fn immutable_trace_digest_and_expiry_reject_modified_evidence() {
+        use asterius_domain::audit::query::{DiagnosticEvidence, canonical_diagnostics};
+        let tenant = TenantId::new("acme");
+        let now = OffsetDateTime::UNIX_EPOCH;
+        let original = json!({"rules": [{"matched": false}], "policy_revision": "old"});
+        let detail = Detail::new()
+            .text("diagnostic_id", uuid::Uuid::new_v4().to_string())
+            .credential("diagnostic_digest", canonical_diagnostics(&original))
+            .number("diagnostic_expires_at", 100);
+        let event = entry(exchange().detail(detail));
+        let mut query = Snapshot {
+            evidence: DiagnosticEvidence {
+                diagnostics: original.clone(),
+                expires_at: now + time::Duration::seconds(100),
+            },
+            reads: std::sync::atomic::AtomicUsize::new(0),
+        };
+        let valid = render_detail(&query, &tenant, &event, now)
+            .await
+            .expect("original evidence");
+        assert_eq!(valid["diagnostic"]["status"], "recorded");
+        query.evidence.diagnostics["rules"][0]["matched"] = json!(true);
+        let altered = render_detail(&query, &tenant, &event, now)
+            .await
+            .expect("modified evidence");
+        assert_eq!(altered["diagnostic"]["reason"], "integrity_mismatch");
+        assert!(altered["diagnostic"].get("snapshot").is_none());
+        query.evidence.diagnostics = original;
+        query.evidence.expires_at = now + time::Duration::seconds(200);
+        let extended = render_detail(&query, &tenant, &event, now)
+            .await
+            .expect("extended evidence");
+        assert_eq!(extended["diagnostic"]["reason"], "integrity_mismatch");
+        let reads = query.reads.load(std::sync::atomic::Ordering::Relaxed);
+        let expired = render_detail(&query, &tenant, &event, now + time::Duration::seconds(100))
+            .await
+            .expect("immutable expiry");
+        assert_eq!(expired["diagnostic"]["status"], "expired");
+        assert_eq!(
+            query.reads.load(std::sync::atomic::Ordering::Relaxed),
+            reads,
+            "event expiry must stop a tampered storage read"
+        );
     }
 
     #[tokio::test]

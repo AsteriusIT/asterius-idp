@@ -73,7 +73,7 @@ export interface AuditRow {
   readonly grant_id?: string;
   readonly request_id?: string;
   readonly detail?: Readonly<Record<string, unknown>>;
-  readonly diagnostic?: { readonly status: 'recorded' | 'expired' | 'unavailable' | 'not_recorded' | 'opaque'; readonly expires_at?: string; readonly snapshot?: unknown };
+  readonly diagnostic?: { readonly status: 'recorded' | 'expired' | 'unavailable' | 'not_recorded' | 'opaque'; readonly expires_at?: string; readonly snapshot?: unknown; readonly reason?: 'integrity_mismatch' };
 }
 
 interface Page {
@@ -516,6 +516,7 @@ function AuditEventDrawer() {
         {record && <><p><strong>{record.type ?? 'Unreadable record'}</strong> · {record.outcome}</p><p>{record.occurred_at}</p><Chain links={chainOf(record)} /><DetailList row={record} />
           <Panel title="Authorization evidence">
             <p>{({ recorded: 'Evidence from the evaluated policy snapshot.', expired: 'The policy evidence has expired.', unavailable: 'The recorded evidence is currently unavailable.', not_recorded: 'No policy evidence was recorded for this event.', opaque: 'This event cannot be decoded by this server.' })[record.diagnostic?.status ?? 'not_recorded']}</p>
+            {record.diagnostic?.reason === 'integrity_mismatch' && <p>The recorded evidence failed its integrity check and has been withheld.</p>}
             {record.diagnostic?.expires_at && <p>Available until <Timestamp value={record.diagnostic.expires_at} /></p>}
             {record.diagnostic?.snapshot !== undefined && <JsonValue value={record.diagnostic.snapshot} />}
             <p>Only events recorded by Asterius or an integrated policy enforcement point are visible here.</p>

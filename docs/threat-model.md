@@ -2467,8 +2467,10 @@ Boolean diagnostic snapshots identify the actual evaluated policy, including a
 cached issuance decision's original revision. They omit context inputs and
 policy literals, redact credential-shaped rule IDs, and remain bounded to
 64 KiB. They expire separately after seven days and are unreadable at the expiry
-boundary even before physical sweep. Their UUID and expiry remain in the
-immutable event, whose hash-chain behavior is unchanged. Missing/expired evidence
+boundary even before physical sweep. Their UUID, expiry and canonical SHA-256 fingerprint remain in the
+immutable event, whose hash-chain behavior is unchanged. Readers verify that
+fingerprint and the original expiry before displaying evidence; changed JSON or
+expiry metadata cannot be presented as a historical decision. Missing/expired evidence
 is explicit; current policies are never presented as historical decisions.
 Unintegrated downstream decisions and non-policy issuance paths are outside this
 visibility boundary. An audit outage cannot alter a completed PDP verdict.

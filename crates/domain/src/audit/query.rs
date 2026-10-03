@@ -53,6 +53,28 @@ pub struct DiagnosticEvidence {
     pub expires_at: OffsetDateTime,
 }
 
+/// Deterministic encoding for integrity binding, independent of PostgreSQL JSONB
+/// key order and serde feature choices. Callers supply bounded diagnostic JSON.
+#[must_use]
+pub fn canonical_diagnostics(value: &serde_json::Value) -> String {
+    fn ordered(value: &serde_json::Value) -> serde_json::Value {
+        match value {
+            serde_json::Value::Object(object) => {
+                let sorted: std::collections::BTreeMap<_, _> = object
+                    .iter()
+                    .map(|(key, value)| (key.clone(), ordered(value)))
+                    .collect();
+                serde_json::Value::Object(sorted.into_iter().collect())
+            }
+            serde_json::Value::Array(values) => {
+                serde_json::Value::Array(values.iter().map(ordered).collect())
+            }
+            other => other.clone(),
+        }
+    }
+    ordered(value).to_string()
+}
+
 /// What an operator is asking for. Every member is optional and they are
 /// conjunctive: a record matches when it satisfies all of the ones set.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

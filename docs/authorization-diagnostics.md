@@ -102,7 +102,9 @@ bounded to 64 KiB, with truncation marked; existing rule/node budgets still
 apply. Snapshots expire seven days after the event, stop being readable exactly
 at expiry, and the existing bounded tenant retention sweeper removes them.
 Deleting a tenant cascades its snapshots. The original event remains governed by
-its existing audit retention policy and contains only the snapshot UUID/expiry.
+its existing audit retention policy and contains the snapshot UUID/expiry and canonical SHA-256 integrity fingerprint.
+The reader checks both fingerprint and immutable event expiry; altered evidence
+is unavailable with `reason: integrity_mismatch`, and its contents are withheld.
 No endpoint reconstructs old decisions using the current policy.
 
 Event detail returns `diagnostic.status`: `recorded` includes `snapshot` and

@@ -368,8 +368,13 @@ impl AuditSink for PgAuditSink {
         };
         let id = uuid::Uuid::new_v4();
         let expires_at = event.occurred_at + time::Duration::days(DIAGNOSTIC_DAYS);
+        // Integrity binding of already-redacted public boolean metadata, not a secrecy claim.
         event.detail = event
             .detail
+            .credential(
+                "diagnostic_digest",
+                asterius_domain::audit::query::canonical_diagnostics(&value),
+            )
             .text("diagnostic_id", id.to_string())
             .number("diagnostic_expires_at", expires_at.unix_timestamp());
         let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;

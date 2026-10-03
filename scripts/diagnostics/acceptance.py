@@ -45,6 +45,7 @@ assert page["items"][0]["request_id"] == reference
 status, _, event = admin.request("GET", api + f"/audit/events/{event_id}")
 assert status == 200 and event["diagnostic"]["status"] == "recorded", "historical evidence"
 snapshot = event["diagnostic"]["snapshot"]
+assert snapshot["enforcement_point"] == "access_evaluation", "actual enforcement-point provenance"
 assert snapshot["policy_revision"].startswith("sha256:") and snapshot["rules"][0]["conditions"][0]["missing"], "actual revision and missing-context outcome"
 assert "country" not in json.dumps(snapshot) and "nonexistent-fixture-subject" not in json.dumps(snapshot), "no context names/input values"
 status, _, empty = admin.request("GET", api + "/audit/events?request_id=" + reference + "&grant=00000000-0000-0000-0000-000000000000&limit=1")
@@ -67,6 +68,9 @@ def sql(statement):
 sql("update tenant_policies set document='{\"version\":1,\"rules\":[]}'::jsonb,updated_at=now() where tenant_id='admin';")
 status, _, same = admin.request("GET", api + f"/audit/events/{event_id}")
 assert status == 200 and same["diagnostic"]["snapshot"] == snapshot, "snapshot cannot be reconstructed from current policy"
+sql("update authorization_diagnostics set diagnostics=jsonb_set(diagnostics,'{rules,0,matched}','true'::jsonb) where tenant_id='admin';")
+status, _, altered = admin.request("GET", api + f"/audit/events/{event_id}")
+assert status == 200 and altered["diagnostic"]["status"] == "unavailable" and altered["diagnostic"]["reason"] == "integrity_mismatch" and "snapshot" not in altered["diagnostic"], "immutable audit digest rejects altered evidence"
 sql("update authorization_diagnostics set created_at=now()-interval '8 days',expires_at=now()-interval '1 day' where tenant_id='admin';")
 status, _, missing = admin.request("GET", api + f"/audit/events/{event_id}")
 assert status == 200 and missing["diagnostic"]["status"] == "unavailable" and "snapshot" not in missing["diagnostic"], "expired stored evidence is unreadable even before sweep"

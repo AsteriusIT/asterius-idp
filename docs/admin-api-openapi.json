@@ -976,6 +976,12 @@
                           "format": "date-time",
                           "type": "string"
                         },
+                        "reason": {
+                          "enum": [
+                            "integrity_mismatch"
+                          ],
+                          "type": "string"
+                        },
                         "snapshot": {
                           "description": "Redacted bounded boolean evidence of the actual evaluated policy; cached issuance retains its original revision. Expires independently after seven days. No tokens, context input values or policy literals.",
                           "properties": {

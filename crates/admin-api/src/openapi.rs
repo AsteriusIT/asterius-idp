@@ -641,7 +641,8 @@ fn audit_detail_schema() -> Value {
                 "type": "object", "required": ["status"],
                 "properties": {
                     "status": {"type": "string", "enum": ["recorded", "expired", "unavailable", "not_recorded", "opaque"]},
-                    "expires_at": {"type": "string", "format": "date-time"}, "snapshot": snapshot
+                    "expires_at": {"type": "string", "format": "date-time"}, "snapshot": snapshot,
+                    "reason": {"type": "string", "enum": ["integrity_mismatch"]}
                 },
                 "description": "Snapshot and expires_at are present only for recorded evidence. Other statuses explain missing evidence; no current-policy reconstruction."
             }
