@@ -6016,6 +6016,9 @@ mod grants {
         // gone, so a round trip that lost or reordered them would be a grant
         // that could no longer say when its person authenticated.
         grant.authentication = Some(GrantAuthentication {
+            assurance_authenticated_at: None,
+            assurance_policy_revision: None,
+            assurance_methods: Vec::new(),
             authenticated_at: epoch(),
             acr: Some("urn:asterius:acr:passkey-uv".to_owned()),
             amr: vec![

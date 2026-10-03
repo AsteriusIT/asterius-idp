@@ -247,38 +247,54 @@ impl ConditionalAccess {
                 ),
             );
         }
-        let verified_acr = input
-            .authentication
-            .filter(|authentication| authentication.authenticated_at <= now)
-            .and_then(|authentication| {
-                authentication.acr.as_ref().filter(|value| {
-                    acr.level(value)
-                        .is_some_and(|level| level.is_met_by(&authentication.amr))
-                })
-            });
         if let Some(authentication) = input.authentication {
-            facts.insert(
-                FactName::AuthenticationAge,
-                known(
-                    FactValue::AuthenticationTime(authentication.authenticated_at),
-                    "exact_grant_authentication",
-                    now,
-                ),
-            );
-            if let Some(value) = verified_acr {
+            let revision = asterius_domain::sha256_hex(acr.to_json().to_string().as_bytes());
+            let verified = authentication.assurance_authenticated_at.filter(|at| {
+                *at <= authentication.authenticated_at
+                    && authentication.authenticated_at <= now
+                    && authentication.assurance_policy_revision.as_deref()
+                        == Some(revision.as_str())
+                    && !authentication.assurance_methods.is_empty()
+                    && authentication.acr.as_ref().is_some_and(|class| {
+                        acr.level(class)
+                            .is_some_and(|level| level.is_met_by(&authentication.assurance_methods))
+                    })
+            });
+            if let Some(at) = verified {
                 facts.insert(
-                    FactName::Assurance,
+                    FactName::AuthenticationAge,
                     known(
-                        FactValue::Text(value.clone()),
-                        "exact_grant_authentication",
+                        FactValue::AuthenticationTime(at),
+                        "exact_grant_assurance_proof",
                         now,
                     ),
                 );
-            } else if authentication.authenticated_at > now {
-                facts.insert(
-                    FactName::Assurance,
-                    Fact::missing(Availability::Invalid, "exact_grant_authentication"),
-                );
+                if let Some(class) = &authentication.acr {
+                    facts.insert(
+                        FactName::Assurance,
+                        known(
+                            FactValue::Text(class.clone()),
+                            "exact_grant_assurance_proof",
+                            now,
+                        ),
+                    );
+                }
+            } else {
+                let availability = if authentication.authenticated_at > now
+                    || authentication
+                        .assurance_authenticated_at
+                        .is_some_and(|at| at > authentication.authenticated_at)
+                {
+                    Availability::Invalid
+                } else {
+                    Availability::Unavailable
+                };
+                for name in [FactName::AuthenticationAge, FactName::Assurance] {
+                    facts.insert(
+                        name,
+                        Fact::missing(availability.clone(), "exact_grant_assurance_proof"),
+                    );
+                }
             }
         }
         let trusted = TrustedAccessContext {
@@ -885,6 +901,9 @@ impl super::authorize::ConditionalAuthorization for ConditionalAccess {
                 .subject(asterius_domain::UserId::new(session.user), &sector)
                 .await?;
             let authentication = GrantAuthentication {
+                assurance_authenticated_at: None,
+                assurance_policy_revision: None,
+                assurance_methods: Vec::new(),
                 authenticated_at: session.authenticated_at,
                 acr: session.acr.clone(),
                 amr: session.amr.clone(),

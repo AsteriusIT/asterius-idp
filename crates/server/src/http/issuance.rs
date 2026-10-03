@@ -1582,6 +1582,9 @@ mod tests {
             .collect();
         grant.session = Some(SessionId::new(DIGEST));
         grant.authentication = Some(GrantAuthentication {
+            assurance_authenticated_at: None,
+            assurance_policy_revision: None,
+            assurance_methods: Vec::new(),
             authenticated_at: epoch(),
             acr: Some("urn:asterius:acr:password".to_owned()),
             amr: vec![AuthenticationMethod::Password],

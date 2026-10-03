@@ -1475,6 +1475,9 @@ mod tests {
         let mut grant = Grant::new(tenant().id, ClientId::new("client"), now);
         grant.claimed_at = Some(now);
         grant.authentication = Some(asterius_domain::GrantAuthentication {
+            assurance_authenticated_at: None,
+            assurance_policy_revision: None,
+            assurance_methods: Vec::new(),
             authenticated_at: now,
             acr: Some("custom".to_owned()),
             amr: vec![AuthenticationMethod::Password],

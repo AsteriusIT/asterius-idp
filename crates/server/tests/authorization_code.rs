@@ -471,6 +471,9 @@ impl Fixture {
             session: Some(asterius_domain::SessionId::new(session.id_digest.clone())),
             // What the authorization copied off the session (`ast-dlk`).
             authentication: Some(asterius_domain::GrantAuthentication {
+                assurance_authenticated_at: None,
+                assurance_policy_revision: None,
+                assurance_methods: Vec::new(),
                 authenticated_at: session.authenticated_at,
                 acr: session.acr.clone(),
                 amr: session.amr.clone(),

@@ -261,6 +261,42 @@ impl PgGrantRepository {
         .map_err(to_domain_error)
     }
 
+    // Proof is server-owned and matched to the complete original authentication
+    // tuple. A legacy row or a changed tuple never acquires fresh authority.
+    async fn hydrate_assurance(&self, mut grant: Grant) -> Result<Grant, DomainError> {
+        if let Some(authentication) = grant.authentication.as_mut() {
+            let amr: Vec<String> = authentication
+                .amr
+                .iter()
+                .map(|method| method.as_str().to_owned())
+                .collect();
+            let proof = sqlx::query_as::<_, (OffsetDateTime, String, Vec<String>)>(
+                "select assurance_authenticated_at, assurance_policy_revision, assurance_methods
+                 from grant_assurance_proofs where tenant_id = $1 and grant_id = $2
+                 and authenticated_at = $3 and acr is not distinct from $4 and amr = $5",
+            )
+            .bind(self.tenant.as_str())
+            .bind(uuid(&grant.id)?)
+            .bind(authentication.authenticated_at)
+            .bind(authentication.acr.as_deref())
+            .bind(amr)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(to_domain_error)?;
+            if let Some((at, revision, methods)) = proof
+                && let Some(methods) = methods
+                    .iter()
+                    .map(|method| asterius_domain::AuthenticationMethod::parse(method))
+                    .collect::<Option<Vec<_>>>()
+            {
+                authentication.assurance_authenticated_at = Some(at);
+                authentication.assurance_policy_revision = Some(revision);
+                authentication.assurance_methods = methods;
+            }
+        }
+        Ok(grant)
+    }
+
     /// Finds one grant by id.
     ///
     /// # Errors
@@ -282,7 +318,13 @@ impl PgGrantRepository {
         .fetch_optional(&self.pool)
         .await
         .map_err(to_domain_error)?;
-        row.map(|row| row.into_entity(&self.tenant)).transpose()
+        match row {
+            Some(row) => self
+                .hydrate_assurance(row.into_entity(&self.tenant)?)
+                .await
+                .map(Some),
+            None => Ok(None),
+        }
     }
 
     /// Whether an access token's `jti` has been revoked before its own expiry.
@@ -422,7 +464,7 @@ impl PgGrantRepository {
     /// [`DomainError::Invalid`] when a stored row is not one this model
     /// accepts, or a storage error.
     pub async fn list_for_subject(&self, subject: &SubjectId) -> Result<Vec<Grant>, DomainError> {
-        sqlx::query_as!(
+        let rows = sqlx::query_as!(
             Row,
             "select grant_id, client_id, user_id, subject, scopes, claims, claims_locales,
                     authorization_details, resources, actor_chain, parent_grant_id,
@@ -436,10 +478,15 @@ impl PgGrantRepository {
         )
         .fetch_all(&self.pool)
         .await
-        .map_err(to_domain_error)?
-        .into_iter()
-        .map(|row| row.into_entity(&self.tenant))
-        .collect()
+        .map_err(to_domain_error)?;
+        let mut grants = Vec::with_capacity(rows.len());
+        for row in rows {
+            grants.push(
+                self.hydrate_assurance(row.into_entity(&self.tenant)?)
+                    .await?,
+            );
+        }
+        Ok(grants)
     }
 
     /// Every authorization this account has granted, newest first
@@ -458,7 +505,7 @@ impl PgGrantRepository {
         &self,
         user: &asterius_domain::UserId,
     ) -> Result<Vec<Grant>, DomainError> {
-        sqlx::query_as!(
+        let rows = sqlx::query_as!(
             Row,
             "select grant_id, client_id, user_id, subject, scopes, claims, claims_locales,
                     authorization_details, resources, actor_chain, parent_grant_id,
@@ -472,10 +519,15 @@ impl PgGrantRepository {
         )
         .fetch_all(&self.pool)
         .await
-        .map_err(to_domain_error)?
-        .into_iter()
-        .map(|row| row.into_entity(&self.tenant))
-        .collect()
+        .map_err(to_domain_error)?;
+        let mut grants = Vec::with_capacity(rows.len());
+        for row in rows {
+            grants.push(
+                self.hydrate_assurance(row.into_entity(&self.tenant)?)
+                    .await?,
+            );
+        }
+        Ok(grants)
     }
 
     /// Takes the authority to mint one credential from a grant, and records
@@ -554,7 +606,8 @@ impl PgGrantRepository {
         // The update's `where` clause has already established that this grant
         // is claimable, so this cannot fail — but it is the one constructor of
         // `ClaimedGrant`, and going through it is what keeps that true.
-        row.into_entity(&self.tenant)?
+        self.hydrate_assurance(row.into_entity(&self.tenant)?)
+            .await?
             .claim(now)
             .map_err(|error| DomainError::invalid("grant_id", error.to_string()))
     }

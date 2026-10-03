@@ -294,6 +294,12 @@ pub struct Session {
     /// actually proved who they are, which is *not* `created_at` after a
     /// step-up.
     pub authenticated_at: OffsetDateTime,
+    /// Oldest verified proof needed for the current class; independent of auth_time.
+    pub assurance_authenticated_at: Option<OffsetDateTime>,
+    /// A class cannot inherit proof after its configured meaning changes.
+    pub assurance_policy_revision: Option<String>,
+    /// Methods actually proved within the assurance interval, excluding historical AMR.
+    pub assurance_methods: Vec<AuthenticationMethod>,
     /// When it was last used.
     pub last_seen_at: OffsetDateTime,
     /// The absolute deadline.
@@ -333,6 +339,9 @@ impl Session {
             user,
             created_at: now,
             authenticated_at: now,
+            assurance_authenticated_at: None,
+            assurance_policy_revision: None,
+            assurance_methods: Vec::new(),
             last_seen_at: now,
             expires_at: now + limits.absolute,
             idle_expires_at: now + limits.idle,
@@ -742,4 +751,19 @@ mod tests {
         assert_eq!(session.amr, vec![AuthenticationMethod::Password]);
         assert!(session.revoked.is_none());
     }
+}
+
+/// Verified evidence carried atomically through session-id rotation.
+#[derive(Debug, Clone, Copy)]
+pub struct VerifiedSessionRotation<'a> {
+    /// Historical authentication methods retained by the session.
+    pub methods: &'a [AuthenticationMethod],
+    /// Class assigned by the current ladder.
+    pub acr: Option<&'a str>,
+    /// Oldest proof needed to satisfy the current class.
+    pub assurance_authenticated_at: Option<OffsetDateTime>,
+    /// Exact current ladder revision at verification.
+    pub assurance_policy_revision: Option<&'a str>,
+    /// Methods whose verification belongs to that interval.
+    pub assurance_methods: &'a [AuthenticationMethod],
 }
