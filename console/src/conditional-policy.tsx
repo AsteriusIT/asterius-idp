@@ -14,7 +14,7 @@ export function ConditionalPolicy({ draft, revision, mayWrite, busy, onStage }: 
   return <Panel title="Conditional access rollout" description="Review the editor draft, simulate it, then publish the reviewed revision. Active scopes enforce restrictions. Report-only scopes record their result and cannot grant denied access.">
     <p>Stored revision: {revision ? <code>{revision}</code> : 'No stored document'}.</p>
     {scopes === null ? <Message tone="info">The draft is not ready for a structured preview. The server validates the policy when you publish.</Message> : <DataTable
-      rows={scopes} rowKey={scope => scope.id}
+      rows={scopes.map((scope, index) => ({ ...scope, previewKey: String(index) }))} rowKey={scope => scope.previewKey}
       empty={<EmptyState title="No conditional scopes" body="The document has no conditional rollout configured." />}
       columns={[
         { key: 'scope', header: 'Scope', cell: scope => <code>{scope.id}</code> },
