@@ -1,0 +1,5 @@
+{
+  "bound_issuer": "${EXACT_KUBERNETES_ISSUER}",
+  "jwt_validation_pubkeys": ["${PINNED_CLUSTER_PUBLIC_KEY_PEM}"],
+  "jwt_supported_algs": ["RS256"]
+}

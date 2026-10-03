@@ -1,0 +1,8 @@
+{
+  "oidc_discovery_url": "${ASTERIUS_ISSUER}",
+  "oidc_discovery_ca_pem": "${ASTERIUS_CA_PEM}",
+  "oidc_client_id": "${ASTERIUS_CLIENT_ID}",
+  "oidc_client_secret": "${SERVER_GENERATED_CLIENT_SECRET}",
+  "jwt_supported_algs": ["ES256"],
+  "default_role": "human"
+}

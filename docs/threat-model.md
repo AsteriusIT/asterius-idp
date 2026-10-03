@@ -2492,3 +2492,21 @@ operator provisioned runner credentials require dedicated ephemeral runners and
 trusted workflow/environment controls. No JWT or raw claims are emitted by the
 sample. Controlled CI fixtures establish local protocol interoperability only,
 not a live GitHub issuer/job or an unimplemented trusted broker.
+
+### Vault/OpenBao recipe trust boundary (ast-dd1y.6.6)
+
+The tested human recipe uses an explicitly selected standard OIDC confidential
+client, exact HTTPS callback, S256 PKCE and ES256 ID token. The downstream role
+binds the verified stable subject, client audience and verified-email claim to
+one read policy. Its client secret is external to committed templates and is
+rendered only to a new private file. The workload recipe establishes separate
+explicit Kubernetes JWT trust with pinned public keys, issuer, audience,
+namespace and ServiceAccount name/UID. It does not translate DPoP access tokens
+into Bearer authority or verify their proof in Vault/OpenBao. Offline JWT
+validation retains validity after ServiceAccount deletion until expiry. Product
+token authority has its own TTL/revocation; upstream logout cannot withdraw a
+fetched secret or silently revoke that token. Versioned native positive/refusal,
+logout and expiry evidence and the exact limits are in
+[the integration recipe](integrations/vault-openbao.md). Its test cluster,
+databases, TLS services and credential files are disposable and independently
+owned; no current Kubernetes context or shared schema is modified.
