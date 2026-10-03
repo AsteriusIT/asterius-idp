@@ -1132,6 +1132,7 @@ test('the policy editor refuses a bad document, saves a good one and answers the
   // Arrange
   await signIn(page);
   await openPolicy(page);
+  await page.getByRole('button', { name: 'Edit policy', exact: true }).click();
   const document = page.getByLabel('The rule document, as the evaluator reads it');
 
   // Act: a condition no build of this server knows.
@@ -1185,10 +1186,15 @@ test('the policy editor refuses a bad document, saves a good one and answers the
   // Assert: the decision, and the reason the rule carries — read out of the
   // decision itself and not off the page, where the document above spells the
   // same words.
-  const decision = page.getByRole('region', { name: 'Decision' });
+  const decisionRegion = page.getByRole('region', { name: 'Decision', exact: true });
+  const decision = decisionRegion.locator('dl.detail').first();
   await expect(decision.getByText('permit', { exact: true })).toBeVisible();
   await expect(decision.getByText('reading is open to every subject')).toBeVisible();
   await expect(decision.getByText('anyone-may-read')).toBeVisible();
+  const trace = decisionRegion.getByRole('region', { name: 'Rule explanations' });
+  await expect(trace.getByText(/^sha256:/)).toBeVisible();
+  await expect(trace.getByRole('cell', { name: 'Matched', exact: true })).toBeVisible();
+  await expect(trace.getByRole('cell', { name: 'anyone-may-read', exact: true })).toBeVisible();
 
   // Act: an action no rule names is the default deny.
   await page.getByLabel('Action').fill('delete');

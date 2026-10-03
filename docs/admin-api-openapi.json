@@ -7092,6 +7092,108 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "properties": {
+                    "context": {
+                      "type": "object"
+                    },
+                    "decision": {
+                      "type": "boolean"
+                    },
+                    "diagnostics": {
+                      "description": "Tenant-authorized administrator trace only; absent from public AuthZEN responses. No input values or policy literals. At most 128 rules and 256 condition nodes across all rules; truncated marks omitted nodes. policy_revision is a SHA-256 digest of the exact canonical document; policy_updated_at is Unix nanoseconds as a decimal string. enforcement_point identifies the administrative trial. No trace is retained.",
+                      "properties": {
+                        "enforcement_point": {
+                          "type": "string"
+                        },
+                        "policy_revision": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "policy_updated_at": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "rules": {
+                          "items": {
+                            "properties": {
+                              "applicable": {
+                                "type": "boolean"
+                              },
+                              "conditions": {
+                                "items": {
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string"
+                                    },
+                                    "matched": {
+                                      "type": "boolean"
+                                    },
+                                    "missing": {
+                                      "type": "boolean"
+                                    },
+                                    "path": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "path",
+                                    "kind",
+                                    "matched",
+                                    "missing"
+                                  ],
+                                  "type": "object"
+                                },
+                                "maxItems": 256,
+                                "type": "array"
+                              },
+                              "effect": {
+                                "enum": [
+                                  "permit",
+                                  "deny"
+                                ],
+                                "type": "string"
+                              },
+                              "id": {
+                                "maxLength": 256,
+                                "type": "string"
+                              },
+                              "matched": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "effect",
+                              "applicable",
+                              "matched",
+                              "conditions"
+                            ],
+                            "type": "object"
+                          },
+                          "maxItems": 128,
+                          "type": "array"
+                        },
+                        "truncated": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "policy_revision",
+                        "policy_updated_at",
+                        "enforcement_point",
+                        "rules",
+                        "truncated"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "decision"
+                  ],
                   "type": "object"
                 }
               }

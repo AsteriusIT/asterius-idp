@@ -8711,7 +8711,8 @@ mod tests {
             );
 
             asterius_domain::ports::PolicyEngine::evaluate(
-                &asterius_domain::policy::DeclarativeEngine::new(Arc::new(self.clone())),
+                &asterius_domain::policy::DeclarativeEngine::new(Arc::new(self.clone()))
+                    .with_explanations("admin_policy_trial"),
                 tenant,
                 &resolved,
             )
@@ -12228,6 +12229,18 @@ mod tests {
         assert_eq!(permitted.status(), StatusCode::OK);
         let body = body_of(permitted).await;
         assert_eq!(body["decision"], serde_json::json!(true));
+        assert_eq!(
+            body["diagnostics"]["enforcement_point"],
+            "admin_policy_trial"
+        );
+        assert!(
+            body["diagnostics"]["policy_revision"]
+                .as_str()
+                .expect("digest")
+                .starts_with("sha256:")
+        );
+        assert_eq!(body["diagnostics"]["rules"][0]["id"], "admins-read");
+        assert_eq!(body["diagnostics"]["rules"][0]["matched"], true);
         assert_eq!(
             body["context"]["reason_admin"],
             serde_json::json!({"en": "the admins group reads every document"})

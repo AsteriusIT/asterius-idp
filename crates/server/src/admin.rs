@@ -565,7 +565,8 @@ impl asterius_admin_api::backend::PolicyTrial for DeploymentPolicyTrial {
     ) -> Result<asterius_domain::policy::Decision, DomainError> {
         let engine = asterius_domain::policy::DeclarativeEngine::new(Arc::new(
             asterius_store_pg::PgPolicies::new(self.store.pool().clone()),
-        ));
+        ))
+        .with_explanations("admin_policy_trial");
         let subjects =
             crate::http::protocol::StoredSubjects::of(&self.store, Arc::clone(&self.kek), tenant);
         crate::http::access_evaluation::decide_without_enforcing(

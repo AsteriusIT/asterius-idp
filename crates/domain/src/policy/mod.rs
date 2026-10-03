@@ -40,6 +40,7 @@
 
 pub mod document;
 pub mod engine;
+pub mod explanation;
 pub mod request;
 pub mod search;
 
