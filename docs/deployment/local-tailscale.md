@@ -10,6 +10,15 @@ This uses private Tailscale Serve on port 443. Funnel is disabled. Existing Serv
 routes on 8443 and 8444 remain unchanged. Tailnet access does not confer an
 Asterius role: the existing admin password and TOTP challenge still apply.
 
+The user bridge is enabled and active, and `Linger=yes` is configured for
+`qrodic` so the user service can remain active after the last session logs out.
+The applied local command was `loginctl --no-ask-password enable-linger qrodic`.
+This does not keep a powered-off host or stopped WSL VM online: the host,
+Docker/Kubernetes and Tailscale must remain running. HTTPS readiness passed
+after the change; logout/reboot itself was not exercised. See
+[the persistence check](evidence/local-tailscale-persistence-2026-10-03.json).
+
+
 ## Current verified deployment
 
 The latest 2026-10-03 image includes the exact session-rotation correction from

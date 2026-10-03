@@ -1,0 +1,15 @@
+{
+  "task": "ast-cykg",
+  "user": "qrodic",
+  "linger_enabled": true,
+  "bridge_enabled": true,
+  "bridge_active": true,
+  "private_https_readiness": "pass",
+  "funnel_enabled": false,
+  "serve_443": "http://127.0.0.1:9475",
+  "existing_8443_8444": "preserved",
+  "limitations": [
+    "No actual last-user-logout or host reboot was performed during this check.",
+    "The host, WSL VM, Docker/Kubernetes and Tailscale must remain running and connected."
+  ]
+}
