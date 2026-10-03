@@ -2492,3 +2492,26 @@ operator provisioned runner credentials require dedicated ephemeral runners and
 trusted workflow/environment controls. No JWT or raw claims are emitted by the
 sample. Controlled CI fixtures establish local protocol interoperability only,
 not a live GitHub issuer/job or an unimplemented trusted broker.
+# Kubernetes identity CRDs
+
+Namespaced Application/Resource/Policy objects are untrusted desired input. A
+controller instance pins its namespace, canonical tenant issuer, tenant service
+client and administrator-owned binding identity. Admission and namespace labels
+do not replace this runtime check. Separate tenant instances use separate service
+credentials; cross-namespace Secret references and deployment-wide identity
+credentials are excluded. The GitOps writer can read its public binding parameter
+but cannot read Secrets, alter bindings/admission/RBAC or forge status. The
+controller gets only explicitly named Secrets and never expands that list from a
+manifest. Referenced application JWKS must contain public keys only.
+
+Structural schemas and parameterized fail-closed CEL enforce bounded input and
+same-namespace references. RuleSet JSON retains complete policy conditions and
+requires authoritative remote planning before mutation; schema acceptance is not
+policy acceptance. Remote ownership is the authenticated service principal,
+not CRD labels. UID-based external keys, exact conditional revisions and remote
+tombstone receipts prevent name reuse from changing another incarnation.
+Finalizers retain protection/ownership/dependency errors; manually removing them
+can orphan live authority. Status/events/logs contain bounded categories and
+opaque public identity/revision only, never secrets, credentials or raw policy
+literals. [The CRD ADR](adr/kubernetes-identity-resources.md) specifies this trust
+boundary; operator runtime verification is separate.
