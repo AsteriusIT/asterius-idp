@@ -73,6 +73,7 @@ pub mod saml;
 pub mod scim;
 mod scim_groups;
 pub mod ssf;
+pub mod temporary_entitlements;
 pub mod theme_image;
 mod theme_preview;
 pub mod throttle;
@@ -2222,6 +2223,16 @@ static REGISTRY: &[Operation] = &[
     USER_GROUPS_LIST,
     GROUP_DELETE,
     APP_ROLES_LIST,
+    TEMPORARY_ENTITLEMENT_LIST,
+    TEMPORARY_ENTITLEMENT_CREATE,
+    TEMPORARY_ENTITLEMENT_READ,
+    TEMPORARY_ENTITLEMENT_UPDATE,
+    TEMPORARY_ENTITLEMENT_ELIGIBILITIES,
+    TEMPORARY_ENTITLEMENT_ELIGIBILITY_SET,
+    TEMPORARY_ENTITLEMENT_ELIGIBILITY_REMOVE,
+    TEMPORARY_ENTITLEMENT_REQUESTS,
+    TEMPORARY_ENTITLEMENT_ACTIVATIONS,
+    TEMPORARY_ENTITLEMENT_REVOKE,
     APP_ROLE_CREATE,
     APP_ROLE_DELETE,
     CLIENT_APP_ROLES_LIST,
@@ -2360,6 +2371,88 @@ pub const POLICY_SIMULATE: Operation = Operation::probe(
     M::Post,
     A::new(R::Tenant, "admin.policies:read"),
     "Simulates a stored or hypothetical policy over actual tenant-owned user, client and resource references; additionally requires admin.users:read, admin.clients:read and admin.resource_servers:read",
+);
+
+pub const TEMPORARY_ENTITLEMENT_LIST_ID: &str = "temporary_entitlements.list";
+pub const TEMPORARY_ENTITLEMENT_LIST: Operation = Operation::read(
+    TEMPORARY_ENTITLEMENT_LIST_ID,
+    "/temporary-entitlements",
+    S::Get,
+    A::new(R::Tenant, "admin.app_roles:read"),
+    "Console-only owner-scoped temporary entitlement list",
+);
+pub const TEMPORARY_ENTITLEMENT_CREATE_ID: &str = "temporary_entitlements.create";
+pub const TEMPORARY_ENTITLEMENT_CREATE: Operation = Operation::mutation(
+    TEMPORARY_ENTITLEMENT_CREATE_ID,
+    "/temporary-entitlements",
+    M::Post,
+    A::new(R::Tenant, "admin.app_roles:write"),
+    "Console-only owner-scoped temporary entitlement create",
+);
+pub const TEMPORARY_ENTITLEMENT_READ_ID: &str = "temporary_entitlements.read";
+pub const TEMPORARY_ENTITLEMENT_READ: Operation = Operation::read(
+    TEMPORARY_ENTITLEMENT_READ_ID,
+    "/temporary-entitlements/{id}",
+    S::Get,
+    A::new(R::Tenant, "admin.app_roles:read"),
+    "Console-only owner-scoped temporary entitlement read",
+);
+pub const TEMPORARY_ENTITLEMENT_UPDATE_ID: &str = "temporary_entitlements.update";
+pub const TEMPORARY_ENTITLEMENT_UPDATE: Operation = Operation::mutation(
+    TEMPORARY_ENTITLEMENT_UPDATE_ID,
+    "/temporary-entitlements/{id}",
+    M::Put,
+    A::new(R::Tenant, "admin.app_roles:write"),
+    "Console-only owner-scoped temporary entitlement update",
+);
+pub const TEMPORARY_ENTITLEMENT_ELIGIBILITIES_ID: &str = "temporary_entitlements.eligibilities";
+pub const TEMPORARY_ENTITLEMENT_ELIGIBILITIES: Operation = Operation::read(
+    TEMPORARY_ENTITLEMENT_ELIGIBILITIES_ID,
+    "/temporary-entitlements/{id}/eligibilities",
+    S::Get,
+    A::new(R::Tenant, "admin.app_roles:read"),
+    "Console-only owner-scoped temporary entitlement eligibilities",
+);
+pub const TEMPORARY_ENTITLEMENT_ELIGIBILITY_SET_ID: &str = "temporary_entitlements.eligibility_set";
+pub const TEMPORARY_ENTITLEMENT_ELIGIBILITY_SET: Operation = Operation::mutation(
+    TEMPORARY_ENTITLEMENT_ELIGIBILITY_SET_ID,
+    "/temporary-entitlements/{id}/eligibilities",
+    M::Post,
+    A::new(R::Tenant, "admin.app_roles:write"),
+    "Console-only owner-scoped temporary entitlement eligibility_set",
+);
+pub const TEMPORARY_ENTITLEMENT_ELIGIBILITY_REMOVE_ID: &str =
+    "temporary_entitlements.eligibility_remove";
+pub const TEMPORARY_ENTITLEMENT_ELIGIBILITY_REMOVE: Operation = Operation::mutation(
+    TEMPORARY_ENTITLEMENT_ELIGIBILITY_REMOVE_ID,
+    "/temporary-entitlements/{id}/eligibilities/{eligibility_id}",
+    M::Delete,
+    A::new(R::Tenant, "admin.app_roles:write"),
+    "Console-only owner-scoped temporary entitlement eligibility_remove",
+);
+pub const TEMPORARY_ENTITLEMENT_REQUESTS_ID: &str = "temporary_entitlements.requests";
+pub const TEMPORARY_ENTITLEMENT_REQUESTS: Operation = Operation::read(
+    TEMPORARY_ENTITLEMENT_REQUESTS_ID,
+    "/temporary-entitlements/{id}/requests",
+    S::Get,
+    A::new(R::Tenant, "admin.app_roles:read"),
+    "Console-only owner-scoped temporary entitlement requests",
+);
+pub const TEMPORARY_ENTITLEMENT_ACTIVATIONS_ID: &str = "temporary_entitlements.activations";
+pub const TEMPORARY_ENTITLEMENT_ACTIVATIONS: Operation = Operation::read(
+    TEMPORARY_ENTITLEMENT_ACTIVATIONS_ID,
+    "/temporary-entitlements/{id}/activations",
+    S::Get,
+    A::new(R::Tenant, "admin.app_roles:read"),
+    "Console-only owner-scoped temporary entitlement activations",
+);
+pub const TEMPORARY_ENTITLEMENT_REVOKE_ID: &str = "temporary_entitlements.revoke";
+pub const TEMPORARY_ENTITLEMENT_REVOKE: Operation = Operation::mutation(
+    TEMPORARY_ENTITLEMENT_REVOKE_ID,
+    "/temporary-entitlements/{id}/activations/{activation_id}/revoke",
+    M::Post,
+    A::new(R::Tenant, "admin.app_roles:write"),
+    "Console-only owner-scoped temporary entitlement revoke",
 );
 
 /// The registry.

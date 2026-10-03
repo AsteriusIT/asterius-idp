@@ -319,6 +319,9 @@ async fn route(
     context: &Handling<'_>,
     body: axum::body::Body,
 ) -> Result<Response, AdminError> {
+    if id.starts_with("temporary_entitlements.") {
+        return context.temporary_entitlement(id, body).await;
+    }
     if crate::declarative::is_route(id) {
         return context.management(id, body).await;
     }
@@ -19437,5 +19440,137 @@ mod tests {
                 .len(),
             1
         );
+    }
+}
+
+impl Handling<'_> {
+    async fn temporary_entitlement(
+        &self,
+        operation: &str,
+        body: axum::body::Body,
+    ) -> Result<Response, AdminError> {
+        use asterius_domain::temporary_entitlements::{
+            EligibilityChange, EntitlementConfiguration, RevokeActivation,
+        };
+        let Principal::Console { user, .. } = &self.principal else {
+            return Err(AdminError::Forbidden);
+        };
+        let port = self
+            .state
+            .backend
+            .temporary_entitlements()
+            .ok_or(AdminError::Unavailable)?;
+        let segments: Vec<_> = self.path.split('/').filter(|s| !s.is_empty()).collect();
+        let marker = segments
+            .iter()
+            .position(|s| *s == "temporary-entitlements")
+            .ok_or(AdminError::NotFound)?;
+        let id = segments
+            .get(marker + 1)
+            .map(|s| uuid::Uuid::parse_str(s).map_err(|_| AdminError::NotFound))
+            .transpose()?;
+        let error = |e| group_error(crate::TEMPORARY_ENTITLEMENT_CREATE_ID, e);
+        let tenant = &self.tenant.id;
+        match operation {
+            crate::TEMPORARY_ENTITLEMENT_LIST_ID => Ok(json_no_store(
+                StatusCode::OK,
+                &serde_json::json!({"items":port.list(tenant,user).await.map_err(error)?}),
+            )),
+            crate::TEMPORARY_ENTITLEMENT_CREATE_ID => {
+                let c: EntitlementConfiguration = self.parse_body(body).await?;
+                let result = port
+                    .configure(tenant, user, None, None, c)
+                    .await
+                    .map_err(error)?;
+                Ok(json_no_store(
+                    StatusCode::CREATED,
+                    &serde_json::json!(result),
+                ))
+            }
+            crate::TEMPORARY_ENTITLEMENT_READ_ID => {
+                let id = id.ok_or(AdminError::NotFound)?;
+                let result = port.get(tenant, user, id).await.map_err(error)?;
+                Ok(json_no_store(StatusCode::OK, &serde_json::json!(result)))
+            }
+            crate::TEMPORARY_ENTITLEMENT_UPDATE_ID => {
+                let c = crate::temporary_entitlements::ReplaceConfiguration::parse(
+                    self.parse_body(body).await?,
+                )?;
+                let result = port
+                    .configure(tenant, user, id, Some(c.expected_revision), c.configuration)
+                    .await
+                    .map_err(error)?;
+                Ok(json_no_store(StatusCode::OK, &serde_json::json!(result)))
+            }
+            crate::TEMPORARY_ENTITLEMENT_ELIGIBILITIES_ID => Ok(json_no_store(
+                StatusCode::OK,
+                &serde_json::json!({"items":port.eligibilities(tenant,user,id.ok_or(AdminError::NotFound)?).await.map_err(error)?}),
+            )),
+            crate::TEMPORARY_ENTITLEMENT_ELIGIBILITY_SET_ID => {
+                let value: serde_json::Value = self.parse_body(body).await?;
+                if !value
+                    .as_object()
+                    .is_some_and(|o| o.contains_key("expected_revision"))
+                {
+                    return Err(AdminError::Invalid(
+                        "expected_revision must be explicitly null or UUID".into(),
+                    ));
+                }
+                let c: EligibilityChange = serde_json::from_value(value)
+                    .map_err(|_| AdminError::Invalid("invalid eligibility document".into()))?;
+                let result = port
+                    .set_eligibility(tenant, user, id.ok_or(AdminError::NotFound)?, c)
+                    .await
+                    .map_err(error)?;
+                Ok(json_no_store(StatusCode::OK, &serde_json::json!(result)))
+            }
+            crate::TEMPORARY_ENTITLEMENT_ELIGIBILITY_REMOVE_ID => {
+                let eligibility = segments
+                    .get(marker + 3)
+                    .and_then(|s| uuid::Uuid::parse_str(s).ok())
+                    .ok_or(AdminError::NotFound)?;
+                let c: crate::temporary_entitlements::RemoveEligibility =
+                    self.parse_body(body).await?;
+                port.remove_eligibility(
+                    tenant,
+                    user,
+                    id.ok_or(AdminError::NotFound)?,
+                    eligibility,
+                    c.expected_revision,
+                )
+                .await
+                .map_err(error)?;
+                Ok(json_no_store(
+                    StatusCode::OK,
+                    &serde_json::json!({"removed":true}),
+                ))
+            }
+            crate::TEMPORARY_ENTITLEMENT_REQUESTS_ID => Ok(json_no_store(
+                StatusCode::OK,
+                &serde_json::json!({"items":port.owner_requests(tenant,user,id.ok_or(AdminError::NotFound)?).await.map_err(error)?}),
+            )),
+            crate::TEMPORARY_ENTITLEMENT_ACTIVATIONS_ID => Ok(json_no_store(
+                StatusCode::OK,
+                &serde_json::json!({"items":port.owner_activations(tenant,user,id.ok_or(AdminError::NotFound)?).await.map_err(error)?}),
+            )),
+            crate::TEMPORARY_ENTITLEMENT_REVOKE_ID => {
+                let activation = segments
+                    .get(marker + 3)
+                    .and_then(|s| uuid::Uuid::parse_str(s).ok())
+                    .ok_or(AdminError::NotFound)?;
+                let c: RevokeActivation = self.parse_body(body).await?;
+                if c.activation_id != activation {
+                    return Err(AdminError::Invalid(
+                        "activation_id differs from addressed activation".into(),
+                    ));
+                }
+                let result = port
+                    .owner_revoke(tenant, user, id.ok_or(AdminError::NotFound)?, c)
+                    .await
+                    .map_err(error)?;
+                Ok(json_no_store(StatusCode::OK, &serde_json::json!(result)))
+            }
+            _ => Err(AdminError::NotFound),
+        }
     }
 }

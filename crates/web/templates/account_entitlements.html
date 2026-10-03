@@ -1,0 +1,24 @@
+{% extends "account_base.html" %}
+{% block title %}{{ title }} — {{ tenant_name }}{% endblock %}
+{% block account_content %}
+<header class="account-page-heading"><h2>{{ title }}</h2><p>{{ introduction }}</p></header>
+{% if !message.is_empty() %}<p role="status">{{ message }}</p>{% endif %}
+<p><a href="{{ sign_in_href }}">{{ sign_in_label }}</a></p>
+<section class="account-section"><h3>{{ request_label }}</h3>
+{% for item in eligible %}<article class="account-document"><h4>{{ item.entitlement.configuration.role_name }}</h4>
+<p><code>{{ item.entitlement.configuration.client_id }}</code> · <code>{{ item.entitlement.configuration.resource }}</code></p>
+<ul>{% for permission in item.entitlement.configuration.permissions %}<li><code>{{ permission }}</code></li>{% endfor %}</ul>
+<p>{{ item.expires_at }}</p>
+<form method="post" action="{{ page_href }}/request"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="entitlement_id" value="{{ item.entitlement.entitlement_id }}"><input type="hidden" name="idempotency_key" value="{{ item.idempotency_key }}">
+<label>{{ duration_label }}<input name="duration_seconds" type="number" min="1" max="{{ item.entitlement.configuration.max_duration_seconds }}" value="{{ item.entitlement.configuration.max_duration_seconds }}" required></label>
+<label>{{ reason_label }}<textarea name="reason" maxlength="1024" required></textarea></label><button type="submit">{{ request_label }}</button></form></article>{% endfor %}</section>
+<section class="account-section"><h3>{{ requests_label }}</h3>
+{% for item in requests %}<article class="account-document"><h4>{{ item.request.role_name }}</h4><p><code>{{ item.request.client_id }}</code> · <code>{{ item.request.resource }}</code></p>
+<ul>{% for permission in item.request.permissions %}<li><code>{{ permission }}</code></li>{% endfor %}</ul>
+<p>{{ item.request.reason }}</p><p>{{ item.request.duration_seconds }} s · {{ item.request.status.as_str() }}</p>
+{% if item.pending %}{% if item.own %}<form method="post" action="{{ page_href }}/cancel"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="request_id" value="{{ item.request.request_id }}"><input type="hidden" name="idempotency_key" value="{{ item.idempotency_key }}"><button type="submit">{{ cancel_label }}</button></form>
+{% else %}<form method="post" action="{{ page_href }}/decide"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="request_id" value="{{ item.request.request_id }}"><input type="hidden" name="idempotency_key" value="{{ item.idempotency_key }}"><button type="submit" name="decision" value="approve">{{ approve_label }}</button><button type="submit" name="decision" value="deny">{{ deny_label }}</button></form>{% endif %}{% endif %}</article>{% endfor %}</section>
+<section class="account-section"><h3>{{ activations_label }}</h3>
+{% for item in activations %}<article class="account-document"><h4>{{ item.activation.activation_id }}</h4><p>{{ item.status }} · {{ item.expires_at }}</p>
+{% if item.activation.revoked_at.is_none() %}<form method="post" action="{{ page_href }}/revoke"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="activation_id" value="{{ item.activation.activation_id }}"><input type="hidden" name="idempotency_key" value="{{ item.idempotency_key }}"><label>{{ reason_label }}<textarea name="reason" maxlength="1024" required></textarea></label><button type="submit">{{ revoke_label }}</button></form>{% endif %}</article>{% endfor %}</section>
+{% endblock %}

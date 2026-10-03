@@ -190,6 +190,8 @@ pub enum FirstPartyDestination {
     AccountSessions,
     /// Recent security changes on the signed-in account.
     AccountActivity,
+    /// Ordinary session-bound temporary privilege requests and approvals.
+    AccountEntitlements,
     /// Return to the email change form after a fresh authentication.
     AccountEmail,
     /// Return to the user's Claims Provider connection page after sign-in.
@@ -216,6 +218,7 @@ impl FirstPartyDestination {
             Self::AccountTotp => "account_totp",
             Self::AccountSessions => "account_sessions",
             Self::AccountActivity => "account_activity",
+            Self::AccountEntitlements => "account_entitlements",
             Self::AccountEmail => "account_email",
             Self::AccountClaimsProviders => "account_claims_providers",
             Self::AccountIdJagConsent => "account_id_jag_consent",
@@ -242,6 +245,7 @@ impl FirstPartyDestination {
             "account_totp" => Some(Self::AccountTotp),
             "account_sessions" => Some(Self::AccountSessions),
             "account_activity" => Some(Self::AccountActivity),
+            "account_entitlements" => Some(Self::AccountEntitlements),
             "account_email" => Some(Self::AccountEmail),
             "account_claims_providers" => Some(Self::AccountClaimsProviders),
             "account_id_jag_consent" => Some(Self::AccountIdJagConsent),

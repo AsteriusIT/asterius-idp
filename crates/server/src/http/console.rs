@@ -105,6 +105,7 @@ pub const fn location_of(destination: FirstPartyDestination) -> &'static str {
         FirstPartyDestination::AccountTotp => "../account/totp",
         FirstPartyDestination::AccountSessions => "../account/sessions",
         FirstPartyDestination::AccountActivity => "../account/activity",
+        FirstPartyDestination::AccountEntitlements => "../account/entitlements",
         FirstPartyDestination::AccountEmail => "../account/email",
         FirstPartyDestination::AccountClaimsProviders => "../account/claims-providers",
         FirstPartyDestination::AccountIdJagConsent => "../account/id-jag",

@@ -3218,3 +3218,56 @@ mod experience_tests {
         assert!(html.contains("class=\"danger-section\""));
     }
 }
+
+/// Immutable entitlement request presentation. Askama escapes every reason/catalogue value.
+#[derive(Debug)]
+pub struct TemporaryRequestLine {
+    pub request: asterius_domain::temporary_entitlements::EntitlementRequest,
+    pub own: bool,
+    pub pending: bool,
+    pub idempotency_key: String,
+}
+
+#[derive(Debug)]
+pub struct TemporaryEligibilityLine {
+    pub entitlement: asterius_domain::temporary_entitlements::Entitlement,
+    pub expires_at: String,
+    pub idempotency_key: String,
+}
+#[derive(Debug)]
+pub struct TemporaryActivationLine {
+    pub activation: asterius_domain::temporary_entitlements::Activation,
+    pub expires_at: String,
+    pub status: &'static str,
+    pub idempotency_key: String,
+}
+#[derive(Debug, Template)]
+#[template(path = "account_entitlements.html")]
+pub struct AccountEntitlementsPage<'a> {
+    pub text: &'a Catalog,
+    pub tenant_name: &'a str,
+    pub account_href: &'a str,
+    pub page_href: &'a str,
+    pub sign_in_href: &'a str,
+    pub csrf: &'a str,
+    pub title: &'a str,
+    pub introduction: &'a str,
+    pub message: &'a str,
+    pub request_label: &'a str,
+    pub requests_label: &'a str,
+    pub activations_label: &'a str,
+    pub reason_label: &'a str,
+    pub duration_label: &'a str,
+    pub approve_label: &'a str,
+    pub deny_label: &'a str,
+    pub cancel_label: &'a str,
+    pub revoke_label: &'a str,
+    pub sign_in_label: &'a str,
+    pub eligible: Vec<TemporaryEligibilityLine>,
+    pub requests: Vec<TemporaryRequestLine>,
+    pub activations: Vec<TemporaryActivationLine>,
+    pub nonce_attribute: NonceAttribute,
+    pub theme_css: &'a str,
+    pub brand: crate::brand::Brand<'a>,
+}
+account_chrome!(AccountEntitlementsPage, account_href, "entitlements");
