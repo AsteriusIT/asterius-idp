@@ -1005,6 +1005,7 @@ fn account_pages(endpoints: Arc<ClientEndpoints>) -> Router {
             crate::http::account::PAGE_PATH,
             get(account_home).with_state(Arc::clone(&endpoints)),
         )
+        .route("/account/devices", get(account_devices_read).post(account_devices_remove).with_state(Arc::clone(&endpoints)))
         .route(
             account_passkeys::PAGE_PATH,
             get(account_passkeys_page)
@@ -7696,6 +7697,73 @@ fn sessions_account_context<'a>(
 }
 
 /// `GET /account` — the account pages, as links.
+/// Owner-only inspect/removal; no account ID can be supplied by the browser.
+async fn account_devices_read(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
+) -> Response {
+    use asterius_domain::managed_devices::Registry;
+    let Ok(parts) = account_parts(&endpoints, &tenant).await else { return unavailable(); };
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    let context = account_context(&tenant, &parts, &text, &nonce, mount);
+    let now = time::OffsetDateTime::now_utc();
+    let Some(session) = crate::http::account::admitted(&context, &headers, now).await else {
+        return axum::http::StatusCode::UNAUTHORIZED.into_response();
+    };
+    let raw_query = query.as_deref().unwrap_or_default();
+    if raw_query.len()>1024 { return axum::http::StatusCode::BAD_REQUEST.into_response(); }
+    let query = asterius_oidc::form::Parameters::from_pairs(url::form_urlencoded::parse(raw_query.as_bytes()).map(|(k,v)| (k.into_owned(),v.into_owned())));
+    if query.names().any(|name| !matches!(name,"after"|"limit")) { return axum::http::StatusCode::BAD_REQUEST.into_response(); }
+    let (Ok(after), Ok(limit)) = (query.get("after"), query.get("limit")) else { return axum::http::StatusCode::BAD_REQUEST.into_response(); };
+    let Ok(after) = after.map(uuid::Uuid::parse_str).transpose() else { return axum::http::StatusCode::BAD_REQUEST.into_response(); };
+    let Ok(limit) = limit.map_or(Ok(50_u16),str::parse) else { return axum::http::StatusCode::BAD_REQUEST.into_response(); };
+    if !(1..=100).contains(&limit) { return axum::http::StatusCode::BAD_REQUEST.into_response(); }
+    let registry = asterius_store_pg::PgManagedDevices::new(endpoints.store.pool().clone(), Arc::clone(&endpoints.audit));
+    match registry.devices(&tenant.id, Some(asterius_domain::UserId::new(session.user)), after, limit).await {
+        Ok(devices) => (crate::http::account::no_store(), axum::Json(serde_json::json!({"devices":devices,"csrf":crate::http::account::csrf_for(&session,"managed-devices")}))).into_response(),
+        Err(_) => unavailable(),
+    }
+}
+
+async fn account_devices_remove(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    use asterius_domain::managed_devices::{Registry, RemovalAuthority};
+    let Ok(parts) = account_parts(&endpoints, &tenant).await else { return unavailable(); };
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    let context = account_context(&tenant, &parts, &text, &nonce, mount);
+    let now = time::OffsetDateTime::now_utc();
+    let Some(session) = crate::http::account::admitted(&context, &headers, now).await else {
+        return axum::http::StatusCode::UNAUTHORIZED.into_response();
+    };
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Input { id: uuid::Uuid, expected_revision: uuid::Uuid, csrf: String }
+    if body.len()>crate::http::account::MAX_BODY { return axum::http::StatusCode::PAYLOAD_TOO_LARGE.into_response(); }
+    let Ok(input) = serde_json::from_slice::<Input>(&body) else { return axum::http::StatusCode::BAD_REQUEST.into_response(); };
+    if !crate::http::account::fresh(&session,now) || !crate::http::account::checked_csrf(&session,"managed-devices",&input.csrf) {
+        return axum::http::StatusCode::FORBIDDEN.into_response();
+    }
+    let registry = asterius_store_pg::PgManagedDevices::new(endpoints.store.pool().clone(), Arc::clone(&endpoints.audit));
+    match registry.remove(&tenant.id,input.id,input.expected_revision,RemovalAuthority::Owner(asterius_domain::UserId::new(session.user)),now).await {
+        Ok(()) => (crate::http::account::no_store(), axum::http::StatusCode::NO_CONTENT).into_response(),
+        Err(asterius_domain::DomainError::NotFound) => axum::http::StatusCode::NOT_FOUND.into_response(),
+        Err(asterius_domain::DomainError::Conflict(_)) => axum::http::StatusCode::CONFLICT.into_response(),
+        Err(_) => unavailable(),
+    }
+}
+
 async fn account_home(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
