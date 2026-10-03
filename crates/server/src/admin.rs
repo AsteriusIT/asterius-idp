@@ -550,6 +550,62 @@ impl std::fmt::Debug for DeploymentPolicyTrial {
     }
 }
 
+fn simulation_policy(
+    simulation: &asterius_admin_api::policies::Simulation,
+    current: Option<&asterius_domain::policy::StoredPolicy>,
+) -> Option<asterius_domain::policy::StoredPolicy> {
+    simulation.policy.as_ref().map_or_else(
+        || current.cloned(),
+        |rules| {
+            Some(asterius_domain::policy::StoredPolicy {
+                rules: rules.clone(),
+                updated_at: current
+                    .map_or(time::OffsetDateTime::UNIX_EPOCH, |policy| policy.updated_at),
+            })
+        },
+    )
+}
+
+impl DeploymentPolicyTrial {
+    async fn simulation_trusted(
+        &self,
+        tenant: &TenantId,
+        simulation: &asterius_admin_api::policies::Simulation,
+        client: &asterius_domain::Client,
+        request: &asterius_domain::policy::EvaluationRequest,
+        revision: Option<&str>,
+        acr: &asterius_domain::AcrPolicy,
+    ) -> Result<asterius_domain::policy::conditional::TrustedAccessContext, DomainError> {
+        use asterius_domain::policy::conditional::{ConditionalSettings, TrustedAccessContext};
+        let classification =
+            asterius_store_pg::PgConditionalSettings::new(self.store.pool().clone())
+                .read(tenant, &simulation.client)
+                .await?;
+        let now = time::OffsetDateTime::now_utc();
+        Ok(TrustedAccessContext {
+            tenant: tenant.clone(),
+            subject: Some(request.subject.id().to_owned()),
+            client: simulation.client.clone(),
+            action: simulation.enforcement_action.clone(),
+            evaluated_at: now,
+            policy_revision: revision.unwrap_or("absent").to_owned(),
+            acr_revision: asterius_domain::sha256_hex(acr.to_json().to_string().as_bytes()),
+            client_revision: asterius_domain::sha256_hex(
+                format!(
+                    "{}:{:?}",
+                    client.updated_at.unix_timestamp_nanos(),
+                    classification.as_ref().map(|value| value.revision)
+                )
+                .as_bytes(),
+            ),
+            facts: asterius_admin_api::policies::conditional_simulation::current_facts(
+                classification.as_ref(),
+                now,
+            ),
+        })
+    }
+}
+
 #[async_trait::async_trait]
 impl asterius_admin_api::backend::PolicyTrial for DeploymentPolicyTrial {
     async fn simulate(
@@ -559,9 +615,7 @@ impl asterius_admin_api::backend::PolicyTrial for DeploymentPolicyTrial {
     ) -> Result<asterius_admin_api::policies::SimulationOutcome, DomainError> {
         use asterius_admin_api::policies::SimulationOutcome;
         use asterius_domain::policy::explanation;
-        use asterius_domain::policy::{
-            EvaluationRequest, Properties, Resource, StoredPolicy, Subject,
-        };
+        use asterius_domain::policy::{EvaluationRequest, Properties, Resource, Subject};
         use asterius_domain::ports::{
             ApplicationRoleDirectory, GrantRepository, GroupDirectory, PolicyStore,
             ResourceServerRepository,
@@ -631,48 +685,17 @@ impl asterius_admin_api::backend::PolicyTrial for DeploymentPolicyTrial {
             request,
             &facts,
         )?;
-        let evaluated = simulation.policy.as_ref().map_or_else(
-            || current.clone(),
-            |rules| {
-                Some(StoredPolicy {
-                    rules: rules.clone(),
-                    updated_at: current
-                        .as_ref()
-                        .map_or(time::OffsetDateTime::UNIX_EPOCH, |policy| policy.updated_at),
-                })
-            },
-        );
-        use asterius_domain::policy::conditional::{ConditionalSettings, TrustedAccessContext};
-        let classification =
-            asterius_store_pg::PgConditionalSettings::new(self.store.pool().clone())
-                .read(tenant, &simulation.client)
-                .await?;
-        let now = time::OffsetDateTime::now_utc();
-        let trusted = TrustedAccessContext {
-            tenant: tenant.clone(),
-            subject: Some(subject.to_string()),
-            client: simulation.client.clone(),
-            action: simulation.enforcement_action.clone(),
-            evaluated_at: now,
-            policy_revision: current_revision
-                .clone()
-                .unwrap_or_else(|| "absent".to_owned()),
-            acr_revision: asterius_domain::sha256_hex(
-                settings.acr_policy().to_json().to_string().as_bytes(),
-            ),
-            client_revision: asterius_domain::sha256_hex(
-                format!(
-                    "{}:{:?}",
-                    client.updated_at.unix_timestamp_nanos(),
-                    classification.as_ref().map(|value| value.revision)
-                )
-                .as_bytes(),
-            ),
-            facts: asterius_admin_api::policies::conditional_simulation::current_facts(
-                classification.as_ref(),
-                now,
-            ),
-        };
+        let evaluated = simulation_policy(simulation, current.as_ref());
+        let trusted = self
+            .simulation_trusted(
+                tenant,
+                simulation,
+                &client,
+                &request,
+                current_revision.as_deref(),
+                settings.acr_policy(),
+            )
+            .await?;
         let (decision, conditional) =
             asterius_admin_api::policies::conditional_simulation::evaluate(
                 evaluated.as_ref(),

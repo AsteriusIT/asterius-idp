@@ -284,7 +284,7 @@ fn trusted_examples_schema() -> Value {
     let fact = |value: Value| json!({"oneOf":[missing,{"type":"object","additionalProperties":false,"required":["availability","value"],"properties":{"availability":{"const":"known"},"value":value}}]});
     json!({"type":"object","additionalProperties":false,"maxProperties":5,"description":"Administrative what-if examples only. Cannot override groups, roles or grants or assert a production source. Missing states never carry a value.","properties":{
         "assurance":fact(json!({"type":"string","minLength":1,"maxLength":256,"description":"An attainable level in this tenant's current ACR ladder; unsupported values are invalid evidence."})),
-        "authentication_age":fact(json!({"type":"integer","minimum":0,"maximum":604800})),
+        "authentication_age":fact(json!({"type":"integer","minimum":0,"maximum":604_800})),
         "application_sensitivity":fact(json!({"enum":["standard","sensitive","critical"]})),
         "device_compliance":fact(json!({"enum":["compliant","non_compliant","unknown"]})),
         "network_zone":fact(json!({"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9_.-]+$"}}))

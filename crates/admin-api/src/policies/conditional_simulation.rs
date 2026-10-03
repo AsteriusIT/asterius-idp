@@ -290,7 +290,7 @@ pub fn evaluate(
             }
         }
     }
-    let facts = trusted.facts.keys().map(|name|json!({"name":name,"availability":trusted.availability(*name),"source":trusted.facts.get(name).map(|fact|fact.source.as_str()).unwrap_or("unavailable"),"hypothetical":trusted.facts.get(name).is_some_and(|fact|fact.source==EXAMPLE_SOURCE)})).collect::<Vec<_>>();
+    let facts = trusted.facts.keys().map(|name|json!({"name":name,"availability":trusted.availability(*name),"source":trusted.facts.get(name).map_or("unavailable",|fact|fact.source.as_str()),"hypothetical":trusted.facts.get(name).is_some_and(|fact|fact.source==EXAMPLE_SOURCE)})).collect::<Vec<_>>();
     let response = json!({"enforcement_action":trusted.action,"legacy_would_permit":legacy.permit(),"active_would_permit":decision.permit(),"policy_revision":trusted.policy_revision,"evaluated_policy_revision":policy.map(|policy|explanation::revision(&policy.rules)),"acr_revision":trusted.acr_revision,"client_revision":trusted.client_revision,"facts":facts,"scopes":scopes});
     (decision, response)
 }
@@ -304,7 +304,7 @@ mod tests {
             json!({"groups":{"availability":"known","value":["private-canary"]}}),
             json!({"device_compliance":{"availability":"stale","value":"private-canary"}}),
             json!({"network_zone":{"availability":"known","value":["private-canary","private-canary"]}}),
-            json!({"authentication_age":{"availability":"known","value":604801}}),
+            json!({"authentication_age":{"availability":"known","value":604_801}}),
             json!({"assurance":{"availability":"known","value":"a","source":"verified"}}),
         ] {
             let error = TrustedExamples::parse(&value).expect_err("invalid example");
@@ -315,7 +315,7 @@ mod tests {
     fn fixture(
         mode: &str,
         base: &str,
-        condition: Value,
+        condition: &Value,
     ) -> (StoredPolicy, EvaluationRequest, TrustedAccessContext) {
         use asterius_domain::policy::{Action, Context, Properties, Resource, RuleSet, Subject};
         let now = OffsetDateTime::UNIX_EPOCH;
@@ -353,7 +353,7 @@ mod tests {
             json!({"not":{"device_compliance":"compliant"}}),
             json!({"any":[{"device_compliance":"compliant"},{"all":[]}]}),
         ] {
-            let (policy, request, trusted) = fixture("active", "permit", condition);
+            let (policy, request, trusted) = fixture("active", "permit", &condition);
             let (decision, response) = evaluate(Some(&policy), &request, trusted, None, &ladder);
             assert!(!decision.permit());
             assert_eq!(response["legacy_would_permit"], true);
@@ -364,7 +364,7 @@ mod tests {
             let (policy, request, trusted) = fixture(
                 "report_only",
                 base,
-                json!({"device_compliance":"compliant"}),
+                &json!({"device_compliance":"compliant"}),
             );
             let examples = TrustedExamples::parse(
                 &json!({"device_compliance":{"availability":"known","value":"compliant"}}),
@@ -389,8 +389,11 @@ mod tests {
     #[test]
     fn conditional_simulation_age_missing_states_and_exact_identity_boundary_remain_distinct() {
         let ladder = AcrPolicy::default();
-        let (policy, request, trusted) =
-            fixture("active", "permit", json!({"authentication_age_at_most":60}));
+        let (policy, request, trusted) = fixture(
+            "active",
+            "permit",
+            &json!({"authentication_age_at_most":60}),
+        );
         for (seconds, permit) in [(0, true), (61, false)] {
             let examples = TrustedExamples::parse(
                 &json!({"authentication_age":{"availability":"known","value":seconds}}),
@@ -449,7 +452,7 @@ mod tests {
         let (mut policy, request, trusted) = fixture(
             "active",
             "permit",
-            json!({"all":[{"acr_at_least":"urn:asterius:acr:passkey-uv"},{"authentication_age_at_most":60}]}),
+            &json!({"all":[{"acr_at_least":"urn:asterius:acr:passkey-uv"},{"authentication_age_at_most":60}]}),
         );
         let mut document = policy.rules.to_json();
         document["conditional_scopes"][0]["assurance_remedy"] =
