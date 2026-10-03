@@ -2805,7 +2805,7 @@ console CSRF gate and a fresh phishing-resistant session proof.
 Removal checks live assignment generation, ownership revision, source account,
 role catalogue and group context. Deletion/recreation cannot reuse a generation;
 new group members invalidate a group-role snapshot. Deadline checks follow lock
-acquisition. SCIM, builder and declarative controller ownership is protected even
+acquisition. SCIM, LDAP, builder and declarative controller ownership is protected even
 when the controller's own deletion protection is disabled. Governance does not
 impersonate the controller. The chosen lifecycle withdrawal and application
 result share a transaction with durable audit append; an audit failure must

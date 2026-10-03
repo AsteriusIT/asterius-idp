@@ -36,7 +36,7 @@ recreation. Applying removal must check the current assignment generation,
 owner-policy revision, live owner and reviewer authority, target scope and
 snapshot meaning in the same transaction as the existing lifecycle removal
 and durable audit append. A changed or unavailable source becomes a conflict;
-it cannot silently remove newly granted access. SCIM-, builder- or
+it cannot silently remove newly granted access. SCIM-, LDAP-, builder- or
 controller-owned authority is protected: a review can propose removal, but
 cannot impersonate its owner or bypass the controller's deletion protection.
 

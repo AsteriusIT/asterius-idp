@@ -25,7 +25,9 @@ pub(super) async fn active_admin(
     .await
     .map_err(to_domain_error)?;
     if held.is_none() {
-        return Err(DomainError::Conflict("current active tenant administrator is required".into()));
+        return Err(DomainError::Conflict(
+            "current active tenant administrator is required".into(),
+        ));
     }
     Ok(())
 }
@@ -48,18 +50,30 @@ pub(super) async fn lock(
     target.validate()?;
     if let Some(group) = group(target) {
         sqlx::query("select declarative_lock($1,'group',$2)")
-            .bind(tenant.as_str()).bind(json!([group])).execute(&mut *connection)
-            .await.map_err(to_domain_error)?;
+            .bind(tenant.as_str())
+            .bind(json!([group]))
+            .execute(&mut *connection)
+            .await
+            .map_err(to_domain_error)?;
         let present: Option<Uuid> = sqlx::query_scalar(
             "select group_id from managed_groups where tenant_id=$1 and group_id=$2 for update",
-        ).bind(tenant.as_str()).bind(group).fetch_optional(&mut *connection)
-            .await.map_err(to_domain_error)?;
-        if present.is_none() { return Ok(None); }
+        )
+        .bind(tenant.as_str())
+        .bind(group)
+        .fetch_optional(&mut *connection)
+        .await
+        .map_err(to_domain_error)?;
+        if present.is_none() {
+            return Ok(None);
+        }
     }
     if matches!(target, Target::Membership { .. }) {
         sqlx::query("select declarative_lock($1,'membership',$2)")
-            .bind(tenant.as_str()).bind(json!(target.keys())).execute(&mut *connection)
-            .await.map_err(to_domain_error)?;
+            .bind(tenant.as_str())
+            .bind(json!(target.keys()))
+            .execute(&mut *connection)
+            .await
+            .map_err(to_domain_error)?;
     }
     // Every statement is literal and every value is bound; the key shape cannot
     // be replaced by a caller-selected relation, predicate or column.
@@ -89,9 +103,12 @@ pub(super) async fn protected(
     tenant: &TenantId,
     target: &Target,
 ) -> Result<bool, DomainError> {
-    let Some(group) = group(target) else { return Ok(false); };
+    let Some(group) = group(target) else {
+        return Ok(false);
+    };
     let protected: bool = sqlx::query_scalar(
         "select exists(select 1 from scim_group_owners where tenant_id=$1 and group_id=$2)
+         or exists(select 1 from ldap_group_owners where tenant_id=$1 and group_id=$2)
          or exists(select 1 from flow_resource_links where tenant_id=$1 and resource_kind='group'
                    and resource_id=$2::text and relation='managed')
          or exists(select 1 from declarative_owners where tenant_id=$1 and kind='group'
@@ -120,14 +137,18 @@ pub(super) async fn standing_for_user(
          order by client_id nulls first,name,group_id nulls first limit 501",
     ).bind(tenant.as_str()).bind(user).fetch_all(connection).await.map_err(to_domain_error)?;
     if rows.len() > 500 {
-        return Err(DomainError::Conflict("effective provenance exceeds the bounded review snapshot".into()));
+        return Err(DomainError::Conflict(
+            "effective provenance exceeds the bounded review snapshot".into(),
+        ));
     }
-    rows.into_iter().map(|row| {
-        let client: Option<String> = row.try_get("client_id").map_err(to_domain_error)?;
-        let name: String = row.try_get("name").map_err(to_domain_error)?;
-        let group: Option<Uuid> = row.try_get("group_id").map_err(to_domain_error)?;
-        Ok(json!({"client_id":client,"name":name,"group_id":group}))
-    }).collect()
+    rows.into_iter()
+        .map(|row| {
+            let client: Option<String> = row.try_get("client_id").map_err(to_domain_error)?;
+            let name: String = row.try_get("name").map_err(to_domain_error)?;
+            let group: Option<Uuid> = row.try_get("group_id").map_err(to_domain_error)?;
+            Ok(json!({"client_id":client,"name":name,"group_id":group}))
+        })
+        .collect()
 }
 
 /// Calls existing lifecycle commands and leaves unrelated effective sources intact.
@@ -137,26 +158,70 @@ pub(super) async fn withdraw(
     target: &Target,
     now: time::OffsetDateTime,
 ) -> Result<bool, DomainError> {
-    use asterius_domain::{ClientId, GroupId, RoleName, RoleOwner};
     use crate::{PgApplicationRoles, PgGroups};
-    let parse = |name: &str| RoleName::parse(name)
-        .map_err(|error| DomainError::invalid("name", error.to_string()));
+    use asterius_domain::{ClientId, GroupId, RoleName, RoleOwner};
+    let parse = |name: &str| {
+        RoleName::parse(name).map_err(|error| DomainError::invalid("name", error.to_string()))
+    };
     match target {
-        Target::Membership { group_id, user_id } => PgGroups::remove_member_on(
-            connection, tenant, GroupId::from_uuid(*group_id), UserId::new(*user_id), now,
-        ).await,
-        Target::UserTenantRole { user_id, name } => PgApplicationRoles::withdraw_on(
-            connection, tenant, UserId::new(*user_id), &RoleOwner::Tenant, &parse(name)?,
-        ).await,
-        Target::UserClientRole { user_id, client_id, name } => PgApplicationRoles::withdraw_on(
-            connection, tenant, UserId::new(*user_id), &RoleOwner::Client(ClientId::new(client_id)), &parse(name)?,
-        ).await,
-        Target::GroupTenantRole { group_id, name } => PgApplicationRoles::withdraw_group_on(
-            connection, tenant, GroupId::from_uuid(*group_id), &RoleOwner::Tenant, &parse(name)?,
-        ).await,
-        Target::GroupClientRole { group_id, client_id, name } => PgApplicationRoles::withdraw_group_on(
-            connection, tenant, GroupId::from_uuid(*group_id), &RoleOwner::Client(ClientId::new(client_id)), &parse(name)?,
-        ).await,
+        Target::Membership { group_id, user_id } => {
+            PgGroups::remove_member_on(
+                connection,
+                tenant,
+                GroupId::from_uuid(*group_id),
+                UserId::new(*user_id),
+                now,
+            )
+            .await
+        }
+        Target::UserTenantRole { user_id, name } => {
+            PgApplicationRoles::withdraw_on(
+                connection,
+                tenant,
+                UserId::new(*user_id),
+                &RoleOwner::Tenant,
+                &parse(name)?,
+            )
+            .await
+        }
+        Target::UserClientRole {
+            user_id,
+            client_id,
+            name,
+        } => {
+            PgApplicationRoles::withdraw_on(
+                connection,
+                tenant,
+                UserId::new(*user_id),
+                &RoleOwner::Client(ClientId::new(client_id)),
+                &parse(name)?,
+            )
+            .await
+        }
+        Target::GroupTenantRole { group_id, name } => {
+            PgApplicationRoles::withdraw_group_on(
+                connection,
+                tenant,
+                GroupId::from_uuid(*group_id),
+                &RoleOwner::Tenant,
+                &parse(name)?,
+            )
+            .await
+        }
+        Target::GroupClientRole {
+            group_id,
+            client_id,
+            name,
+        } => {
+            PgApplicationRoles::withdraw_group_on(
+                connection,
+                tenant,
+                GroupId::from_uuid(*group_id),
+                &RoleOwner::Client(ClientId::new(client_id)),
+                &parse(name)?,
+            )
+            .await
+        }
     }
 }
 
@@ -167,6 +232,29 @@ pub(super) async fn context_fingerprint(
     tenant: &TenantId,
     target: &Target,
 ) -> Result<Value, DomainError> {
+    context_on(connection, tenant, target, true).await
+}
+
+/// Read-only reports compare the same bounded context without acquiring write locks.
+pub(super) async fn context_for_report_on(
+    connection: &mut PgConnection,
+    tenant: &TenantId,
+    target: &Target,
+) -> Result<Value, DomainError> {
+    context_on(connection, tenant, target, false).await
+}
+
+fn context_query(query: &str, lock_clause: &str, locking: bool) -> String {
+    // Both fragments are fixed SQL below; request values always use bindings.
+    format!("{query}{}", if locking { lock_clause } else { "" })
+}
+
+async fn context_on(
+    connection: &mut PgConnection,
+    tenant: &TenantId,
+    target: &Target,
+    locking: bool,
+) -> Result<Value, DomainError> {
     let group_state: Option<Value> = if let Some(group) = group(target) {
         sqlx::query_scalar(
             "select jsonb_build_object('group_revision',g.revision,'incarnation',d.incarnation,'provenance_revision',d.revision)
@@ -174,23 +262,27 @@ pub(super) async fn context_fingerprint(
                and d.kind='group' and d.keys=jsonb_build_array(g.group_id::text)
              where g.tenant_id=$1 and g.group_id=$2",
         ).bind(tenant.as_str()).bind(group).fetch_optional(&mut *connection).await.map_err(to_domain_error)?
-    } else { None };
+    } else {
+        None
+    };
     let catalogue: Option<Value> = match target {
         Target::Membership { .. } => None,
-        Target::UserTenantRole { name, .. } | Target::GroupTenantRole { name, .. } => sqlx::query_scalar(
-            "select jsonb_build_object('name',name,'description',description,'created_at',created_at) from tenant_roles where tenant_id=$1 and name=$2 for share",
-        ).bind(tenant.as_str()).bind(name).fetch_optional(&mut *connection).await.map_err(to_domain_error)?,
-        Target::UserClientRole { client_id, name, .. } | Target::GroupClientRole { client_id, name, .. } => sqlx::query_scalar(
-            "select jsonb_build_object('name',r.name,'description',r.description,'created_at',r.created_at,'client_status',c.status)
-             from client_roles r join clients c using(tenant_id,client_id) where r.tenant_id=$1 and r.client_id=$2 and r.name=$3 for share of r,c",
-        ).bind(tenant.as_str()).bind(client_id).bind(name).fetch_optional(&mut *connection).await.map_err(to_domain_error)?,
+        Target::UserTenantRole { name, .. } | Target::GroupTenantRole { name, .. } => sqlx::query_scalar(&context_query(
+            "select jsonb_build_object('name',name,'description',description,'created_at',created_at) from tenant_roles where tenant_id=$1 and name=$2",
+            " for share", locking,
+        )).bind(tenant.as_str()).bind(name).fetch_optional(&mut *connection).await.map_err(to_domain_error)?,
+        Target::UserClientRole { client_id, name, .. } | Target::GroupClientRole { client_id, name, .. } => sqlx::query_scalar(&context_query(
+            "select jsonb_build_object('name',r.name,'description',r.description,'created_at',r.created_at,'client_status',c.status,'client_updated_at',c.updated_at)
+             from client_roles r join clients c using(tenant_id,client_id) where r.tenant_id=$1 and r.client_id=$2 and r.name=$3",
+            " for share of r,c", locking,
+        )).bind(tenant.as_str()).bind(client_id).bind(name).fetch_optional(&mut *connection).await.map_err(to_domain_error)?,
     };
     let account_state:Value=match target {
         Target::Membership {user_id,..}|Target::UserTenantRole {user_id,..}|Target::UserClientRole {user_id,..}=>
-            sqlx::query_scalar("select jsonb_build_object('status',status,'updated_at',updated_at) from users where tenant_id=$1 and user_id=$2 for share")
+            sqlx::query_scalar(&context_query("select jsonb_build_object('status',status,'updated_at',updated_at) from users where tenant_id=$1 and user_id=$2", " for share", locking))
                 .bind(tenant.as_str()).bind(user_id).fetch_one(&mut *connection).await.map_err(to_domain_error)?,
         Target::GroupTenantRole {group_id,..}|Target::GroupClientRole {group_id,..}=>{
-            let rows:Vec<Value>=sqlx::query_scalar("select jsonb_build_object('user_id',u.user_id,'status',u.status,'updated_at',u.updated_at) from users u join group_memberships m using(tenant_id,user_id) where m.tenant_id=$1 and m.group_id=$2 order by u.user_id limit 101 for share of u")
+            let rows:Vec<Value>=sqlx::query_scalar(&context_query("select jsonb_build_object('user_id',u.user_id,'status',u.status,'updated_at',u.updated_at) from users u join group_memberships m using(tenant_id,user_id) where m.tenant_id=$1 and m.group_id=$2 order by u.user_id limit 101", " for share of u", locking))
                 .bind(tenant.as_str()).bind(group_id).fetch_all(&mut *connection).await.map_err(to_domain_error)?;
             if rows.len()>100 {return Err(DomainError::Conflict("group exceeds the bounded hundred-user review snapshot".into()));}
             json!(rows)

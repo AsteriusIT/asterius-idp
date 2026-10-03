@@ -325,7 +325,9 @@ async fn route(
     context: &Handling<'_>,
     body: axum::body::Body,
 ) -> Result<Response, AdminError> {
-    if id.starts_with("governance.") { return context.governance(id,body).await; }
+    if id.starts_with("governance.") {
+        return context.governance(id, body).await;
+    }
 
     if id.starts_with("temporary_entitlements.") {
         return context.temporary_entitlement(id, body).await;

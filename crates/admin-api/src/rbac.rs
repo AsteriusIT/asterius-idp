@@ -411,22 +411,38 @@ mod tests {
 mod governance_tests {
     use super::*;
     #[test]
-    fn governance_requires_the_actual_console_realm_even_for_deployment_authority(){
-        let own=TenantId::new("reserved");let other=TenantId::new("other");
-        let held=Held::Roles {tenant:own.clone(),roles:vec![Role::DeploymentAdmin]};
-        let required=Authority::new(Reach::ConsoleTenant,"admin.governance:write");
-        assert!(held.satisfies(required,&own));assert!(!held.satisfies(required,&other));
-        let service=Held::Scopes {tenant:None,scopes:vec!["admin.governance:write".into()]};
-        assert!(!service.satisfies(required,&own));
+    fn governance_requires_the_actual_console_realm_even_for_deployment_authority() {
+        let own = TenantId::new("reserved");
+        let other = TenantId::new("other");
+        let held = Held::Roles {
+            tenant: own.clone(),
+            roles: vec![Role::DeploymentAdmin],
+        };
+        let required = Authority::new(Reach::ConsoleTenant, "admin.governance:write");
+        assert!(held.satisfies(required, &own));
+        assert!(!held.satisfies(required, &other));
+        let service = Held::Scopes {
+            tenant: None,
+            scopes: vec!["admin.governance:write".into()],
+        };
+        assert!(!service.satisfies(required, &own));
     }
     #[test]
-    fn reviewer_configuration_never_gives_auditors_or_support_write_authority(){
-        let tenant=TenantId::new("same");
-        let read=Authority::new(Reach::ConsoleTenant,"admin.governance:read");
-        let write=Authority::new(Reach::ConsoleTenant,"admin.governance:write");
-        let auditor=Held::Roles {tenant:tenant.clone(),roles:vec![Role::SecurityAuditor]};
-        let support=Held::Roles {tenant:tenant.clone(),roles:vec![Role::UserSupport]};
-        assert!(auditor.satisfies(read,&tenant));assert!(!auditor.satisfies(write,&tenant));
-        assert!(!support.satisfies(read,&tenant));assert!(!support.satisfies(write,&tenant));
+    fn reviewer_configuration_never_gives_auditors_or_support_write_authority() {
+        let tenant = TenantId::new("same");
+        let read = Authority::new(Reach::ConsoleTenant, "admin.governance:read");
+        let write = Authority::new(Reach::ConsoleTenant, "admin.governance:write");
+        let auditor = Held::Roles {
+            tenant: tenant.clone(),
+            roles: vec![Role::SecurityAuditor],
+        };
+        let support = Held::Roles {
+            tenant: tenant.clone(),
+            roles: vec![Role::UserSupport],
+        };
+        assert!(auditor.satisfies(read, &tenant));
+        assert!(!auditor.satisfies(write, &tenant));
+        assert!(!support.satisfies(read, &tenant));
+        assert!(!support.satisfies(write, &tenant));
     }
 }

@@ -92,7 +92,6 @@ impl PgGroups {
         }
         Ok(changed)
     }
-
 }
 
 #[derive(sqlx::FromRow)]

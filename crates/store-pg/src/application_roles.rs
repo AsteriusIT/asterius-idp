@@ -136,7 +136,6 @@ impl PgApplicationRoles {
         };
         Ok(affected > 0)
     }
-
 }
 
 /// Turns a stored name back into a [`RoleName`].

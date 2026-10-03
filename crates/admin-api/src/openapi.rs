@@ -330,7 +330,13 @@ fn operation_parameters(operation: &Operation) -> Vec<Value> {
         parameters.push(json!({"name":"If-Match","in":"header","required":false,"schema":{"type":"string"},"description":"Quoted canonical sha256 revision from GET /policies. Required when adding, modifying or removing conditional scopes; use If-None-Match: * only for a first publication."}));
         parameters.push(json!({"name":"If-None-Match","in":"header","required":false,"schema":{"type":"string","const":"*"},"description":"Explicitly expects no existing policy. Mutually exclusive with If-Match."}));
     }
-    if matches!(operation.id(),"governance.ownership.list"|"governance.review.list"|"governance.review.items"|"governance.reviewers") {
+    if matches!(
+        operation.id(),
+        "governance.ownership.list"
+            | "governance.review.list"
+            | "governance.review.items"
+            | "governance.reviewers"
+    ) {
         parameters.push(json!({"name":"after","in":"query","required":false,"schema":{"type":"string","format":"uuid"},"description":"Exact last row UUID from the previous page; rows are ordered by UUID within this tenant."}));
         parameters.push(json!({"name":"limit","in":"query","required":false,"schema":{"type":"integer","minimum":1,"maximum":100,"default":50},"description":"Rows per page; values outside one to one hundred are refused."}));
     }
@@ -949,31 +955,46 @@ fn path_parameters(path: &str) -> Vec<&str> {
         .collect()
 }
 
-fn governance_documentation(operation:&Operation,object:&mut Value){
-    if !operation.id().starts_with("governance."){return;}
-    object["security"]=json!([{"consoleSession":[]}]);object["x-console-only"]=json!(true);
-    object["x-fresh-phishing-resistant-write"]=json!(operation.authority().scope().ends_with(":write"));
-    object["description"]=json!("Human identity must belong to the addressed tenant. Owner/reviewer configuration never grants administrative authority. Writes additionally require current active tenant-administrator authority, fresh phishing-resistant console proof and normal CSRF protection. Reasons and historical snapshots remain private. Decisions do not change access until explicit application. Stale or externally managed sources are refused; independent standing and temporary sources remain intact. Notification transport is disabled.");
-    let uuid=json!({"type":"string","format":"uuid","not":{"const":"00000000-0000-0000-0000-000000000000"}});
-    let schema=match operation.id(){
-        "governance.ownership.configure"=>{
+fn governance_documentation(operation: &Operation, object: &mut Value) {
+    if !operation.id().starts_with("governance.") {
+        return;
+    }
+    object["security"] = json!([{"consoleSession":[]}]);
+    object["x-console-only"] = json!(true);
+    object["x-fresh-phishing-resistant-write"] =
+        json!(operation.authority().scope().ends_with(":write"));
+    object["description"] = json!(
+        "Human identity must belong to the addressed tenant. Owner/reviewer configuration never grants administrative authority. Writes additionally require current active tenant-administrator authority, fresh phishing-resistant console proof and normal CSRF protection. Reasons and historical snapshots remain private. Decisions do not change access until explicit application. Stale or externally managed sources are refused; independent standing and temporary sources remain intact. Notification transport is disabled."
+    );
+    let uuid = json!({"type":"string","format":"uuid","not":{"const":"00000000-0000-0000-0000-000000000000"}});
+    let schema = match operation.id() {
+        "governance.ownership.configure" => {
             let targets:Vec<Value>=[("membership",vec!["group_id","user_id"]),("user_tenant_role",vec!["user_id","name"]),("user_client_role",vec!["user_id","client_id","name"]),("group_tenant_role",vec!["group_id","name"]),("group_client_role",vec!["group_id","client_id","name"])].into_iter().map(|(kind,keys)|{
                 let mut properties=serde_json::Map::new();properties.insert("kind".into(),json!({"const":kind}));
                 let mut required=vec!["kind"];for key in keys{required.push(key);properties.insert(key.into(),match key {"name"=>json!({"type":"string","pattern":"^[a-z0-9][a-z0-9._:-]{0,63}$"}),"client_id"=>json!({"type":"string","minLength":1,"maxLength":2048}),_=>uuid.clone()});}
                 json!({"type":"object","additionalProperties":false,"required":required,"properties":properties})
             }).collect();
-            Some(json!({"type":"object","additionalProperties":false,"required":["target","owner_user_id","reviewers","enabled"],"properties":{"target":{"oneOf":targets},"owner_user_id":uuid,"reviewers":{"type":"array","minItems":1,"maxItems":20,"uniqueItems":true,"items":uuid},"enabled":{"type":"boolean"},"expected_revision":{"type":["string","null"],"format":"uuid"}},"description":"Omitted/null revision expects no saved ownership. Existing ownership requires its exact current revision; stale writes return 409."}))
+            Some(
+                json!({"type":"object","additionalProperties":false,"required":["target","owner_user_id","reviewers","enabled"],"properties":{"target":{"oneOf":targets},"owner_user_id":uuid,"reviewers":{"type":"array","minItems":1,"maxItems":20,"uniqueItems":true,"items":uuid},"enabled":{"type":"boolean"},"expected_revision":{"type":["string","null"],"format":"uuid"}},"description":"Omitted/null revision expects no saved ownership. Existing ownership requires its exact current revision; stale writes return 409."}),
+            )
         }
-        "governance.review.start"=>Some(json!({"type":"object","additionalProperties":false,"required":["ownership_ids","reviewer_id","due_at"],"properties":{"ownership_ids":{"type":"array","minItems":1,"maxItems":200,"uniqueItems":true,"items":uuid},"reviewer_id":uuid,"due_at":{"type":"string","format":"date-time"}},"description":"Deadline must be future and within ninety days of database time. Every selected source must exist and its configured reviewer must remain eligible. Group snapshots refuse more than one hundred affected users or incomplete provenance."})),
-        "governance.review.decide"=>Some(json!({"type":"object","additionalProperties":false,"required":["decision","reason"],"properties":{"decision":{"enum":["retain","remove"]},"reason":{"type":"string","minLength":1,"maxLength":1000}},"description":"An assigned reviewer records one immutable decision and printable nonempty reason. This command does not mutate access."})),
-        "governance.review.apply"|"governance.review.cancel"=>Some(json!({"type":"object","additionalProperties":false,"maxProperties":0})),
-        _=>None,
+        "governance.review.start" => Some(
+            json!({"type":"object","additionalProperties":false,"required":["ownership_ids","reviewer_id","due_at"],"properties":{"ownership_ids":{"type":"array","minItems":1,"maxItems":200,"uniqueItems":true,"items":uuid},"reviewer_id":uuid,"due_at":{"type":"string","format":"date-time"}},"description":"Deadline must be future and within ninety days of database time. Every selected source must exist and its configured reviewer must remain eligible. Group snapshots refuse more than one hundred affected users or incomplete provenance."}),
+        ),
+        "governance.review.decide" => Some(
+            json!({"type":"object","additionalProperties":false,"required":["decision","reason"],"properties":{"decision":{"enum":["retain","remove"]},"reason":{"type":"string","minLength":1,"maxLength":1000}},"description":"An assigned reviewer records one immutable decision and printable nonempty reason. This command does not mutate access."}),
+        ),
+        "governance.review.apply" | "governance.review.cancel" => {
+            Some(json!({"type":"object","additionalProperties":false,"maxProperties":0}))
+        }
+        _ => None,
     };
-    if let Some(schema)=schema{object["requestBody"]=json!({"required":!matches!(operation.id(),"governance.review.apply"|"governance.review.cancel"),"content":{"application/json":{"schema":schema}}});}
+    if let Some(schema) = schema {
+        object["requestBody"] = json!({"required":!matches!(operation.id(),"governance.review.apply"|"governance.review.cancel"),"content":{"application/json":{"schema":schema}}});
+    }
 }
 
 fn declarative_documentation(operation: &Operation, object: &mut Value) {
-
     if !crate::declarative::is_route(operation.id()) {
         return;
     }
