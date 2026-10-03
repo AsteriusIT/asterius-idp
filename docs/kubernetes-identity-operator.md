@@ -47,11 +47,16 @@ No remote credential material is written to disk, CRD status, events or logs.
 Only parsed private keys remain in process memory; this is not a claim of
 guaranteed memory zeroization.
 
-Install with reviewed values:
+Apply the reviewed CRDs first, provision the binding and selected Secrets,
+then install with reviewed values:
 
 ```sh
+kubectl apply -f deploy/operator/crds.json
+kubectl wait --for=condition=Established --timeout=60s \
+  crd/applications.identity.asterius.io crd/resources.identity.asterius.io \
+  crd/policies.identity.asterius.io crd/asteriustenantbindings.identity.asterius.io
 helm upgrade --install asterius-operator charts/asterius-operator \
-  --namespace identity-acme --values reviewed-operator-values.yaml
+  --namespace identity-acme --values reviewed-operator-values.yaml --skip-crds
 ```
 
 The chart installs bounded namespaced Roles, a precreated Lease and fail-closed
@@ -62,9 +67,8 @@ limited to the exact controller service account or an administrator authorized
 to update that namespace's binding. Admission does not replace runtime checks.
 The chart disables service-account automount and explicitly projects a renewed
 600-second Kubernetes token and API-server CA. The container is nonroot with a
-read-only filesystem, no capabilities and no privilege escalation. Helm does
-not upgrade CRDs automatically: explicitly validate and apply updated CRDs before
-upgrading the controller. Never temporarily turn off admission to bypass errors.
+read-only filesystem, no capabilities and no privilege escalation. Explicitly
+validate and apply updated CRDs before upgrading the controller with `--skip-crds`. Never temporarily turn off admission to bypass errors.
 
 ## Reconciliation and recovery
 
@@ -158,3 +162,7 @@ Remote CI has not been run locally; the workflow reproduces the real checks.
 Primary target behavior: Kubernetes 1.35
 [Lease MicroTime wire format](https://github.com/kubernetes/apimachinery/blob/v0.35.0/pkg/apis/meta/v1/micro_time.go)
 and [deletion generation bump](https://github.com/kubernetes/apiserver/blob/v0.35.0/pkg/registry/generic/registry/store.go#L932).
+
+The [GitOps interoperability and recovery guide](kubernetes-identity-gitops.md)
+covers actual Flux delivery, Terraform ownership conflicts and compatible
+image upgrade/rollback without changing remote identity references.

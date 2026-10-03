@@ -1,0 +1,71 @@
+# TLS edge, strips all caller-supplied identity/credential/forwarding headers.
+static_resources:
+  listeners:
+    - name: gateway_tls
+      address:
+        socket_address: { address: 0.0.0.0, port_value: 8443 }
+      filter_chains:
+        - transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+              common_tls_context:
+                tls_certificates:
+                  - certificate_chain: { filename: /cfg/gateway.crt }
+                    private_key: { filename: /cfg/gateway.key }
+          filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: authenticated_gateway
+                use_remote_address: true
+                xff_num_trusted_hops: 0
+                route_config:
+                  name: authenticated_routes
+                  virtual_hosts:
+                    - name: gateway
+                      domains: ["${GATEWAY_AUTHORITY}"]
+                      request_headers_to_add:
+                        - header: { key: x-forwarded-proto, value: https }
+                          append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                        - header: { key: x-real-ip, value: "%DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT%" }
+                          append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                      request_headers_to_remove:
+                        - x-forwarded-proto
+                        - x-forwarded-for
+                        - authorization
+                        - proxy-authorization
+                        - x-forwarded-user
+                        - x-forwarded-email
+                        - x-forwarded-groups
+                        - x-forwarded-preferred-username
+                        - x-forwarded-access-token
+                        - x-auth-request-user
+                        - x-auth-request-email
+                        - x-auth-request-groups
+                        - x-auth-request-access-token
+                        - x-auth-request-redirect
+                        - x-forwarded-host
+                        - x-forwarded-uri
+                        - x-original-url
+                        - x-original-uri
+                        - x-real-ip
+                        - forwarded
+                      routes:
+                        - match: { prefix: "/" }
+                          route: { cluster: oauth2, timeout: 15s }
+                http_filters:
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+  clusters:
+    - name: oauth2
+      type: STRICT_DNS
+      connect_timeout: 3s
+      load_assignment:
+        cluster_name: oauth2
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: { address: oauth2, port_value: 4180 }

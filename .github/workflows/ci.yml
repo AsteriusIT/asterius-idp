@@ -52,7 +52,7 @@ jobs:
   kubernetes-interoperability:
     name: Kubernetes real OP, helper, RBAC and expiry
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     services:
       postgres:
         image: postgres:16-alpine
@@ -109,6 +109,19 @@ jobs:
           ASTERIUS_BIN: ${{ github.workspace }}/target/debug/asterius
           ASTERIUS_ACCEPTANCE_DB_CONTAINER: ${{ job.services.postgres.id }}
         run: bash scripts/operator-acceptance.sh
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.15.8"
+          terraform_wrapper: false
+      - uses: azure/setup-helm@v4.3.1
+        with:
+          version: v4.2.0
+      - name: real Flux delivery, Terraform ownership, upgrade and recovery
+        env:
+          ASTERIUS_BIN: ${{ github.workspace }}/target/debug/asterius
+          ASTERIUS_ACCEPTANCE_DB_CONTAINER: ${{ job.services.postgres.id }}
+          ASTERIUS_OPERATOR_GITOPS: "1"
+        run: bash scripts/operator-acceptance.sh
       - name: retain public evidence only
         uses: actions/upload-artifact@v4
         with:
@@ -116,6 +129,7 @@ jobs:
           path: |
             artifacts/kubernetes-e2e.json
             artifacts/operator-e2e.json
+            artifacts/operator-gitops-e2e.json
           if-no-files-found: ignore
 
   # -------------------------------------------------------------------------

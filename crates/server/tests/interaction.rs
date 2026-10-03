@@ -2919,12 +2919,11 @@ async fn the_consent_screen_names_only_this_authorization_s_origin() {
     );
 }
 
-/// The login page submits to this server and nowhere else. If the widening
-/// ever attaches itself to a stage that does not need it, this fails.
+/// A first-party login has no registered callback and remains self-only.
 #[tokio::test]
-async fn no_other_page_inherits_the_widened_form_action() {
+async fn a_first_party_login_does_not_inherit_a_client_form_action() {
     let id = InteractionId::generate();
-    let store = FakeStore::with(&id.digest(), serde_json::json!({"stage": "login"}));
+    let store = FakeStore::with(&id.digest(), serde_json::json!({"stage": "login"})).first_party();
     let tenant = tenant();
     let nonce = Nonce::generate();
     let sessions = FakeSessions::default();
@@ -2945,6 +2944,127 @@ async fn no_other_page_inherits_the_widened_form_action() {
         !policy.contains("rp.example"),
         "the login page inherited a client origin: {policy}"
     );
+}
+
+/// Login and a final factor can redirect straight to the RP when consent is
+/// remembered. Their form policy must name the same exact validated origin as
+/// consent, including its port, without inheriting another client's origin.
+#[tokio::test]
+async fn authorization_login_and_factor_forms_allow_only_this_callback_origin() {
+    for (stage, factor) in [("login", false), ("step_up", false), ("login", true)] {
+        let id = InteractionId::generate();
+        let mut state = serde_json::json!({"stage": stage});
+        if factor {
+            state["totp_user"] = serde_json::json!("00000000-0000-4000-8000-000000000001");
+            state["totp_username"] = serde_json::json!("alice");
+        }
+        let store = FakeStore::with(&id.digest(), state);
+        store.redirecting_to("https://other.example:8443/cb");
+        let tenant = tenant();
+        let nonce = Nonce::generate();
+        let sessions = FakeSessions::default();
+        let issued = Issued::default();
+        let response = show(
+            context(&tenant, &store, &nonce, None, &sessions, &issued),
+            id.expose(),
+            None,
+            &cookie_header(id.expose()),
+            OffsetDateTime::now_utc(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let policy = policy_of(&response);
+        assert!(
+            policy.contains("form-action 'self' https://other.example:8443;"),
+            "{stage}/{factor}: {policy}"
+        );
+        assert!(
+            !policy.contains("rp.example"),
+            "an unrelated origin leaked: {policy}"
+        );
+        assert!(
+            !policy.contains("form-action *"),
+            "a wildcard leaked: {policy}"
+        );
+        let body = body_of(response).await;
+        assert!(
+            body.contains(if factor {
+                "name=\"totp_code\""
+            } else {
+                "name=\"password\""
+            }),
+            "wrong form for {stage}/{factor}"
+        );
+    }
+}
+
+/// A refused credential redraws a login form whose later successful retry can
+/// finish remembered consent. It must retain this request's exact callback.
+#[tokio::test]
+async fn a_retried_login_retains_its_exact_authorization_form_action() {
+    let id = InteractionId::generate();
+    let mut state = StoredState::default();
+    let token = state.issue_csrf();
+    let store = FakeStore::with(&id.digest(), serde_json::to_value(&state).expect("json"));
+    store.redirecting_to("https://other.example:8443/cb");
+    let tenant = tenant();
+    let nonce = Nonce::generate();
+    let sessions = FakeSessions::default();
+    let issued = Issued::default();
+    let response = submit(
+        context(
+            &tenant,
+            &store,
+            &nonce,
+            Some(&AlwaysRefuses),
+            &sessions,
+            &issued,
+        ),
+        id.expose(),
+        &cookie_header(id.expose()),
+        &Bytes::from(format!(
+            "csrf={}&username=ada&password=wrong",
+            token.expose()
+        )),
+        OffsetDateTime::now_utc(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(sessions.0.lock().expect("lock").is_empty());
+    let policy = policy_of(&response);
+    assert!(
+        policy.contains("form-action 'self' https://other.example:8443;"),
+        "{policy}"
+    );
+    assert!(!policy.contains("rp.example"), "{policy}");
+    assert!(
+        body_of(response)
+            .await
+            .contains("Those details did not match.")
+    );
+}
+
+/// A native/private-scheme callback does not grant a browser origin to login.
+#[tokio::test]
+async fn a_private_scheme_callback_does_not_widen_login_form_action() {
+    let id = InteractionId::generate();
+    let store = FakeStore::with(&id.digest(), serde_json::json!({"stage": "login"}));
+    store.redirecting_to("com.example.app:/cb");
+    let tenant = tenant();
+    let nonce = Nonce::generate();
+    let sessions = FakeSessions::default();
+    let issued = Issued::default();
+    let response = show(
+        context(&tenant, &store, &nonce, None, &sessions, &issued),
+        id.expose(),
+        None,
+        &cookie_header(id.expose()),
+        OffsetDateTime::now_utc(),
+    )
+    .await;
+    let policy = policy_of(&response);
+    assert!(policy.contains("form-action 'self';"), "{policy}");
+    assert!(!policy.contains("com.example.app"), "{policy}");
 }
 
 /// A callback a CSP `host-source` cannot express — a native client's private
