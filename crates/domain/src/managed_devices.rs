@@ -127,7 +127,7 @@ impl DeviceBinding {
         }
         let mut binding = Self::from_verified(evidence, now)?;
         binding.bound_grant_id = Some(grant.id.clone());
-        binding.request_parent = grant.parent.clone();
+        binding.request_parent.clone_from(&grant.parent);
         binding.validate(now)?;
         Ok(binding)
     }
