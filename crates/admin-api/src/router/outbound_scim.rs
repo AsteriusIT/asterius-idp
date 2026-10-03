@@ -82,7 +82,7 @@ impl Handling<'_> {
         self.state
             .backend
             .outbound_scim()
-            .ok_or(AdminError::Unavailable)?;
+            .ok_or(AdminError::NotFound)?;
         let write = !matches!(
             operation,
             "outbound_scim.lifecycle_read"
@@ -131,7 +131,7 @@ impl Handling<'_> {
             .state
             .backend
             .outbound_scim()
-            .ok_or(AdminError::Unavailable)?;
+            .ok_or(AdminError::NotFound)?;
         let segments: Vec<_> = self
             .path
             .split('/')
@@ -153,7 +153,7 @@ impl Handling<'_> {
                     .state
                     .backend
                     .outbound_scim_credentials()
-                    .ok_or(AdminError::Unavailable)?;
+                    .ok_or(AdminError::NotFound)?;
                 serde_json::json!({"items":credentials.descriptors(&self.tenant.id)})
             }
             "outbound_scim.assignments" => {
@@ -173,7 +173,7 @@ impl Handling<'_> {
             .state
             .backend
             .outbound_scim()
-            .ok_or(AdminError::Unavailable)?;
+            .ok_or(AdminError::NotFound)?;
         let segments: Vec<_> = self
             .path
             .split('/')
@@ -245,7 +245,7 @@ impl Handling<'_> {
                     .state
                     .backend
                     .outbound_scim_lifecycle()
-                    .ok_or(AdminError::Unavailable)?;
+                    .ok_or(AdminError::NotFound)?;
                 serde_json::json!({"items":lifecycle.recent(&self.tenant.id,connector()?,assignment).await.map_err(error)?})
             }
             "outbound_scim.lifecycle" => {
@@ -260,7 +260,7 @@ impl Handling<'_> {
                     .state
                     .backend
                     .outbound_scim_lifecycle()
-                    .ok_or(AdminError::Unavailable)?;
+                    .ok_or(AdminError::NotFound)?;
                 serde_json::json!(
                     lifecycle
                         .enqueue(&self.tenant.id, user, connector()?, assignment, command)
@@ -302,7 +302,7 @@ impl Handling<'_> {
                     .state
                     .backend
                     .outbound_scim_inspection()
-                    .ok_or(AdminError::Unavailable)?;
+                    .ok_or(AdminError::NotFound)?;
                 serde_json::json!(
                     inspection
                         .dry_run(
@@ -326,7 +326,7 @@ impl Handling<'_> {
                     .state
                     .backend
                     .outbound_scim_inspection()
-                    .ok_or(AdminError::Unavailable)?;
+                    .ok_or(AdminError::NotFound)?;
                 serde_json::json!(
                     inspection
                         .preview(
@@ -354,7 +354,7 @@ impl Handling<'_> {
             .state
             .backend
             .outbound_scim()
-            .ok_or(AdminError::Unavailable)?;
+            .ok_or(AdminError::NotFound)?;
         let segments: Vec<_> = self
             .path
             .split('/')
