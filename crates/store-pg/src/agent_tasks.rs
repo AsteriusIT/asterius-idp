@@ -560,27 +560,24 @@ impl TaskSigner<'_> {
                 return Err(invalid());
             }
         }
-        let token = match issuance {
-            Some(issuance) => {
-                let authority = authority.ok_or_else(invalid)?;
-                let held = asterius_domain::keys::HeldGrantAuthority::from_fenced_grant(
-                    issuance.grant,
-                    &issuer,
-                    authority.expires_at(),
-                );
-                self.sign_held_access(issuance, &held, algorithm, typ, claims)
-                    .await?
-            }
-            None => {
-                let publication = asterius_domain::keys::HeldClientPublication::from_fenced_client(
-                    tenant.clone(),
-                    issuer,
-                    ClientId::new(client),
-                );
-                self.inner
-                    .sign_client_bound(tenant, &publication, algorithm, typ, claims)
-                    .await?
-            }
+        let token = if let Some(issuance) = issuance {
+            let authority = authority.ok_or_else(invalid)?;
+            let held = asterius_domain::keys::HeldGrantAuthority::from_fenced_grant(
+                issuance.grant,
+                &issuer,
+                authority.expires_at(),
+            );
+            self.sign_held_access(issuance, &held, algorithm, typ, claims)
+                .await?
+        } else {
+            let publication = asterius_domain::keys::HeldClientPublication::from_fenced_client(
+                tenant.clone(),
+                issuer,
+                ClientId::new(client),
+            );
+            self.inner
+                .sign_client_bound(tenant, &publication, algorithm, typ, claims)
+                .await?
         };
         tx.commit().await.map_err(to_domain_error)?;
         Ok(token)
@@ -1027,17 +1024,18 @@ impl TaskSigner<'_> {
         .map_err(to_domain_error)?;
         let authority =
             crate::PgGrantRepository::lock_issuance_authority_on(&mut tx, tenant, grant).await?;
-        let issuer: String = sqlx::query_scalar("select issuer from tenants where tenant_id=$1")
-            .bind(tenant.as_str())
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(to_domain_error)?;
-        if claims.get("iss").and_then(serde_json::Value::as_str) != Some(issuer.as_str()) {
+        let tenant_issuer: String =
+            sqlx::query_scalar("select tenant_issuer from tenants where tenant_id=$1")
+                .bind(tenant.as_str())
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(to_domain_error)?;
+        if claims.get("iss").and_then(serde_json::Value::as_str) != Some(tenant_issuer.as_str()) {
             return Err(invalid());
         }
         let held = asterius_domain::keys::HeldGrantAuthority::from_fenced_grant(
             grant,
-            &issuer,
+            &tenant_issuer,
             authority.expires_at(),
         );
         cap_authority_expiry(&mut signed_claims, authority.expires_at())?;
@@ -1090,7 +1088,7 @@ impl TaskSigner<'_> {
                 ),
         );
         crate::audit::append(&mut tx, self.audit.prepare(event)).await?;
-        if !held.validates(tenant, grant, &issuer, OffsetDateTime::now_utc())
+        if !held.validates(tenant, grant, &tenant_issuer, OffsetDateTime::now_utc())
             || expiry <= OffsetDateTime::now_utc()
         {
             return Err(invalid());
