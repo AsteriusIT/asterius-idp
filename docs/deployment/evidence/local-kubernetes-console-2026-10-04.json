@@ -1,0 +1,77 @@
+{
+  "task": "ast-1r9t",
+  "source_commit": "b72d9e03",
+  "binary_sha256": "ffb6bb71bb153324a77a8d8bf92cb1a12c3a8e70a993625f4c0caa06b4b44a86",
+  "image": "asterius-idp:local-ast-1r9t-ffb6bb71bb15",
+  "image_id": "sha256:a0e61b3332c746e10695fa2889f92e5f5726f842fca4b832fb0de07772906ec3",
+  "isolated_restore": "pass",
+  "restricted_image_readiness": "pass",
+  "isolated_canonical_discovery": "pass",
+  "isolated_protected_entrypoint_redirects": "pass",
+  "exact_account_credential_totp_equality": true,
+  "successful_migrations": 117,
+  "required_migrations": [
+    172
+  ],
+  "private_backup": "~/.local/share/asterius/backups/ast-1r9t-20261004T142545Z-56bd4f5c",
+  "private_backup_mode": "0700/0600",
+  "status": "pass",
+  "deployment_source": "claude/ast-1r9t worktree",
+  "remote_ci": "not_run_local_worktree_deployment",
+  "live_rollout": "pass",
+  "live_https_readiness": "pass",
+  "live_canonical_discovery": "pass",
+  "live_protected_redirects": "pass",
+  "live_exact_account_password_totp_equality": true,
+  "live_console_embedded_assets": [
+    {
+      "file": "Geist-Variable-DPGgOCY9.woff2",
+      "sha256": "2ffebe993e969069a9789d15164b7715d42491b5835516c5e3b935d5f81b05f1"
+    },
+    {
+      "file": "GeistMono-Variable-Vc9u_qg9.woff2",
+      "sha256": "afaacc4c5fbba89d2ebf7a02dc4070208540874592a5504d57175782fe893101"
+    },
+    {
+      "file": "main-sQD7iaTs.js",
+      "sha256": "91fae79865674950d121c69a4ee1dfc0013969a147d093709714062081ba3245"
+    },
+    {
+      "file": "style-CnDKrAEU.css",
+      "sha256": "c9fb516a45b67356e918ebba9fcbeef6f16e15ce0ed10e7f38ebbd5a08fbf7c1"
+    }
+  ],
+  "private_serve_configuration_unchanged": true,
+  "bridge_active": true,
+  "console_typecheck_and_build": "pass",
+  "menu_routes_with_icons": 28,
+  "frontend_tests_passed": 86,
+  "controlled_chromium_checks_passed": 10,
+  "limits": [
+    "Authenticated existing-account password/TOTP sign-in was not exercised.",
+    "This frontend change was deployed from the local worktree; no remote CI was run and no Rust source changed.",
+    "Authenticated UI behavior was tested with controlled responses; the live check verifies protected redirects and exact assets, not an existing-user TOTP sign-in or remote cluster/controller state."
+  ],
+  "controlled_browser_evidence": {
+    "status": "pass",
+    "fixture": "built console in Chromium with controlled tenant-scoped API responses; no live credentials used",
+    "checks": [
+      "cluster_directory_saved_profile",
+      "partial_catalogue_failure_is_visible",
+      "group_names_authentication_and_owned_approval_status",
+      "group_pagination_returns_to_first_page_without_losing_selection",
+      "authentication_refreshes_after_profile_save",
+      "save_preserves_offpage_group_and_exact_revision",
+      "concurrent_conflict_retains_saved_onboarding",
+      "mobile_no_horizontal_overflow",
+      "read_only_permissions_preserve_groups_and_hide_temporary_data",
+      "create_profile_from_broker_selection_uses_zero_revision"
+    ],
+    "passed": 10
+  },
+  "initial_https_probe": "transient503 immediately after pod replacement; repeat after private bridge reconnected passed",
+  "worktree_source": "claude/ast-1r9t",
+  "not_merged_into_main": true,
+  "rust_source_changes": false,
+  "browser_fixture_sha256": "a7606f3ed2785d15278efb552935c892cdee34d035d71b50cc2dc692c72833d2"
+}

@@ -19,7 +19,28 @@ after the change; logout/reboot itself was not exercised. See
 [the persistence check](evidence/local-tailscale-persistence-2026-10-03.json).
 
 
-## Current verified deployment
+## Current worktree deployment
+
+The 2026-10-04 Kubernetes console update runs directly from the local
+`claude/ast-1r9t` worktree, source `b72d9e03`. It is not merged into main.
+Open **Kubernetes access** under **Applications** for the cluster directory,
+group name picker, authentication status, saved copyable onboarding and owned
+temporary access snapshots. See [the console guide](../kubernetes-console.md).
+
+Image `asterius-idp:local-ast-1r9t-ffb6bb71bb15` uses binary SHA-256
+`ffb6bb71bb153324a77a8d8bf92cb1a12c3a8e70a993625f4c0caa06b4b44a86`.
+Typechecking/build, 86 frontend tests and ten controlled Chromium checks passed.
+No Rust source or migration changed. A fresh protected backup and restricted
+restored-database probe passed before rollout. Live HTTPS readiness, canonical
+discovery, protected account/console redirects and all embedded asset comparisons
+passed. Exact account, password and encrypted TOTP records matched the baseline;
+schema remains at 117 successful migrations. Private Serve state was preserved.
+The existing account's TOTP sign-in and remote cluster/controller health were
+not exercised. No remote CI or git push was performed.
+
+See [the Kubernetes console deployment evidence](evidence/local-kubernetes-console-2026-10-04.json).
+
+## Previous menu icon update
 
 The 2026-10-04 menu update is merged locally as `49b83f4a`. It adds matching
 Lucide icons for temporary privileges, access reviews, governance findings,

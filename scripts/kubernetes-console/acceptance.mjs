@@ -12,9 +12,9 @@ const checks=[];let activePage;
 const g1='11111111-1111-4111-8111-111111111111',g2='22222222-2222-4222-8222-222222222222';
 const profile={cluster_id:'production',namespace:'tools',group_ids:[g2],revision:7,client_id:'broker',audience:'broker',issuer:'https://identity.test/t/team',registration_compatible:true,authentication_configuration:{kind:'AuthenticationConfiguration'},rbac_bindings:[],legacy_flags:['--oidc-client-id=broker']};
 const client={client_id:'broker',client_name:'Production broker',status:'active'};
-async function fixture(scopes=['admin.session:read','admin.clients:read','admin.clients:write','admin.groups:read','admin.app_roles:read']) {
+async function fixture(scopes=['admin.session:read','admin.clients:read','admin.clients:write','admin.groups:read','admin.app_roles:read'],configured=true) {
  const context=await browser.newContext({viewport:{width:1280,height:900}});const page=await context.newPage();activePage=page;
- const errors=[];const writes=[];let conflict=false;let saved={...profile};
+ const errors=[];const writes=[];let conflict=false;let saved=configured?{...profile}:null;
  page.on('pageerror',e=>errors.push(e.message));
  await page.route('https://kubernetes-console.test/**',async route=>{
   const url=new URL(route.request().url()); const path=url.pathname.split('/api/v1/')[1];
@@ -24,11 +24,11 @@ async function fixture(scopes=['admin.session:read','admin.clients:read','admin.
    if(path==='clients')return json({items:url.searchParams.has('cursor')?[{...client,client_id:'second',client_name:'Other broker'}]:[client],next_cursor:url.searchParams.has('cursor')?null:'next'});
    if(path==='clients/broker/kubernetes'&&route.request().method()==='PUT'){
     const body=route.request().postDataJSON();writes.push(body);if(conflict)return json({error:{message:'Profile changed; reload before saving.'}},409);
-    assert.equal(body.revision,saved.revision);saved={...saved,...body,revision:saved.revision+1};return json(saved);
+    assert.equal(body.revision,saved?.revision??0);saved={...profile,...body,revision:(saved?.revision??0)+1};return json(saved);
    }
-   if(path==='clients/broker/kubernetes')return json(saved);
+   if(path==='clients/broker/kubernetes')return saved?json(saved):json({error:{message:'No profile'}},404);
    if(path==='clients/second/kubernetes')return json({error:{message:'Backend unavailable'}},503);
-   if(path==='clients/broker/kubernetes/online')return json({enabled:saved.revision===7,reviewer_client_id:'reviewer',revision:'online-revision'});
+   if(path==='clients/broker/kubernetes/online')return json({enabled:saved?.revision===7,reviewer_client_id:'reviewer',revision:'online-revision'});
    if(path==='groups')return json({items:url.searchParams.has('cursor')?[{id:g2,name:'operators',display_name:'Operators'}]:[{id:g1,name:'developers',display_name:'Developers'}],next_cursor:url.searchParams.has('cursor')?null:'group-next'});
    if(path===`groups/${g2}`)return json({id:g2,name:'operators',display_name:'Operators'});
    if(path==='temporary-entitlements')return json({items:[{entitlement_id:'owned',client_id:'broker',role_name:'cluster-view',enabled:true}]});
@@ -65,6 +65,7 @@ try {
  const readOnly=await fixture(['admin.session:read','admin.clients:read']);await readOnly.page.getByRole('button',{name:'View production'}).click();
  await readOnly.page.getByText('You need group read permission',{exact:false}).waitFor();assert.ok(await readOnly.page.getByRole('button',{name:'Save cluster profile'}).isDisabled());
  await readOnly.page.getByText('Temporary access requires application-role read permission.').waitFor();assert.equal(readOnly.writes.length,0);assert.deepEqual(readOnly.errors,[]);checks.push('read_only_permissions_preserve_groups_and_hide_temporary_data');await readOnly.context.close();
+ const creation=await fixture(undefined,false);await creation.page.getByRole('button',{name:'Add cluster',exact:true}).click();await creation.page.getByLabel('Broker application').click();await creation.page.getByRole('option',{name:'Production broker',exact:true}).click();await creation.page.getByRole('button',{name:'Configure cluster'}).click();await creation.page.getByLabel('Cluster identifier').fill('new-cluster');await creation.page.getByRole('button',{name:'Save cluster profile'}).click();await creation.page.getByText('Saved revision 1.',{exact:false}).waitFor();assert.equal(creation.writes[0].revision,0);assert.equal(creation.writes[0].cluster_id,'new-cluster');assert.deepEqual(creation.writes[0].group_ids,[]);assert.deepEqual(creation.errors,[]);await creation.context.close();checks.push('create_profile_from_broker_selection_uses_zero_revision');
  const evidence={status:'pass',fixture:'built console in Chromium with controlled tenant-scoped API responses; no live credentials used',checks,passed:checks.length};
  await writeFile('/tmp/ast-1r9t-kubernetes-browser.json',JSON.stringify(evidence,null,2)+'\n');process.stdout.write(JSON.stringify(evidence)+'\n');
 }catch(e){if(activePage){await activePage.screenshot({path:'/tmp/ast-1r9t-browser-failure.png',fullPage:true});await writeFile('/tmp/ast-1r9t-browser-failure.txt',await activePage.locator('body').innerText());}throw e;}finally{await browser.close();}
