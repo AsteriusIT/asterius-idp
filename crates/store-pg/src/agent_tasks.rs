@@ -1025,7 +1025,7 @@ impl TaskSigner<'_> {
         let authority =
             crate::PgGrantRepository::lock_issuance_authority_on(&mut tx, tenant, grant).await?;
         let tenant_issuer: String =
-            sqlx::query_scalar("select tenant_issuer from tenants where tenant_id=$1")
+            sqlx::query_scalar("select issuer from tenants where tenant_id=$1")
                 .bind(tenant.as_str())
                 .fetch_one(&mut *tx)
                 .await
