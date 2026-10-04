@@ -6,9 +6,7 @@ use std::str::FromStr as _;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
-#[tokio::test]
-#[ignore = "requires PostgreSQL; CI runs ignored final issuance revision regressions"]
-async fn grant_amend_issuance_fence_refuses_stale_revision_but_preserves_claim_and_narrowing() {
+async fn fixture_pool() -> (sqlx::PgPool, sqlx::PgPool, String) {
     let url = std::env::var("DATABASE_URL").expect("CI PostgreSQL URL");
     let schema = format!("grant_revision_{}", Uuid::new_v4().simple());
     let admin = PgPoolOptions::new()
@@ -29,6 +27,13 @@ async fn grant_amend_issuance_fence_refuses_stale_revision_but_preserves_claim_a
         .await
         .expect("pool");
     MIGRATOR.run(&pool).await.expect("migrations");
+    (admin, pool, schema)
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL; CI runs ignored final issuance revision regressions"]
+async fn grant_amend_issuance_fence_refuses_stale_revision_but_preserves_claim_and_narrowing() {
+    let (admin, pool, schema) = fixture_pool().await;
     let tenant = TenantId::new("revision");
     let issuer = Issuer::parse("https://as.example/revision").expect("issuer");
     sqlx::query("insert into tenants(tenant_id,issuer,display_name,default_resource) values('revision','https://as.example/revision','Revision','https://api.example/')").execute(&pool).await.expect("tenant");
