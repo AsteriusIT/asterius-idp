@@ -473,6 +473,10 @@ impl TaskSigner<'_> {
 
     // Preserve the exact issuance through the non-task client fence so inner
     // policy decorators can evaluate it after every outer lock wait.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep non-task publication/principal/lineage validation, explicit held-context handoff and signature commit in one transaction"
+    )]
     async fn sign_unbound_with(
         &self,
         tenant: &TenantId,
