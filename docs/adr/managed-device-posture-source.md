@@ -195,3 +195,29 @@ provides TLS private-key possession rather than merely parsing a public leaf.
 [ClientAuth usage in RFC5280 §4.2.1.12](https://www.rfc-editor.org/rfc/rfc5280.html#section-4.2.1.12)
 keeps the dedicated device/proxy certificate purpose explicit. Neither RFC
 specifies this repository's enrollment or management protocol.
+
+### Proposed final authority and legacy derivation compatibility
+
+The isolated ast-dd1y.9 candidate replaces modification timestamps with a
+private grant authority UUID. The baseline database changes `updated_at` on
+ordinary claim, and transaction timestamps can repeat across real permission
+amendments; neither is a valid authority revision. Migration0171 preserves the
+UUID across claim/expiry bookkeeping and an exact attested stable-public-session
+lookup rotation, and changes it when durable permissions, authentication,
+principal, actor or parent authority changes. The generation and each child's
+immutable captured parent generation remain private database/issuance context.
+They are never supplied by a workload token, browser header or public JWT claim.
+
+Final signing checks the exact current claimed lineage under canonical tenant,
+client, user and root-to-leaf locks. Every child edge must retain the generation
+observed before derivation. Loading an existing child cannot replace its receipt
+with the current parent generation. Existing derived grants without historical
+receipts fail closed for new issuance and require reauthorization; standalone
+legacy grants acquire their own generation during migration. Already-issued
+stateless credentials keep their existing expiry and resource-server revocation
+contract. This does not claim retrospective offline JWT invalidation.
+
+This compatibility tradeoff is part of the proposed runtime refinements for
+human review before delivery. Candidate schema/compiled CI regressions/controlled
+runtime evidence must be reviewed separately; source preparation is not an
+approval or proof that the final 116-migration binary has passed runtime checks.
