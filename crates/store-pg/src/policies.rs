@@ -108,6 +108,28 @@ impl PgPolicies {
         Ok(PolicyPublicationFence { transaction })
     }
 
+    /// Open facts beneath an outer specialized assertion's retained publication
+    /// lock. This proves only current client publication, never grant authority.
+    ///
+    /// # Errors
+    /// Rejects mismatched retained client context or storage failure.
+    pub async fn facts_under_held_client_publication(
+        &self,
+        tenant: &TenantId,
+        issuer: &asterius_domain::Issuer,
+        client: &str,
+        publication: &asterius_domain::keys::HeldClientPublication,
+    ) -> Result<PolicyPublicationFence, DomainError> {
+        if !publication.validates(tenant, issuer.as_str(), client) {
+            return Err(DomainError::invalid(
+                "client_publication",
+                "held client publication mismatch",
+            ));
+        }
+        let transaction = self.pool.begin().await.map_err(to_domain_error)?;
+        Ok(PolicyPublicationFence { transaction })
+    }
+
     async fn publish(
         &self,
         tenant: &TenantId,

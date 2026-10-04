@@ -588,7 +588,16 @@ impl TaskSigner<'_> {
                 }
                 token
             }
-            None => self.inner.sign(tenant, algorithm, typ, claims).await?,
+            None => {
+                let publication = asterius_domain::keys::HeldClientPublication::from_fenced_client(
+                    tenant.clone(),
+                    issuer,
+                    ClientId::new(client),
+                );
+                self.inner
+                    .sign_client_bound(tenant, &publication, algorithm, typ, claims)
+                    .await?
+            }
         };
         tx.commit().await.map_err(to_domain_error)?;
         Ok(token)
@@ -623,6 +632,19 @@ impl Signer for TaskSigner<'_> {
             return prepared.sign(tenant, algorithm, typ, claims).await;
         }
         self.sign_checked(tenant, algorithm, typ, claims).await
+    }
+
+    async fn sign_client_bound(
+        &self,
+        tenant: &TenantId,
+        publication: &asterius_domain::keys::HeldClientPublication,
+        algorithm: Option<asterius_domain::SigningAlgorithm>,
+        typ: &'static str,
+        claims: &serde_json::Value,
+    ) -> Result<asterius_domain::CompactJws, DomainError> {
+        self.inner
+            .sign_client_bound(tenant, publication, algorithm, typ, claims)
+            .await
     }
 
     async fn sign_identity(
@@ -1107,6 +1129,20 @@ impl Signer for PreparedTaskSigner<'_> {
         .sign_checked(tenant, algorithm, typ, claims)
         .await
     }
+    async fn sign_client_bound(
+        &self,
+        tenant: &TenantId,
+        publication: &asterius_domain::keys::HeldClientPublication,
+        algorithm: Option<asterius_domain::SigningAlgorithm>,
+        typ: &'static str,
+        claims: &serde_json::Value,
+    ) -> Result<asterius_domain::CompactJws, DomainError> {
+        self.inner
+            .as_ref()
+            .sign_client_bound(tenant, publication, algorithm, typ, claims)
+            .await
+    }
+
     async fn sign_identity(
         &self,
         tenant: &TenantId,

@@ -1458,6 +1458,68 @@ impl<'a> ConditionalSigner<'a> {
             admission: None,
         }
     }
+    async fn sign_raw_context(
+        &self,
+        tenant: &asterius_domain::TenantId,
+        publication: Option<&asterius_domain::keys::HeldClientPublication>,
+        algorithm: Option<asterius_domain::SigningAlgorithm>,
+        typ: &'static str,
+        claims: &serde_json::Value,
+    ) -> Result<asterius_domain::CompactJws, DomainError> {
+        let client = if typ == "oauth-id-jag+jwt" {
+            claims.get("act").and_then(|actor| actor.get("client_id"))
+        } else {
+            claims.get("client_id")
+        };
+        let client = client.and_then(serde_json::Value::as_str).ok_or_else(|| {
+            DomainError::invalid("conditional_access", "signing application context absent")
+        })?;
+        let transaction = match publication {
+            Some(publication) => {
+                PgPolicies::new(self.access.store.pool().clone())
+                    .facts_under_held_client_publication(
+                        tenant,
+                        &self.tenant.issuer,
+                        client,
+                        publication,
+                    )
+                    .await?
+            }
+            None => self.fence(tenant).await?,
+        };
+        if claims.get("iss").and_then(serde_json::Value::as_str)
+            != Some(self.tenant.issuer.as_str())
+        {
+            return Err(DomainError::invalid(
+                "client_publication",
+                "issuer mismatch",
+            ));
+        }
+        let policy = PgPolicies::new(self.access.store.pool().clone())
+            .load(tenant)
+            .await?;
+        if policy.as_ref().is_some_and(|policy| {
+            policy.rules.conditional_scopes().iter().any(|scope| {
+                scope.mode == EnforcementMode::Active
+                    && scope
+                        .clients
+                        .contains(&asterius_domain::ClientId::new(client))
+            })
+        }) {
+            return Err(DomainError::invalid(
+                "conditional_access",
+                "scoped issuance requires exact grant context",
+            ));
+        }
+        let signed = self
+            .inner
+            .get()
+            .sign(tenant, algorithm, typ, claims)
+            .await?;
+        transaction.commit().await?;
+        Ok(signed)
+    }
+
     async fn current_roles(
         &self,
         transaction: &mut asterius_store_pg::PolicyPublicationFence,
@@ -1535,44 +1597,36 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
         if !matches!(typ, "at+jwt" | "oauth-id-jag+jwt") {
             return self.inner.get().sign(tenant, algorithm, typ, claims).await;
         }
-        // Resolve keys before holding even a publication lock. Prepared task
-        // decorators retain all their checks when called through this port.
         if let Some(prepared) = self.prepare(tenant, algorithm).await? {
             return prepared.sign(tenant, algorithm, typ, claims).await;
         }
-        let transaction = self.fence(tenant).await?;
-        let client = if typ == "oauth-id-jag+jwt" {
-            claims.get("act").and_then(|actor| actor.get("client_id"))
-        } else {
-            claims.get("client_id")
-        };
-        let client = client.and_then(serde_json::Value::as_str).ok_or_else(|| {
-            DomainError::invalid("conditional_access", "signing application context absent")
-        })?;
-        let policy = PgPolicies::new(self.access.store.pool().clone())
-            .load(tenant)
-            .await?;
-        if policy.as_ref().is_some_and(|policy| {
-            policy.rules.conditional_scopes().iter().any(|scope| {
-                scope.mode == EnforcementMode::Active
-                    && scope
-                        .clients
-                        .contains(&asterius_domain::ClientId::new(client))
-            })
-        }) {
+        self.sign_raw_context(tenant, None, algorithm, typ, claims)
+            .await
+    }
+
+    async fn sign_client_bound(
+        &self,
+        tenant: &asterius_domain::TenantId,
+        publication: &asterius_domain::keys::HeldClientPublication,
+        algorithm: Option<asterius_domain::SigningAlgorithm>,
+        typ: &'static str,
+        claims: &serde_json::Value,
+    ) -> Result<asterius_domain::CompactJws, DomainError> {
+        if !matches!(typ, "at+jwt" | "oauth-id-jag+jwt") {
             return Err(DomainError::invalid(
-                "conditional_access",
-                "scoped issuance requires exact grant context",
+                "client_publication",
+                "specialized access assertion required",
             ));
         }
-        let signed = self
-            .inner
-            .get()
-            .sign(tenant, algorithm, typ, claims)
-            .await?;
-        transaction.commit().await?;
-        Ok(signed)
+        if let Some(prepared) = self.prepare(tenant, algorithm).await? {
+            return prepared
+                .sign_client_bound(tenant, publication, algorithm, typ, claims)
+                .await;
+        }
+        self.sign_raw_context(tenant, Some(publication), algorithm, typ, claims)
+            .await
     }
+
     async fn sign_identity(
         &self,
         tenant: &asterius_domain::TenantId,
