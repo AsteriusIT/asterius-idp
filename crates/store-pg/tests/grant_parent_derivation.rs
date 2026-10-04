@@ -112,7 +112,9 @@ impl Fixture {
         .client(grant.client.clone())
         .subject("local-owner".to_owned())
         .grant(grant.id.clone());
-        asterius_store_pg::PgIdJagRedemption::new(self.pool.clone(), self.tenant.clone())
+        asterius_store_pg::Store::from_pool(self.pool.clone())
+            .scope(self.tenant.clone())
+            .id_jag_redemption()
             .commit_issued(
                 "https://upstream.example",
                 "upstream-owner",
