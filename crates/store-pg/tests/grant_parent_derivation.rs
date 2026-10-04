@@ -411,3 +411,76 @@ async fn grant_parent_derivation_late_id_jag_commit_rechecks_client_and_scoped_p
     );
     f.cleanup().await;
 }
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL; CI runs queued publication writer composition"]
+async fn grant_parent_derivation_role_facts_use_held_connection_behind_queued_writer() {
+    let f = Fixture::new().await;
+    let user = Uuid::new_v4();
+    sqlx::query("insert into users(tenant_id,user_id,username) values('parent',$1,'facts-owner')")
+        .bind(user)
+        .execute(&f.pool)
+        .await
+        .expect("owner");
+    sqlx::query("insert into tenant_roles(tenant_id,name) values('parent','fixture_auditor')")
+        .execute(&f.pool)
+        .await
+        .expect("standing role catalogue");
+    sqlx::query("insert into user_tenant_roles(tenant_id,user_id,name) values('parent',$1,'fixture_auditor')")
+        .bind(user).execute(&f.pool).await.expect("standing assignment");
+    let mut grant = f.parent.clone();
+    grant.user = Some(asterius_domain::UserId::new(user));
+    let mut publication = PgPolicies::new(f.pool.clone())
+        .signing_fence(&f.tenant, &f.issuer)
+        .await
+        .expect("outer publication fence");
+    let mut writer = f.pool.begin().await.expect("independent writer");
+    let writer_pid: i32 = sqlx::query_scalar("select pg_backend_pid()")
+        .fetch_one(&mut *writer)
+        .await
+        .expect("writer backend");
+    let pending = tokio::spawn(async move {
+        sqlx::query("select tenant_id from tenants where tenant_id='parent' for no key update")
+            .execute(&mut *writer)
+            .await
+            .expect("publication writer eventually acquires fence");
+        writer
+            .rollback()
+            .await
+            .expect("release writer without mutation");
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let waiting: bool = sqlx::query_scalar("select exists(select 1 from pg_stat_activity where pid=$1 and wait_event_type='Lock')")
+                .bind(writer_pid).fetch_one(&f.pool).await.expect("observe actual writer wait");
+            if waiting { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }).await.expect("writer is queued behind retained publication, not guessed by sleep");
+    let held = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        asterius_store_pg::PgApplicationRoles::held_by_grant_on(
+            publication.connection(),
+            &f.tenant,
+            &grant,
+        ),
+    )
+    .await
+    .expect("same-connection facts do not queue behind writer waiting on outer fence")
+    .expect("current supplied role facts");
+    assert!(
+        held.tenant
+            .iter()
+            .any(|role| role.as_str() == "fixture_auditor")
+    );
+    assert!(
+        !pending.is_finished(),
+        "writer remains fenced through facts completion"
+    );
+    publication.commit().await.expect("release outer fence");
+    tokio::time::timeout(std::time::Duration::from_secs(5), pending)
+        .await
+        .expect("writer proceeds after release")
+        .expect("writer task");
+    f.cleanup().await;
+}

@@ -726,6 +726,12 @@ impl super::agent_issuance::ConditionalGuard for ConditionalAccess {
             )
             .await?
         };
+        let held_roles = asterius_store_pg::PgApplicationRoles::held_by_grant_on(
+            fence.connection(),
+            &tenant.id,
+            grant,
+        )
+        .await?;
         let permitted = self
             .check_grant_fact(
                 tenant,
@@ -735,7 +741,7 @@ impl super::agent_issuance::ConditionalGuard for ConditionalAccess {
                 OffsetDateTime::now_utc(),
                 GrantFacts {
                     device: Some(&device),
-                    held_roles: None,
+                    held_roles: Some(&held_roles),
                 },
             )
             .await?;
@@ -913,6 +919,17 @@ impl asterius_domain::ports::PolicyEngine for ConditionalPolicyEngine {
                 }
                 (None, _) => Fact::missing(Availability::Absent, "exact_request_device_proof"),
             };
+            let held_roles = match (device_fence.as_mut(), exact) {
+                (Some(fence), Some(grant)) => Some(
+                    asterius_store_pg::PgApplicationRoles::held_by_grant_on(
+                        fence.connection(),
+                        tenant,
+                        grant,
+                    )
+                    .await?,
+                ),
+                _ => None,
+            };
             let authentication = exact
                 .filter(|grant| grant.actor_chain.is_empty() && client.registration.agent.is_none())
                 .and_then(|grant| grant.authentication.as_ref());
@@ -922,7 +939,7 @@ impl asterius_domain::ports::PolicyEngine for ConditionalPolicyEngine {
                 authentication,
                 grant: exact,
                 device: Some(&device),
-                held_roles: None,
+                held_roles: held_roles.as_ref(),
             };
             let resolved = self
                 .access
@@ -1317,6 +1334,12 @@ impl super::authorize::ConditionalAuthorization for ConditionalAccess {
             self.device_anchors.get(tenant.id.as_str()),
         )
         .await?;
+        let held_roles = asterius_store_pg::PgApplicationRoles::held_by_grant_on(
+            fence.connection(),
+            &tenant.id,
+            grant,
+        )
+        .await?;
         let input = Principal {
             user: grant.user,
             subject: grant
@@ -1326,7 +1349,7 @@ impl super::authorize::ConditionalAuthorization for ConditionalAccess {
             authentication: grant.authentication.as_ref(),
             grant: Some(grant),
             device: Some(&device),
-            held_roles: None,
+            held_roles: Some(&held_roles),
         };
         let permitted = self
             .check(
