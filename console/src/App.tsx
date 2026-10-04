@@ -12,6 +12,7 @@ import { AccessReviews } from './access-reviews';
 import { GovernanceFindings } from './governance-findings';
 import { OutboundScim } from './outbound-scim';
 import { Clients } from './clients';
+import { KubernetesAccess } from './kubernetes-access';
 import { AppSidebar } from './components/app-sidebar';
 import { AppTopbar } from './components/app-topbar';
 import { SidebarInset, SidebarProvider } from './components/ui/sidebar';
@@ -195,6 +196,7 @@ function RouteScreen({
   if (route === 'groups') return <Groups session={session} />;
   if (route === 'architecture') return <ArchitectureFlows session={session} fragment={fragment} />;
   if (route === 'scim') return <ScimProvisioning session={session} />;
+  if (route === 'kubernetes') return <KubernetesAccess session={session} />;
   if (route === 'clients') {
     return <Clients session={session} />;
   }
