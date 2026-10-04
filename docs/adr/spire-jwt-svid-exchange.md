@@ -1,6 +1,6 @@
 # SPIRE JWT-SVID subject exchange
 
-- **Status:** Proposed; human normative review required before ast-dd1y.2.6
+- **Status:** Approved by the user on 2026-10-04; implementation and delivery tracked separately
 - **Date:** 2026-10-03
 - **Bead:** ast-dd1y.2.5
 - **Refines:** [external workload trust](external-workload-trust.md)
@@ -185,3 +185,11 @@ is fabricated by this document.
 - [SPIRE credential builder](https://github.com/spiffe/spire/blob/main/pkg/server/credtemplate/builder.go): actual `iat`, optional configured `JWTIssuer`, TTL and optional `jti` behavior; implementation fact, not a SPIFFE normative requirement.
 - [SPIRE JWT signer](https://github.com/spiffe/spire/blob/main/pkg/server/ca/ca.go): actual key ID/type/signature issuance boundary.
 - [RFC 8705 §§2–3](https://www.rfc-editor.org/info/rfc8705/): registered client-certificate authentication and token binding as separate decisions.
+
+## Human review approval — 2026-10-04
+
+The user explicitly stated: "I have reviewed and approve all five contracts."
+Approval covers this prepared contract, including its documented compatibility,
+trust and freshness limits, at SHA-256 `8da739717636174c74ed9d9d38fc442422df7143a9637c96fdacbb6acfd1e700`.
+Implementation, runtime evidence and delivery retain their separate verification
+requirements. This record does not claim CI or deployment completion.
