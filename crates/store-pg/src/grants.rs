@@ -133,7 +133,10 @@ async fn lock_authority_principals_on(
     let active_clients: Vec<String> = sqlx::query_scalar(
         "select client_id from clients where tenant_id=$1 and client_id=any($2) and status='active' order by client_id for share",
     ).bind(tenant.as_str()).bind(&clients).fetch_all(&mut *connection).await.map_err(to_domain_error)?;
-    if active_clients != clients {
+    // PostgreSQL's collation defines the common lock order; Rust string order
+    // need not match it. The unique requested keys and unique tenant/client PK
+    // make cardinality sufficient to establish complete active coverage.
+    if active_clients.len() != clients.len() {
         return Err(authority_invalid());
     }
     let mut users = rows
