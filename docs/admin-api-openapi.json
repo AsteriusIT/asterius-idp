@@ -4420,6 +4420,108 @@
         "x-asterius-scope": "admin.clients:write"
       }
     },
+    "/admin/api/v1/clients/{client_id}/test-token": {
+      "post": {
+        "operationId": "clients.test_token.issue",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "client_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A caller-chosen key, unique per creation. A repeat is refused with 409 rather than executed a second time.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request conflicts with the current state, or its Idempotency-Key has already been used."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.test_tokens:write"
+            ]
+          }
+        ],
+        "summary": "Issues a short-lived OIDC test ID token for a selected active user",
+        "x-asterius-idempotent": true,
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.test_tokens:write"
+      }
+    },
     "/admin/api/v1/declarative/v1/resources": {
       "get": {
         "description": "Requires admin.session:read plus the addressed kind's read scope; mutation additionally requires kind write scope. Tenant create requires deployment reach. Ownership comes only from verified issuer/client credentials. The import ID is unpadded base64url of [tenant,kind,identity], or [tenant,membership,groupUUID,userUUID]. If-Match uses the exact strong 64-hex ETag. POST create retries use durable external_key, not Idempotency-Key. Plan/read/import never return credentials.",

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { ApiError, mutate, read, type Session } from './api';
-import { JsonView } from './components/json-view';
+import { YamlView } from './components/yaml-view';
 import { Button, Field, Message, Panel } from './ui';
 
 interface Profile {
@@ -66,7 +66,7 @@ export function KubernetesProfileSetup({ clientId, session, canWrite }: {
     <Button disabled={busy || !canWrite} onClick={() => { void save(); }}>Save cluster profile</Button>
     {profile !== null && <>
       <p>Review these saved authentication and namespace-scoped read-only RBAC examples before applying. Trust the issuer CA explicitly. Group removal and logout affect new tokens; existing tokens remain usable until expiry.</p>
-      <JsonView value={profile} label="Saved Kubernetes onboarding profile" />
+      <YamlView value={profile} label="Saved Kubernetes onboarding profile" />
     </>}
   </Panel>;
 }

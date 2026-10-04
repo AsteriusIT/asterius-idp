@@ -64,9 +64,9 @@
 //! 1. **Confusion of principals.** A token minted for an agent must never be
 //!    mistaken for a token minted for its owner. FAPI 2.0 SP §6.7 names the
 //!    concrete form: a `client_id` that could pass for a subject identifier.
-//!    [`crate::ClientId::mint`] answers it — the prefix `c.` cannot occur in
-//!    either spelling of a `sub` this server issues — and
-//!    [`crate::ClientId::MINTED_PREFIX`] is where that argument lives.
+//!    [`crate::ClientId::mint`] draws a UUID without client input. The
+//!    authorization layer must still keep client and user principal types
+//!    separate because their public identifiers now share a UUID format.
 //! 2. **Unbounded delegation.** An agent that may mint further delegations is
 //!    an agent whose blast radius is whatever the next hop decides.
 //!    [`AgentLimits::max_delegation_depth`] is the bound, and token exchange

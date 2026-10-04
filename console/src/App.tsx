@@ -12,6 +12,7 @@ import { AccessReviews } from './access-reviews';
 import { GovernanceFindings } from './governance-findings';
 import { OutboundScim } from './outbound-scim';
 import { Clients } from './clients';
+import { TokenConsole } from './token-console';
 import { KubernetesAccess } from './kubernetes-access';
 import { AppSidebar } from './components/app-sidebar';
 import { AppTopbar } from './components/app-topbar';
@@ -200,6 +201,7 @@ function RouteScreen({
   if (route === 'clients') {
     return <Clients session={session} />;
   }
+  if (route === 'token-console') return <TokenConsole session={session} />;
   if (route === 'oidc-providers') return <OidcProviders session={session} />;
   if (route === 'resources') {
     return <ResourceServers session={session} />;

@@ -165,6 +165,10 @@ impl EventType {
     pub const CODE_REPLAYED: Self = Self("code.replayed");
     /// A token was issued.
     pub const TOKEN_ISSUED: Self = Self("token.issued");
+    /// A console administrator requested an ID token for another user.
+    pub const TEST_TOKEN_REQUESTED: Self = Self("test_token.requested");
+    /// A console administrator received that signed test ID token.
+    pub const TEST_TOKEN_ISSUED: Self = Self("test_token.issued");
     /// A wallet received a signed, holder-bound identity VC (`OpenID4VCI`).
     pub const VC_ISSUED: Self = Self("vc.issued");
     /// A token request was refused.
@@ -627,7 +631,7 @@ impl EventType {
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 111] = [
+    pub const ALL: [Self; 113] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -652,6 +656,8 @@ impl EventType {
         Self::CODE_REDEEMED,
         Self::CODE_REPLAYED,
         Self::TOKEN_ISSUED,
+        Self::TEST_TOKEN_REQUESTED,
+        Self::TEST_TOKEN_ISSUED,
         Self::TOKEN_REFUSED,
         Self::TOKEN_EXCHANGED,
         Self::OID4VP_PRESENTED,

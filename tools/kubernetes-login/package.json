@@ -15,6 +15,7 @@
     "check": "node --check src/security.mjs && node --check src/store.mjs && node --check src/upstream.mjs && node --check src/broker.mjs && node --check src/helper.mjs && node --check src/broker-main.mjs && node --check src/credentials.mjs"
   },
   "dependencies": {
-    "jose": "6.2.12"
+    "jose": "6.2.12",
+    "yaml": "^2.9.1"
   }
 }

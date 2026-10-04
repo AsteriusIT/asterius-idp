@@ -37,7 +37,7 @@ async function prepare(page: Page, override?: (path: string, route: Route) => Re
         body: `<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width, initial-scale=1"><title>Console</title><link rel="stylesheet" nonce="${nonce}" href="${manifest['style.css'].file}"></head><body><div id="console"></div><script id="console-entry" nonce="${nonce}" type="module" src="${manifest['src/main.tsx'].file}"></script></body></html>` });
     } else if (url.pathname.includes('/assets/')) {
       const filename = url.pathname.split('/assets/')[1]!;
-      await route.fulfill({ body: readFileSync(`${dist}/assets/${filename}`), contentType: filename.endsWith('.js') ? 'application/javascript' : filename.endsWith('.css') ? 'text/css' : 'font/woff2' });
+      await route.fulfill({ body: readFileSync(`${dist}/assets/${filename}`), contentType: filename.endsWith('.js') ? 'application/javascript' : filename.endsWith('.css') ? 'text/css' : filename.endsWith('.svg') ? 'image/svg+xml' : 'font/woff2' });
     } else await route.fulfill({ status: 404, body: 'Not found' });
   });
   return errors;
@@ -49,6 +49,87 @@ test('resource request expiry removes the privileged shell', async ({ page }) =>
   await expect(page.getByRole('heading', { name: 'Signed out', exact: true })).toBeVisible();
   await expect(page.getByRole('navigation', { name: 'Console sections' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Sign in', exact: true })).toBeVisible();
+});
+
+test('Kubernetes page uses searchable pickers, YAML examples and a separate terminal section', async ({ page }) => {
+  const profile = { cluster_id: 'production', client_id: 'broker', namespace: 'apps', group_ids: ['operators'], revision: 2,
+    issuer: 'https://issuer.example.test', audience: 'https://cluster.example.test', registration_compatible: true,
+    authentication_configuration: { apiVersion: 'apiserver.config.k8s.io/v1beta1', kind: 'AuthenticationConfiguration' },
+    rbac_bindings: [{ apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'RoleBinding', metadata: { name: 'view' } }], legacy_flags: ['--oidc-issuer-url=https://issuer.example.test'] };
+  const errors = await prepare(page, path => {
+    if (path === 'session') return { body: { ...session, scopes: [...session.scopes, 'admin.groups:read'] } };
+    if (path === 'clients') return { body: { items: [{ client_id: 'broker', client_name: 'Cluster broker', status: 'active' }, { client_id: 'another', client_name: 'Unused broker', status: 'active' }], next_cursor: null } };
+    if (path === 'clients/broker/kubernetes') return { body: profile };
+    if (path === 'clients/another/kubernetes') return { status: 404, body: {} };
+    if (path === 'clients/broker/kubernetes/online') return { status: 404, body: {} };
+    if (path === 'groups') return { body: { items: [{ id: 'operators', display_name: 'Operators', name: 'operators' }, { id: 'auditors', display_name: 'Auditors', name: 'auditors' }], next_cursor: null } };
+    if (path === 'groups/operators') return { body: { id: 'operators', display_name: 'Operators', name: 'operators' } };
+    return undefined;
+  });
+  await page.goto(`${entry}#/kubernetes`);
+  await expect(page.getByRole('navigation', { name: 'Console sections' }).getByRole('link', { name: 'Help & guides' })).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'Help and guides' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Architecture builder' })).toBeVisible();
+  expect(await page.locator('a[href="#/kubernetes"] img').evaluate(image => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
+  await expect(page.getByRole('table', { name: 'Cluster profiles' })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Connected clusters' })).toBeVisible();
+  await page.getByRole('button', { name: 'Add cluster' }).click();
+  await page.getByRole('combobox', { name: 'Broker application' }).click();
+  await page.getByRole('combobox', { name: 'Search broker applications' }).fill('unused');
+  await expect(page.getByRole('option', { name: /Unused broker/ })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: /View production/ }).click();
+  await expect(page.getByRole('region', { name: 'Cluster authentication configuration' })).toContainText('apiVersion:');
+  await expect(page.getByRole('region', { name: 'Cluster authentication configuration' })).not.toContainText('"apiVersion"');
+  await expect(page.getByRole('region', { name: 'Terminal login', exact: true })).toBeVisible();
+  await page.getByRole('combobox', { name: /Released managed groups/ }).click();
+  await page.getByRole('combobox', { name: 'Search managed groups' }).fill('Audit');
+  await expect(page.getByRole('option', { name: /Auditors/ })).toBeVisible();
+  await page.getByRole('option', { name: /Auditors/ }).click();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('button', { name: 'Remove Auditors (auditors)' })).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 800 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await expect(page.getByRole('link', { name: 'Help and guides' })).toBeInViewport();
+  expect(errors).toEqual([]);
+});
+
+test('Provisioning client searches inside its select and retains an off-page choice', async ({ page }) => {
+  const errors = await prepare(page, (path, route) => {
+    if (path === 'clients') {
+      const query = new URL(route.request().url()).searchParams.get('q') ?? '';
+      return { body: query.toLowerCase().includes('outside')
+        ? { items: [{ client_id: 'outside', client_name: 'Outside page broker' }], next_cursor: null }
+        : query === ''
+          ? { items: [{ client_id: 'first', client_name: 'First page broker' }], next_cursor: 'more' }
+          : { items: [], next_cursor: null } };
+    }
+    if (path === 'clients/outside') return { body: { client_id: 'outside', client_name: 'Outside page broker', status: 'active',
+      token_endpoint_auth_method: 'private_key_jwt', grant_types: ['client_credentials'], dpop_bound_access_tokens: true,
+      resources: [], scope: 'admin.scim:read admin.scim:write' } };
+    return undefined;
+  });
+  await page.goto(`${entry}#/scim`);
+  const picker = page.getByRole('combobox', { name: 'Application', exact: true });
+  await expect(picker).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Search applications' })).toHaveCount(0);
+  await picker.click();
+  await expect(page.getByText('More results exist. Refine your search.')).toBeVisible();
+  await page.getByRole('combobox', { name: 'Search provisioning applications' }).fill('outside');
+  await expect(page.getByRole('option', { name: /Outside page broker/ })).toBeVisible();
+  if (process.env.E2E_SHOTS) await page.screenshot({ path: `${process.env.E2E_SHOTS}/scim-provisioning-picker.png` });
+  await page.getByRole('option', { name: /Outside page broker/ }).click();
+  await expect(picker).toContainText('Outside page broker (outside)');
+  await expect(page.getByRole('status').filter({ hasText: 'Outside page broker' })).toBeVisible();
+  await picker.click();
+  await page.getByRole('combobox', { name: 'Search provisioning applications' }).fill('nothing');
+  await expect(page.getByText('No applications match. Try a name or client ID.')).toBeVisible();
+  await expect(picker).toContainText('Outside page broker (outside)');
+  await page.getByRole('button', { name: 'Clear selection' }).click();
+  await expect(picker).toContainText('Choose an application');
+  await page.setViewportSize({ width: 390, height: 800 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  expect(errors).toEqual([]);
 });
 
 test('withdrawal requires confirmation and a failed write keeps the dialog open', async ({ page }) => {
@@ -201,6 +282,74 @@ test('application secret survives tab changes and warns before leaving until ack
   expect(errors).toEqual([]);
 });
 
+test('tenant-wide test console selects an application and user, then decodes an issued ID token', async ({ page }) => {
+  const client = { client_id: 'reports', client_name: 'Reports', compliance_profile: 'oidc', status: 'active', application_type: 'web',
+    token_endpoint_auth_method: 'client_secret_basic', redirect_uris: ['https://reports.example.test/callback'], post_logout_redirect_uris: [],
+    grant_types: ['authorization_code'], scope: 'openid', id_token_signed_response_alg: 'EdDSA', subject_type: 'public', resources: [],
+    authorization_details_types: [], roles_in_id_token: false, managed_groups_claim: false };
+  const claims = { iss: `${origin}/t/review`, sub: 'subject', aud: 'reports', asterius_test: true };
+  const jwt = `${Buffer.from('{"typ":"JWT","alg":"EdDSA"}').toString('base64url')}.${Buffer.from(JSON.stringify(claims)).toString('base64url')}.signature`;
+  let issued = 0;
+  const errors = await prepare(page, (path, route) => {
+    if (path === 'session') return { body: { ...session, scopes: [...session.scopes, 'admin.test_tokens:write'] } };
+    if (path === 'clients') return { body: { items: [client], next_cursor: null } };
+    if (path === 'clients/reports') return { body: client };
+    if (path === 'clients/reports/test-token') {
+      issued++;
+      expect(route.request().postDataJSON()).toEqual({ user_id: 'alex' });
+      return { body: { id_token: jwt, expires_in: 60 } };
+    }
+    return undefined;
+  });
+  await page.setViewportSize({ width: 1920, height: 900 });
+  await page.goto(`${entry}#/token-console`);
+  await expect(page.getByRole('heading', { name: 'OIDC test console' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Token test console' })).toHaveAttribute('aria-current', 'page');
+  expect((await page.locator('.token-console-page').boundingBox())!.width).toBeGreaterThan(1480);
+  if (process.env.E2E_SHOTS) await page.screenshot({ path: `${process.env.E2E_SHOTS}/tenant-token-console.png` });
+  await expect(page.getByRole('button', { name: 'Save client' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Issue test ID token' })).toBeDisabled();
+  await page.getByRole('combobox', { name: 'Application' }).click();
+  await page.getByRole('combobox', { name: 'Search applications for test token' }).fill('reports');
+  await page.getByRole('option', { name: /Reports/ }).click();
+  await expect(page.getByRole('button', { name: 'Issue test ID token' })).toBeDisabled();
+  await page.getByRole('combobox', { name: 'User' }).click();
+  await page.getByRole('combobox', { name: 'Search users for test token' }).fill('alex');
+  await page.getByRole('option', { name: /alex@example.test/ }).click();
+  await page.getByRole('button', { name: 'Issue test ID token' }).click();
+  await expect(page.getByRole('region', { name: 'JWT claims' })).toContainText('asterius_test');
+  await page.getByText('Claims as YAML').click();
+  await expect(page.getByRole('region', { name: 'JWT claims YAML' })).toContainText('asterius_test: true');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.goto(`${entry}#/clients?id=reports&tab=test`);
+  await expect(page.getByRole('tab', { name: 'General' })).toBeVisible();
+  await expect(page.getByRole('tab', { name: 'Test console' })).toHaveCount(0);
+  expect(issued).toBe(1);
+  expect(errors).toEqual([]);
+});
+
+test('application connection card keeps its blue gradient and adds borderless copy actions', async ({ page }) => {
+  const client = { client_id: 'reports', client_name: 'Reports', compliance_profile: 'oidc', status: 'active', application_type: 'web',
+    token_endpoint_auth_method: 'client_secret_basic', redirect_uris: ['https://reports.example.test/callback'], post_logout_redirect_uris: [],
+    grant_types: ['authorization_code'], scope: 'openid', id_token_signed_response_alg: 'EdDSA', subject_type: 'public', resources: [],
+    authorization_details_types: [], roles_in_id_token: false, managed_groups_claim: false };
+  await prepare(page, path => path === 'clients/reports' ? { body: client } : undefined);
+  await page.route('**/.well-known/openid-configuration', route => route.fulfill({ contentType: 'application/json', body: JSON.stringify({
+    issuer: `${origin}/t/review`, token_endpoint_auth_methods_supported: ['client_secret_basic'],
+  }) }));
+  await page.goto(`${entry}#/clients?id=reports`);
+  const card = page.locator('.application-connection-card');
+  await expect(card.getByText('Connect to this application')).toBeVisible();
+  expect(await card.evaluate(element => getComputedStyle(element).backgroundImage)).toContain('linear-gradient');
+  for (const label of ['Copy client ID', 'Copy authentication method', 'Copy issuer', 'Copy discovery URL']) {
+    const button = card.getByRole('button', { name: label });
+    await expect(button).toBeVisible();
+    expect(await button.evaluate(element => getComputedStyle(element).borderTopWidth)).toBe('0px');
+  }
+  if (process.env.E2E_SHOTS) await card.screenshot({ path: `${process.env.E2E_SHOTS}/application-connection-card.png` });
+});
+
 test('expiry during a write removes both the editor and its draft prompt', async ({ page }) => {
   let writes = 0;
   await prepare(page, (path, route) => {
@@ -302,7 +451,7 @@ test('an audit event link loads its record independently of the current list', a
 
 test('policy restoration confirms publication and keeps failures in the dialog', async ({ page }) => {
   let writes = 0;
-  const policy = { document: { version: 1, rules: [] }, rule_count: 0, updated_at: '2026-09-29T12:00:00Z' };
+  const policy = { document: { version: 1, rules: [] }, revision: null, rule_count: 0, updated_at: '2026-09-29T12:00:00Z' };
   const errors = await prepare(page, (path, route) => {
     if (path === 'session') return { body: { ...session, scopes: [...session.scopes, 'admin.policies:read', 'admin.policies:write'] } };
     if (path === 'policies/history') return { body: { items: [{ id: 7, policy }] } };
@@ -505,7 +654,7 @@ test('tenant settings open on tabs with direct controls', async ({ page }) => {
   await expect(page.getByRole('tab', { name: 'Capabilities' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Save settings' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Edit settings' })).toHaveCount(0);
-  await expect(page.locator('.app-topbar').getByRole('link', { name: 'Architecture builder' })).toHaveCount(0);
+  await expect(page.locator('.app-topbar').getByRole('link', { name: 'Architecture builder' })).toBeVisible();
 });
 
 test('workspace health is reachable from the top bar and reports scoped milestones', async ({ page }) => {
@@ -719,9 +868,11 @@ test('groups share the directory toolbar and role assignments fit their dialog',
       const button = form.querySelector('button')!.getBoundingClientRect();
       return Math.abs(input.y - button.y);
     })).toBeLessThan(3);
-    const inputBounds = (await search.boundingBox())!;
-    const buttonBounds = (await searchButton.boundingBox())!;
-    expect(buttonBounds.x).toBeGreaterThan(inputBounds.x + inputBounds.width);
+    await expect.poll(() => page.locator('.directory-search').evaluate(form => {
+      const input = form.querySelector('input')!.getBoundingClientRect();
+      const button = form.querySelector('button')!.getBoundingClientRect();
+      return button.x - input.right;
+    })).toBeGreaterThan(0);
   }
   await page.getByRole('button', { name: 'View Operators' }).click();
   await page.getByRole('button', { name: 'Assign role', exact: true }).click();
@@ -784,11 +935,14 @@ test('architecture toolbar does not overlap the palette and details stay within 
   await expect(toggle).toBeVisible();
   for (const width of [390, 768, 1440]) {
     await page.setViewportSize({ width, height: 900 });
-    const palette = (await page.locator('.architecture-palette').boundingBox())!;
-    const view = (await toggle.boundingBox())!;
-    expect(palette.x + palette.width <= view.x || palette.y + palette.height <= view.y).toBe(true);
-    expect(await page.locator('.architecture-sidepane').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await expect.poll(() => page.evaluate(() => {
+      const palette = document.querySelector('.architecture-palette')!.getBoundingClientRect();
+      const view = document.querySelector('.architecture-view-switch button')!.getBoundingClientRect();
+      const pane = document.querySelector('.architecture-sidepane')!;
+      return (palette.right <= view.x || palette.bottom <= view.y)
+        && pane.scrollWidth <= pane.clientWidth
+        && document.documentElement.scrollWidth <= innerWidth;
+    })).toBe(true);
     if (process.env.E2E_SHOTS) await page.screenshot({ path: `${process.env.E2E_SHOTS}/architecture-toolbar-${width}.png` });
   }
   await toggle.click();

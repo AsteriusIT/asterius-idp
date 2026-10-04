@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRemoteJWKSet } from "jose";
+import YAML from "yaml";
 import { CredentialStore } from "./credentials.mjs";
 import {
   boundedJson,
@@ -136,6 +137,9 @@ export function kubeconfig(
     ],
     "current-context": cluster.id,
   };
+}
+export function kubeconfigYaml(cluster, configPath, account) {
+  return YAML.stringify(kubeconfig(cluster, configPath, account), { lineWidth: 0 });
 }
 export class Helper {
   constructor(cluster, store, options = {}) {
@@ -377,13 +381,7 @@ export async function main(args = process.argv.slice(2)) {
   const cluster = loadConfig(values["--config"], values["--cluster"]),
     account = identifier(values["--account"] ?? "default");
   if (action === "kubeconfig") {
-    process.stdout.write(
-      JSON.stringify(
-        kubeconfig(cluster, resolve(values["--config"]), account),
-        null,
-        2,
-      ) + "\n",
-    );
+    process.stdout.write(kubeconfigYaml(cluster, resolve(values["--config"]), account));
     return;
   }
   const helper = new Helper(cluster, new CredentialStore(cluster, account));

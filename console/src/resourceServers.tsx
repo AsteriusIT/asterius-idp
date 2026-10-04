@@ -21,7 +21,7 @@ import {
   parseScopes,
   scopesError,
 } from './resource-server-model';
-import { Button, ConfirmDialog, Field, LoadFailure, Message, Panel, Screen, Skeleton } from './ui';
+import { Button, ConfirmDialog, Field, LoadFailure, Message, Screen, Skeleton } from './ui';
 
 interface ResourceServer {
   readonly identifier: string;
@@ -132,7 +132,7 @@ export function ResourceServers({ session }: Readonly<{ session: Session }>): JS
     {withdrawing !== null && <ConfirmDialog title={`Withdraw ${withdrawing}?`}
       body={<><p>This removes the registration from {session.workspace}. Applications depending on it may no longer obtain the expected access. Already issued tokens retain their existing validity.</p>{error && <Message tone="error">{error}</Message>}</>}
       confirmLabel="Withdraw registration" busy={busy} onCancel={() => { setWithdrawing(null); setError(null); }} onConfirm={() => void withdraw(withdrawing)} />}
-    <Panel title="Registered audiences">
+    <section className="resource-server-list" aria-label="Registered audiences">
       {load.kind === 'loading' && <Skeleton rows={3} label="Reading the resource servers." />}
       {load.kind === 'failed' && <LoadFailure message={load.message} onRetry={refresh} />}
       {load.kind === 'ready' && (load.items.length === 0 ? <p className="muted">No resource servers are registered.</p> :
@@ -140,8 +140,8 @@ export function ResourceServers({ session }: Readonly<{ session: Session }>): JS
           <tbody>{load.items.map(item => <tr key={item.identifier}><td><code>{item.identifier}</code><FlowOrigin session={session} kind="api" resource={item.identifier} /></td><td>{scopeDescription(item.scopes)}</td>
             <td>{item.default_token_lifetime_seconds === null ? 'Tenant default' : `${item.default_token_lifetime_seconds} seconds`}</td>
             <td>{item.introspection_clients.length === 0 ? 'None' : item.introspection_clients.join(', ')}</td>
-            {mayWrite && <td><Button small className="size-8 p-0" disabled={busy} aria-label={`Edit ${item.identifier}`} title="Edit" onClick={() => openEdit(item)}><PencilIcon aria-hidden="true" /></Button> <Button small variant="danger" disabled={busy} onClick={() => setWithdrawing(item.identifier)}>Withdraw</Button></td>}</tr>)}</tbody></table></div>)}
-    </Panel>
+            {mayWrite && <td><div className="resource-server-actions"><Button small className="resource-server-edit" disabled={busy} aria-label={`Edit ${item.identifier}`} title="Edit" onClick={() => openEdit(item)}><PencilIcon aria-hidden="true" /></Button><Button small variant="danger" disabled={busy} onClick={() => setWithdrawing(item.identifier)}>Withdraw</Button></div></td>}</tr>)}</tbody></table></div>)}
+    </section>
     {mayWrite && <Dialog open={editorOpen} onOpenChange={(open) => {
       if (busy) return;
       if (!open) requestClose();
@@ -154,7 +154,7 @@ export function ResourceServers({ session }: Readonly<{ session: Session }>): JS
         {error !== null && <Message tone="error">{error}</Message>}
         <Field label="Audience URL">{props => <input {...props} type="url" value={audience} disabled={editing} onChange={event => setAudience(event.target.value)} placeholder="Absolute audience URL" />}</Field>
         <Field label="Supported scopes" hint="Space-separated. Leave empty to support no scopes.">{props => <input {...props} value={scopes} disabled={unrestricted} onChange={event => setScopes(event.target.value)} placeholder="accounts:read accounts:write" />}</Field>
-        <label><input type="checkbox" checked={unrestricted} onChange={event => setUnrestricted(event.target.checked)} /> Do not restrict granted scopes</label>
+        <label className="resource-server-checkbox"><input type="checkbox" checked={unrestricted} onChange={event => setUnrestricted(event.target.checked)} /><span>Allow any granted scope</span></label>
         <Field label="Default token lifetime" hint="Optional, in seconds (1–86400). The tenant default applies when empty.">{props => <input {...props} type="number" min="1" max="86400" step="1" value={lifetime} onChange={event => setLifetime(event.target.value)} placeholder="300" />}</Field>
         <Field label="Introspection clients" hint="Optional. Enter one client id per line; only these clients may introspect tokens for this audience.">{props => <textarea {...props} rows={3} value={introspectionClients} onChange={event => setIntrospectionClients(event.target.value)} placeholder={'c.gateway\nc.reports'} />}</Field>
         {confirmation}

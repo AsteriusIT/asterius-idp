@@ -553,7 +553,7 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
         </Panel>}
         <Tabs value={tab} onValueChange={setTab}>
           <ApplicationTabs existing={editing.kind === 'existing'} guided={guided} />
-        <div><Editor
+        {!['resources', 'policy', 'configuration', 'kubernetes'].includes(tab) && <Editor
           draft={draft}
           session={session}
           guided={guided}
@@ -571,7 +571,7 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
           onRotateSecret={() => save(draft, editing, 'rotate')}
           onRevokeSecret={() => save(draft, editing, 'revoke')}
           onClose={() => leave(() => setRouteParameters('clients', { id: null, mode: null, tab: null }))}
-        /></div>
+        />}
         {editing.kind === 'existing' && <TabsContent value="resources"><ResourceAllowList
           load={resourceLoad}
           selected={selectedResources}
@@ -581,15 +581,15 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
           onChange={setSelectedResources}
           onSave={() => saveResources(editing.document.client_id)}
         /></TabsContent>}
+        {editing.kind === 'existing' && <TabsContent value="policy"><ClientConditionalAccess session={session} clientID={editing.document.client_id} /></TabsContent>}
         {editing.kind === 'existing' && <TabsContent value="configuration">
-          <ClientConditionalAccess session={session} clientID={editing.document.client_id} />
-          <Panel title="Application configuration JSON">
+          <Panel title="Saved configuration">
             <p>This reflects the last saved registration. Save edits before copying it. Private signing keys, proof keys, and client secrets are never included.</p>
             {discovery !== null ? <JsonView value={clientConfiguration(editing.document, discovery)} label="Saved client configuration" />
               : <p>Discovery must load before a connection configuration can be exported.</p>}
           </Panel>
-          <KubernetesProfileSetup clientId={editing.document.client_id} session={session} canWrite={canWrite} />
         </TabsContent>}
+        {editing.kind === 'existing' && <TabsContent value="kubernetes"><KubernetesProfileSetup clientId={editing.document.client_id} session={session} canWrite={canWrite} /></TabsContent>}
         </Tabs>
       </Screen>
     );
@@ -612,14 +612,14 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
       {notice !== null && <Message tone="success">{notice}</Message>}
       {refusal !== null && <Message tone="error">{refusal}</Message>}
 
-      <Panel className="directory-panel" title="Registered clients">
+      <section className="directory-panel" aria-label="Registered applications">
         <div className="directory-toolbar"><DirectorySearch label="Search clients" value={query} placeholder="Name, client ID or callback" onChange={setQuery} onSubmit={() => {
           if (cursor === null && appliedQuery === query) refresh(query);
           else { setCursor(null); setAppliedQuery(query); }
         }} /><DirectoryStatusFilter value={status} options={[{ value: '', label: 'All statuses' }, { value: 'active', label: 'Active' }, { value: 'disabled', label: 'Disabled' }]} onChange={value => { setCursor(null); setStatus(value); }} /></div>
         <Inventory load={load} onOpen={(id) => setRouteParameters('clients', { id, mode: null, tab: null })} onRetry={() => refresh(appliedQuery)} busy={busy} />
         {(cursor !== null || nextCursor) && <Actions><Button variant="ghost" disabled={cursor === null || load.kind === 'loading'} onClick={() => setCursor(null)}>First page</Button><Button variant="ghost" disabled={!nextCursor || load.kind === 'loading'} onClick={() => setCursor(nextCursor)}>Next page</Button></Actions>}
-      </Panel>
+      </section>
 
       {gate !== null && <Gate gate={gate} />}
     </Screen>
@@ -634,20 +634,22 @@ function clientEditorRoute(parameters: URLSearchParams): { tab: string; guided: 
   const wantedTab = parameters.get('tab') ?? 'settings';
   return {
     guided: parameters.get('mode') === 'new' && parameters.get('guided') === '1',
-    tab: ['settings', 'callbacks', 'credentials', 'grants', 'resources', 'tokens', 'configuration', 'review'].includes(wantedTab) ? wantedTab : 'settings',
+    tab: ['settings', 'callbacks', 'credentials', 'grants', 'resources', 'tokens', 'policy', 'configuration', 'kubernetes', 'review'].includes(wantedTab) ? wantedTab : 'settings',
   };
 }
 
 function ApplicationTabs({ existing, guided }: Readonly<{ existing: boolean; guided: boolean }>): JSX.Element {
-  return <TabsList aria-label="Application sections">
+  return <TabsList className="application-tabs" aria-label="Application sections">
             <TabsTrigger value="settings">General</TabsTrigger>
             <TabsTrigger value="callbacks">Callbacks</TabsTrigger>
             <TabsTrigger value="credentials">Credentials</TabsTrigger>
             <TabsTrigger value="grants">Access &amp; grants</TabsTrigger>
             {existing && <TabsTrigger value="resources">Resources</TabsTrigger>}
+            {existing && <TabsTrigger value="kubernetes">Kubernetes</TabsTrigger>}
             <TabsTrigger value="tokens">Token claims</TabsTrigger>
+            {existing && <TabsTrigger value="policy">Access policy</TabsTrigger>}
+            {existing && <TabsTrigger value="configuration">Export</TabsTrigger>}
             {guided && <TabsTrigger value="review">Review</TabsTrigger>}
-            {existing && <TabsTrigger value="configuration">Configuration JSON</TabsTrigger>}
 
           </TabsList>;
 }
@@ -673,10 +675,10 @@ function ConnectionCard({ document, draft, discovery, discoveryUrl, session, bus
           actions={<Badge tone={document.status === 'active' ? 'ok' : 'bad'}>{document.status}</Badge>}
         >
           <dl className="application-connection-grid">
-            <div><dt>Client ID</dt><dd><code>{document.client_id}</code></dd></div>
-            <div><dt>Authentication</dt><dd><code>{draft.token_endpoint_auth_method}</code></dd></div>
-            <div className="application-connection-wide"><dt>Issuer</dt><dd><code>{discovery.issuer}</code></dd></div>
-            <div className="application-connection-wide"><dt>Discovery document</dt><dd><code>{discoveryUrl}</code></dd></div>
+            <div><dt>Client ID</dt><dd><code>{document.client_id}</code><CopyValue value={document.client_id} label="Copy client ID" iconOnly /></dd></div>
+            <div><dt>Authentication</dt><dd><code>{draft.token_endpoint_auth_method}</code><CopyValue value={draft.token_endpoint_auth_method} label="Copy authentication method" iconOnly /></dd></div>
+            <div className="application-connection-wide"><dt>Issuer</dt><dd><code>{discovery.issuer}</code><CopyValue value={discovery.issuer} label="Copy issuer" iconOnly /></dd></div>
+            <div className="application-connection-wide"><dt>Discovery document</dt><dd><code>{discoveryUrl}</code><CopyValue value={discoveryUrl} label="Copy discovery URL" iconOnly /></dd></div>
           </dl>
           {draft.token_endpoint_auth_method === 'private_key_jwt' && <p className="muted">Use the issuer as the assertion audience, the client ID as <code>iss</code> and <code>sub</code>, and a fresh <code>jti</code> for every request.</p>}
           {!profile.fapiBadge && <Message tone="info">This application is a non-FAPI compatibility exception. Review its authentication and sender constraints before production use.</Message>}
@@ -1035,18 +1037,20 @@ function Editor({
         </fieldset></TabsContent>
 
         <TabsContent value="credentials">
-          {issuedSecret !== null && <OneTimeSecret key={issuedSecret} value={issuedSecret} onStored={onSecretCopied} />}
+          {(issuedSecret !== null || (draft.token_endpoint_auth_method === 'client_secret_basic' && editing.kind === 'existing')) && <section className="credential-secret-panel" aria-label="Client secret">
+            <h3>Client secret</h3>
+            {issuedSecret !== null && <OneTimeSecret key={issuedSecret} value={issuedSecret} onStored={onSecretCopied} />}
+            {draft.token_endpoint_auth_method === 'client_secret_basic' && editing.kind === 'existing' && canWrite && <div className="credential-secret-actions">
+              <p className="muted">Rotate to issue a replacement once, or revoke to stop shared-secret authentication until a new secret is issued.</p>
+              <Actions>
+                <Button type="button" disabled={busy} onClick={onRotateSecret}><RefreshCwIcon aria-hidden="true" />Rotate secret</Button>
+                <Button type="button" variant="danger" disabled={busy} onClick={() => setConfirmingRevoke(true)}>Revoke secret</Button>
+              </Actions>
+            </div>}
+          </section>}
           <fieldset disabled={busy || !canWrite}>
           <legend id="client-keys-subjects">Keys and subjects</legend>
           <ClientSecurity draft={draft} discovery={discovery} refusal={refusal} busy={busy || !canWrite} onChange={onChange} />
-          {draft.token_endpoint_auth_method === 'client_secret_basic' && editing.kind === 'existing' && canWrite && <div className="credential-secret-actions">
-            <h3>Client secret</h3>
-            <p className="muted">Rotate to issue a replacement once, or revoke to stop shared-secret authentication until a new secret is issued.</p>
-            <Actions>
-              <Button type="button" disabled={busy} onClick={onRotateSecret}><RefreshCwIcon aria-hidden="true" />Rotate secret</Button>
-              <Button type="button" variant="danger" disabled={busy} onClick={() => setConfirmingRevoke(true)}>Revoke secret</Button>
-            </Actions>
-          </div>}
           {draft.token_endpoint_auth_method !== 'none' && editing.kind === 'existing' && editing.document.jwks !== undefined && (
             <JsonView value={editing.document.jwks} label="Registered inline JWK Set JSON" />
           )}
@@ -1137,7 +1141,7 @@ function Editor({
           <fieldset>
             <legend>Allowed authorization response modes</legend>
             <p className="muted">No selection means the server permits every supported mode. Select modes to restrict this client.</p>
-            {responseModeRows(draft.response_modes).map((mode) => <label key={mode} className="grant-option">
+            <div className="response-mode-options">{responseModeRows(draft.response_modes).map((mode) => <label key={mode} className={draft.response_modes?.includes(mode) ? 'response-mode selected' : 'response-mode'}>
               <input
                 type="checkbox"
                 name="response_modes"
@@ -1149,8 +1153,8 @@ function Editor({
                     : (draft.response_modes ?? []).filter((item) => item !== mode);
                   onChange({ ...draft, response_modes: next.length === 0 ? null : next });
                 }}
-              />{' '}{mode}{!RESPONSE_MODES.includes(mode as typeof RESPONSE_MODES[number]) && ' (unrecognized; preserved)'}
-            </label>)}
+              /><span>{mode === 'form_post' ? 'Form post' : mode === 'query' ? 'Query' : mode}{!RESPONSE_MODES.includes(mode as typeof RESPONSE_MODES[number]) && ' (unrecognized; preserved)'}</span>
+            </label>)}</div>
           </fieldset>
           <p>
             <label>

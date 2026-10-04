@@ -1,11 +1,12 @@
 import {useCallback, useEffect, useRef, useState, type JSX} from 'react';
-import {NetworkIcon, PlusIcon} from 'lucide-react';
+import {CheckIcon, ChevronsUpDownIcon, PlusIcon, RefreshCwIcon, TerminalIcon} from 'lucide-react';
 import {ApiError, mutate, read, type Session} from './api';
 import type {ClientRow} from './clients';
 import type {GroupRow} from './groups-model';
-import {FormSelect} from './components/ui/select';
+import {Popover, PopoverContent, PopoverTrigger} from './components/ui/popover';
+import {Command, CommandEmpty, CommandInput, CommandItem, CommandList} from './components/ui/command';
 import {CopyValue} from './components/copy-value';
-import {JsonView} from './components/json-view';
+import {YamlView} from './components/yaml-view';
 import {useUnsavedChanges} from './navigation-guard';
 import {hrefOf} from './routes';
 import {Actions, Badge, Button, DataTable, EmptyState, Field, LoadFailure, Message, Panel, Screen, Skeleton} from './ui';
@@ -40,8 +41,9 @@ export function KubernetesAccess({session}: {session:Session}):JSX.Element {
   const configured=rows.filter(row=>row.profile!==null);
   const candidates=rows.filter(row=>row.profile===null && !row.error);
   return <Screen title="Kubernetes access" description="Connect a cluster, choose the groups it trusts and review how people receive access."
-    actions={<Actions><Button disabled={busy} onClick={()=>void load()}>Refresh</Button>{session.scopes.includes('admin.clients:write')&&<Button onClick={()=>setCreating(!creating)}><PlusIcon aria-hidden="true"/>Add cluster</Button>}</Actions>}>
-    <Panel title="Connected clusters" description="Saved authentication profiles in this workspace. Kubernetes RBAC determines what each identity can do.">
+    actions={<Actions><Button disabled={busy} variant="ghost" onClick={()=>void load()}><RefreshCwIcon aria-hidden="true"/>Refresh</Button>{session.scopes.includes('admin.clients:write')&&<Button variant="primary" onClick={()=>setCreating(!creating)}><PlusIcon aria-hidden="true"/>Add cluster</Button>}</Actions>}>
+    <section className="kubernetes-clusters" aria-label="Connected clusters">
+      <p className="muted">Saved authentication profiles in this workspace. Kubernetes RBAC determines what each identity can do.</p>
       {busy&&rows.length===0&&<Skeleton rows={3} label="Reading cluster applications."/>}
       {error&&<LoadFailure message={error} onRetry={()=>void load(cursor)}/>}
       <DataTable caption="Cluster profiles" rows={configured} rowKey={row=>row.client.client_id}
@@ -54,14 +56,61 @@ export function KubernetesAccess({session}: {session:Session}):JSX.Element {
           {key:'open',header:'Configuration',actions:true,cell:row=><Button small onClick={()=>setSelected(row)}>View <span className="visually-hidden">{row.profile?.cluster_id}</span></Button>},
         ]}/>
       {rows.some(row=>row.error)&&<Message tone="error">Some application profiles could not be read. Refresh before treating this list as complete.<ul>{rows.filter(row=>row.error).map(row=><li key={row.client.client_id}>{row.client.client_name||row.client.client_id}: {row.error}</li>)}</ul></Message>}
-      {cursor&&<Button disabled={busy} onClick={()=>void load(cursor)}>Load more applications</Button>}
-    </Panel>
+      {cursor&&<div className="kubernetes-table-footer"><Button disabled={busy} variant="secondary" onClick={()=>void load(cursor)}>Load more applications</Button></div>}
+    </section>
     {creating&&<Panel title="Add a cluster profile" description="First register one confidential broker application per cluster, with OIDC compatibility, private_key_jwt, DPoP and ES256 public-subject ID tokens.">
-      <Field label="Broker application">{props=><FormSelect {...props} value={candidate} onValueChange={setCandidate} options={[{value:'',label:'Choose an application'},...candidates.map(row=>({value:row.client.client_id,label:row.client.client_name||row.client.client_id}))]}/>}</Field>
-      <Actions><Button disabled={!candidate} onClick={()=>{const row=candidates.find(row=>row.client.client_id===candidate);if(row)setSelected(row);}}>Configure cluster</Button><a href={hrefOf('clients')} className="identity-link">Manage applications</a></Actions>
+      <div className="field"><label id="broker-application-label">Broker application</label><BrokerApplicationPicker value={candidate} onChange={setCandidate} candidates={candidates}/></div>
+      <Actions><a href={hrefOf('clients')} className="identity-link">Manage applications</a><Button variant="primary" disabled={!candidates.some(row=>row.client.client_id===candidate)} onClick={()=>{const row=candidates.find(row=>row.client.client_id===candidate);if(row)setSelected(row);}}>Configure cluster</Button></Actions>
       <p className="muted">Only loaded applications without a saved profile are listed. Load more above if your broker is missing.</p>
     </Panel>}
   </Screen>;
+}
+
+function BrokerApplicationPicker({value,onChange,candidates}:{value:string;onChange:(value:string)=>void;candidates:Cluster[]}):JSX.Element {
+  const [open,setOpen]=useState(false);
+  const selected=candidates.find(row=>row.client.client_id===value);
+  return <Popover open={open} onOpenChange={setOpen}>
+    <PopoverTrigger asChild><Button variant="secondary" role="combobox" aria-labelledby="broker-application-label" aria-expanded={open} className="kubernetes-picker-trigger">
+      <span>{selected?.client.client_name||selected?.client.client_id||'Choose an application'}</span><ChevronsUpDownIcon aria-hidden="true"/>
+    </Button></PopoverTrigger>
+    <PopoverContent align="start" className="kubernetes-picker-popover"><Command>
+      <CommandInput placeholder="Search loaded applications…" aria-label="Search broker applications"/>
+      <CommandList><CommandEmpty>No loaded application matches. Load more applications from the cluster list.</CommandEmpty>
+        {candidates.map(row=><CommandItem key={row.client.client_id} value={`${row.client.client_name} ${row.client.client_id}`} onSelect={()=>{onChange(row.client.client_id);setOpen(false);}}>
+          <span className="kubernetes-picker-option"><strong>{row.client.client_name||row.client.client_id}</strong><small>{row.client.client_id}</small></span>
+          {value===row.client.client_id&&<CheckIcon className="ml-auto size-4" aria-hidden="true"/>}
+        </CommandItem>)}
+      </CommandList>
+    </Command></PopoverContent>
+  </Popover>;
+}
+
+function ManagedGroupPicker({groups,selected,term,onTerm,onSelect,disabled,loading,error,onRetry,hasPrevious,hasNext,onFirst,onNext}:{
+  groups:GroupRow[];selected:string[];term:string;onTerm:(value:string)=>void;onSelect:(value:string[])=>void;
+  disabled:boolean;loading:boolean;error:string|null;onRetry:()=>void;hasPrevious:boolean;hasNext:boolean;onFirst:()=>void;onNext:()=>void;
+}):JSX.Element {
+  const [open,setOpen]=useState(false);
+  return <Popover open={open} onOpenChange={setOpen}>
+    <PopoverTrigger asChild><Button variant="secondary" role="combobox" aria-labelledby="released-groups-label" aria-expanded={open} disabled={disabled} className="kubernetes-picker-trigger">
+      <span>{selected.length===0?'Choose managed groups':`${selected.length} selected group${selected.length===1?'':'s'}`}</span><ChevronsUpDownIcon aria-hidden="true"/>
+    </Button></PopoverTrigger>
+    <PopoverContent align="start" className="kubernetes-picker-popover"><Command shouldFilter={false}>
+      <CommandInput value={term} onValueChange={onTerm} placeholder="Search managed groups…" aria-label="Search managed groups"/>
+      <CommandList>
+        {loading&&<p className="kubernetes-picker-note" role="status">Searching groups…</p>}
+        {error&&<div className="kubernetes-picker-note"><p>{error}</p><Button small onClick={onRetry}>Retry</Button></div>}
+        {!loading&&!error&&groups.length===0&&<p className="kubernetes-picker-note">No matching groups on this page.</p>}
+        {!error&&groups.map(group=>{
+          const checked=selected.includes(group.id);
+          return <CommandItem key={group.id} value={group.id} disabled={loading||(!checked&&selected.length>=100)} onSelect={()=>onSelect(checked?selected.filter(id=>id!==group.id):[...selected,group.id])}>
+            <span className="kubernetes-picker-check" aria-hidden="true">{checked&&<CheckIcon className="size-4"/>}</span>
+            <span className="kubernetes-picker-option"><strong>{group.display_name}</strong><small>{group.name}</small></span>
+          </CommandItem>;
+        })}
+      </CommandList>
+      {(hasPrevious||hasNext)&&<div className="kubernetes-picker-footer">{hasPrevious&&<Button small variant="ghost" disabled={loading} onClick={onFirst}>First page</Button>}{hasNext&&<Button small variant="ghost" disabled={loading} onClick={onNext}>Next page</Button>}</div>}
+    </Command></PopoverContent>
+  </Popover>;
 }
 
 function ClusterDetail({session,cluster,onBack}:{session:Session;cluster:Cluster;onBack:()=>void}):JSX.Element {
@@ -103,15 +152,12 @@ function ClusterDetail({session,cluster,onBack}:{session:Session;cluster:Cluster
       <Field label="Example RBAC namespace">{props=><input {...props} value={namespace} disabled={!writable||busy} onChange={e=>setNamespace(e.target.value)}/>}</Field>
       {!groupsReadable?<Message tone="info">You need group read permission to change released groups. The saved selection will be preserved.</Message>:<>
         {selected.length>0&&<><h3>Selected groups</h3><ul>{selected.map(id=><li key={id} className="flex items-center justify-between gap-3 py-1"><span>{knownGroups[id]??'Reading group name…'}</span><Button small variant="ghost" disabled={!writable||busy} onClick={()=>setSelected(previous=>previous.filter(value=>value!==id))}>Remove <span className="visually-hidden">{knownGroups[id]??'selected group'}</span></Button></li>)}</ul></>}
-        <Field label="Find managed groups">{props=><input {...props} type="search" value={term} onChange={e=>setTerm(e.target.value)}/>}</Field>
-        {groupError&&<LoadFailure message={groupError} onRetry={()=>void loadGroups()}/>}{groupBusy&&<Skeleton rows={2} label="Reading managed groups."/>}
-        <fieldset disabled={!writable||busy||groupBusy}><legend>Released managed groups ({selected.length}/100)</legend>
-          {groups.map(group=><label key={group.id} className="flex items-center gap-3 py-2"><input type="checkbox" checked={selected.includes(group.id)} disabled={!selected.includes(group.id)&&selected.length>=100} onChange={e=>setSelected(previous=>e.target.checked?[...previous,group.id]:previous.filter(id=>id!==group.id))}/><span>{group.display_name}<span className="muted"> ({group.name})</span></span></label>)}
-          {!groupBusy&&groups.length===0&&<p>No matching groups.</p>}
-        </fieldset><Actions>{groupPage&&<Button disabled={groupBusy} onClick={()=>void loadGroups()}>First group page</Button>}{groupCursor&&<Button disabled={groupBusy} onClick={()=>void loadGroups(groupCursor)}>Next group page</Button>}</Actions>
+        <div className="field"><label id="released-groups-label">Released managed groups ({selected.length}/100)</label>
+          <ManagedGroupPicker groups={groups} selected={selected} term={term} onTerm={setTerm} onSelect={setSelected} disabled={!writable||busy} loading={groupBusy} error={groupError} onRetry={()=>void loadGroups()} hasPrevious={groupPage} hasNext={groupCursor!==null} onFirst={()=>void loadGroups()} onNext={()=>void loadGroups(groupCursor)}/>
+        </div>
         <p className="muted">Selections from other pages and searches are preserved.</p>
       </>}
-      <Actions><Button disabled={!writable||busy||!dirty||!name.trim()||!namespace.trim()} onClick={()=>void save()}>{busy?'Saving…':'Save cluster profile'}</Button><Button disabled={busy||!dirty} variant="ghost" onClick={()=>{setName(saved?.cluster_id??'');setNamespace(saved?.namespace??'default');setSelected(saved?.group_ids??[]);}}>Discard changes</Button></Actions>
+      <Actions><Button disabled={busy||!dirty} variant="ghost" onClick={()=>{setName(saved?.cluster_id??'');setNamespace(saved?.namespace??'default');setSelected(saved?.group_ids??[]);}}>Discard changes</Button><Button variant="primary" disabled={!writable||busy||!dirty||!name.trim()||!namespace.trim()} onClick={()=>void save()}>{busy?'Saving…':'Save cluster profile'}</Button></Actions>
     </Panel>
     {saved&&<>
       <Onboarding profile={saved} username={session.username}/>
@@ -121,16 +167,26 @@ function ClusterDetail({session,cluster,onBack}:{session:Session;cluster:Cluster
 }
 
 function Onboarding({profile,username}:{profile:ClusterProfile;username:string}):JSX.Element {
-  return <Panel title="Connect and sign in" description={`Saved revision ${profile.revision}. Review these examples before applying; unsaved edits are excluded.`}>
-    <p><NetworkIcon className="inline size-4" aria-hidden="true"/> Issuer: <span className="break-all">{profile.issuer}</span> <CopyValue value={profile.issuer} label="Copy issuer" iconOnly/> Audience: <span className="break-all">{profile.audience}</span> <CopyValue value={profile.audience} label="Copy audience" iconOnly/></p>
-    <h3>Cluster authentication</h3><p>Use structured authentication or legacy OIDC flags. Configure trust in the issuer CA explicitly.</p>
-    <JsonView label="Cluster authentication configuration" value={profile.authentication_configuration}/>
+  return <>
+    <Panel title="Cluster authentication" description={`Saved revision ${profile.revision}. Review these examples before applying; unsaved edits are excluded.`}>
+    <div className="kubernetes-facts"><div><span>Issuer</span><code>{profile.issuer}</code><CopyValue value={profile.issuer} label="Copy issuer" iconOnly/></div><div><span>Audience</span><code>{profile.audience}</code><CopyValue value={profile.audience} label="Copy audience" iconOnly/></div></div>
+    <p>Use structured authentication or legacy OIDC flags. Configure trust in the issuer CA explicitly.</p>
+    <YamlView label="Cluster authentication configuration" value={profile.authentication_configuration}/>
     <CopyValue value={profile.legacy_flags.map(shellQuote).join(' ')} label="Copy legacy API-server flags"/>
     <h3>Namespace access example</h3><p>These bindings grant read-only view access to the saved groups. Kubernetes RBAC remains the authority for cluster permissions.</p>
-    <JsonView label="Namespace RBAC examples" value={profile.rbac_bindings}/>
-    <h3>Terminal login</h3><p>Install the helper and configure /etc/asterius/kube-helper.json with your deployed broker, cluster API server and trusted CA pins first. The account argument selects a local credential-store partition.</p>
-    <pre className="overflow-auto whitespace-pre-wrap">{loginCommand(profile.cluster_id,username)}</pre><CopyValue value={loginCommand(profile.cluster_id,username)} label="Copy terminal commands"/>
-  </Panel>;
+    <YamlView label="Namespace RBAC examples" value={profile.rbac_bindings} documents/>
+    </Panel>
+    <TerminalLogin cluster={profile.cluster_id} username={username}/>
+  </>;
+}
+
+function TerminalLogin({cluster,username}:{cluster:string;username:string}):JSX.Element {
+  const commands=loginCommand(cluster,username);
+  return <section className="kubernetes-terminal" aria-labelledby="kubernetes-terminal-heading">
+    <div className="kubernetes-terminal-heading"><span className="kubernetes-terminal-icon"><TerminalIcon aria-hidden="true"/></span><div><h3 id="kubernetes-terminal-heading">Terminal login</h3><p>Generate a kubeconfig, then verify access with kubectl.</p></div></div>
+    <p>Install the helper and configure <code>/etc/asterius/kube-helper.json</code> with your broker, cluster API server and trusted CA pins. The account argument selects a local credential store.</p>
+    <div className="kubernetes-terminal-code"><pre tabIndex={0} role="region" aria-label="Terminal login commands"><code>{commands}</code></pre><CopyValue value={commands} label="Copy terminal commands"/></div>
+  </section>;
 }
 
 interface Entitlement {entitlement_id:string;client_id:string;role_name:string;enabled:boolean}
@@ -163,7 +219,7 @@ function TemporaryAccess({session,client,onMode}:{session:Session;client:string;
       <DataTable caption={`Requests for ${item.entitlement.role_name}`} rows={item.requests} rowKey={r=>r.request_id} empty={<p>No requests.</p>} columns={[
         {key:'status',header:'Approval',cell:r=>r.status},{key:'deadline',header:'Deadline',cell:r=>new Date(r.deadline*1000).toLocaleString()},
       ]}/>
-      {item.authentication!=null&&<><p>Use this temporary identity configuration when this binding is enabled. The ordinary signed-token example above does not include temporary identities.</p><JsonView label="Temporary identity authentication" value={item.authentication}/></>}
+      {item.authentication!=null&&<><p>Use this temporary identity configuration when this binding is enabled. The ordinary signed-token example above does not include temporary identities.</p><YamlView label="Temporary identity authentication" value={item.authentication}/></>}
     </section>)}
     {readable&&<Button disabled={busy} variant="ghost" onClick={()=>setRetry(value=>value+1)}>Refresh temporary access</Button>}
     <a href={hrefOf('temporary-privileges')} className="identity-link">Manage approvals and temporary privileges</a>

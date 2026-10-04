@@ -344,10 +344,8 @@ pub fn extend_chain(
     let mut current = Map::new();
     // The actor is a client of this tenant, so `client_id` is the identity
     // claim that names it. §4.1's examples use `sub`; a `sub` here would be a
-    // second spelling of a principal — and a `client_id` cannot be mistaken
-    // for a subject identifier of this server (FAPI 2.0 SP §6.7, and
-    // `ClientId::MINTED_PREFIX`), which is exactly the confusion an `act`
-    // claim must not create.
+    // second spelling of a principal. The key name keeps the client principal
+    // explicit even though minted client IDs and public subjects are both UUIDs.
     current.insert("client_id".to_owned(), Value::String(actor.to_owned()));
     chain.push(Value::Object(current));
     chain.extend_from_slice(previous);

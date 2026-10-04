@@ -2,6 +2,8 @@ import { useState, type JSX } from 'react';
 import {
   ArrowUpRightIcon,
   HeartPulseIcon,
+  BookOpenIcon,
+  NetworkIcon,
   ShieldCheckIcon,
   CopyIcon,
   ChevronDownIcon,
@@ -16,6 +18,7 @@ import { TenantSwitcher } from '@/components/tenant-switcher';
 import { Button } from '@/components/ui/button';
 import { SidebarTrigger } from '@/components/ui/sidebar';
 import { hrefOf } from '@/routes';
+import { reaches, DESTINATIONS } from '@/navigation';
 import { sessionRoleLabel } from '@/session-label';
 
 export function AppTopbar({
@@ -45,6 +48,8 @@ export function AppTopbar({
       </div>
 
       <div className="topbar-actions">
+        {reaches(session, DESTINATIONS.find(item => item.route === 'architecture')!) && <Button asChild variant="ghost" size="icon" title="Architecture builder" aria-label="Architecture builder"><a href={hrefOf('architecture')}><NetworkIcon aria-hidden="true" /></a></Button>}
+        <Button asChild variant="ghost" size="icon" title="Help and guides" aria-label="Help and guides"><a href={hrefOf('help')}><BookOpenIcon aria-hidden="true" /></a></Button>
         <Button asChild variant="ghost" size="icon" title="Workspace health" aria-label="Workspace health"><a href={hrefOf('health')}><HeartPulseIcon aria-hidden="true" /></a></Button>
         <AccountMenu session={session} onSignOut={onSignOut} />
       </div>

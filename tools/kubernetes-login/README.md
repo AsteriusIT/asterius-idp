@@ -87,13 +87,13 @@ private key, token or client-authentication credential.
 ```sh
 node tools/kubernetes-login/src/helper.mjs kubeconfig \
   --config /etc/asterius/kube-helper.json --cluster cluster-a --account alice \
-  > /path/to/reviewed-kubeconfig.json
-kubectl --kubeconfig /path/to/reviewed-kubeconfig.json get pods
+  > /path/to/reviewed-kubeconfig.yaml
+kubectl --kubeconfig /path/to/reviewed-kubeconfig.yaml get pods
 node tools/kubernetes-login/src/helper.mjs logout \
   --config /etc/asterius/kube-helper.json --cluster cluster-a --account alice
 ```
 
-The generated JSON is valid kubeconfig YAML and invokes the executable helper
+The generated YAML invokes the executable helper
 by absolute path, with `provideClusterInfo=true`, v1 ExecCredential and
 `interactiveMode=IfAvailable`. It contains only public pins and invocation
 arguments. The helper verifies API server/CA pins on every exec invocation.

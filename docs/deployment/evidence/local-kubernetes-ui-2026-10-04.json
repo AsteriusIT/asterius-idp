@@ -1,0 +1,28 @@
+{
+  "task": "ast-45rx",
+  "source_branch": "claude/ast-45rx",
+  "base_commit": "1c076f76",
+  "source_state": "uncommitted worktree",
+  "binary_sha256": "286bf790698c6f1ae770b48e8ec42dbc361108b0672a895ecba36fa24c165cc0",
+  "image": "asterius-idp:local-ast-45rx-286bf790698c",
+  "image_id": "sha256:f5c9aed133d82bca4910c138690248178eaecd0f26b4cabe167b539499e6e9fe",
+  "private_backup": "~/.local/share/asterius/backups/ast-45rx-20261004T194507Z-1f8321e3",
+  "isolated_restore": "pass",
+  "isolated_readiness": "pass",
+  "isolated_canonical_discovery_and_protected_redirects": "pass",
+  "exact_account_credential_totp_equality": true,
+  "successful_migrations": 117,
+  "required_migrations": [163, 165, 172],
+  "live_rollout": "ready 1/1",
+  "live_https_readiness": "200",
+  "live_console_assets": "five embedded assets returned 200 with exact SHA-256 equality against console/dist, including the Kubernetes SVG",
+  "frontend_tests": "86 passed",
+  "controlled_chromium_test": "Kubernetes and SCIM provisioning search pickers, off-page selection, YAML, terminal section, navigation and mobile width passed (2 focused checks)",
+  "terminal_helper_tests": "18 passed; installed local helper generates a kubectl-readable YAML kubeconfig",
+  "rust_verify": "fmt and clippy passed; targeted nextest compilation stopped because the worktree filesystem ran out of space",
+  "limits": [
+    "No Rust source changed. Targeted nextest did not run because compilation exhausted local disk space.",
+    "Authenticated live UI and real-user TOTP sign-in were not exercised; browser interactions used controlled API responses.",
+    "No remote CI, PR, commit, push or Dolt sync was performed."
+  ]
+}
