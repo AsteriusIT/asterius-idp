@@ -67,6 +67,8 @@ impl Fixture {
             self.parent.client.clone(),
             OffsetDateTime::now_utc(),
         );
+        child.user = self.parent.user;
+        child.subject.clone_from(&self.parent.subject);
         child.parent = Some(self.parent.id.clone());
         child.parent_derivation = receipt.then(|| ParentDerivation::from_grant(&self.parent));
         child.scopes = ["openid".to_owned()].into();
@@ -220,7 +222,21 @@ async fn grant_parent_derivation_same_transaction_clock_changes_generation_and_l
 #[tokio::test]
 #[ignore = "requires PostgreSQL; CI runs exact ancestor principal closure"]
 async fn grant_parent_derivation_source_client_disable_blocks_different_sector_child() {
-    let f = Fixture::new().await;
+    let mut f = Fixture::new().await;
+    let user = Uuid::new_v4();
+    sqlx::query("insert into users(tenant_id,user_id,username) values('parent',$1,'sector-owner')")
+        .bind(user)
+        .execute(&f.pool)
+        .await
+        .expect("exact common owner");
+    sqlx::query("update grants set user_id=$1,subject='source-sector-subject' where tenant_id='parent' and grant_id=$2")
+        .bind(user).bind(Uuid::parse_str(f.parent.id.as_str()).expect("UUID"))
+        .execute(&f.pool).await.expect("human source grant");
+    f.parent = PgGrantRepository::new(f.pool.clone(), f.tenant.clone())
+        .find(&f.parent.id)
+        .await
+        .expect("load current human source")
+        .expect("source");
     sqlx::query("insert into clients(tenant_id,client_id,client_name,token_endpoint_auth_method,jwks) values('parent','recipient','Recipient','private_key_jwt','{\"keys\":[]}'::jsonb)").execute(&f.pool).await.expect("recipient client");
     let mut child = f.child(true);
     child.client = ClientId::new("recipient");
