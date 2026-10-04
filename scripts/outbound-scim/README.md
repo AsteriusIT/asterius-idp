@@ -72,3 +72,11 @@ prevented completion. It is separate from a successful full-matrix receipt:
 passed earlier controls do not prove later retirement/recreation controls or a
 subsequently rebuilt authentication fence. `retirement-sql-evidence.json` records
 only the isolated exact SQL controls, not HTTP lifecycle completion.
+
+`runtime-acceptance-2026-10-04.json` records the successful owned116-migration
+run: 29 actual HTTP/browser controls on the exact frozen binary, including
+User/Group committed-response loss, reviewed retirement and same-email fresh
+incarnation recreation. Both private databases and all owned runtime containers
+were removed. This validates the candidate implementation; normative approval
+and main delivery remain pending. The broader matrix keeps its independent
+SQL/unit/CI evidence requirements.

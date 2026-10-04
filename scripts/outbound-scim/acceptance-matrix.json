@@ -1,6 +1,6 @@
 {
   "ticket": "ast-dd1y.6.3",
-  "status": "prepared_not_executed",
+  "status": "owned_runtime29_controls_executed_broader_case_list_preserved",
   "profile": "asterius-fapi-dpop-scim-v2",
   "activation_gate": "Human acceptance of ast-dd1y.6.2; no runtime enabled by this manifest",
   "real_fixture": {
@@ -120,5 +120,6 @@
       "id": "selected_user_group_refresh",
       "invariant": "User selection/unselection queues affected selected Groups atomically in the same connector transaction"
     }
-  ]
+  ],
+  "executed_runtime_receipt": "runtime-acceptance-2026-10-04.json"
 }
