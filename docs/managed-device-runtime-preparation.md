@@ -53,6 +53,14 @@ without obtaining the same tenant, client, user or root locks on a second
 connection; otherwise a queued writer can cause the signer to wait on itself.
 Identity issuance owns its full direct publication/lineage fence. Task access
 forwards its complete issuance context rather than falling back to raw signing.
+The three early boundaries that explicitly retain publication locks—bound token
+guard, device-aware PDP and bound consent—also resolve roles on their existing
+connection and pass the protected snapshot into policy evaluation. Unbound early
+evaluation retains its standalone read behavior. An ignored CI regression queues
+a real tenant writer (observed through PostgreSQL lock state), resolves standing
+and temporary role facts on the outer connection within a bounded timeout, and
+checks that the writer proceeds only after release. This is prepared CI evidence;
+it has not been executed as an ignored test locally.
 Specialized raw ID-JAG redemption forwards a separate retained tenant/client
 publication value through prepared decorators. It cannot establish claimed-grant
 or device authority; active conditional scopes that need exact grant context still
