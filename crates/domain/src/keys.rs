@@ -322,9 +322,67 @@ impl fmt::Display for CompactJws {
     }
 }
 
+/// Private evidence that a production adapter retains the exact publication,
+/// principal and grant-lineage locks through downstream signing.
+/// Never serialize this value or accept it from an HTTP/token claim.
+#[derive(Debug)]
+pub struct HeldGrantAuthority {
+    tenant: TenantId,
+    grant: crate::GrantId,
+    issuer: String,
+    revision: uuid::Uuid,
+    expires_at: Option<time::OffsetDateTime>,
+}
+impl HeldGrantAuthority {
+    /// Construct only after strict validation on a transaction retained through
+    /// signature and commit. Callers own the lifetime of all corresponding locks.
+    #[must_use]
+    pub fn from_fenced_grant(
+        grant: &crate::Grant,
+        issuer: &str,
+        expires_at: Option<time::OffsetDateTime>,
+    ) -> Self {
+        Self {
+            tenant: grant.tenant.clone(),
+            grant: grant.id.clone(),
+            issuer: issuer.to_owned(),
+            revision: grant.authority_revision,
+            expires_at,
+        }
+    }
+    /// Match exact issuance without selecting another current grant.
+    #[must_use]
+    pub fn validates(
+        &self,
+        tenant: &TenantId,
+        grant: &crate::Grant,
+        issuer: &str,
+        now: time::OffsetDateTime,
+    ) -> bool {
+        self.tenant == *tenant
+            && grant.tenant == *tenant
+            && self.grant == grant.id
+            && self.issuer == issuer
+            && self.revision == grant.authority_revision
+            && self.expires_at.is_none_or(|expiry| expiry > now)
+    }
+    /// Exact server issuer tied to the retained publication fence.
+    #[must_use]
+    pub fn issuer(&self) -> &str {
+        &self.issuer
+    }
+    /// The original minimum lineage deadline, never extended by awaited work.
+    #[must_use]
+    pub const fn expires_at(&self) -> Option<time::OffsetDateTime> {
+        self.expires_at
+    }
+}
+
 /// Access-token authorization context supplied by a validated grant handler.
 #[derive(Debug, Clone, Copy)]
 pub struct AccessIssuance<'a> {
+    /// Populated only by the outer transaction-owning production signer.
+    pub held_authority: Option<&'a HeldGrantAuthority>,
     /// Exact proof carried by this issuance boundary; never inherited from a session.
     pub device_binding: Option<&'a crate::managed_devices::DeviceBinding>,
     pub grant: &'a crate::Grant,
@@ -1097,5 +1155,36 @@ mod tests {
     #[test]
     fn a_rotation_that_does_not_ask_gets_the_propagation_period() {
         assert_eq!(Activation::default(), Activation::OnSchedule);
+    }
+}
+
+#[cfg(test)]
+mod held_authority_tests {
+    use super::HeldGrantAuthority;
+    use crate::{ClientId, Grant, TenantId};
+    use time::{Duration, OffsetDateTime};
+
+    #[test]
+    fn held_authority_refuses_same_id_new_permission_generation_or_other_issuer() {
+        let now = OffsetDateTime::UNIX_EPOCH;
+        let tenant = TenantId::new("one");
+        let grant = Grant::new(tenant.clone(), ClientId::new("client"), now);
+        let held = HeldGrantAuthority::from_fenced_grant(
+            &grant,
+            "https://as.example/one",
+            Some(now + Duration::seconds(60)),
+        );
+        assert!(held.validates(&tenant, &grant, "https://as.example/one", now));
+        let mut amended = grant.clone();
+        amended.scopes.insert("new.permission".to_owned());
+        amended.authority_revision = uuid::Uuid::new_v4();
+        assert!(!held.validates(&tenant, &amended, "https://as.example/one", now));
+        assert!(!held.validates(&tenant, &grant, "https://as.example/other", now));
+        assert!(!held.validates(
+            &tenant,
+            &grant,
+            "https://as.example/one",
+            now + Duration::seconds(60)
+        ));
     }
 }

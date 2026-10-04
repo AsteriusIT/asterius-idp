@@ -36,8 +36,9 @@ struct DeviceRow {
 }
 
 #[derive(Clone, Copy)]
-enum ResolutionPhase {
+enum ResolutionPhase<'a> {
     Final,
+    FinalHeld(&'a asterius_domain::keys::HeldGrantAuthority),
     ExchangePreflight,
     AuthorizationPreflight,
 }
@@ -170,6 +171,33 @@ impl PgManagedDevices {
         .await
     }
 
+    /// Resolve facts beneath an outer retained publication/principal/lineage
+    /// fence, without taking the same locks on a second connection.
+    ///
+    /// # Errors
+    /// Returns storage errors; mismatched held authority produces invalid facts.
+    pub async fn resolve_under_held_authority_on(
+        connection: &mut PgConnection,
+        tenant: &TenantId,
+        grant: &Grant,
+        binding: Option<&DeviceBinding>,
+        current_anchor: Option<&LeafFingerprint>,
+        authority: &asterius_domain::keys::HeldGrantAuthority,
+    ) -> Result<Fact, DomainError> {
+        if !authority.validates(tenant, grant, authority.issuer(), OffsetDateTime::now_utc()) {
+            return Ok(missing(Availability::Invalid));
+        }
+        Self::resolve_on(
+            connection,
+            tenant,
+            grant,
+            binding,
+            current_anchor,
+            ResolutionPhase::FinalHeld(authority),
+        )
+        .await
+    }
+
     /// Early exchange evaluation only: exact verified parent authority plus a
     /// provisional child. This is never the final issued-authority resolver.
     pub async fn resolve_preflight_on(
@@ -222,7 +250,7 @@ impl PgManagedDevices {
         grant: &Grant,
         binding: Option<&DeviceBinding>,
         current_anchor: Option<&LeafFingerprint>,
-        phase: ResolutionPhase,
+        phase: ResolutionPhase<'_>,
     ) -> Result<Fact, DomainError> {
         let Some(binding) = binding else {
             return Ok(missing(Availability::Absent));
@@ -260,6 +288,11 @@ impl PgManagedDevices {
                 crate::PgGrantRepository::lock_authorization_preflight_on(connection, tenant, grant)
                     .await
             }
+            ResolutionPhase::FinalHeld(held) => {
+                // The publication adapter already checked issuer and exact tuple.
+                // This phase never manufactures new authority or takes root locks.
+                Ok(Some(crate::grants::GrantAuthorityFence::from_held(held)))
+            }
             ResolutionPhase::Final => {
                 crate::PgGrantRepository::lock_issuance_authority_on(connection, tenant, grant)
                     .await
@@ -272,20 +305,25 @@ impl PgManagedDevices {
             Err(error) => return Err(error),
         };
         let authority_expiry = authority.and_then(|fence| fence.expires_at());
-        if !source_current_on(connection, tenant, binding).await? {
+        let held = matches!(phase, ResolutionPhase::FinalHeld(_));
+        if !source_current_on(connection, tenant, binding, !held).await? {
             return Ok(missing(Availability::Invalid));
         }
-        let account: Option<bool> = sqlx::query_scalar(
-            "select status='active' from users where tenant_id=$1 and user_id=$2 for share",
-        )
+        let account: Option<bool> = sqlx::query_scalar(if held {
+            "select status='active' from users where tenant_id=$1 and user_id=$2"
+        } else {
+            "select status='active' from users where tenant_id=$1 and user_id=$2 for share"
+        })
         .bind(tenant.as_str())
         .bind(binding.user().as_uuid())
         .fetch_optional(&mut *connection)
         .await
         .map_err(to_domain_error)?;
-        let application: Option<bool> = sqlx::query_scalar(
-            "select status='active' from clients where tenant_id=$1 and client_id=$2 for share",
-        )
+        let application: Option<bool> = sqlx::query_scalar(if held {
+            "select status='active' from clients where tenant_id=$1 and client_id=$2"
+        } else {
+            "select status='active' from clients where tenant_id=$1 and client_id=$2 for share"
+        })
         .bind(tenant.as_str())
         .bind(binding.client().as_str())
         .fetch_optional(&mut *connection)
@@ -322,6 +360,7 @@ async fn source_current_on(
     connection: &mut PgConnection,
     tenant: &TenantId,
     binding: &DeviceBinding,
+    lock_principals: bool,
 ) -> Result<bool, DomainError> {
     let relay: Option<String> = sqlx::query_scalar(
         "select client_id from managed_device_sources where tenant_id=$1 and source_id=$2",
@@ -334,13 +373,21 @@ async fn source_current_on(
     let Some(relay) = relay else {
         return Ok(false);
     };
-    let active: Option<bool> = sqlx::query_scalar(
-        "select status='active' and not is_agent and client_type='confidential' \
+    let query = "select status='active' and not is_agent and client_type='confidential' \
          and grant_types=ARRAY['client_credentials']::text[] and dpop_bound_access_tokens \
          and token_endpoint_auth_method in ('private_key_jwt','tls_client_auth','self_signed_tls_client_auth') \
-         from clients where tenant_id=$1 and client_id=$2 for share"
-    ).bind(tenant.as_str()).bind(&relay).fetch_optional(&mut *connection)
-        .await.map_err(to_domain_error)?;
+         from clients where tenant_id=$1 and client_id=$2";
+    let locked_query = format!("{query} for share");
+    let active: Option<bool> = sqlx::query_scalar(if lock_principals {
+        &locked_query
+    } else {
+        query
+    })
+    .bind(tenant.as_str())
+    .bind(&relay)
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(to_domain_error)?;
     if active != Some(true) {
         return Ok(false);
     }

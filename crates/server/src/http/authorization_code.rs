@@ -475,6 +475,7 @@ impl AuthorizationCode<'_> {
             .sign_access(
                 &tenant.id,
                 asterius_domain::keys::AccessIssuance {
+                    held_authority: None,
                     device_binding: binding.device_binding.as_ref(),
                     grant: &grant,
                     implicit_resources: &issuance::implicit_resources(

@@ -491,17 +491,31 @@ impl TaskSigner<'_> {
         }
         .ok_or_else(invalid)?;
         let mut tx = self.tasks.pool.begin().await.map_err(to_domain_error)?;
-        sqlx::query(
-            "select tenant_id from tenants where tenant_id=$1 and status='active' for share",
+        let issuer: String = sqlx::query_scalar(
+            "select issuer from tenants where tenant_id=$1 and status='active' for share",
         )
         .bind(tenant.as_str())
         .fetch_optional(&mut *tx)
         .await
         .map_err(to_domain_error)?
         .ok_or_else(invalid)?;
-
-        sqlx::query("select client_id from clients where tenant_id=$1 and client_id=$2 and status='active' for share")
-            .bind(tenant.as_str()).bind(client).fetch_optional(&mut *tx).await.map_err(to_domain_error)?.ok_or_else(invalid)?;
+        if claims.get("iss").and_then(serde_json::Value::as_str) != Some(issuer.as_str()) {
+            return Err(invalid());
+        }
+        let authority = if let Some(issuance) = issuance {
+            Some(
+                crate::PgGrantRepository::lock_issuance_authority_on(
+                    &mut tx,
+                    tenant,
+                    issuance.grant,
+                )
+                .await?,
+            )
+        } else {
+            sqlx::query("select client_id from clients where tenant_id=$1 and client_id=$2 and status='active' for share")
+                .bind(tenant.as_str()).bind(client).fetch_optional(&mut *tx).await.map_err(to_domain_error)?.ok_or_else(invalid)?;
+            None
+        };
         let required: bool = sqlx::query_scalar(
             "select exists(select 1 from agent_task_clients where tenant_id=$1 and client_id=$2)",
         )
@@ -534,33 +548,45 @@ impl TaskSigner<'_> {
             if issuance.grant.task.is_some() {
                 return Err(invalid());
             }
-            let lookup = issuance.grant.parent.as_ref().unwrap_or(&issuance.grant.id);
-            let lookup = Uuid::parse_str(lookup.as_str()).map_err(|_| invalid())?;
-            // First approval backfills historical descendants under the root
-            // UPDATE lock. KEY SHARE serializes even an ordinary recipient's
-            // previously unbound issuance with that approval; client locks
-            // precede the root consistently with the task path.
-            let root: Option<Uuid> = sqlx::query_scalar("with recursive lineage as (select grant_id,parent_grant_id,1 as depth from grants where tenant_id=$1 and grant_id=$2 union all select g.grant_id,g.parent_grant_id,l.depth+1 from grants g join lineage l on g.grant_id=l.parent_grant_id where g.tenant_id=$1 and l.depth<10) select grant_id from lineage where parent_grant_id is null")
-                .bind(tenant.as_str()).bind(lookup).fetch_optional(&mut *tx).await.map_err(to_domain_error)?;
-            if let Some(root) = root {
-                sqlx::query("select grant_id from grants where tenant_id=$1 and grant_id=$2 and revoked_at is null and (expires_at is null or expires_at>clock_timestamp()) for key share")
-                    .bind(tenant.as_str()).bind(root).fetch_optional(&mut *tx).await.map_err(to_domain_error)?.ok_or_else(invalid)?;
-                let bound: bool = sqlx::query_scalar("select exists(select 1 from agent_task_grants where tenant_id=$1 and grant_id=$2)")
-                    .bind(tenant.as_str()).bind(lookup).fetch_one(&mut *tx).await.map_err(to_domain_error)?;
-                if bound {
-                    return Err(invalid());
-                }
-            } else if issuance.grant.parent.is_some() {
-                // Missing/cyclic/deeper-than-supported ancestry cannot fall
-                // back to a standalone client credential.
+            let bound: bool = sqlx::query_scalar(
+                "select exists(select 1 from agent_task_grants where tenant_id=$1 and grant_id=$2)",
+            )
+            .bind(tenant.as_str())
+            .bind(grant_uuid(issuance.grant)?)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(to_domain_error)?;
+            if bound {
                 return Err(invalid());
             }
         }
         let token = match issuance {
             Some(issuance) => {
-                self.inner
-                    .sign_access(tenant, issuance, algorithm, typ, claims)
-                    .await?
+                let authority = authority.ok_or_else(invalid)?;
+                let held = asterius_domain::keys::HeldGrantAuthority::from_fenced_grant(
+                    issuance.grant,
+                    &issuer,
+                    authority.expires_at(),
+                );
+                let mut bounded_claims = claims.clone();
+                cap_authority_expiry(&mut bounded_claims, authority.expires_at())?;
+                let token = self
+                    .inner
+                    .sign_access(
+                        tenant,
+                        asterius_domain::keys::AccessIssuance {
+                            held_authority: Some(&held),
+                            ..issuance
+                        },
+                        algorithm,
+                        typ,
+                        &bounded_claims,
+                    )
+                    .await?;
+                if !held.validates(tenant, issuance.grant, &issuer, OffsetDateTime::now_utc()) {
+                    return Err(invalid());
+                }
+                token
             }
             None => self.inner.sign(tenant, algorithm, typ, claims).await?,
         };
@@ -962,9 +988,32 @@ impl TaskSigner<'_> {
         .map_err(to_domain_error)?;
         let authority =
             crate::PgGrantRepository::lock_issuance_authority_on(&mut tx, tenant, grant).await?;
+        let issuer: String = sqlx::query_scalar("select issuer from tenants where tenant_id=$1")
+            .bind(tenant.as_str())
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(to_domain_error)?;
+        if claims.get("iss").and_then(serde_json::Value::as_str) != Some(issuer.as_str()) {
+            return Err(invalid());
+        }
+        let held = asterius_domain::keys::HeldGrantAuthority::from_fenced_grant(
+            grant,
+            &issuer,
+            authority.expires_at(),
+        );
+        cap_authority_expiry(&mut signed_claims, authority.expires_at())?;
         let token = self
             .inner
-            .sign(tenant, algorithm, typ, &signed_claims)
+            .sign_access(
+                tenant,
+                asterius_domain::keys::AccessIssuance {
+                    held_authority: Some(&held),
+                    ..issuance
+                },
+                algorithm,
+                typ,
+                &signed_claims,
+            )
             .await?;
         // Fresh current time immediately before commit; signing latency never
         // turns an expired run into an issued credential.
@@ -1002,9 +1051,31 @@ impl TaskSigner<'_> {
                 ),
         );
         crate::audit::append(&mut tx, self.audit.prepare(event)).await?;
+        if !held.validates(tenant, grant, &issuer, OffsetDateTime::now_utc())
+            || expiry <= OffsetDateTime::now_utc()
+        {
+            return Err(invalid());
+        }
         tx.commit().await.map_err(to_domain_error)?;
         Ok(token)
     }
+}
+
+fn cap_authority_expiry(
+    claims: &mut serde_json::Value,
+    deadline: Option<OffsetDateTime>,
+) -> Result<(), DomainError> {
+    let expiry = claims
+        .get("exp")
+        .and_then(serde_json::Value::as_i64)
+        .ok_or_else(invalid)?;
+    if let Some(deadline) = deadline {
+        if deadline <= OffsetDateTime::now_utc() {
+            return Err(invalid());
+        }
+        claims["exp"] = serde_json::json!(expiry.min(deadline.unix_timestamp()));
+    }
+    Ok(())
 }
 
 struct PreparedTaskSigner<'a> {
