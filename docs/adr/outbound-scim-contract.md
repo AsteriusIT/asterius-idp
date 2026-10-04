@@ -285,7 +285,9 @@ The first Asterius target advertises the exact `OutboundIncarnations:2.0`
 ServiceProviderConfig extension, verified during the authenticated preview.
 Target-side identity retention applies only to the closed
 `urn:asterius:outbound:<source-tenant>:<connector-uuid>:<user|group>:<source-uuid>:<generation-uuid>`
-namespace. Deleting a User/Group ownership row, changing that externalId, or
+namespace. The source tenant segment must satisfy the same closed lexical rule
+as `TenantId`: `[a-z0-9][a-z0-9_-]{0,63}`; malformed namespace-like values retain
+ordinary SCIM lifecycle behavior. Deleting a User/Group ownership row, changing that externalId, or
 marking its User deletion identity creates an atomic tenant/client/kind/externalId
 tombstone. Concurrent and late collection POSTs cannot reuse that incarnation;
 ordinary SCIM externalIds retain their existing delete/recreate semantics. An
