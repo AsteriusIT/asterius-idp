@@ -1,0 +1,51 @@
+{
+  "issue": "ast-s2k9",
+  "source_commits": [
+    "e581f641",
+    "bc74cedf"
+  ],
+  "date": "2026-10-04",
+  "status": "source checkpoint and owned SQL controls; integrated Rust verification owned by orchestrator",
+  "scope": "Client lifecycle mutations take tenant publication writer before client rows or application advisory locks and retain it through the same transaction commit.",
+  "owned_postgresql": {
+    "version": "16.15",
+    "migrations": 116,
+    "image_sha256": "81bd698b4594e751a3269e4dcd3e03a4a0ec0daf7b72e7aa1abd43cce9887542",
+    "isolation": "Separate disposable tmpfs PostgreSQL container; no shared database or instance mutation.",
+    "controls": [
+      {
+        "name": "writer waits before client row",
+        "result": "pass",
+        "method": "Connection A holds tenant FOR SHARE. Connection B obtains the same tenant FOR NO KEY UPDATE before updating a client with an enabled Kubernetes online profile. pg_stat_activity confirms B waits on a lock."
+      },
+      {
+        "name": "publication client read remains available",
+        "result": "pass",
+        "method": "While B waits, A reads the client FOR SHARE under a one-second statement timeout and sees active."
+      },
+      {
+        "name": "writer commits and preserves lifecycle invalidation",
+        "result": "pass",
+        "method": "After A commits, B commits disabled client status and the actual online-profile AFTER trigger sets enabled=false."
+      }
+    ],
+    "cleanup": "All control rows removed, then owned container and private metadata removed."
+  },
+  "ci_regression": {
+    "path": "crates/store-pg/tests/client_lifecycle_fence.rs",
+    "name": "client_lifecycle_writer_waits_before_client_row_and_preserves_invalidation",
+    "registered_ignored_selector": true,
+    "executed_locally": false,
+    "coverage": "Actual PgClientRepository.upsert and PgPolicies.signing_fence with a real enabled online profile; client read must not block while writer waits at tenant admission."
+  },
+  "local_checks": [
+    "rustfmt changed Rust sources",
+    "git diff --check"
+  ],
+  "limitations": [
+    "The SQL control executes the production lock SQL and actual database triggers, not compiled repository methods or cryptographic issuance.",
+    "No worker Cargo, nextest, ignored integration tests or full suite were executed; composed verification belongs to the orchestrator.",
+    "This bug fix does not approve or activate proposed outbound SCIM, device or Kubernetes online protocols."
+  ],
+  "metadata": "No SQLx query macro text or bind changes."
+}
