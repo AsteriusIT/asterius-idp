@@ -208,7 +208,6 @@ impl Fixture {
             status: ClientStatus::Active,
             created_at: self.now,
             updated_at: self.now,
-            authority_revision: uuid::Uuid::new_v4(),
         };
         client.registration.resources.insert(RESOURCE.to_owned());
         self.store
@@ -245,7 +244,6 @@ impl Fixture {
             status: ClientStatus::Active,
             created_at: self.now,
             updated_at: self.now,
-            authority_revision: uuid::Uuid::new_v4(),
         };
         client.registration.resources.insert(RESOURCE.to_owned());
         self.store
@@ -373,7 +371,6 @@ impl Fixture {
             claims: asterius_domain::entities::user::ClaimSet::default(),
             created_at: self.now,
             updated_at: self.now,
-            authority_revision: uuid::Uuid::new_v4(),
         })
         .await
         .expect("store the user");
