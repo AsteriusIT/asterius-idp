@@ -1,6 +1,6 @@
 # Managed device posture uses an authenticated relay and enrolled TLS credentials
 
-- **Status:** Initial architecture recorded; runtime trust refinements Proposed, normative human review required by ast-dd1y.4.5
+- **Status:** Approved by the user on 2026-10-04; implementation and delivery tracked separately
 - **Date:** 2026-10-03
 - **Bead:** ast-dd1y.4.4
 - **Refines:** [Trusted conditional access](trusted-conditional-access-context.md)
@@ -221,3 +221,11 @@ This compatibility tradeoff is part of the proposed runtime refinements for
 human review before delivery. Candidate schema/compiled CI regressions/controlled
 runtime evidence must be reviewed separately; source preparation is not an
 approval or proof that the final 116-migration binary has passed runtime checks.
+
+## Human review approval — 2026-10-04
+
+The user explicitly stated: "I have reviewed and approve all five contracts."
+Approval covers this prepared contract, including its documented compatibility,
+trust and freshness limits, at SHA-256 `99f90f64696f75de98ba92a29fd82db11a5f9f2b1144fd983de7cfcd51c2d01c`.
+Implementation, runtime evidence and delivery retain their separate verification
+requirements. This record does not claim CI or deployment completion.

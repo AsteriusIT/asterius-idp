@@ -1,6 +1,6 @@
 # ADR: Bounded outbound SCIM ownership and reconciliation
 
-- Status: Proposed for review
+- **Status:** Approved by the user on 2026-10-04; implementation and delivery tracked separately
 - Date: 2026-10-03
 - Bead: ast-dd1y.6.2
 - Implementation: ast-dd1y.6.3
@@ -327,3 +327,11 @@ DELETE receipt can be explicitly archived without another target request. Explic
 recreation verifies absence or fences an already inactive/empty old target,
 retains its history, and atomically queues a fresh locally owned incarnation.
 All these refinements remain Proposed; they add no approval or delivery claim.
+
+## Human review approval — 2026-10-04
+
+The user explicitly stated: "I have reviewed and approve all five contracts."
+Approval covers this prepared contract, including its documented compatibility,
+trust and freshness limits, at SHA-256 `1abfe8ef8b43c29d899edafefe429b897d1bd1c7fdc2c2dc3342306069c37563`.
+Implementation, runtime evidence and delivery retain their separate verification
+requirements. This record does not claim CI or deployment completion.

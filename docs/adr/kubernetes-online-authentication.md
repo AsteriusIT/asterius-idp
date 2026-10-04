@@ -1,6 +1,6 @@
 # Kubernetes online authentication uses a bounded TokenReview adapter
 
-- **Status:** Proposed; normative human review required by ast-dd1y.1.5
+- **Status:** Approved by the user on 2026-10-04; implementation and delivery tracked separately
 - **Date:** 2026-10-03
 - **Bead:** ast-dd1y.1.5
 - **Refines:** [Kubernetes human access](kubernetes-human-access.md)
@@ -176,3 +176,11 @@ measure held-token denial with the disabled inner webhook cache and the global t
 mutation coverage, targeted Rust verification, operator documentation, OpenAPI
 and threat-model updates accompany implementation. This proposed document alone
 does not satisfy runtime acceptance or close the ticket.
+
+## Human review approval — 2026-10-04
+
+The user explicitly stated: "I have reviewed and approve all five contracts."
+Approval covers this prepared contract, including its documented compatibility,
+trust and freshness limits, at SHA-256 `0f8ab0ff24ca6798018110642d7d1f1616260e5d4ca16fbcc681f086eb8bb1a8`.
+Implementation, runtime evidence and delivery retain their separate verification
+requirements. This record does not claim CI or deployment completion.

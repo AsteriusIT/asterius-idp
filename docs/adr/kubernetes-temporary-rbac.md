@@ -1,6 +1,6 @@
 # Native Kubernetes RBAC for approved temporary privilege
 
-Status: proposed normative extension; isolated interoperability verified, human review pending.
+- **Status:** Approved by the user on 2026-10-04; implementation and delivery tracked separately
 Refs: ast-dd1y.5.3; approved baseline login ast-dd1y.1.1; temporary lifecycle ast-dd1y.5.1.
 
 A temporary RoleBinding must never use the ordinary Kubernetes username. Otherwise
@@ -149,3 +149,11 @@ loss, standing-role overlap denial, exact resource/scope and foreign tuple denia
 CAS-generation replacement, preserved baseline bindings, and actual controller
 ServiceAccount negatives for create, Role edits, different roleRef, other binding,
 other namespace and verbs beyond the fixed Role. No existing deployment is modified.
+
+## Human review approval — 2026-10-04
+
+The user explicitly stated: "I have reviewed and approve all five contracts."
+Approval covers this prepared contract, including its documented compatibility,
+trust and freshness limits, at SHA-256 `4ccfffba0d8e3a7f6f61c0b6def43f20232a61719fa264631537ae5cce03c6c7`.
+Implementation, runtime evidence and delivery retain their separate verification
+requirements. This record does not claim CI or deployment completion.
