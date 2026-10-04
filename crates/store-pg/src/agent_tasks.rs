@@ -473,10 +473,6 @@ impl TaskSigner<'_> {
 
     // Preserve the exact issuance through the non-task client fence so inner
     // policy decorators can evaluate it after every outer lock wait.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "Keep non-task publication/principal/lineage validation, explicit held-context handoff and signature commit in one transaction"
-    )]
     async fn sign_unbound_with(
         &self,
         tenant: &TenantId,
@@ -572,25 +568,8 @@ impl TaskSigner<'_> {
                     &issuer,
                     authority.expires_at(),
                 );
-                let mut bounded_claims = claims.clone();
-                cap_authority_expiry(&mut bounded_claims, authority.expires_at())?;
-                let token = self
-                    .inner
-                    .sign_access(
-                        tenant,
-                        asterius_domain::keys::AccessIssuance {
-                            held_authority: Some(&held),
-                            ..issuance
-                        },
-                        algorithm,
-                        typ,
-                        &bounded_claims,
-                    )
-                    .await?;
-                if !held.validates(tenant, issuance.grant, &issuer, OffsetDateTime::now_utc()) {
-                    return Err(invalid());
-                }
-                token
+                self.sign_held_access(issuance, &held, algorithm, typ, claims)
+                    .await?
             }
             None => {
                 let publication = asterius_domain::keys::HeldClientPublication::from_fenced_client(
@@ -604,6 +583,40 @@ impl TaskSigner<'_> {
             }
         };
         tx.commit().await.map_err(to_domain_error)?;
+        Ok(token)
+    }
+    async fn sign_held_access(
+        &self,
+        issuance: asterius_domain::keys::AccessIssuance<'_>,
+        held: &asterius_domain::keys::HeldGrantAuthority,
+        algorithm: Option<asterius_domain::SigningAlgorithm>,
+        typ: &'static str,
+        claims: &serde_json::Value,
+    ) -> Result<asterius_domain::CompactJws, DomainError> {
+        let tenant = &issuance.grant.tenant;
+        let mut bounded_claims = claims.clone();
+        cap_authority_expiry(&mut bounded_claims, held.expires_at())?;
+        let token = self
+            .inner
+            .sign_access(
+                tenant,
+                asterius_domain::keys::AccessIssuance {
+                    held_authority: Some(held),
+                    ..issuance
+                },
+                algorithm,
+                typ,
+                &bounded_claims,
+            )
+            .await?;
+        if !held.validates(
+            tenant,
+            issuance.grant,
+            held.issuer(),
+            OffsetDateTime::now_utc(),
+        ) {
+            return Err(invalid());
+        }
         Ok(token)
     }
 }
