@@ -225,6 +225,19 @@ impl PgClientRepository {
         crate::users::PgUserRepository::lifecycle_fence_on(connection, tenant).await
     }
 
+    async fn creation_fence_on(
+        connection: &mut sqlx::PgConnection,
+        tenant: &TenantId,
+    ) -> Result<(), DomainError> {
+        Self::lifecycle_fence_on(connection, tenant)
+            .await
+            .map_err(|error| match error {
+                // Preserve the registration/upsert foreign-key conflict contract.
+                DomainError::NotFound => DomainError::Conflict("tenant does not exist".to_owned()),
+                other => other,
+            })
+    }
+
     /// Reads the live command endpoint without exposing a stale outbox URL.
     /// Disabled or deleted clients have no delivery target.
     pub async fn command_endpoint_for_delivery(
@@ -410,7 +423,7 @@ impl PgClientRepository {
         let (agent, agent_policy) = agent_columns(registration);
 
         let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
-        Self::lifecycle_fence_on(&mut transaction, &self.tenant).await?;
+        Self::creation_fence_on(&mut transaction, &self.tenant).await?;
         bind_all!(
             sqlx::query(
                 "insert into clients (tenant_id, client_id, client_name, compliance_profile,
@@ -640,7 +653,7 @@ impl PgClientRepository {
         client: &Client,
         registration_access_token: Option<&[u8; 32]>,
     ) -> Result<Row, DomainError> {
-        Self::lifecycle_fence_on(connection, tenant).await?;
+        Self::creation_fence_on(connection, tenant).await?;
         let registration = &client.registration;
         let lists = ListColumns::of(registration);
         let (jwks, jwks_uri) = key_columns(registration);
