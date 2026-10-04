@@ -191,7 +191,6 @@ impl Fixture {
             status: ClientStatus::Active,
             created_at: self.now,
             updated_at: self.now,
-            authority_revision: uuid::Uuid::new_v4(),
         };
         client.registration.resources.insert(RESOURCE.to_owned());
         self.store
@@ -231,7 +230,6 @@ impl Fixture {
             status: ClientStatus::Active,
             created_at: self.now,
             updated_at: self.now,
-            authority_revision: uuid::Uuid::new_v4(),
         };
         client.registration.resources.insert(RESOURCE.to_owned());
         self.store
@@ -268,7 +266,6 @@ impl Fixture {
             status: ClientStatus::Active,
             created_at: self.now,
             updated_at: self.now,
-            authority_revision: uuid::Uuid::new_v4(),
         };
         client.registration.resources.insert(RESOURCE.to_owned());
         self.store
@@ -305,7 +302,6 @@ impl Fixture {
             status: ClientStatus::Active,
             created_at: self.now,
             updated_at: self.now,
-            authority_revision: uuid::Uuid::new_v4(),
         };
         client.registration.resources.insert(RESOURCE.to_owned());
         self.store
@@ -338,7 +334,6 @@ impl Fixture {
             status: ClientStatus::Active,
             created_at: self.now,
             updated_at: self.now,
-            authority_revision: uuid::Uuid::new_v4(),
         };
         client.registration.resources.insert(RESOURCE.to_owned());
         self.store
@@ -423,7 +418,6 @@ impl Fixture {
             },
             created_at: self.now,
             updated_at: self.now,
-            authority_revision: uuid::Uuid::new_v4(),
         })
         .await
         .expect("store the user");
