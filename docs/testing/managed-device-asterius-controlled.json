@@ -30,10 +30,10 @@
     "revoked_exact_cc_grant_invalidates_relay_authority"
   ],
   "passed": 26,
-  "binary_source_commit": "d3f395c5",
-  "binary_sha256": "6c8cd8c81dc7ab3f144aba650321074bf19ece522e637a1295cf2cdbf3a1b95a",
-  "migration_count": 115,
-  "observed_at": "2026-10-03T23:14:22Z",
+  "binary_source_commit": "fd2c8ae1a388f3dcaadf31b3e38a6281ae0d187f",
+  "binary_sha256": "86f5fdc9eb82a795a0ac83a437815f6f248c89976b88ffbbdef7ad549b8136e4",
+  "migration_count": 116,
+  "observed_at": "2026-10-04T00:32:39Z",
   "human_authentication": {
     "refresh": "seeded offline refresh grants",
     "authorization_code": "actual Chromium password and UV WebAuthn registration/assertion via virtual CTAP2 authenticator; signed ID amr pop+user verified; no seeded authentication class proof"
@@ -50,7 +50,7 @@
     "scripts/managed-devices/proxy.mjs": "9e2a5be152f904fae4a5e7cffe95e25572b92d2e26968f996db6ab22798cf5bc",
     "scripts/managed-devices/prepare-pki.sh": "a41730f257eac2ef1e6093b249a59c8b8d573a64e63f99d2fa4614fe6971ea73"
   },
-  "removal_to_refusal_seconds": 0.367,
+  "removal_to_refusal_seconds": 0.34,
   "stale_time_test": "controlled_database_timestamp_perturbation_not_real_300_second_wait",
   "source_admission": "existing exact-realm tenant administrator role/session policy and CSRF; no additional UV requirement",
   "candidate_gate": {
@@ -77,5 +77,14 @@
     "normal_original_code_issuance": "passed on corrected composed binary",
     "concurrent_withdrawal_regression": "separate ignored PostgreSQL tests; reserved for CI, not run by this HTTP/browser fixture",
     "owned_resources": "all owned database, private PKI directory and three listeners cleaned"
+  },
+  "source_verification": "parent frozen candidate fmt/strict clippy, 628 targeted nextest checks and 157 exact OpenAPI controls passed; ignored PostgreSQL races compiled for CI and not executed locally",
+  "fixture_source_commit": "479557cc784e47fc5c6b915b302c4f7ef0a5759a",
+  "baseline_115_migration_run": {
+    "binary_source_commit": "d3f395c5",
+    "binary_sha256": "6c8cd8c81dc7ab3f144aba650321074bf19ece522e637a1295cf2cdbf3a1b95a",
+    "observed_at": "2026-10-03T23:14:22Z",
+    "passed": 26,
+    "removal_to_refusal_seconds": 0.367
   }
 }

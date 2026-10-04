@@ -6,15 +6,17 @@ remains pending before delivery to main. The candidate exports typed ports,
 mounts bounded management/relay and owner inspection routes, implements private
 interaction/code proof transfer, and configures a dedicated authenticated proxy
 TLS listener. Sources remain disabled by default. Source checkpoints composed by
-the parent passed workspace checks/strict lint. The composed candidate at
-`372a51de` passed 156 targeted Rust checks and all 115 fuzz target smoke checks.
-The later composed candidate `d3f395c5`, including the final identity grant fence,
-passed all 26 controlled HTTPS/browser checks with 115 embedded migrations. Its
-retained binary SHA-256 is
-`6c8cd8c81dc7ab3f144aba650321074bf19ece522e637a1295cf2cdbf3a1b95a`; see
+the parent passed workspace checks/strict lint. The frozen composed candidate
+`fd2c8ae1a388f3dcaadf31b3e38a6281ae0d187f` passed fmt, strict lint, 628 targeted
+Rust checks and 157 exact OpenAPI contract controls. Its retained 116-migration
+binary passed all 26 controlled HTTPS/browser checks, including normal original
+code issuance after the UUID authority correction. The binary SHA-256 is
+`86f5fdc9eb82a795a0ac83a437815f6f248c89976b88ffbbdef7ad549b8136e4`; see
 [sanitized acceptance evidence](testing/managed-device-asterius-controlled.json).
-Human review still gates delivery. This proves the controlled software PKI
-profile; it does not prove live MDM interoperability or hardware attestation.
+Device removal led to refusal in 0.340 seconds. The earlier 115-migration run
+is retained as baseline evidence. Human review still gates delivery. This proves
+the controlled software PKI profile; it does not prove live MDM interoperability
+or hardware attestation.
 
 A subsequent source review found that original-code identity issuance and online
 identity issuance needed a common final grant fence. The correction candidate
@@ -75,11 +77,13 @@ continuous grant-authority lock. Focused CI storage tests cover normal commit,
 client disable and conditional/task profile publication winning that interval;
 they do not claim actual remote ID-JAG cryptography or local ignored execution.
 
-These source corrections are not yet in the recorded 115-migration runtime
-binary. Official metadata regeneration, targeted compilation/verification and a
-fresh normal-code controlled runtime on the 116-migration candidate remain
-required. Human normative review of the refined trust/compatibility contract
-still gates delivery.
+These source corrections are included in the recorded frozen 116-migration
+binary. Official metadata regeneration and the composed targeted gate passed,
+and the normal-code controlled runtime passed all 26 checks. The concurrent
+grant amendment/revocation and queued-writer PostgreSQL regressions remain
+compiled CI-only evidence; this run does not claim to execute those ignored tests.
+Human normative review of the refined trust/compatibility contract still gates
+delivery.
 
 The corrected binary passed the full 26 normal HTTPS/browser controls, including
 original-code identity issuance. That run does not claim to exercise withdrawal
@@ -306,8 +310,10 @@ client authentication.
 Code issuance and redemption candidate transactions now store and consume a
 private sidecar beside the exact code digest. Redemption uses the existing
 single-winner code spend and `DELETE RETURNING` of its sidecar in the same
-transaction. The interaction-capture/transfer and removal writers are not yet
-implemented; this remains incomplete source, without checks or runtime evidence.
+transaction. Interaction capture/transfer and owner removal writers are
+implemented in the frozen candidate; the 26 controlled runtime checks exercise
+real original interaction/code transfer and removal followed by fresh refusal.
+Their normative trust refinements remain proposed before delivery.
 
 
 The dedicated certificate candidate is implemented in
