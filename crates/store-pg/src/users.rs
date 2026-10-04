@@ -1322,7 +1322,7 @@ mod scim_security_tests {
         sqlx::query("insert into tenants(tenant_id,issuer,display_name,default_resource) values($1,$2,'Retirement fixture','https://api.example/')")
             .bind(tenant.as_str()).bind(format!("https://id.example/t/{}",tenant.as_str()))
             .execute(&pool).await.expect("fixture tenant");
-        sqlx::query("insert into clients(tenant_id,client_id,redirect_uris) values($1,$2,'{}')")
+        sqlx::query("insert into clients(tenant_id,client_id,client_name,token_endpoint_auth_method,redirect_uris) values($1,$2,'SCIM fixture','private_key_jwt','{}')")
             .bind(tenant.as_str())
             .bind(client.as_str())
             .execute(&pool)
@@ -1443,7 +1443,7 @@ mod scim_security_tests {
         sqlx::query("insert into tenants(tenant_id,issuer,display_name,default_resource) values($1,$2,'Security fixture','https://api.example/')")
             .bind(tenant.as_str()).bind(format!("https://id.example/t/{}",tenant.as_str()))
             .execute(&pool).await.expect("fixture tenant");
-        sqlx::query("insert into clients(tenant_id,client_id,redirect_uris) values($1,$2,'{}')")
+        sqlx::query("insert into clients(tenant_id,client_id,client_name,token_endpoint_auth_method,redirect_uris) values($1,$2,'SCIM fixture','private_key_jwt','{}')")
             .bind(tenant.as_str())
             .bind(client.as_str())
             .execute(&pool)
