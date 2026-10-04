@@ -418,7 +418,7 @@ async fn principal_locks(
     expected.sort();
     expected.dedup();
     let clients=sqlx::query("select client_id,is_agent,agent_owner_user_id from clients where tenant_id=$1 and client_id=any($2) and status='active' order by client_id for share")
-        .bind(tenant.as_str()).bind(&expected).fetch_all(connection).await.map_err(to_domain_error)?;
+        .bind(tenant.as_str()).bind(&expected).fetch_all(&mut *connection).await.map_err(to_domain_error)?;
     if clients.len() != expected.len()
         || clients.iter().any(|row| {
             row.get::<bool, _>("is_agent")
