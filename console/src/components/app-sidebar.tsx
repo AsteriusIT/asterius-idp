@@ -57,6 +57,7 @@ export const NAVIGATION_ICONS: Readonly<Record<string, LucideIcon>> = {
   clients: AppWindowIcon,
   resources: ServerIcon,
   architecture: NetworkIcon,
+  kubernetes: NetworkIcon,
   'authorization-details': ShapesIcon,
   keys: KeyRoundIcon,
   policy: ScaleIcon,

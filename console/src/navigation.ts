@@ -100,6 +100,7 @@ export const DESTINATIONS: readonly Destination[] = [
   { route: 'groups', label: 'Groups', reach: 'tenant', scope: 'admin.groups:read', bead: 'ast-6uqw.13', group: 'People' },
   { route: 'outbound-scim', label: 'Outbound provisioning', reach: 'tenant', scope: 'admin.outbound_scim:read', bead: 'ast-dd1y.6.3', group: 'Applications' },
   { route: 'scim', label: 'SCIM provisioning', reach: 'tenant', scope: 'admin.clients:read', bead: 'ast-s36.13.5', group: 'Applications' },
+  { route: 'kubernetes', label: 'Kubernetes access', reach: 'tenant', scope: 'admin.clients:read', bead: 'ast-1r9t', group: 'Applications' },
   { route: 'clients', label: 'Applications', reach: 'tenant', scope: 'admin.clients:read', bead: 'ast-f7m.5', group: 'Applications' },
   { route: 'oidc-providers', label: 'Sign-in providers', reach: 'tenant', scope: 'admin.oidc_providers:read', bead: 'ast-7vbr.1', group: 'Sign-in & trust' },
   { route: 'resources', label: 'Resource servers', reach: 'tenant', scope: 'admin.resource_servers:read', bead: 'ast-f7m.12', group: 'Applications' },
