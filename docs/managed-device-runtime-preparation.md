@@ -53,8 +53,13 @@ without obtaining the same tenant, client, user or root locks on a second
 connection; otherwise a queued writer can cause the signer to wait on itself.
 Identity issuance owns its full direct publication/lineage fence. Task access
 forwards its complete issuance context rather than falling back to raw signing.
-Specialized raw ID-JAG redemption remains a separate atomic protocol transition
-and still needs an explicit publication-context handoff before candidate delivery.
+Specialized raw ID-JAG redemption forwards a separate retained tenant/client
+publication value through prepared decorators. It cannot establish claimed-grant
+or device authority; active conditional scopes that need exact grant context still
+refuse this path. Its later replay/consent/grant/audit commit rechecks exact subject
+binding, active local user, consent and assertion/grant expiry. The signing fence
+is released before that later transaction; this source checkpoint does not claim
+that publication/client authority is retained through redemption commit.
 
 These source corrections are not yet in the recorded 115-migration runtime
 binary. Official metadata regeneration, targeted compilation/verification and a

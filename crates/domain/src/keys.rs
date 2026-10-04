@@ -378,6 +378,32 @@ impl HeldGrantAuthority {
     }
 }
 
+/// Private retained tenant/client publication context for specialized assertions
+/// whose replay/consent/grant persistence occurs after successful cryptography.
+/// This is not evidence of a current claimed grant or device authority.
+#[derive(Debug)]
+pub struct HeldClientPublication {
+    tenant: TenantId,
+    issuer: String,
+    client: crate::ClientId,
+}
+impl HeldClientPublication {
+    /// Construct only while retaining the exact publication and active client locks.
+    #[must_use]
+    pub fn from_fenced_client(tenant: TenantId, issuer: String, client: crate::ClientId) -> Self {
+        Self {
+            tenant,
+            issuer,
+            client,
+        }
+    }
+    /// Verify exact private context against the signing transaction.
+    #[must_use]
+    pub fn validates(&self, tenant: &TenantId, issuer: &str, client: &str) -> bool {
+        self.tenant == *tenant && self.issuer == issuer && self.client.as_str() == client
+    }
+}
+
 /// Access-token authorization context supplied by a validated grant handler.
 #[derive(Debug, Clone, Copy)]
 pub struct AccessIssuance<'a> {
@@ -484,6 +510,20 @@ pub trait Signer: fmt::Debug + Send + Sync {
         &self,
         tenant: &TenantId,
         _grant: &crate::Grant,
+        algorithm: Option<SigningAlgorithm>,
+        typ: &'static str,
+        claims: &serde_json::Value,
+    ) -> Result<CompactJws, crate::DomainError> {
+        self.sign(tenant, algorithm, typ, claims).await
+    }
+
+    /// Preserve an explicit retained publication/client fence for specialized
+    /// raw assertions. This context never substitutes for exact grant authority.
+    /// Production decorators must forward it through prepared wrappers.
+    async fn sign_client_bound(
+        &self,
+        tenant: &TenantId,
+        _publication: &HeldClientPublication,
         algorithm: Option<SigningAlgorithm>,
         typ: &'static str,
         claims: &serde_json::Value,
