@@ -64,7 +64,7 @@
     "ignored_postgresql_tests": "compiled_selected_CI_only_not_run_locally"
   },
   "owned_cleanup": "nonce databases, SPIRE server/agent containers, network and fixture keys removed; protected failure logs retained privately",
-  "delivery": "pending_delivery_policy_choice",
+  "delivery": "local_main_merged_and_console_inclusive_image_live",
   "fixture_sha256": {
     "scripts/spire/runtime.py": "335a0aff4f2f034474f997af44ce1697a3a6284416a84b8620fb5109fb70ce7d",
     "scripts/spire/acceptance.mjs": "e95ee597d4f5211e5923d9276b769639e74b9d844b2bdd9701a1601d4193c475"
@@ -87,5 +87,60 @@
     ],
     "private_backup": "~/.local/share/asterius/backups/ast-dd1y-20261004T111804Z-80834f3d",
     "private_backup_mode": "0700/0600"
+  },
+  "console_inclusive_reverification": {
+    "binary_sha256": "a4748106cb38c7ce75d3ceb6b617182998d1465c0cf7cb7858aa547ddbbae106",
+    "source_tree_equivalent_to_local_main": "ab74aef7",
+    "native_runtime": {
+      "status": "pass",
+      "spire_version": "1.15.3",
+      "checks": [
+        "native_uid1000_attested_svid_independent_client_dpop_api",
+        "native_assertion_replay",
+        "wrong_issuer",
+        "wrong_subject",
+        "wrong_trust_domain",
+        "wrong_audience",
+        "svid_cannot_authenticate_oauth_client",
+        "unregistered_client",
+        "scope_widening",
+        "resource_widening",
+        "action_widening",
+        "disabled_trust",
+        "empty_bundle_revokes_issuance",
+        "native_expired_svid",
+        "native_spire_key_rotation",
+        "native_spire_retired_authority_revocation",
+        "unused_old_svid_after_key_removal",
+        "native_rotated_key_is_distinct",
+        "new_svid_with_retired_bundle",
+        "durable_spiffe_domain_id_provenance"
+      ],
+      "passed": 20,
+      "mints": 2,
+      "apiCalls": 2,
+      "native_claims": [
+        "iss",
+        "sub",
+        "aud",
+        "iat",
+        "exp"
+      ],
+      "svid_lifetime_seconds": 300,
+      "transport": "real_verified_https_private_key_jwt_and_dpop",
+      "bundle_authorities": "native_spiffe_json_operator_installed",
+      "limits": [
+        "Direct owned SQL seeds exercise verifier and mint; administrative CAS and upstream sequence admission remain actual repository CI regression coverage.",
+        "Static upstream bundle delivery has no automatic freshness bound.",
+        "Native agent caches same-audience assertions; fixture restarts the owned agent to obtain fresh unspent native SVIDs for authority rotation.",
+        "Full ignored PostgreSQL suite was not run locally."
+      ],
+      "local_authority_output_shape": [
+        "active"
+      ]
+    },
+    "frontend_build": "pass",
+    "frontend_tests": 82,
+    "delivery_evidence": "docs/deployment/evidence/local-modern-idp-2026-10-04.json"
   }
 }

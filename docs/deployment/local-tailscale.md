@@ -21,6 +21,36 @@ after the change; logout/reboot itself was not exercised. See
 
 ## Current verified deployment
 
+The 2026-10-04 modern IdP update is merged into local main as `ab74aef7`,
+with the user's explicit permission to merge locally without remote CI. The live
+image is `asterius-idp:local-ast-dd1y-a4748106cb38`, using console-inclusive binary
+SHA-256 `a4748106cb38c7ce75d3ceb6b617182998d1465c0cf7cb7858aa547ddbbae106`.
+It includes Kubernetes online authentication, managed device posture, temporary
+Kubernetes RBAC, outbound SCIM, SPIRE JWT-SVID exchange and parent permission
+revision enforcement. Optional integrations require their documented setup.
+
+The console build and 82 frontend tests passed. The final backend source passed
+75 targeted library tests, strict linting and parser fuzz checks; the earlier
+composed candidate passed 628 targeted tests. Native SPIRE interoperability was
+repeated on this exact console-inclusive binary: all 20 controls passed.
+Remote CI and ignored PostgreSQL concurrency tests were not run under the user's
+explicit local merge exception.
+
+A fresh protected backup is retained at
+`~/.local/share/asterius/backups/ast-dd1y-20261004T133538Z-4fd365b4`
+(directory 0700, files 0600). The isolated restore and live upgrade reached
+117 successful migrations. Exact account, password credential and encrypted
+TOTP records matched the pre-upgrade baseline. The live pod is ready, strict
+HTTPS readiness and canonical discovery passed, and both tenant account and
+console entrypoints retain their protected redirects. All four embedded console
+assets matched the built files byte for byte. Private Serve configuration and
+the active bridge were verified. The existing user's password/TOTP sign-in was
+not exercised in this update.
+
+See [the modern IdP delivery evidence](evidence/local-modern-idp-2026-10-04.json).
+
+## Previous session rotation update
+
 The latest 2026-10-03 image includes the exact session-rotation correction from
 local main `ccd98d6e`, alongside governance findings, access reviews and temporary
 privileges. It uses binary SHA-256

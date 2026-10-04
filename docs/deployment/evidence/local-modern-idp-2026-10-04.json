@@ -1,0 +1,57 @@
+{
+  "task": "ast-dd1y",
+  "source_commit": "ab74aef7",
+  "binary_sha256": "a4748106cb38c7ce75d3ceb6b617182998d1465c0cf7cb7858aa547ddbbae106",
+  "image": "asterius-idp:local-ast-dd1y-a4748106cb38",
+  "image_id": "sha256:eb3b95f480d909c7c9201b2327b54ca34ab1b575ea59cb019f1fa9d060b98f0c",
+  "isolated_restore": "pass",
+  "restricted_image_readiness": "pass",
+  "isolated_canonical_discovery": "pass",
+  "isolated_protected_entrypoint_redirects": "pass",
+  "exact_account_credential_totp_equality": true,
+  "successful_migrations": 117,
+  "required_migrations": [
+    160,
+    164,
+    168,
+    169,
+    171,
+    172
+  ],
+  "private_backup": "~/.local/share/asterius/backups/ast-dd1y-20261004T133538Z-4fd365b4",
+  "private_backup_mode": "0700/0600",
+  "status": "pass",
+  "local_merge": "ab74aef7",
+  "remote_ci": "explicit_user_local_merge_exception_2026-10-04",
+  "live_rollout": "pass",
+  "live_https_readiness": "pass",
+  "live_canonical_discovery": "pass",
+  "live_protected_redirects": "pass",
+  "live_exact_account_password_totp_equality": true,
+  "live_console_embedded_assets": [
+    {
+      "file": "Geist-Variable-DPGgOCY9.woff2",
+      "sha256": "2ffebe993e969069a9789d15164b7715d42491b5835516c5e3b935d5f81b05f1"
+    },
+    {
+      "file": "GeistMono-Variable-Vc9u_qg9.woff2",
+      "sha256": "afaacc4c5fbba89d2ebf7a02dc4070208540874592a5504d57175782fe893101"
+    },
+    {
+      "file": "main-Cxds1HQV.js",
+      "sha256": "c20fc38a08603cefc8a5645636a6ce85932976340f1af5e5d6bae2ccd9385502"
+    },
+    {
+      "file": "style-BRJlnuRG.css",
+      "sha256": "223b7784928fec42c5aad328e2536187e2138d3f766e74161f500d2f296c36b8"
+    }
+  ],
+  "private_serve_configuration_unchanged": true,
+  "bridge_active": true,
+  "frontend_tests_passed": 82,
+  "native_spire_checks_passed": 20,
+  "limits": [
+    "Authenticated existing-account password/TOTP sign-in was not exercised.",
+    "Ignored PostgreSQL concurrency and full remote CI suites were not run under explicit local merge exception."
+  ]
+}
