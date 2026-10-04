@@ -22,7 +22,7 @@ after the change; logout/reboot itself was not exercised. See
 ## Current worktree deployment
 
 The 2026-10-04 Kubernetes console update runs directly from the local
-`claude/ast-1r9t` worktree, source `b72d9e03`. It is not merged into main.
+`claude/ast-1r9t` worktree, source `b72d9e03`, and then merged into local main.
 Open **Kubernetes access** under **Applications** for the cluster directory,
 group name picker, authentication status, saved copyable onboarding and owned
 temporary access snapshots. See [the console guide](../kubernetes-console.md).

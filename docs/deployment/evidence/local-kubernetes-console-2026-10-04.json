@@ -71,7 +71,7 @@
   },
   "initial_https_probe": "transient503 immediately after pod replacement; repeat after private bridge reconnected passed",
   "worktree_source": "claude/ast-1r9t",
-  "not_merged_into_main": true,
   "rust_source_changes": false,
-  "browser_fixture_sha256": "a7606f3ed2785d15278efb552935c892cdee34d035d71b50cc2dc692c72833d2"
+  "browser_fixture_sha256": "a7606f3ed2785d15278efb552935c892cdee34d035d71b50cc2dc692c72833d2",
+  "delivery": "deployed_from_worktree_then_merged_into_local_main"
 }
