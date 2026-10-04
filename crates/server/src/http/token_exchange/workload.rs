@@ -108,6 +108,7 @@ impl TokenExchange<'_> {
             subject: Some(SubjectId::new(&verified.principal)),
             user: None,
             parent: None,
+            parent_derivation: None,
             scopes: verified.scopes.clone(),
             resources: verified.resources.clone(),
             chain: Vec::new(),
