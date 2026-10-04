@@ -53,6 +53,7 @@
 
 use crate::error::to_domain_error;
 use asterius_domain::{DomainError, TenantId};
+use sqlx::Connection as _;
 use sqlx::pool::PoolConnection;
 use sqlx::postgres::{PgPool, Postgres};
 use time::{Duration, OffsetDateTime};
@@ -1141,14 +1142,18 @@ impl PgRetention {
             let mut removed = 0_u64;
 
             for batch in 0..MAX_BATCHES {
-                let affected = sqlx::query(statement)
-                    .bind(tenant.as_str())
-                    .bind(cutoff)
-                    .bind(BATCH)
-                    .execute(&mut **connection)
-                    .await
-                    .map_err(to_domain_error)?
-                    .rows_affected();
+                let affected = if entry.table == "clients" {
+                    Self::client_batch(connection, tenant, statement, cutoff).await?
+                } else {
+                    sqlx::query(statement)
+                        .bind(tenant.as_str())
+                        .bind(cutoff)
+                        .bind(BATCH)
+                        .execute(&mut **connection)
+                        .await
+                        .map_err(to_domain_error)?
+                        .rows_affected()
+                };
                 removed += affected;
 
                 if affected < BATCH.unsigned_abs() {
@@ -1164,6 +1169,32 @@ impl PgRetention {
             }
         }
         Ok(sweep)
+    }
+
+    /// Client cascades can invalidate publication state; lock tenant first.
+    /// Each batch still commits independently and keeps its existing predicate.
+    async fn client_batch(
+        connection: &mut PoolConnection<Postgres>,
+        tenant: &TenantId,
+        statement: &str,
+        cutoff: OffsetDateTime,
+    ) -> Result<u64, DomainError> {
+        let mut transaction = connection.begin().await.map_err(to_domain_error)?;
+        match crate::PgClientRepository::lifecycle_fence_on(&mut transaction, tenant).await {
+            Ok(()) => {}
+            Err(DomainError::NotFound) => return Ok(0),
+            Err(error) => return Err(error),
+        }
+        let affected = sqlx::query(statement)
+            .bind(tenant.as_str())
+            .bind(cutoff)
+            .bind(BATCH)
+            .execute(&mut *transaction)
+            .await
+            .map_err(to_domain_error)?
+            .rows_affected();
+        transaction.commit().await.map_err(to_domain_error)?;
+        Ok(affected)
     }
 
     /// Gives the tenant's lock back.
