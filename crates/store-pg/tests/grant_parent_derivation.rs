@@ -92,6 +92,43 @@ impl Fixture {
             .expect("release authority without signature");
         allowed
     }
+    async fn commit_jag(&self, user: Uuid, jti: &str) -> bool {
+        use asterius_domain::audit::{Actor, AuditEvent, EventType, Outcome};
+        let now = OffsetDateTime::now_utc();
+        let mut grant = Grant::new(self.tenant.clone(), self.parent.client.clone(), now);
+        grant.user = Some(asterius_domain::UserId::new(user));
+        grant.subject = Some(asterius_domain::SubjectId::new("local-owner"));
+        grant.scopes = ["openid".to_owned()].into();
+        grant.resources.clone_from(&self.parent.resources);
+        grant.claimed_at = Some(now);
+        grant.expires_at = Some(now + time::Duration::minutes(5));
+        let event = AuditEvent::new(
+            self.tenant.clone(),
+            EventType::TOKEN_EXCHANGED,
+            Outcome::Success,
+            Actor::Client(grant.client.clone()),
+            now,
+        )
+        .client(grant.client.clone())
+        .subject("local-owner".to_owned())
+        .grant(grant.id.clone());
+        asterius_store_pg::PgIdJagRedemption::new(self.pool.clone(), self.tenant.clone())
+            .commit_issued(
+                "https://upstream.example",
+                "upstream-owner",
+                "upstream-actor",
+                "client",
+                "https://api.example/",
+                &["openid".to_owned()],
+                jti,
+                now + time::Duration::minutes(5),
+                now,
+                &grant,
+                event,
+            )
+            .await
+            .expect("atomic post-signature redemption")
+    }
     async fn cleanup(self) {
         self.pool.close().await;
         sqlx::query(&format!("drop schema {} cascade", self.schema))
@@ -290,6 +327,69 @@ async fn grant_parent_derivation_attested_lookup_rotation_preserves_generation()
     assert_ne!(
         revision, reassigned,
         "unrelated session cannot retain frozen authority generation"
+    );
+    f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL; CI runs late specialized assertion authority closure"]
+async fn grant_parent_derivation_late_id_jag_commit_rechecks_client_and_scoped_publication() {
+    let f = Fixture::new().await;
+    let user = Uuid::new_v4();
+    sqlx::query("insert into users(tenant_id,user_id,username) values('parent',$1,'jag-owner')")
+        .bind(user)
+        .execute(&f.pool)
+        .await
+        .expect("owner");
+    sqlx::query("insert into id_jag_subject_bindings(tenant_id,issuer,upstream_subject,user_id) values('parent','https://upstream.example','upstream-owner',$1)").bind(user).execute(&f.pool).await.expect("exact binding");
+    sqlx::query("insert into id_jag_consents(tenant_id,user_id,issuer,actor_client_id,client_id,resource,scopes,granted_at,expires_at) values('parent',$1,'https://upstream.example','upstream-actor','client','https://api.example/',array['openid'],now()-interval '1 minute',now()+interval '1 hour')").bind(user).execute(&f.pool).await.expect("consent");
+    assert!(
+        f.commit_jag(user, "normal").await,
+        "normal atomic redemption still succeeds"
+    );
+    sqlx::query(
+        "update clients set status='disabled' where tenant_id='parent' and client_id='client'",
+    )
+    .execute(&f.pool)
+    .await
+    .expect("disable between signature and redemption");
+    assert!(!f.commit_jag(user, "late-disable").await);
+    sqlx::query(
+        "update clients set status='active' where tenant_id='parent' and client_id='client'",
+    )
+    .execute(&f.pool)
+    .await
+    .expect("restore client");
+    let document = serde_json::json!({"version":1,"rules":[],"conditional_scopes":[{"id":"exact-grant","mode":"active","clients":["client"],"actions":["jwt_bearer"],"rules":[{"id":"permit","effect":"permit"}]}]});
+    sqlx::query("insert into tenant_policies(tenant_id,document) values('parent',$1)")
+        .bind(document)
+        .execute(&f.pool)
+        .await
+        .expect("scoped publication wins before redemption");
+    assert!(
+        !f.commit_jag(user, "late-profile").await,
+        "raw assertions never acquire invented exact grant context"
+    );
+    sqlx::query("delete from tenant_policies where tenant_id='parent'")
+        .execute(&f.pool)
+        .await
+        .expect("remove conditional profile");
+    sqlx::query("insert into agent_task_clients(tenant_id,client_id) values('parent','client')")
+        .execute(&f.pool)
+        .await
+        .expect("task mode wins before redemption");
+    assert!(
+        !f.commit_jag(user, "late-task").await,
+        "raw assertions cannot acquire unrelated task authority"
+    );
+    let replays: i64 =
+        sqlx::query_scalar("select count(*) from id_jag_replays where tenant_id='parent'")
+            .fetch_one(&f.pool)
+            .await
+            .expect("replay count");
+    assert_eq!(
+        replays, 1,
+        "refused late transitions consume neither replay nor grant"
     );
     f.cleanup().await;
 }

@@ -58,8 +58,14 @@ publication value through prepared decorators. It cannot establish claimed-grant
 or device authority; active conditional scopes that need exact grant context still
 refuse this path. Its later replay/consent/grant/audit commit rechecks exact subject
 binding, active local user, consent and assertion/grant expiry. The signing fence
-is released before that later transaction; this source checkpoint does not claim
-that publication/client authority is retained through redemption commit.
+is released before that later transaction. The late atomic commit independently
+locks active tenant and exact client before the existing user/binding/consent
+locks, refuses newly task-bound clients, and parses the current policy to retain
+the raw-path refusal for active conditional scopes needing exact grant context.
+Thus a change between the two fences is revalidated rather than treated as a
+continuous grant-authority lock. Focused CI storage tests cover normal commit,
+client disable and conditional/task profile publication winning that interval;
+they do not claim actual remote ID-JAG cryptography or local ignored execution.
 
 These source corrections are not yet in the recorded 115-migration runtime
 binary. Official metadata regeneration, targeted compilation/verification and a
