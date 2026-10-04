@@ -1,0 +1,91 @@
+{
+  "status": "pass",
+  "spire_version": "1.15.3",
+  "checks": [
+    "native_uid1000_attested_svid_independent_client_dpop_api",
+    "native_assertion_replay",
+    "wrong_issuer",
+    "wrong_subject",
+    "wrong_trust_domain",
+    "wrong_audience",
+    "svid_cannot_authenticate_oauth_client",
+    "unregistered_client",
+    "scope_widening",
+    "resource_widening",
+    "action_widening",
+    "disabled_trust",
+    "empty_bundle_revokes_issuance",
+    "native_expired_svid",
+    "native_spire_key_rotation",
+    "native_spire_retired_authority_revocation",
+    "unused_old_svid_after_key_removal",
+    "native_rotated_key_is_distinct",
+    "new_svid_with_retired_bundle",
+    "durable_spiffe_domain_id_provenance"
+  ],
+  "passed": 20,
+  "mints": 2,
+  "apiCalls": 2,
+  "native_claims": [
+    "iss",
+    "sub",
+    "aud",
+    "iat",
+    "exp"
+  ],
+  "svid_lifetime_seconds": 300,
+  "transport": "real_verified_https_private_key_jwt_and_dpop",
+  "bundle_authorities": "native_spiffe_json_operator_installed",
+  "limits": [
+    "Direct owned SQL seeds exercise verifier and mint; administrative CAS and upstream sequence admission remain actual repository CI regression coverage.",
+    "Static upstream bundle delivery has no automatic freshness bound.",
+    "Native agent caches same-audience assertions; fixture restarts the owned agent to obtain fresh unspent native SVIDs for authority rotation.",
+    "Full ignored PostgreSQL suite was not run locally."
+  ],
+  "local_authority_output_shape": [
+    "active"
+  ],
+  "source_commit": "85c0abea",
+  "binary_sha256": "390ac6e5c30acbc2157dbf0f33a53f03e0961715b1e9cc2f2c538636aad7b9ae",
+  "schema_migrations": 117,
+  "verification": {
+    "all_targets_cargo_check": "pass",
+    "format": "pass",
+    "strict_clippy": "pass",
+    "targeted_nextest": {
+      "passed": 75,
+      "skipped": 2975,
+      "local_nextest_invocations": 3,
+      "first_attempt": "linking failed when disk full; no tests executed",
+      "second_attempt": "61 passed before existing managed-device retention SQL audit mismatch; fixed without semantic change",
+      "third_attempt": "all75passed"
+    },
+    "fuzz_registry_format_build_lint": "pass",
+    "ignored_postgresql_tests": "compiled_selected_CI_only_not_run_locally"
+  },
+  "owned_cleanup": "nonce databases, SPIRE server/agent containers, network and fixture keys removed; protected failure logs retained privately",
+  "delivery": "pending_delivery_policy_choice",
+  "fixture_sha256": {
+    "scripts/spire/runtime.py": "335a0aff4f2f034474f997af44ce1697a3a6284416a84b8620fb5109fb70ce7d",
+    "scripts/spire/acceptance.mjs": "e95ee597d4f5211e5923d9276b769639e74b9d844b2bdd9701a1601d4193c475"
+  },
+  "upgrade_probe": {
+    "task": "ast-dd1y",
+    "source_commit": "85c0abea",
+    "binary_sha256": "390ac6e5c30acbc2157dbf0f33a53f03e0961715b1e9cc2f2c538636aad7b9ae",
+    "image": "asterius-idp:local-ast-dd1y-390ac6e5c30a",
+    "image_id": "sha256:24bfb5c5e93adaad069d5230acaff951bedd56f4721f7d43f049c61713b98638",
+    "isolated_restore": "pass",
+    "restricted_image_readiness": "pass",
+    "isolated_canonical_discovery": "pass",
+    "isolated_protected_entrypoint_redirects": "pass",
+    "exact_account_credential_totp_equality": true,
+    "successful_migrations": 117,
+    "required_migrations": [
+      163,
+      165
+    ],
+    "private_backup": "~/.local/share/asterius/backups/ast-dd1y-20261004T111804Z-80834f3d",
+    "private_backup_mode": "0700/0600"
+  }
+}
