@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select grant_id, client_id, user_id, subject, scopes, claims, claims_locales,\n                    authorization_details, resources, actor_chain, parent_grant_id,\n                    session_id, authenticated_at, acr, amr, created_at, updated_at, expires_at,\n                    claimed_at, revoked_at, revocation_reason\n               from grants\n               where tenant_id = $1 and user_id = $2\n               order by created_at desc, grant_id",
+  "query": "select grant_id, client_id, user_id, subject, scopes, claims, claims_locales,\n                    authorization_details, resources, actor_chain, parent_grant_id, authority_revision, parent_authority_revision,\n                    session_id, authenticated_at, acr, amr, created_at, updated_at, expires_at,\n                    claimed_at, revoked_at, revocation_reason\n               from grants\n               where tenant_id = $1 and user_id = $2\n               order by created_at desc, grant_id",
   "describe": {
     "columns": [
       {
@@ -60,51 +60,61 @@
       },
       {
         "ordinal": 11,
+        "name": "authority_revision",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 12,
+        "name": "parent_authority_revision",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 13,
         "name": "session_id",
         "type_info": "Text"
       },
       {
-        "ordinal": 12,
+        "ordinal": 14,
         "name": "authenticated_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 13,
+        "ordinal": 15,
         "name": "acr",
         "type_info": "Text"
       },
       {
-        "ordinal": 14,
+        "ordinal": 16,
         "name": "amr",
         "type_info": "TextArray"
       },
       {
-        "ordinal": 15,
+        "ordinal": 17,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 16,
+        "ordinal": 18,
         "name": "updated_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 17,
+        "ordinal": 19,
         "name": "expires_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 18,
+        "ordinal": 20,
         "name": "claimed_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 19,
+        "ordinal": 21,
         "name": "revoked_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 20,
+        "ordinal": 22,
         "name": "revocation_reason",
         "type_info": "Text"
       }
@@ -127,6 +137,8 @@
       false,
       false,
       true,
+      false,
+      true,
       true,
       true,
       true,
@@ -139,5 +151,5 @@
       true
     ]
   },
-  "hash": "51c198bfd6eb35a334c1f3b21d615cb196aced366d9bcc6825fdf717c828c9e1"
+  "hash": "bc385a7142b3e3ceb271d2f356ec9dc2b9239c8266a58c92cd12d8715d88d3a3"
 }
