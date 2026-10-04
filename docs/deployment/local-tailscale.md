@@ -10,9 +10,74 @@ This uses private Tailscale Serve on port 443. Funnel is disabled. Existing Serv
 routes on 8443 and 8444 remain unchanged. Tailnet access does not confer an
 Asterius role: the existing admin password and TOTP challenge still apply.
 
+The user bridge is enabled and active, and `Linger=yes` is configured for
+`qrodic` so the user service can remain active after the last session logs out.
+The applied local command was `loginctl --no-ask-password enable-linger qrodic`.
+This does not keep a powered-off host or stopped WSL VM online: the host,
+Docker/Kubernetes and Tailscale must remain running. HTTPS readiness passed
+after the change; logout/reboot itself was not exercised. See
+[the persistence check](evidence/local-tailscale-persistence-2026-10-03.json).
+
+
 ## Current verified deployment
 
-The latest 2026-10-03 image includes the read-only **Governance findings** screen
+The 2026-10-04 modern IdP update is merged into local main as `ab74aef7`,
+with the user's explicit permission to merge locally without remote CI. The live
+image is `asterius-idp:local-ast-dd1y-a4748106cb38`, using console-inclusive binary
+SHA-256 `a4748106cb38c7ce75d3ceb6b617182998d1465c0cf7cb7858aa547ddbbae106`.
+It includes Kubernetes online authentication, managed device posture, temporary
+Kubernetes RBAC, outbound SCIM, SPIRE JWT-SVID exchange and parent permission
+revision enforcement. Optional integrations require their documented setup.
+
+The console build and 82 frontend tests passed. The final backend source passed
+75 targeted library tests, strict linting and parser fuzz checks; the earlier
+composed candidate passed 628 targeted tests. Native SPIRE interoperability was
+repeated on this exact console-inclusive binary: all 20 controls passed.
+Remote CI and ignored PostgreSQL concurrency tests were not run under the user's
+explicit local merge exception.
+
+A fresh protected backup is retained at
+`~/.local/share/asterius/backups/ast-dd1y-20261004T133538Z-4fd365b4`
+(directory 0700, files 0600). The isolated restore and live upgrade reached
+117 successful migrations. Exact account, password credential and encrypted
+TOTP records matched the pre-upgrade baseline. The live pod is ready, strict
+HTTPS readiness and canonical discovery passed, and both tenant account and
+console entrypoints retain their protected redirects. All four embedded console
+assets matched the built files byte for byte. Private Serve configuration and
+the active bridge were verified. The existing user's password/TOTP sign-in was
+not exercised in this update.
+
+See [the modern IdP delivery evidence](evidence/local-modern-idp-2026-10-04.json).
+
+## Previous session rotation update
+
+The latest 2026-10-03 image includes the exact session-rotation correction from
+local main `ccd98d6e`, alongside governance findings, access reviews and temporary
+privileges. It uses binary SHA-256
+`bf8fc000e345a4428f25c8fa13703e383189c96b56adc7120252ffbca9b4b03d`,
+image `asterius-idp:local-ast-96u1-bf8fc000e345`, and image ID
+`sha256:cd6ea8fdb62680da0995a8e980bd9e07b4d51a5deb75cac3bded27b00f1122e7`.
+The rotation change passed composed strict linting, 92 targeted tests, 115
+composed fuzz parser builds, owned full-schema SQL controls and a real controlled
+rotation/refresh path before its local main merge. This main binary was rebuilt
+successfully, then tested in the restricted runtime image against a restored
+local database. The new optional protocol candidates remain isolated.
+
+The fresh protected recovery snapshot is
+`~/.local/share/asterius/backups/ast-96u1-20261003T213751Z-5ab867ed`
+(directory 0700, files 0600). Both isolated restore and live upgrade preserved
+exact account, credential and encrypted TOTP rows. Both databases have 111
+successful migrations, including 0170 for private grant/session lineage.
+Configuration and secret data, security contexts, durable loopback bridge and
+private Serve routes are unchanged. The live deployment is ready; strict TLS
+readiness, canonical discovery and protected account/console redirects pass.
+No fresh successful TOTP ceremony is claimed by this deployment check.
+The prior image and snapshots remain available; image-only downgrade is
+unvalidated. See [the session update evidence](evidence/local-session-rotation-update-2026-10-03.json).
+
+## Previous governance report update
+
+The earlier 2026-10-03 image added the read-only **Governance findings** screen
 in addition to temporary privileges, access reviews and the deadline correction.
 It uses local main `4066e08f`, verified binary SHA-256
 `c79b1caedc1ce9ff655b7d2c2adbc1498f26c7a501a50a4d66b3fe3b957c5cbd`,

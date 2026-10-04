@@ -1,5 +1,5 @@
 {
-  "status": "technically_verified_candidate_normative_reviews_approved_pending_delivery",
+  "status": "delivered_local_main_and_private_console",
   "date": "2026-10-04",
   "source_commit": "fd2c8ae1a388f3dcaadf31b3e38a6281ae0d187f",
   "binary_sha256": "86f5fdc9eb82a795a0ac83a437815f6f248c89976b88ffbbdef7ad549b8136e4",
@@ -67,34 +67,36 @@
       "sha256_identifies": "prepared_contract_before_approval_record"
     },
     {
-      "document": "../asterius-idp-ast-dd1y.2.5/docs/adr/spire-jwt-svid-exchange.md",
+      "document": "docs/adr/spire-jwt-svid-exchange.md",
       "sha256": "8da739717636174c74ed9d9d38fc442422df7143a9637c96fdacbb6acfd1e700",
       "human_review": "approved_by_user_2026-10-04",
-      "runtime_implementation": "authorized_by_approved_architecture_pending_implementation",
+      "runtime_implementation": "implemented_verified_and_delivered",
       "approved_document_sha256": "8da739717636174c74ed9d9d38fc442422df7143a9637c96fdacbb6acfd1e700",
       "sha256_identifies": "prepared_contract_before_approval_record"
     }
   ],
-  "candidate_main_merged": false,
-  "candidate_shared_deployed": false,
+  "candidate_main_merged": true,
+  "candidate_shared_deployed": true,
   "owned_runtime_fixtures_cleaned": true,
-  "retained_shared_deployment": {
-    "image": "asterius-idp:local-ast-96u1-bf8fc000e345",
-    "migrations": 111,
-    "private_console_url": "https://desktop-cpbptqn-1.tailacbb15.ts.net/t/admin/admin/",
-    "private_account_url": "https://desktop-cpbptqn-1.tailacbb15.ts.net/t/admin/account",
-    "serve": "tailnet_only_https_443",
-    "funnel_enabled": false
-  },
   "limits": [
     "Runtime fixture-specific controlled seeds, software PKI and private synthetic transport limitations remain in linked receipts.",
     "Literal40s Kubernetes cache boundary saturation, primary database replication and ignored concurrency regressions are not claimed.",
-    "SPIRE runtime implementation remains dependent on its proposed architecture review."
+    "Remote CI and ignored PostgreSQL regressions not executed under explicit user local merge exception."
   ],
   "approval": {
     "date": "2026-10-04",
     "reviewer": "user",
     "statement": "I have reviewed and approve all five contracts",
     "scope": "all five prepared contracts including compatibility and freshness limits"
-  }
+  },
+  "delivery_evidence": "docs/deployment/evidence/local-modern-idp-2026-10-04.json",
+  "current_shared_deployment": {
+    "image": "asterius-idp:local-ast-dd1y-a4748106cb38",
+    "migrations": 117,
+    "private_console_url": "https://desktop-cpbptqn-1.tailacbb15.ts.net/t/admin/admin/",
+    "private_account_url": "https://desktop-cpbptqn-1.tailacbb15.ts.net/t/admin/account",
+    "serve": "tailnet_only_https_443",
+    "funnel_enabled": false
+  },
+  "historical_candidate_receipt": true
 }
