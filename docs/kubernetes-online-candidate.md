@@ -1,11 +1,18 @@
 # Kubernetes online candidate preparation
 
-The proposed ADR remains under its existing human review. The exported parser, optional API ports and signing/store adapters are composed
-in the isolated candidate worktree. Workspace/all-target metadata compilation
-and owned empty-database migration checks passed. Go adapter tests with real
-mTLS passed closed-response and deadline controls. The strict Rust gate and
-actual Kubernetes/issuance acceptance are still incomplete; no main delivery or
-shared deployment activation has occurred.
+The proposed ADR remains under its existing human review. The exported parser,
+optional API ports and signing/store adapters are composed in the isolated
+candidate worktree. The frozen 116-migration source `fd2c8ae1` passed formatting,
+strict Clippy, 628 targeted nextest tests, workspace/all-target SQLx preparation,
+and 119 fuzz-target registry, format, build and lint checks. Actual Kubernetes
+1.35 acceptance passed 18 controlled runtime checks. No main delivery or shared
+deployment activation has occurred.
+
+The [aggregate candidate record](testing/modern-idp-candidate-2026-10-04.json)
+identifies the verified source, binary and pending review document hashes. The
+[Kubernetes runtime receipt](testing/kubernetes-online-final116-acceptance.json)
+records the individual controls, measurements and fixture limits. These are
+existing verification results from 2026-10-04, not new runs.
 
 The closed TokenReview request bounds are 65536 JSON bytes, 16384 opaque token
 bytes, and 1–16 distinct nonempty audiences of at most 2048 bytes. Unsupported
@@ -82,22 +89,23 @@ primary-backed Asterius replicas; all-replica outage yields no new uncached
 identity. Remove this profile's equivalent native offline OIDC authenticator,
 otherwise the offline path bypasses live revocation.
 
-## Required future acceptance
+## Acceptance boundaries
 
-| Boundary | Control (all not_run) |
+| Boundary | Recorded evidence and limits |
 | --- | --- |
-| Wire | Actual Kubernetes 1.35 serialized v1 request accepted; beta/wrong kind/malformed/status injection/duplicate fields/limits refused |
-| Route authority | Wrong cluster certificate pin, issuer, tenant, human audience, reviewer, delegated reviewer and missing requested audience deny |
-| Exact issuance | Code + refresh bind the returned complete token; missing session/store failure refuses release; unbound old token cannot enroll |
-| Grant/session | Revoke one of two same-user grants; held token for revoked grant denies; other legitimate grant remains valid; rotation preserves stable public sid; logout denies |
-| Groups | Current removal immediately narrows uncached groups; later additions never widen old signed release; JIT composition fails closed |
-| Availability | Entire-route timeout, primary DB outage, bad upstream response and all adapter replicas unavailable deny without stale identity |
-| Freshness | Real disposable Kubernetes 1.35 + kubectl records native configured cache and held-token disable/revoke denial latency; no instant/offline revocation claim |
-| Side effects/privacy | Repeated review does not change session activity/expiry, create grants, log raw token or echo request status/spec |
+| Wire | Actual Kubernetes 1.35 requests accepted through production adapters; parser-negative cases retain focused test coverage rather than an exhaustive runtime claim |
+| Route authority | Controlled route/audience/reviewer authority, service-only DPoP, exact reviewer grant receipt, mTLS and SPKI checks passed |
+| Exact issuance | Real PAR/PKCE code and refresh digest registration passed; signature/storage concurrency races remain untested in this runtime fixture |
+| Grant/session | Exact grant revocation with another grant surviving, stable public SID across real password session rotation, user disable and browser logout passed |
+| Groups | Signed-group intersection with current membership and refusal to widen after additions passed; this receipt does not establish online/JIT composition |
+| Availability | Two-adapter failover, entire three-second route timeout under table lock, primary DB outage/recovery and all-adapter outage without native fallback passed; DB replication remains untested |
+| Freshness | Warm revocation denial measured 10.232s; opaque 25s delayed response plus outer cache measured 31.672s from revocation to denial; a response released after the native 30s timeout was not cached; the full 40s boundary was not saturated |
+| Side effects/privacy | Read-only review passed; transport retained opaque TLS without certificate termination or claim changes; browser/session proofs were seeded, with no new WebAuthn ceremony in this fixture |
 
-Only after candidate implementation, coordinated targeted verification and
-actual controlled runtime evidence may these statuses change. Human delivery
-review remains a separate required gate before main merge/completion/enabling.
+The receipt covers its listed controls, rather than every possible negative or
+concurrent case. Ignored PostgreSQL concurrency regressions remain CI-only and
+were not executed locally. Human delivery review remains a separate required
+gate before main merge/completion/enabling.
 
 The dedicated reviewer scope also requires a private SHA-256 JTI receipt recorded
 only after successful client_credentials signing with the exact fresh root grant.

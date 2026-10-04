@@ -1,5 +1,5 @@
 {
-  "status": "technically_verified_candidate_pending_normative_reviews",
+  "status": "technically_verified_candidate_normative_reviews_approved_pending_delivery",
   "date": "2026-10-04",
   "source_commit": "fd2c8ae1a388f3dcaadf31b3e38a6281ae0d187f",
   "binary_sha256": "86f5fdc9eb82a795a0ac83a437815f6f248c89976b88ffbbdef7ad549b8136e4",
@@ -41,28 +41,38 @@
     {
       "document": "docs/adr/kubernetes-online-authentication.md",
       "sha256": "0f8ab0ff24ca6798018110642d7d1f1616260e5d4ca16fbcc681f086eb8bb1a8",
-      "human_review": "pending"
+      "human_review": "approved_by_user_2026-10-04",
+      "approved_document_sha256": "0f8ab0ff24ca6798018110642d7d1f1616260e5d4ca16fbcc681f086eb8bb1a8",
+      "sha256_identifies": "prepared_contract_before_approval_record"
     },
     {
       "document": "docs/adr/managed-device-posture-source.md",
       "sha256": "99f90f64696f75de98ba92a29fd82db11a5f9f2b1144fd983de7cfcd51c2d01c",
-      "human_review": "pending"
+      "human_review": "approved_by_user_2026-10-04",
+      "approved_document_sha256": "99f90f64696f75de98ba92a29fd82db11a5f9f2b1144fd983de7cfcd51c2d01c",
+      "sha256_identifies": "prepared_contract_before_approval_record"
     },
     {
       "document": "docs/adr/outbound-scim-contract.md",
       "sha256": "1abfe8ef8b43c29d899edafefe429b897d1bd1c7fdc2c2dc3342306069c37563",
-      "human_review": "pending"
+      "human_review": "approved_by_user_2026-10-04",
+      "approved_document_sha256": "1abfe8ef8b43c29d899edafefe429b897d1bd1c7fdc2c2dc3342306069c37563",
+      "sha256_identifies": "prepared_contract_before_approval_record"
     },
     {
       "document": "docs/adr/kubernetes-temporary-rbac.md",
       "sha256": "4ccfffba0d8e3a7f6f61c0b6def43f20232a61719fa264631537ae5cce03c6c7",
-      "human_review": "pending"
+      "human_review": "approved_by_user_2026-10-04",
+      "approved_document_sha256": "4ccfffba0d8e3a7f6f61c0b6def43f20232a61719fa264631537ae5cce03c6c7",
+      "sha256_identifies": "prepared_contract_before_approval_record"
     },
     {
       "document": "../asterius-idp-ast-dd1y.2.5/docs/adr/spire-jwt-svid-exchange.md",
       "sha256": "8da739717636174c74ed9d9d38fc442422df7143a9637c96fdacbb6acfd1e700",
-      "human_review": "pending",
-      "runtime_implementation": "awaits architecture review"
+      "human_review": "approved_by_user_2026-10-04",
+      "runtime_implementation": "authorized_by_approved_architecture_pending_implementation",
+      "approved_document_sha256": "8da739717636174c74ed9d9d38fc442422df7143a9637c96fdacbb6acfd1e700",
+      "sha256_identifies": "prepared_contract_before_approval_record"
     }
   ],
   "candidate_main_merged": false,
@@ -80,5 +90,11 @@
     "Runtime fixture-specific controlled seeds, software PKI and private synthetic transport limitations remain in linked receipts.",
     "Literal40s Kubernetes cache boundary saturation, primary database replication and ignored concurrency regressions are not claimed.",
     "SPIRE runtime implementation remains dependent on its proposed architecture review."
-  ]
+  ],
+  "approval": {
+    "date": "2026-10-04",
+    "reviewer": "user",
+    "statement": "I have reviewed and approve all five contracts",
+    "scope": "all five prepared contracts including compatibility and freshness limits"
+  }
 }
