@@ -1,0 +1,84 @@
+{
+  "status": "technically_verified_candidate_pending_normative_reviews",
+  "date": "2026-10-04",
+  "source_commit": "fd2c8ae1a388f3dcaadf31b3e38a6281ae0d187f",
+  "binary_sha256": "86f5fdc9eb82a795a0ac83a437815f6f248c89976b88ffbbdef7ad549b8136e4",
+  "migrations": 116,
+  "verification": {
+    "fmt": "pass",
+    "strict_clippy": "pass",
+    "targeted_nextest": {
+      "passed": 628,
+      "skipped": 3860,
+      "full_local_suite_run": false,
+      "ignored_postgresql_tests_run_locally": false
+    },
+    "official_sqlx_prepare_workspace_all_targets": "pass_owned_postgresql_116",
+    "openapi_paths": 157,
+    "openapi_exact_match": true,
+    "fuzz": {
+      "targets": 119,
+      "registry": "pass",
+      "format": "pass",
+      "stable_build_and_strict_lint": "pass"
+    }
+  },
+  "runtime_evidence": {
+    "kubernetes": {
+      "controls_passed": 18,
+      "document": "docs/testing/kubernetes-online-final116-acceptance.json"
+    },
+    "managed_device": {
+      "controls_passed": 26,
+      "document": "docs/testing/managed-device-asterius-controlled.json"
+    },
+    "outbound_scim": {
+      "controls_passed": 29,
+      "document": "scripts/outbound-scim/runtime-acceptance-2026-10-04.json"
+    }
+  },
+  "human_review_documents": [
+    {
+      "document": "docs/adr/kubernetes-online-authentication.md",
+      "sha256": "0f8ab0ff24ca6798018110642d7d1f1616260e5d4ca16fbcc681f086eb8bb1a8",
+      "human_review": "pending"
+    },
+    {
+      "document": "docs/adr/managed-device-posture-source.md",
+      "sha256": "99f90f64696f75de98ba92a29fd82db11a5f9f2b1144fd983de7cfcd51c2d01c",
+      "human_review": "pending"
+    },
+    {
+      "document": "docs/adr/outbound-scim-contract.md",
+      "sha256": "1abfe8ef8b43c29d899edafefe429b897d1bd1c7fdc2c2dc3342306069c37563",
+      "human_review": "pending"
+    },
+    {
+      "document": "docs/adr/kubernetes-temporary-rbac.md",
+      "sha256": "4ccfffba0d8e3a7f6f61c0b6def43f20232a61719fa264631537ae5cce03c6c7",
+      "human_review": "pending"
+    },
+    {
+      "document": "../asterius-idp-ast-dd1y.2.5/docs/adr/spire-jwt-svid-exchange.md",
+      "sha256": "8da739717636174c74ed9d9d38fc442422df7143a9637c96fdacbb6acfd1e700",
+      "human_review": "pending",
+      "runtime_implementation": "awaits architecture review"
+    }
+  ],
+  "candidate_main_merged": false,
+  "candidate_shared_deployed": false,
+  "owned_runtime_fixtures_cleaned": true,
+  "retained_shared_deployment": {
+    "image": "asterius-idp:local-ast-96u1-bf8fc000e345",
+    "migrations": 111,
+    "private_console_url": "https://desktop-cpbptqn-1.tailacbb15.ts.net/t/admin/admin/",
+    "private_account_url": "https://desktop-cpbptqn-1.tailacbb15.ts.net/t/admin/account",
+    "serve": "tailnet_only_https_443",
+    "funnel_enabled": false
+  },
+  "limits": [
+    "Runtime fixture-specific controlled seeds, software PKI and private synthetic transport limitations remain in linked receipts.",
+    "Literal40s Kubernetes cache boundary saturation, primary database replication and ignored concurrency regressions are not claimed.",
+    "SPIRE runtime implementation remains dependent on its proposed architecture review."
+  ]
+}
