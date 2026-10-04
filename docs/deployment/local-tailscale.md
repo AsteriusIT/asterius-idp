@@ -21,6 +21,23 @@ after the change; logout/reboot itself was not exercised. See
 
 ## Current verified deployment
 
+The 2026-10-04 menu update is merged locally as `49b83f4a`. It adds matching
+Lucide icons for temporary privileges, access reviews, governance findings,
+outbound provisioning and workspace health. All 27 menu routes have icons.
+Console typechecking and the production build passed.
+
+The live image is `asterius-idp:local-ast-f342-ef0de44ffce7`, using binary SHA-256
+`ef0de44ffce7cea7bfcbd20cc52fd3daf07c3af179f7ac994c3625195409ce3d`.
+A fresh protected backup and isolated restore passed before rollout. Live HTTPS
+readiness, discovery, protected account/console redirects and exact embedded
+asset comparisons passed. Schema remains at 117 successful migrations and exact
+account/password/TOTP records matched the baseline. Private Serve configuration
+and bridge remain active. Authenticated sidebar interaction was not exercised.
+
+See [the menu deployment evidence](evidence/local-navigation-icons-2026-10-04.json).
+
+## Previous modern IdP update
+
 The 2026-10-04 modern IdP update is merged into local main as `ab74aef7`,
 with the user's explicit permission to merge locally without remote CI. The live
 image is `asterius-idp:local-ast-dd1y-a4748106cb38`, using console-inclusive binary
