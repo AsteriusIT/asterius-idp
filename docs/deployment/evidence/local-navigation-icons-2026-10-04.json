@@ -1,0 +1,54 @@
+{
+  "task": "ast-f342",
+  "source_commit": "49b83f4a",
+  "binary_sha256": "ef0de44ffce7cea7bfcbd20cc52fd3daf07c3af179f7ac994c3625195409ce3d",
+  "image": "asterius-idp:local-ast-f342-ef0de44ffce7",
+  "image_id": "sha256:82e872f56d579df8e34030cb0b0de290eb8d196d609fd09a41f807ca0a2e2dee",
+  "isolated_restore": "pass",
+  "restricted_image_readiness": "pass",
+  "isolated_canonical_discovery": "pass",
+  "isolated_protected_entrypoint_redirects": "pass",
+  "exact_account_credential_totp_equality": true,
+  "successful_migrations": 117,
+  "required_migrations": [
+    172
+  ],
+  "private_backup": "~/.local/share/asterius/backups/ast-f342-20261004T134801Z-93ddfbe7",
+  "private_backup_mode": "0700/0600",
+  "status": "pass",
+  "local_merge": "49b83f4a",
+  "remote_ci": "explicit_user_local_merge_exception_2026-10-04",
+  "live_rollout": "pass",
+  "live_https_readiness": "pass",
+  "live_canonical_discovery": "pass",
+  "live_protected_redirects": "pass",
+  "live_exact_account_password_totp_equality": true,
+  "live_console_embedded_assets": [
+    {
+      "file": "Geist-Variable-DPGgOCY9.woff2",
+      "sha256": "2ffebe993e969069a9789d15164b7715d42491b5835516c5e3b935d5f81b05f1"
+    },
+    {
+      "file": "GeistMono-Variable-Vc9u_qg9.woff2",
+      "sha256": "afaacc4c5fbba89d2ebf7a02dc4070208540874592a5504d57175782fe893101"
+    },
+    {
+      "file": "main-DhceRrMd.js",
+      "sha256": "1605a7ba23ca9dc574c56a959c6ed86a78044f432a4e4b4ca7bbb5ca5af3e10a"
+    },
+    {
+      "file": "style-BRJlnuRG.css",
+      "sha256": "223b7784928fec42c5aad328e2536187e2138d3f766e74161f500d2f296c36b8"
+    }
+  ],
+  "private_serve_configuration_unchanged": true,
+  "bridge_active": true,
+  "console_typecheck_and_build": "pass",
+  "menu_routes_with_icons": 27,
+  "limits": [
+    "Authenticated existing-account password/TOTP sign-in was not exercised.",
+    "Ignored PostgreSQL concurrency and full remote CI suites were not run under explicit local merge exception.",
+    "Authenticated sidebar visual interaction was not exercised; all menu icon mappings and built asset equality were checked."
+  ],
+  "initial_https_probe": "transient503 immediately after rollout; repeat after bridge reconnected passed"
+}
