@@ -76,6 +76,13 @@ struct Principal<'a> {
     authentication: Option<&'a GrantAuthentication>,
     grant: Option<&'a Grant>,
     device: Option<&'a Fact>,
+    held_roles: Option<&'a asterius_domain::HeldRoles>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct GrantFacts<'a> {
+    device: Option<&'a Fact>,
+    held_roles: Option<&'a asterius_domain::HeldRoles>,
 }
 
 impl ConditionalAccess {
@@ -113,7 +120,7 @@ impl ConditionalAccess {
         kind: GrantType,
         now: OffsetDateTime,
     ) -> Result<bool, DomainError> {
-        self.check_grant_fact(tenant, client, grant, kind, now, None)
+        self.check_grant_fact(tenant, client, grant, kind, now, GrantFacts::default())
             .await
     }
 
@@ -124,7 +131,7 @@ impl ConditionalAccess {
         grant: &Grant,
         kind: GrantType,
         now: OffsetDateTime,
-        device: Option<&Fact>,
+        facts: GrantFacts<'_>,
     ) -> Result<bool, DomainError> {
         if grant.tenant != tenant.id || client.tenant != tenant.id || grant.client != client.id {
             return Err(DomainError::invalid(
@@ -152,7 +159,8 @@ impl ConditionalAccess {
                 .map(asterius_domain::SubjectId::as_str),
             authentication,
             grant: Some(grant),
-            device,
+            device: facts.device,
+            held_roles: facts.held_roles,
         };
         self.check(tenant, client, action(kind), input, now).await
     }
@@ -466,14 +474,19 @@ impl ConditionalAccess {
         let groups = PgGroups::new(self.store.pool().clone())
             .authorization_references_for_user(&tenant.id, user.id)
             .await?;
-        let roles = match input.grant {
-            Some(grant) => {
+        let roles = match (input.held_roles, input.grant) {
+            (Some(roles), _) => {
+                let mut roles = roles.clone();
+                roles.retain_current_temporary_roles(now);
+                roles
+            }
+            (None, Some(grant)) => {
                 tenant_scope
                     .application_roles()
                     .held_by_grant(grant)
                     .await?
             }
-            None => {
+            (None, None) => {
                 tenant_scope
                     .application_roles()
                     .held_by(&tenant.id, user.id)
@@ -657,7 +670,17 @@ impl super::agent_issuance::ConditionalGuard for ConditionalAccess {
         if binding.is_none() {
             let device = Fact::missing(Availability::Absent, "exact_request_device_proof");
             return self
-                .check_grant_fact(tenant, client, grant, kind, now, Some(&device))
+                .check_grant_fact(
+                    tenant,
+                    client,
+                    grant,
+                    kind,
+                    now,
+                    GrantFacts {
+                        device: Some(&device),
+                        held_roles: None,
+                    },
+                )
                 .await;
         }
         if self.store.pool().options().get_max_connections() < 3 {
@@ -710,7 +733,10 @@ impl super::agent_issuance::ConditionalGuard for ConditionalAccess {
                 grant,
                 kind,
                 OffsetDateTime::now_utc(),
-                Some(&device),
+                GrantFacts {
+                    device: Some(&device),
+                    held_roles: None,
+                },
             )
             .await?;
         fence.commit().await?;
@@ -896,6 +922,7 @@ impl asterius_domain::ports::PolicyEngine for ConditionalPolicyEngine {
                 authentication,
                 grant: exact,
                 device: Some(&device),
+                held_roles: None,
             };
             let resolved = self
                 .access
@@ -1176,6 +1203,7 @@ impl super::authorize::ConditionalAuthorization for ConditionalAccess {
                 authentication: Some(&authentication),
                 grant: None,
                 device: None,
+                held_roles: None,
             };
             let request = self
                 .resolve(tenant, &client, "authorize", &policy, scope, input, now)
@@ -1245,6 +1273,7 @@ impl super::authorize::ConditionalAuthorization for ConditionalAccess {
             authentication: grant.authentication.as_ref(),
             grant: Some(grant),
             device: None,
+            held_roles: None,
         };
         self.check(tenant, client, "authorize", input, now).await
     }
@@ -1297,6 +1326,7 @@ impl super::authorize::ConditionalAuthorization for ConditionalAccess {
             authentication: grant.authentication.as_ref(),
             grant: Some(grant),
             device: Some(&device),
+            held_roles: None,
         };
         let permitted = self
             .check(
@@ -1430,20 +1460,17 @@ impl<'a> ConditionalSigner<'a> {
     }
     async fn current_roles(
         &self,
+        transaction: &mut asterius_store_pg::PolicyPublicationFence,
         tenant: &asterius_domain::TenantId,
         grant: &Grant,
         claims: &serde_json::Value,
     ) -> Result<asterius_domain::HeldRoles, DomainError> {
-        if claims.get("roles").is_none() && claims.get("resource_access").is_none() {
-            return Ok(asterius_domain::HeldRoles::empty());
-        }
-        let held = self
-            .access
-            .store
-            .scope(tenant.clone())
-            .application_roles()
-            .held_by_grant(grant)
-            .await?;
+        let held = asterius_store_pg::PgApplicationRoles::held_by_grant_on(
+            transaction.connection(),
+            tenant,
+            grant,
+        )
+        .await?;
         if !signed_roles_current(claims, &held, &grant.client, OffsetDateTime::now_utc()) {
             return Err(DomainError::invalid(
                 "temporary_entitlement",
@@ -1605,7 +1632,9 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
             self.access.device_anchors.get(tenant.as_str()),
         )
         .await?;
-        let held = self.current_roles(tenant, grant, claims).await?;
+        let held = self
+            .current_roles(&mut transaction, tenant, grant, claims)
+            .await?;
         let mut identity_claims = claims.clone();
         if let Some(deadline) = authority.expires_at() {
             let expiry = identity_claims
@@ -1728,7 +1757,10 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
                 grant,
                 kind,
                 OffsetDateTime::now_utc(),
-                Some(&device),
+                GrantFacts {
+                    device: Some(&device),
+                    held_roles: Some(&held),
+                },
             )
             .await?
         {
@@ -1772,13 +1804,19 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
                 .sign_access(tenant, issuance, algorithm, typ, claims)
                 .await;
         }
-        let mut transaction = self.fence(tenant).await?;
-        let device = asterius_store_pg::PgManagedDevices::resolve_for_grant_on(
+        let authority = issuance.held_authority.ok_or_else(|| {
+            DomainError::invalid("grant_authority", "outer retained authority required")
+        })?;
+        let mut transaction = PgPolicies::new(self.access.store.pool().clone())
+            .facts_under_held_publication(tenant, &self.tenant.issuer, issuance.grant, authority)
+            .await?;
+        let device = asterius_store_pg::PgManagedDevices::resolve_under_held_authority_on(
             transaction.connection(),
             tenant,
             issuance.grant,
             issuance.device_binding,
             self.access.device_anchors.get(tenant.as_str()),
+            authority,
         )
         .await?;
         let client = self
@@ -1846,6 +1884,9 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
                 }
             }
         };
+        let held = self
+            .current_roles(&mut transaction, tenant, &narrowed, claims)
+            .await?;
         // This fresh clock follows any key/lock wait. Auth age is always from
         // the original transaction, never from an unrelated elevated session.
         if !self
@@ -1856,7 +1897,10 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
                 &narrowed,
                 issuance.kind,
                 OffsetDateTime::now_utc(),
-                Some(&device),
+                GrantFacts {
+                    device: Some(&device),
+                    held_roles: Some(&held),
+                },
             )
             .await?
         {
@@ -1865,7 +1909,7 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
                 "conditional issuance refused",
             ));
         }
-        let held = self.current_roles(tenant, &narrowed, claims).await?;
+
         let kind = issuance.kind;
         let signed = self
             .inner
@@ -1900,13 +1944,27 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
                 &narrowed,
                 kind,
                 OffsetDateTime::now_utc(),
-                Some(&device),
+                GrantFacts {
+                    device: Some(&device),
+                    held_roles: Some(&held),
+                },
             )
             .await?
         {
             return Err(DomainError::invalid(
                 "conditional_access",
                 "device authority expired during signing",
+            ));
+        }
+        if !authority.validates(
+            tenant,
+            issuance.grant,
+            self.tenant.issuer.as_str(),
+            OffsetDateTime::now_utc(),
+        ) {
+            return Err(DomainError::invalid(
+                "grant_authority",
+                "access authority expired during signing",
             ));
         }
         transaction.commit().await?;

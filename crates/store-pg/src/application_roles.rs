@@ -62,6 +62,88 @@ impl PgApplicationRoles {
     pub const fn new(pool: PgPool) -> Self {
         Self { pool }
     }
+    /// Resolve standing and temporary roles on the caller's supplied facts
+    /// connection beneath an already-held publication fence.
+    ///
+    /// # Errors
+    /// Returns invalid stored role/proof data and storage errors.
+    pub async fn held_by_grant_on(
+        connection: &mut sqlx::PgConnection,
+        tenant: &TenantId,
+        grant: &asterius_domain::Grant,
+    ) -> Result<HeldRoles, DomainError> {
+        if grant.tenant != *tenant {
+            return Err(DomainError::invalid("grant", "role tenant mismatch"));
+        }
+        let Some(user) = grant.user else {
+            return Ok(HeldRoles::empty());
+        };
+        let rows = sqlx::query(
+            "select null::text as client_id, name, null::uuid as group_id
+               from user_tenant_roles where tenant_id = $1 and user_id = $2
+             union all
+             select client_id, name, null::uuid
+               from user_client_roles where tenant_id = $1 and user_id = $2
+             union all
+             select null::text, r.name, r.group_id
+               from group_memberships m
+               join group_tenant_roles r using (tenant_id, group_id)
+              where m.tenant_id = $1 and m.user_id = $2
+             union all
+             select r.client_id, r.name, r.group_id
+               from group_memberships m
+               join group_client_roles r using (tenant_id, group_id)
+              where m.tenant_id = $1 and m.user_id = $2",
+        )
+        .bind(tenant.as_str())
+        .bind(user.as_uuid())
+        .fetch_all(&mut *connection)
+        .await
+        .map_err(to_domain_error)?;
+
+        let mut held = HeldRoles::default();
+        for row in rows {
+            let name = parse_stored(row.get("name"))?;
+            match row.get::<Option<String>, _>("client_id") {
+                Some(client) => {
+                    held.clients
+                        .entry(ClientId::new(client))
+                        .or_default()
+                        .insert(name);
+                }
+                None => {
+                    held.tenant.insert(name);
+                }
+            }
+        }
+        let snapshot =
+            crate::PgTemporaryEntitlements::resolve_under_publication_on(connection, tenant, grant)
+                .await?;
+        held.temporary_proof_expires_at = grant
+            .authentication
+            .as_ref()
+            .and_then(|auth| auth.assurance_authenticated_at)
+            .and_then(|at| at.checked_add(time::Duration::seconds(120)));
+        for activation in snapshot.roles {
+            let roles = held.clients.entry(activation.client.clone()).or_default();
+            if roles.insert(activation.role.clone()) {
+                held.temporary_deadlines
+                    .entry(activation.client)
+                    .or_default()
+                    .insert(activation.role, activation.expires_at);
+            } else if let Some(deadline) = held
+                .temporary_deadlines
+                .get_mut(&activation.client)
+                .and_then(|deadlines| deadlines.get_mut(&activation.role))
+            {
+                // Independent standing authority has no marker. Multiple
+                // temporary sources may supply the same role until the last ends.
+                *deadline = (*deadline).max(activation.expires_at);
+            }
+        }
+        held.retain_current_temporary_roles(OffsetDateTime::now_utc());
+        Ok(held)
+    }
 }
 
 impl PgApplicationRoles {

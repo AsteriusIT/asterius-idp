@@ -243,3 +243,53 @@ async fn grant_parent_derivation_current_disabled_human_blocks_publication() {
     );
     f.cleanup().await;
 }
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL; CI runs frozen session authority compatibility"]
+async fn grant_parent_derivation_attested_lookup_rotation_preserves_generation() {
+    let f = Fixture::new().await;
+    sqlx::query("insert into users(tenant_id,user_id,username) values('parent','00000000-0000-4000-8000-000000000001','session-owner')").execute(&f.pool).await.expect("owner");
+    sqlx::query("insert into sessions(tenant_id,session_id,public_sid,user_id,authenticated_at,expires_at,idle_expires_at,acr,amr) values ('parent','old','original','00000000-0000-4000-8000-000000000001',now(),now()+interval '1 hour',now()+interval '1 hour','phr',array['pop','user']),('parent','other','unrelated','00000000-0000-4000-8000-000000000001',now(),now()+interval '1 hour',now()+interval '1 hour','phr',array['pop','user'])").execute(&f.pool).await.expect("sessions");
+    sqlx::query("insert into session_assurance_proofs(tenant_id,session_id,acr,assurance_authenticated_at,assurance_policy_revision,assurance_methods) select tenant_id,session_id,acr,authenticated_at,repeat('a',64),amr from sessions").execute(&f.pool).await.expect("original proofs");
+    let id = Uuid::new_v4();
+    sqlx::query("insert into grants(tenant_id,grant_id,client_id,user_id,subject,session_id,authenticated_at,acr,amr) select 'parent',$1,'client',user_id,'session-owner',session_id,authenticated_at,acr,amr from sessions where session_id='old'").bind(id).execute(&f.pool).await.expect("frozen grant");
+    let revision: Uuid =
+        sqlx::query_scalar("select authority_revision from grants where grant_id=$1")
+            .bind(id)
+            .fetch_one(&f.pool)
+            .await
+            .expect("original generation");
+    let mut transaction = f.pool.begin().await.expect("lookup rotation");
+    sqlx::query("update sessions set session_id='new',authenticated_at=authenticated_at+interval '30 seconds' where tenant_id='parent' and session_id='old'").execute(&mut *transaction).await.expect("stable public session lookup move");
+    sqlx::query("update grants set session_id='new' where tenant_id='parent' and grant_id=$1")
+        .bind(id)
+        .execute(&mut *transaction)
+        .await
+        .expect("attested exact grant lookup move");
+    transaction.commit().await.expect("commit lookup rotation");
+    let after: Uuid = sqlx::query_scalar("select authority_revision from grants where grant_id=$1")
+        .bind(id)
+        .fetch_one(&f.pool)
+        .await
+        .expect("same authority");
+    assert_eq!(
+        revision, after,
+        "attested same-public-session lookup move does not invalidate descendants"
+    );
+    sqlx::query("update grants set session_id='other' where tenant_id='parent' and grant_id=$1")
+        .bind(id)
+        .execute(&f.pool)
+        .await
+        .expect("arbitrary same-user reassignment");
+    let reassigned: Uuid =
+        sqlx::query_scalar("select authority_revision from grants where grant_id=$1")
+            .bind(id)
+            .fetch_one(&f.pool)
+            .await
+            .expect("new authority generation");
+    assert_ne!(
+        revision, reassigned,
+        "unrelated session cannot retain frozen authority generation"
+    );
+    f.cleanup().await;
+}

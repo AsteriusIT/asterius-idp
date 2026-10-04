@@ -627,6 +627,7 @@ impl TokenExchange<'_> {
             .sign_access(
                 &tenant.id,
                 asterius_domain::keys::AccessIssuance {
+                    held_authority: None,
                     device_binding: None,
                     grant: &grant,
                     kind: GrantType::TokenExchange,
@@ -925,6 +926,7 @@ impl TokenExchange<'_> {
             .sign_access(
                 &tenant.id,
                 asterius_domain::keys::AccessIssuance {
+                    held_authority: None,
                     device_binding: device_binding.as_ref(),
                     implicit_resources: &issuance::implicit_resources(
                         tenant,
@@ -1806,6 +1808,7 @@ impl TokenExchange<'_> {
             .sign_access(
                 &tenant.id,
                 asterius_domain::keys::AccessIssuance {
+                    held_authority: None,
                     device_binding: None,
                     grant: &conditional_grant,
                     kind: GrantType::TokenExchange,

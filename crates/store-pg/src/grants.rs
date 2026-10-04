@@ -99,6 +99,12 @@ pub struct GrantAuthorityFence {
     expires_at: Option<OffsetDateTime>,
 }
 impl GrantAuthorityFence {
+    pub(crate) const fn from_held(held: &asterius_domain::keys::HeldGrantAuthority) -> Self {
+        Self {
+            expires_at: held.expires_at(),
+        }
+    }
+
     /// Earliest current expiry among the exact grant and its ancestors.
     #[must_use]
     pub const fn expires_at(&self) -> Option<OffsetDateTime> {

@@ -381,6 +381,7 @@ impl DeviceCode<'_> {
             .sign_access(
                 &tenant.id,
                 asterius_domain::keys::AccessIssuance {
+                    held_authority: None,
                     device_binding: None,
                     implicit_resources: &issuance::implicit_resources(
                         tenant,

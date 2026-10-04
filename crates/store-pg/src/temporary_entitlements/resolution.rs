@@ -57,6 +57,19 @@ impl PgTemporaryEntitlements {
         if anchor.is_none() {
             return Err(DomainError::NotFound);
         }
+        Self::resolve_under_publication_on(connection, tenant, grant).await
+    }
+
+    /// Resolve beneath an already-held publication fence without a duplicate
+    /// tenant lock on another connection. The caller retains that outer fence.
+    ///
+    /// # Errors
+    /// Returns storage errors or invalid stored permission/authentication data.
+    pub async fn resolve_under_publication_on(
+        connection: &mut PgConnection,
+        tenant: &TenantId,
+        grant: &Grant,
+    ) -> Result<TemporaryRoleSnapshot, DomainError> {
         let (now,): (OffsetDateTime,) = sqlx::query_as("select clock_timestamp()")
             .fetch_one(&mut *connection)
             .await

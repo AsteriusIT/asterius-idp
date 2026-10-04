@@ -24,18 +24,43 @@ changes, missing/cyclic/deeper-than-ten lineage, revocation and expiry after loc
 waits. The minimum current lineage expiry caps the signed identity and is
 rechecked after cryptography and online digest persistence. Separate consent/code
 and exact-parent exchange preflight helpers never establish final issued authority.
-A further correction pins the exact loaded permission/authentication revision
-(`grants.updated_at`) after all row waits, using the same PostgreSQL timestamp
-encoding as insertion. First claim changes only `claimed_at`; audience/scope
-narrowing and task preparation do not change this revision. Exact-parent exchange
-preflight copies the parent's observed revision, rather than the child's timestamp.
-An amendment that wins before final identity signing therefore refuses the stale
-loaded grant. The CI regression checks normal first claim/narrowing, stale leaf
-refusal after a real repository amendment, and success after authoritative reload.
-This additional leaf-revision correction is not yet in the recorded runtime binary.
-Parent permission derivation is tracked separately as ast-dd1y.9: reloading a fresh
-parent revision cannot establish that a previously derived child ceiling belongs
-to that revision. Candidate delivery requires that race to be resolved as well.
+A subsequent attempted timestamp pin exposed a normal-code regression: the
+baseline database trigger updates `updated_at` even on first claim. Timestamps
+also collide for authority amendments within one transaction. That attempted
+correction is superseded by ast-dd1y.9's private UUID authority generation.
+Migration0171 rotates the generation only for actual permission, authentication,
+principal or actor changes; claim and expiry bookkeeping preserve it. An attested
+same-public-session private lookup rotation preserves frozen authority, while
+arbitrary session reassignment changes it.
+
+Every derived child carries the immutable generation of its exact parent as
+observed before derivation. Final publication validates each edge against the
+locked current parent; it never substitutes a fresh parent generation for a
+historical receipt. Legacy derived grants without a receipt fail closed for new
+issuance and require reauthorization. Existing stateless credentials retain their
+existing expiry/revocation contract; this migration does not claim retrospective
+offline JWT withdrawal. No generation or receipt appears in public JWT claims.
+The canonical lock order is tenant publication, sorted current clients, sorted
+current human owners, then bounded root-to-leaf grants. An inactive ancestor
+client or exact owner refuses new publication even when the leaf remains live.
+
+Access issuance additionally carries a private held-authority value created only
+after strict validation by the transaction-owning outer signer. It binds tenant,
+issuer, exact grant ID/generation and the original minimum lineage expiry. The
+outer transaction keeps publication, principal and lineage locks until signature
+and commit. Inner conditional/device/role fact reads use that protected context
+without obtaining the same tenant, client, user or root locks on a second
+connection; otherwise a queued writer can cause the signer to wait on itself.
+Identity issuance owns its full direct publication/lineage fence. Task access
+forwards its complete issuance context rather than falling back to raw signing.
+Specialized raw ID-JAG redemption remains a separate atomic protocol transition
+and still needs an explicit publication-context handoff before candidate delivery.
+
+These source corrections are not yet in the recorded 115-migration runtime
+binary. Official metadata regeneration, targeted compilation/verification and a
+fresh normal-code controlled runtime on the 116-migration candidate remain
+required. Human normative review of the refined trust/compatibility contract
+still gates delivery.
 
 The corrected binary passed the full 26 normal HTTPS/browser controls, including
 original-code identity issuance. That run does not claim to exercise withdrawal
