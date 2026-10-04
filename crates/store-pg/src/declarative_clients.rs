@@ -277,6 +277,9 @@ pub(crate) async fn delete(
     identity: &Identity,
 ) -> Result<(), Error> {
     identity_check(identity)?;
+    PgClientRepository::lifecycle_fence_on(connection, &identity.tenant)
+        .await
+        .map_err(Error::Storage)?;
     let changed = sqlx::query("delete from clients where tenant_id=$1 and client_id=$2")
         .bind(identity.tenant.as_str())
         .bind(&identity.keys[0])
