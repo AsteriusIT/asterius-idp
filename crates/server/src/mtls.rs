@@ -291,6 +291,38 @@ pub fn from_proxy_header(
     })
 }
 
+/// Device evidence uses a closed single-leaf spelling. Unlike the established
+/// OAuth adapter, it rejects duplicate fields and trailing/concatenated PEM.
+/// Caller-controlled headers from an untrusted peer are never parsed.
+pub(crate) fn device_from_proxy_header(
+    peer: IpAddr,
+    headers: &HeaderMap,
+    trusted_proxies: &[IpNet],
+    header_name: &str,
+) -> Option<PresentedCertificate> {
+    if !trusted_proxies.iter().any(|net| net.contains(&peer)) {
+        return None;
+    }
+    if headers.get_all(header_name).iter().count() != 1 {
+        return None;
+    }
+    let value = headers.get(header_name)?.to_str().ok()?;
+    if value.len() > MAX_CERTIFICATE_HEADER_LEN {
+        return None;
+    }
+    let decoded = percent_decode(value)?;
+    if decoded.contains("-----") {
+        let body = decoded
+            .trim()
+            .strip_prefix("-----BEGIN CERTIFICATE-----")?
+            .strip_suffix("-----END CERTIFICATE-----")?;
+        if body.contains("-----") {
+            return None;
+        }
+    }
+    from_proxy_header(peer, headers, trusted_proxies, header_name)
+}
+
 /// Decodes the certificate out of a header value.
 ///
 /// Three spellings are in the field, and all three are the same certificate:
@@ -585,6 +617,40 @@ mod tests {
         assert!(
             anchors.for_tenant(&TenantId::new("other")).is_none(),
             "one tenant's CAs were offered to another"
+        );
+    }
+    #[test]
+    fn device_certificate_header_rejects_duplicates_and_trailing_pem() {
+        let peer = IpAddr::from([127, 0, 0, 1]);
+        let proxies = vec!["127.0.0.1/32".parse().expect("fixture network")];
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-device-client-cert",
+            encoded().parse().expect("fixture header"),
+        );
+        assert!(
+            device_from_proxy_header(peer, &headers, &proxies, "x-device-client-cert").is_some()
+        );
+        headers.append(
+            "x-device-client-cert",
+            encoded().parse().expect("fixture header"),
+        );
+        assert!(
+            device_from_proxy_header(peer, &headers, &proxies, "x-device-client-cert").is_none()
+        );
+        headers.clear();
+        let pem = format!(
+            "-----BEGIN CERTIFICATE----- {} -----END CERTIFICATE----- ignored",
+            encoded()
+        );
+        headers.insert("x-device-client-cert", pem.parse().expect("fixture header"));
+        assert!(
+            device_from_proxy_header(peer, &headers, &proxies, "x-device-client-cert").is_none()
+        );
+        let untrusted = IpAddr::from([192, 0, 2, 1]);
+        assert!(
+            device_from_proxy_header(untrusted, &headers, &proxies, "x-device-client-cert")
+                .is_none()
         );
     }
 }

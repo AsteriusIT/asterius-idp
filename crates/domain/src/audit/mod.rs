@@ -547,6 +547,10 @@ impl EventType {
     /// retry is audited by its deliverer as any other; this one says the
     /// delivery was somebody's decision rather than the worker's schedule.
     pub const OUTBOX_RETRIED: Self = Self("outbox.retried");
+    /// An owned outbound SCIM mapping was acknowledged by its current worker.
+    pub const OUTBOUND_SCIM_DELIVERED: Self = Self("outbound_scim.delivered");
+    /// A current outbound SCIM attempt recorded a closed diagnostic code.
+    pub const OUTBOUND_SCIM_REFUSED: Self = Self("outbound_scim.refused");
     /// An operator removed an abandoned outbox row for good (`ast-f7m.8`).
     ///
     /// The one record of the row's existence once it is gone: the outbox
@@ -612,9 +616,18 @@ impl EventType {
     /// An OP sent, or failed to send, an account lifecycle command to an RP.
     pub const PROVIDER_COMMAND_DELIVERED: Self = Self("provider_command.delivered");
 
+    /// A tenant administrator changed a managed-device source generation.
+    pub const DEVICE_SOURCE_CHANGED: Self = Self("device.source_changed");
+    /// An independently authenticated relay enrolled a bounded device.
+    pub const DEVICE_ENROLLED: Self = Self("device.enrolled");
+    /// The exact relay atomically advanced current posture sequences.
+    pub const DEVICE_POSTURE_UPDATED: Self = Self("device.posture_updated");
+    /// A device was removed and its identifying/posture data erased.
+    pub const DEVICE_REMOVED: Self = Self("device.removed");
+
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 105] = [
+    pub const ALL: [Self; 111] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -704,6 +717,10 @@ impl EventType {
         Self::SAML_SP_PROVISIONED,
         Self::SAML_SP_REMOVED,
         Self::OIDC_PROVIDER_SAVED,
+        Self::DEVICE_SOURCE_CHANGED,
+        Self::DEVICE_ENROLLED,
+        Self::DEVICE_POSTURE_UPDATED,
+        Self::DEVICE_REMOVED,
         Self::WORKLOAD_TRUST_SAVED,
         Self::WORKLOAD_TRUST_DELETED,
         Self::WORKLOAD_VERIFIED,
@@ -719,6 +736,8 @@ impl EventType {
         Self::PROVIDER_COMMAND_DELIVERED,
         Self::SSF_VERIFICATION_REQUESTED,
         Self::OUTBOX_RETRIED,
+        Self::OUTBOUND_SCIM_DELIVERED,
+        Self::OUTBOUND_SCIM_REFUSED,
         Self::OUTBOX_DROPPED,
     ];
 

@@ -68,7 +68,7 @@ cargo +nightly fuzz run --target x86_64-unknown-linux-gnu <target> path/to/crash
 
 ## Coverage
 
-The 113 targets below cover 147 declared entry points. Generated from the
+The 119 targets below cover 163 declared entry points. Generated from the
 `// fuzz-target:` markers in `crates/`.
 
 | Fuzz target | Entry point | Source |
@@ -168,8 +168,17 @@ The 113 targets below cover 147 declared entry points. Generated from the
 | `jws_parse` | `parse` | `crates/jose/src/jws.rs` |
 | `jwt_verify` | `verify` | `crates/jose/src/verify.rs` |
 | `kek_unwrap` | `LocalKek::open` | `crates/jose/src/kek.rs` |
+| `kubernetes_token_review` | `TokenReviewRequest::parse` | `crates/domain/src/kubernetes_online.rs` |
 | `login_bucket` | `account_bucket` | `crates/domain/src/rate_limit.rs` |
 | `logout_request` | `LogoutRequest::parse` | `crates/oidc/src/logout.rs` |
+| `managed_device_input` | `Update::parse` | `crates/domain/src/managed_devices.rs` |
+| `outbound_scim_commands` | `parse_configure` | `crates/domain/src/outbound_scim/administration.rs` |
+| `outbound_scim_commands` | `parse_lifecycle` | `crates/domain/src/outbound_scim/lifecycle.rs` |
+| `outbound_scim_commands` | `parse_selection` | `crates/domain/src/outbound_scim/administration.rs` |
+| `outbound_scim_document` | `parse_document` | `crates/domain/src/outbound_scim/protocol.rs` |
+| `outbound_scim_identity` | `canonical_issuer` | `crates/domain/src/outbound_scim/validation.rs` |
+| `outbound_scim_peer` | `parse_peer_capabilities` | `crates/domain/src/outbound_scim/peer.rs` |
+| `outbound_scim_peer` | `parse_peer_token` | `crates/domain/src/outbound_scim/peer.rs` |
 | `pairwise_subject` | `PairwiseSalt::derive_subject` | `crates/domain/src/entities/user.rs` |
 | `par_form` | `validate` | `crates/oidc/src/authorize.rs` |
 | `password_policy` | `normalise` | `crates/domain/src/entities/password.rs` |
@@ -204,6 +213,10 @@ The 113 targets below cover 147 declared entry points. Generated from the
 | `ssf_verification_state` | `VerificationState::parse` | `crates/ssf/src/verification.rs` |
 | `temporary_entitlement_command` | `parse_command` | `crates/server/src/http/entitlements.rs` |
 | `temporary_entitlement_configuration` | `EntitlementConfiguration::validate` | `crates/domain/src/temporary_entitlements.rs` |
+| `temporary_entitlement_configuration` | `KubernetesBindingChange::parse` | `crates/domain/src/temporary_kubernetes.rs` |
+| `temporary_entitlement_configuration` | `KubernetesBindingChange::validate` | `crates/domain/src/temporary_kubernetes.rs` |
+| `temporary_entitlement_configuration` | `KubernetesJitIdentity::parse` | `crates/domain/src/temporary_kubernetes.rs` |
+| `temporary_entitlement_configuration` | `KubernetesJitIdentity::validate` | `crates/domain/src/temporary_kubernetes.rs` |
 | `tenant_message_overrides` | `MessageOverrides::from_json` | `crates/domain/src/messages.rs` |
 | `tenant_route` | `route` | `crates/oidc/src/tenancy.rs` |
 | `tenant_settings` | `SessionPolicy::from_json` | `crates/domain/src/entities/session.rs` |
@@ -218,5 +231,8 @@ The 113 targets below cover 147 declared entry points. Generated from the
 | `workload_token` | `Config::validate` | `crates/domain/src/workload.rs` |
 | `workload_token` | `KeySet::parse` | `crates/jose/src/workload.rs` |
 | `workload_token` | `Parsed::parse` | `crates/jose/src/workload.rs` |
+| `workload_token` | `Parsed::parse_spiffe` | `crates/jose/src/workload.rs` |
+| `workload_token` | `SpiffeBundle::parse` | `crates/jose/src/workload.rs` |
 | `workload_token` | `issuer_hint` | `crates/jose/src/workload.rs` |
+| `workload_token` | `spiffe_domain` | `crates/domain/src/workload.rs` |
 | `workload_token` | `validate_actions` | `crates/domain/src/workload.rs` |

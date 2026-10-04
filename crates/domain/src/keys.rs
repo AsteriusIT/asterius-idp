@@ -322,9 +322,95 @@ impl fmt::Display for CompactJws {
     }
 }
 
+/// Private evidence that a production adapter retains the exact publication,
+/// principal and grant-lineage locks through downstream signing.
+/// Never serialize this value or accept it from an HTTP/token claim.
+#[derive(Debug)]
+pub struct HeldGrantAuthority {
+    tenant: TenantId,
+    grant: crate::GrantId,
+    issuer: String,
+    revision: uuid::Uuid,
+    expires_at: Option<time::OffsetDateTime>,
+}
+impl HeldGrantAuthority {
+    /// Construct only after strict validation on a transaction retained through
+    /// signature and commit. Callers own the lifetime of all corresponding locks.
+    #[must_use]
+    pub fn from_fenced_grant(
+        grant: &crate::Grant,
+        issuer: &str,
+        expires_at: Option<time::OffsetDateTime>,
+    ) -> Self {
+        Self {
+            tenant: grant.tenant.clone(),
+            grant: grant.id.clone(),
+            issuer: issuer.to_owned(),
+            revision: grant.authority_revision,
+            expires_at,
+        }
+    }
+    /// Match exact issuance without selecting another current grant.
+    #[must_use]
+    pub fn validates(
+        &self,
+        tenant: &TenantId,
+        grant: &crate::Grant,
+        issuer: &str,
+        now: time::OffsetDateTime,
+    ) -> bool {
+        self.tenant == *tenant
+            && grant.tenant == *tenant
+            && self.grant == grant.id
+            && self.issuer == issuer
+            && self.revision == grant.authority_revision
+            && self.expires_at.is_none_or(|expiry| expiry > now)
+    }
+    /// Exact server issuer tied to the retained publication fence.
+    #[must_use]
+    pub fn issuer(&self) -> &str {
+        &self.issuer
+    }
+    /// The original minimum lineage deadline, never extended by awaited work.
+    #[must_use]
+    pub const fn expires_at(&self) -> Option<time::OffsetDateTime> {
+        self.expires_at
+    }
+}
+
+/// Private retained tenant/client publication context for specialized assertions
+/// whose replay/consent/grant persistence occurs after successful cryptography.
+/// This is not evidence of a current claimed grant or device authority.
+#[derive(Debug)]
+pub struct HeldClientPublication {
+    tenant: TenantId,
+    issuer: String,
+    client: crate::ClientId,
+}
+impl HeldClientPublication {
+    /// Construct only while retaining the exact publication and active client locks.
+    #[must_use]
+    pub fn from_fenced_client(tenant: TenantId, issuer: String, client: crate::ClientId) -> Self {
+        Self {
+            tenant,
+            issuer,
+            client,
+        }
+    }
+    /// Verify exact private context against the signing transaction.
+    #[must_use]
+    pub fn validates(&self, tenant: &TenantId, issuer: &str, client: &str) -> bool {
+        self.tenant == *tenant && self.issuer == issuer && self.client.as_str() == client
+    }
+}
+
 /// Access-token authorization context supplied by a validated grant handler.
 #[derive(Debug, Clone, Copy)]
 pub struct AccessIssuance<'a> {
+    /// Populated only by the outer transaction-owning production signer.
+    pub held_authority: Option<&'a HeldGrantAuthority>,
+    /// Exact proof carried by this issuance boundary; never inherited from a session.
+    pub device_binding: Option<&'a crate::managed_devices::DeviceBinding>,
     pub grant: &'a crate::Grant,
     pub kind: crate::GrantType,
     /// Server-owned audiences offered by this validated handler, never request data.
@@ -429,6 +515,36 @@ pub trait Signer: fmt::Debug + Send + Sync {
         claims: &serde_json::Value,
     ) -> Result<CompactJws, crate::DomainError> {
         self.sign(tenant, algorithm, typ, claims).await
+    }
+
+    /// Preserve an explicit retained publication/client fence for specialized
+    /// raw assertions. This context never substitutes for exact grant authority.
+    /// Production decorators must forward it through prepared wrappers.
+    async fn sign_client_bound(
+        &self,
+        tenant: &TenantId,
+        _publication: &HeldClientPublication,
+        algorithm: Option<SigningAlgorithm>,
+        typ: &'static str,
+        claims: &serde_json::Value,
+    ) -> Result<CompactJws, crate::DomainError> {
+        self.sign(tenant, algorithm, typ, claims).await
+    }
+
+    /// Signs an identity assertion with private proof from its exact issuance boundary.
+    /// Production decorators must forward this binding, including prepared wrappers.
+    /// Adapters with no posture enforcement retain their existing signing behavior.
+    async fn sign_identity_bound(
+        &self,
+        tenant: &TenantId,
+        grant: &crate::Grant,
+        _binding: Option<&crate::managed_devices::DeviceBinding>,
+        algorithm: Option<SigningAlgorithm>,
+        typ: &'static str,
+        claims: &serde_json::Value,
+    ) -> Result<CompactJws, crate::DomainError> {
+        self.sign_identity(tenant, grant, algorithm, typ, claims)
+            .await
     }
 
     /// Signs an access token with its durable authorization lineage available
@@ -1079,5 +1195,36 @@ mod tests {
     #[test]
     fn a_rotation_that_does_not_ask_gets_the_propagation_period() {
         assert_eq!(Activation::default(), Activation::OnSchedule);
+    }
+}
+
+#[cfg(test)]
+mod held_authority_tests {
+    use super::HeldGrantAuthority;
+    use crate::{ClientId, Grant, TenantId};
+    use time::{Duration, OffsetDateTime};
+
+    #[test]
+    fn held_authority_refuses_same_id_new_permission_generation_or_other_issuer() {
+        let now = OffsetDateTime::UNIX_EPOCH;
+        let tenant = TenantId::new("one");
+        let grant = Grant::new(tenant.clone(), ClientId::new("client"), now);
+        let held = HeldGrantAuthority::from_fenced_grant(
+            &grant,
+            "https://as.example/one",
+            Some(now + Duration::seconds(60)),
+        );
+        assert!(held.validates(&tenant, &grant, "https://as.example/one", now));
+        let mut amended = grant.clone();
+        amended.scopes.insert("new.permission".to_owned());
+        amended.authority_revision = uuid::Uuid::new_v4();
+        assert!(!held.validates(&tenant, &amended, "https://as.example/one", now));
+        assert!(!held.validates(&tenant, &grant, "https://as.example/other", now));
+        assert!(!held.validates(
+            &tenant,
+            &grant,
+            "https://as.example/one",
+            now + Duration::seconds(60)
+        ));
     }
 }

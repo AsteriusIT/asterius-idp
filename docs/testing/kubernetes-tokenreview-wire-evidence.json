@@ -1,0 +1,29 @@
+{
+  "ticket": "ast-dd1y.1.5",
+  "observed_at": "2026-10-03T19:28:11.752476+00:00",
+  "status": "controlled_wire_shape_reproduced_runtime_authentication_not_implemented",
+  "go_version": "go1.24.3 linux/amd64",
+  "command": "GOCACHE=<owned temporary directory> go run scripts/kubernetes-online/wire-shape.go",
+  "script_sha256": "3e811c4ee0f8740d09d7f2886b4278a7bd543af3590d41dca66b3d09bd979bf3",
+  "observed_zero_fields": {
+    "metadata": {
+      "creationTimestamp": null
+    },
+    "status": {
+      "user": {}
+    }
+  },
+  "source_provenance": [
+    "https://github.com/kubernetes/kubernetes/blob/v1.35.0/staging/src/k8s.io/api/authentication/v1/types.go",
+    "https://github.com/kubernetes/kubernetes/blob/v1.35.0/staging/src/k8s.io/apiserver/plugin/pkg/authenticator/token/webhook/webhook.go",
+    "https://github.com/kubernetes/apimachinery/blob/v0.35.0/pkg/runtime/serializer/json/json.go",
+    "https://github.com/kubernetes/apimachinery/blob/v0.35.0/pkg/util/json/json.go"
+  ],
+  "limitations": [
+    "Controlled standard-library reproduction with corresponding upstream field/tag shapes; no imported Kubernetes API package or live cluster run.",
+    "metav1.Time zero-value null output is represented with a nil pointer in the controlled reproduction.",
+    "Request token/spec were not printed; no raw-token logging.",
+    "Human review of the proposed empty-status compatibility correction is still pending.",
+    "Rust candidate parser and tests remain unexported, uncompiled and unexecuted."
+  ]
+}

@@ -37,6 +37,12 @@ pub struct PolicyPublicationFence {
     transaction: sqlx::Transaction<'static, sqlx::Postgres>,
 }
 impl PolicyPublicationFence {
+    /// Read current authority on this connection while its tenant publication lock is held.
+    /// Callers must not commit independently or acquire an incompatible writer lock.
+    pub fn connection(&mut self) -> &mut sqlx::PgConnection {
+        &mut self.transaction
+    }
+
     /// Release only after the downstream signing decorator committed its work.
     pub async fn commit(self) -> Result<(), DomainError> {
         self.transaction.commit().await.map_err(to_domain_error)
@@ -72,6 +78,55 @@ impl PgPolicies {
         if current.as_deref() != Some(issuer.as_str()) {
             return Err(DomainError::NotFound);
         }
+        Ok(PolicyPublicationFence { transaction })
+    }
+
+    /// Open a facts transaction under the outer signer's retained publication
+    /// lock. Never reacquire its tenant/root/principal locks on another connection.
+    ///
+    /// # Errors
+    /// Rejects missing/mismatched/expired trusted held authority or storage errors.
+    pub async fn facts_under_held_publication(
+        &self,
+        tenant: &TenantId,
+        issuer: &asterius_domain::Issuer,
+        grant: &asterius_domain::Grant,
+        authority: &asterius_domain::keys::HeldGrantAuthority,
+    ) -> Result<PolicyPublicationFence, DomainError> {
+        if !authority.validates(
+            tenant,
+            grant,
+            issuer.as_str(),
+            time::OffsetDateTime::now_utc(),
+        ) {
+            return Err(DomainError::invalid(
+                "grant_authority",
+                "held publication authority mismatch",
+            ));
+        }
+        let transaction = self.pool.begin().await.map_err(to_domain_error)?;
+        Ok(PolicyPublicationFence { transaction })
+    }
+
+    /// Open facts beneath an outer specialized assertion's retained publication
+    /// lock. This proves only current client publication, never grant authority.
+    ///
+    /// # Errors
+    /// Rejects mismatched retained client context or storage failure.
+    pub async fn facts_under_held_client_publication(
+        &self,
+        tenant: &TenantId,
+        issuer: &asterius_domain::Issuer,
+        client: &str,
+        publication: &asterius_domain::keys::HeldClientPublication,
+    ) -> Result<PolicyPublicationFence, DomainError> {
+        if !publication.validates(tenant, issuer.as_str(), client) {
+            return Err(DomainError::invalid(
+                "client_publication",
+                "held client publication mismatch",
+            ));
+        }
+        let transaction = self.pool.begin().await.map_err(to_domain_error)?;
         Ok(PolicyPublicationFence { transaction })
     }
 

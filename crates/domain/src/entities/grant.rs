@@ -358,6 +358,39 @@ pub struct GrantAuthentication {
 // The grant
 // ---------------------------------------------------------------------------
 
+/// Private derivation receipt from an exact server-loaded parent grant.
+/// Never accepted from request parameters or released as a token claim.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParentDerivation {
+    parent: GrantId,
+    revision: Uuid,
+}
+impl ParentDerivation {
+    /// Capture the exact loaded parent's permission/authentication revision.
+    #[must_use]
+    pub fn from_grant(parent: &Grant) -> Self {
+        Self {
+            parent: parent.id.clone(),
+            revision: parent.authority_revision,
+        }
+    }
+    /// Restore an immutable persisted receipt; do not use a current parent lookup.
+    #[must_use]
+    pub const fn from_stored(parent: GrantId, revision: Uuid) -> Self {
+        Self { parent, revision }
+    }
+    /// Exact parent named by the derivation.
+    #[must_use]
+    pub const fn parent(&self) -> &GrantId {
+        &self.parent
+    }
+    /// Original revision from which permissions were derived.
+    #[must_use]
+    pub const fn revision(&self) -> Uuid {
+        self.revision
+    }
+}
+
 /// One authorization, and everything issued under it.
 ///
 /// Deliberately not `#[non_exhaustive]`, for the reason
@@ -416,6 +449,8 @@ pub struct Grant {
     /// grant is minted at the token endpoint, so it is claimed the moment it
     /// exists.
     pub parent: Option<GrantId>,
+    /// Private immutable edge receipt; absent legacy edges confer no new issuance authority.
+    pub parent_derivation: Option<ParentDerivation>,
     /// Authoritative task metadata resolved by the task preparer; never a JWT claim source.
     pub task: Option<crate::agent_tasks::Binding>,
     /// The browser session the authorization happened in, when there was one.
@@ -435,6 +470,8 @@ pub struct Grant {
     /// When the row last changed. Grant Management ID1 §6.4's
     /// `last_updated_at`.
     pub updated_at: OffsetDateTime,
+    /// Private durable permission/authentication generation, separate from bookkeeping timestamps.
+    pub authority_revision: Uuid,
     /// When the authorization lapses, if it does.
     pub expires_at: Option<OffsetDateTime>,
     /// When it was withdrawn.
@@ -526,11 +563,13 @@ impl Grant {
             resources: BTreeSet::new(),
             actor_chain: Vec::new(),
             parent: None,
+            parent_derivation: None,
             task: None,
             session: None,
             authentication: None,
             created_at,
             updated_at: created_at,
+            authority_revision: Uuid::new_v4(),
             expires_at: None,
             claimed_at: None,
             revoked_at: None,
@@ -831,11 +870,13 @@ impl GrantRecord {
             resources,
             actor_chain,
             parent: self.parent,
+            parent_derivation: None,
             task: None,
             session: self.session.map(SessionId::new),
             authentication,
             created_at: self.created_at,
             updated_at: self.updated_at,
+            authority_revision: Uuid::nil(),
             expires_at: self.expires_at,
             claimed_at: self.claimed_at,
             revoked_at: self.revoked_at,

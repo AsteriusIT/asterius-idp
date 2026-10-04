@@ -465,6 +465,7 @@ impl Fixture {
             resources: std::collections::BTreeSet::new(),
             actor_chain: Vec::new(),
             parent: None,
+            parent_derivation: None,
             task: None,
             // The store keeps the digest, which is what the token endpoint
             // looks the session up by.
@@ -480,6 +481,7 @@ impl Fixture {
             }),
             created_at: self.now,
             updated_at: self.now,
+            authority_revision: uuid::Uuid::new_v4(),
             expires_at: None,
             revoked_at: None,
             revocation_reason: None,
@@ -493,6 +495,7 @@ impl Fixture {
     async fn issue(&self, grant: &Grant, pkce: &Pkce, dpop_jkt: Option<&str>) -> String {
         let minted = asterius_oidc::code::MintedCode::generate();
         let binding = CodeBinding {
+            device_binding: None,
             client_id: CLIENT.to_owned(),
             grant_id: grant.id.clone(),
             code_challenge: pkce.challenge.to_owned(),
@@ -551,6 +554,7 @@ impl Fixture {
         let ida_frameworks = std::collections::BTreeSet::new();
         let task_audit = PgAuditSink::new(self.store.pool().clone());
         let handler = AuthorizationCode {
+            device_request: None,
             agent_policy: asterius_server::http::agent_issuance::AgentPolicy::unenforced(
                 &task_audit,
             ),
@@ -1367,6 +1371,7 @@ db_test! {
             .issue(
                 minted.digest(),
                 &CodeBinding {
+                    device_binding: None,
                     client_id: "someone-else".to_owned(),
                     grant_id: grant.id.clone(),
                     code_challenge: pkce.challenge.to_owned(),

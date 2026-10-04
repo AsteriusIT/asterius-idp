@@ -23,10 +23,13 @@ pub mod issuer;
 pub mod json_sentinel;
 pub mod keys;
 pub mod kubernetes;
+pub mod kubernetes_online;
 pub mod limits;
 pub mod locale;
+pub mod managed_devices;
 pub mod messages;
 pub mod notification;
+pub mod outbound_scim;
 pub mod outbox;
 pub mod policy;
 pub mod ports;
@@ -34,6 +37,7 @@ pub mod rate_limit;
 pub mod secret;
 mod secret_audit;
 pub mod temporary_entitlements;
+pub mod temporary_kubernetes;
 pub mod tenant_rate_limits;
 pub mod totp;
 
@@ -74,17 +78,17 @@ pub use entities::{
     JsonSchema, JsonSchemaError, JwksRequirement, JwksSource, LiveAccessToken,
     MAX_DELEGATION_DEPTH, MAX_DISPLAY_NAME_LENGTH, MAX_INITIAL_ACCESS_TOKEN_LABEL_LEN,
     MAX_REGISTRATION_EMAIL_LENGTH, MAX_REGISTRATION_USERNAME_LENGTH, MAX_ROLE_DESCRIPTION_LEN,
-    MAX_VERIFIED_CLAIMS, ManagedGroupsClaim, NewInitialAccessToken, PairwiseSalt, PasskeyEnrolment,
-    PolicyViolation, RECOVERY_LIFETIME, RECOVERY_TOKEN_BITS, RecoveryToken, RecoveryTokenError,
-    RedirectUri, RedirectUriError, RefreshPolicy, RefreshPolicyError, RegistrationError,
-    RegistrationMode, RegistrationPolicy, RegistrationPolicyError, ResourceIdentifier,
-    ResourceRegistry, ResourceServer, RevocationReason, Role, RoleAssignment, RoleClaim, RoleName,
-    RoleNameError, RoleOwner, RoleScope, RoleSource, RolesInIdToken, Rotation, RuleId,
-    SectorIdentifier, SoftwareStatementIssuer, SoftwareStatementRule, SubjectError, SubjectType,
-    Tenant, TenantIcon, TenantSettings, TenantSettingsError, TenantStatus, Theme, ThemeError,
-    TlsClientAuthSubject, TokenBinding, TokenDeliveryMode, TokenEndpointAuthMethod, TokenLifetimes,
-    User, UserId, UserRole, UserStatus, Verification, VerifiedAddress, VerifiedClaimName,
-    VerifiedClaims, VerifiedClaimsError,
+    MAX_VERIFIED_CLAIMS, ManagedGroupsClaim, NewInitialAccessToken, PairwiseSalt, ParentDerivation,
+    PasskeyEnrolment, PolicyViolation, RECOVERY_LIFETIME, RECOVERY_TOKEN_BITS, RecoveryToken,
+    RecoveryTokenError, RedirectUri, RedirectUriError, RefreshPolicy, RefreshPolicyError,
+    RegistrationError, RegistrationMode, RegistrationPolicy, RegistrationPolicyError,
+    ResourceIdentifier, ResourceRegistry, ResourceServer, RevocationReason, Role, RoleAssignment,
+    RoleClaim, RoleName, RoleNameError, RoleOwner, RoleScope, RoleSource, RolesInIdToken, Rotation,
+    RuleId, SectorIdentifier, SoftwareStatementIssuer, SoftwareStatementRule, SubjectError,
+    SubjectType, Tenant, TenantIcon, TenantSettings, TenantSettingsError, TenantStatus, Theme,
+    ThemeError, TlsClientAuthSubject, TokenBinding, TokenDeliveryMode, TokenEndpointAuthMethod,
+    TokenLifetimes, User, UserId, UserRole, UserStatus, Verification, VerifiedAddress,
+    VerifiedClaimName, VerifiedClaims, VerifiedClaimsError,
 };
 pub use error::DomainError;
 pub use ids::{

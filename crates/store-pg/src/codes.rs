@@ -71,6 +71,19 @@ impl PgCodeRepository {
         now: OffsetDateTime,
     ) -> Result<(), DomainError> {
         let digest = Self::digest_bytes(digest)?;
+        if let Some(proof) = &binding.device_binding {
+            proof.validate(now)?;
+            if proof.tenant() != &self.tenant
+                || proof.client().as_str() != binding.client_id
+                || proof.bound_grant_id().is_some()
+            {
+                return Err(DomainError::invalid(
+                    "device",
+                    "code proof binding mismatch",
+                ));
+            }
+        }
+        let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
         sqlx::query!(
             "insert into authorization_codes
                  (tenant_id, code_hash, client_id, grant_id, code_challenge,
@@ -89,7 +102,7 @@ impl PgCodeRepository {
             binding.expires_at,
             binding.grant_management_action.as_deref(),
         )
-        .execute(&self.pool)
+        .execute(&mut *transaction)
         .await
         .map_err(|error| match &error {
             sqlx::Error::Database(db) if db.is_unique_violation() => {
@@ -97,6 +110,23 @@ impl PgCodeRepository {
             }
             _ => to_domain_error(error),
         })?;
+        if let Some(proof) = &binding.device_binding {
+            let value = serde_json::to_value(proof)
+                .map_err(|_| DomainError::invalid("device", "invalid private proof"))?;
+            sqlx::query(
+                "insert into managed_device_code_proofs \
+                (tenant_id, code_hash, device_id, binding, expires_at) values ($1,$2,$3,$4,$5)",
+            )
+            .bind(self.tenant.as_str())
+            .bind(&digest)
+            .bind(proof.device())
+            .bind(value)
+            .bind(proof.proof_expires_at())
+            .execute(&mut *transaction)
+            .await
+            .map_err(to_domain_error)?;
+        }
+        transaction.commit().await.map_err(to_domain_error)?;
         Ok(())
     }
 
@@ -118,6 +148,7 @@ impl PgCodeRepository {
         now: OffsetDateTime,
     ) -> Result<Redemption, DomainError> {
         let digest = Self::digest_bytes(digest)?;
+        let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
 
         // The spend. `consumed_at is null` in the predicate is what makes this
         // single-use: a second concurrent redemption matches no row.
@@ -134,12 +165,34 @@ impl PgCodeRepository {
             digest,
             now,
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *transaction)
         .await
         .map_err(to_domain_error)?;
 
         if let Some(row) = spent {
+            let value: Option<serde_json::Value> = sqlx::query_scalar(
+                "delete from managed_device_code_proofs where tenant_id=$1 and code_hash=$2 returning binding"
+            ).bind(self.tenant.as_str()).bind(&digest).fetch_optional(&mut *transaction)
+                .await.map_err(to_domain_error)?;
+            let device_binding = value
+                .map(serde_json::from_value::<asterius_domain::managed_devices::DeviceBinding>)
+                .transpose()
+                .map_err(|_| DomainError::invalid("device", "invalid private proof"))?;
+            if let Some(proof) = &device_binding {
+                proof.validate(now)?;
+                if proof.tenant() != &self.tenant
+                    || proof.client().as_str() != row.client_id
+                    || proof.bound_grant_id().is_some()
+                {
+                    return Err(DomainError::invalid(
+                        "device",
+                        "code proof binding mismatch",
+                    ));
+                }
+            }
+            transaction.commit().await.map_err(to_domain_error)?;
             return Ok(Redemption::Redeemed(Box::new(CodeBinding {
+                device_binding,
                 client_id: row.client_id,
                 grant_id: GrantId::new(row.grant_id.to_string()),
                 code_challenge: row.code_challenge,
@@ -151,6 +204,7 @@ impl PgCodeRepository {
             })));
         }
 
+        transaction.commit().await.map_err(to_domain_error)?;
         // Nothing was spent. Either it never existed, it has expired, or it was
         // already used — and only the last of those is an incident.
         let existing = sqlx::query!(

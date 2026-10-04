@@ -72,10 +72,10 @@ impl PgWorkloadTrusts {
         let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
         consume_on_connection(&mut tx, verified, now).await?;
         crate::grants::PgGrantRepository::insert_on(&mut tx, &verified.tenant, grant).await?;
-        sqlx::query("insert into workload_grant_bindings(tenant_id,grant_id,trust_id,trust_version,provider,principal,assertion_digest,assertion_expires_at) values($1,$2,$3,$4,$5,$6,$7,$8)")
+        sqlx::query("insert into workload_grant_bindings(tenant_id,grant_id,trust_id,trust_version,provider,principal,assertion_digest,assertion_expires_at,source_subject,trust_domain) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)")
             .bind(verified.tenant.as_str()).bind(uuid::Uuid::parse_str(grant.id.as_str()).map_err(|_| invalid())?).bind(&verified.trust_id).bind(verified.trust_version)
-            .bind(match verified.provider { asterius_domain::workload::Provider::Kubernetes => "kubernetes", asterius_domain::workload::Provider::Github => "github" })
-            .bind(&verified.principal).bind(verified.digest.as_slice()).bind(verified.expires_at)
+            .bind(match verified.provider { asterius_domain::workload::Provider::Kubernetes => "kubernetes", asterius_domain::workload::Provider::Github => "github", asterius_domain::workload::Provider::Spiffe => "spiffe" })
+            .bind(&verified.principal).bind(verified.digest.as_slice()).bind(verified.expires_at).bind(&verified.source_subject).bind(&verified.trust_domain)
             .execute(&mut *tx).await.map_err(to_domain_error)?;
         let event = AuditEvent::new(
             verified.tenant.clone(),
@@ -90,6 +90,19 @@ impl PgWorkloadTrusts {
         .detail(
             Detail::new()
                 .text("trust_id", &verified.trust_id)
+                .text("source_subject", &verified.source_subject)
+                .text(
+                    "trust_domain",
+                    verified.trust_domain.as_deref().unwrap_or(""),
+                )
+                .label(
+                    "provider",
+                    match verified.provider {
+                        asterius_domain::workload::Provider::Kubernetes => "kubernetes",
+                        asterius_domain::workload::Provider::Github => "github",
+                        asterius_domain::workload::Provider::Spiffe => "spiffe",
+                    },
+                )
                 .number("trust_version", verified.trust_version),
         );
         crate::audit::append(&mut tx, audit.prepare(event)).await?;
@@ -120,13 +133,12 @@ fn validated(
 }
 fn summary(trust: &Trust) -> Result<Summary, DomainError> {
     let fingerprints = match &trust.config.keys {
-        Keys::Inline { jwks } => asterius_jose::workload::KeySet::parse(
-            &serde_json::to_vec(jwks).map_err(|_| invalid())?,
-            &trust.config.algorithms,
-        )
-        .map_err(|_| invalid())?
-        .fingerprints()
-        .to_vec(),
+        Keys::Inline { .. } | Keys::SpiffeBundle { .. } => {
+            asterius_jose::workload::KeySet::for_config(&trust.config)
+                .map_err(|_| invalid())?
+                .fingerprints()
+                .to_vec()
+        }
         Keys::Remote { .. } => Vec::new(),
     };
     Ok(trust.config.summary(&trust.id, trust.version, fingerprints))
@@ -232,6 +244,33 @@ impl Registry for PgWorkloadTrusts {
             return Err(DomainError::Conflict(
                 "workload trust revision changed".to_owned(),
             ));
+        }
+        if let Keys::SpiffeBundle {
+            trust_domain,
+            bundle,
+        } = &config.keys
+        {
+            let next =
+                asterius_jose::workload::SpiffeBundle::parse(bundle.as_bytes(), &config.algorithms)
+                    .map_err(|_| invalid())?;
+            // Keep upstream ordering across trust deletion/recreation. The
+            // tenant advisory lock also serializes first ledger insertion.
+            let previous: Option<serde_json::Value> = sqlx::query_scalar(
+                "select snapshot from workload_spiffe_bundle_history where tenant_id=$1 and trust_id=$2 and trust_domain=$3 for update"
+            ).bind(tenant.as_str()).bind(id).bind(trust_domain).fetch_optional(&mut *tx).await.map_err(to_domain_error)?;
+            if let Some(previous) = previous {
+                next.follows(
+                    previous
+                        .get("spiffe_sequence")
+                        .and_then(serde_json::Value::as_u64),
+                    &serde_json::to_vec(&previous).map_err(|_| invalid())?,
+                )
+                .map_err(|_| invalid())?;
+            }
+            let snapshot: serde_json::Value =
+                serde_json::from_slice(&next.canonical).map_err(|_| invalid())?;
+            sqlx::query("insert into workload_spiffe_bundle_history(tenant_id,trust_id,trust_domain,snapshot) values($1,$2,$3,$4) on conflict(tenant_id,trust_id,trust_domain) do update set snapshot=excluded.snapshot")
+                .bind(tenant.as_str()).bind(id).bind(trust_domain).bind(snapshot).execute(&mut *tx).await.map_err(to_domain_error)?;
         }
         if current.is_none() {
             let count: i64 =
@@ -344,6 +383,13 @@ pub async fn consume_on_connection(
         || trust.version != verified.trust_version
         || trust.config.provider != verified.provider
         || trust.config.principal != verified.principal
+        || trust.config.subject != verified.source_subject
+        || match &trust.config.keys {
+            Keys::SpiffeBundle { trust_domain, .. } => {
+                verified.trust_domain.as_ref() != Some(trust_domain)
+            }
+            _ => verified.trust_domain.is_some(),
+        }
         || !trust.config.clients.contains(verified.client.as_str())
         || trust.config.scopes != verified.scopes
         || trust.config.resources != verified.resources

@@ -1,6 +1,6 @@
 # Managed device posture uses an authenticated relay and enrolled TLS credentials
 
-- **Status:** Decided architecture; runtime is ast-dd1y.4.5
+- **Status:** Approved by the user on 2026-10-04; implementation and delivery tracked separately
 - **Date:** 2026-10-03
 - **Bead:** ast-dd1y.4.4
 - **Refines:** [Trusted conditional access](trusted-conditional-access-context.md)
@@ -166,3 +166,66 @@ this architecture record itself enables no runtime profile.
 Sources checked on 2026-10-03. Algorithm and FAPI/OIDC profile boundaries remain
 the existing repository decisions; this does not admit public OAuth clients or
 external certificate identities as OAuth client registrations.
+
+## Protected-hop candidate clarification (pending human review)
+
+Source inspection shows the existing `behind_proxy` listener is plain HTTP.
+A trusted CIDR and a public leaf forwarded in a header do not establish the
+protected-hop key-possession boundary above. The candidate therefore requires
+mandatory proxy client TLS authentication on the edge-to-Asterius hop, against
+a separately configured bounded proxy CA bundle, plus an exact operator pin of
+the proxy client leaf SHA256 digest. No configuration boolean or caller-supplied
+field may create the private authenticated-hop context. Ordinary HTTP never
+supplies managed-device facts. The selected device adapter remains behind the
+edge for issuer and forwarding semantics; the protected backend listener uses
+existing rustls/aws-lc TLS1.2/1.3 suites, with mandatory client authentication.
+The edge must validate the backend server chain/name, verify the device client
+TLS handshake, strip incoming device fields and forward the actual device leaf.
+
+The current private trust revision combines the dedicated tenant device CA,
+proxy CA and sorted proxy pins. Each original interaction proof expires no later
+than either the device or proxy leaf expiry, in addition to the existing300s
+bound. Root/pin changes invalidate older proof generations. This does not assert
+physical hardware attestation and does not alter OAuth client authentication.
+The exact transport refinement must be included in human review before delivery;
+source implementation and isolated validation do not constitute that review.
+
+[CertificateVerify in RFC8446 §4.4.3](https://www.rfc-editor.org/rfc/rfc8446.html#section-4.4.3)
+provides TLS private-key possession rather than merely parsing a public leaf.
+[ClientAuth usage in RFC5280 §4.2.1.12](https://www.rfc-editor.org/rfc/rfc5280.html#section-4.2.1.12)
+keeps the dedicated device/proxy certificate purpose explicit. Neither RFC
+specifies this repository's enrollment or management protocol.
+
+### Proposed final authority and legacy derivation compatibility
+
+The isolated ast-dd1y.9 candidate replaces modification timestamps with a
+private grant authority UUID. The baseline database changes `updated_at` on
+ordinary claim, and transaction timestamps can repeat across real permission
+amendments; neither is a valid authority revision. Migration0171 preserves the
+UUID across claim/expiry bookkeeping and an exact attested stable-public-session
+lookup rotation, and changes it when durable permissions, authentication,
+principal, actor or parent authority changes. The generation and each child's
+immutable captured parent generation remain private database/issuance context.
+They are never supplied by a workload token, browser header or public JWT claim.
+
+Final signing checks the exact current claimed lineage under canonical tenant,
+client, user and root-to-leaf locks. Every child edge must retain the generation
+observed before derivation. Loading an existing child cannot replace its receipt
+with the current parent generation. Existing derived grants without historical
+receipts fail closed for new issuance and require reauthorization; standalone
+legacy grants acquire their own generation during migration. Already-issued
+stateless credentials keep their existing expiry and resource-server revocation
+contract. This does not claim retrospective offline JWT invalidation.
+
+This compatibility tradeoff is part of the proposed runtime refinements for
+human review before delivery. Candidate schema/compiled CI regressions/controlled
+runtime evidence must be reviewed separately; source preparation is not an
+approval or proof that the final 116-migration binary has passed runtime checks.
+
+## Human review approval — 2026-10-04
+
+The user explicitly stated: "I have reviewed and approve all five contracts."
+Approval covers this prepared contract, including its documented compatibility,
+trust and freshness limits, at SHA-256 `99f90f64696f75de98ba92a29fd82db11a5f9f2b1144fd983de7cfcd51c2d01c`.
+Implementation, runtime evidence and delivery retain their separate verification
+requirements. This record does not claim CI or deployment completion.

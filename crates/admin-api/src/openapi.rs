@@ -108,6 +108,11 @@ pub fn value() -> Value {
                 },
             },
             "schemas": {
+                "OutboundScimConnector": outbound_scim_connector_schema(),
+                "OutboundScimCredential": outbound_scim_credential_schema(),
+                "OutboundScimAssignment": outbound_scim_assignment_schema(),
+                "OutboundScimLifecycleReceipt": outbound_scim_lifecycle_receipt_schema(),
+                "OutboundScimAssignmentPreview": outbound_scim_assignment_preview_schema(),
                 "Error": error_schema(),
                 "Page": page_schema(),
                 "AcrPolicy": acr_policy_schema(),
@@ -199,15 +204,20 @@ fn operation_object(operation: &Operation) -> Value {
                     "allow_ephemeral_subjects": {"type": "boolean"} }
         });
     }
+    outbound_scim_documentation(operation, &mut object);
     governance_documentation(operation, &mut object);
     declarative_documentation(operation, &mut object);
     client_resources_documentation(operation, &mut object);
     kubernetes_documentation(operation, &mut object);
     conditional_documentation(operation, &mut object);
     temporary_entitlement_documentation(operation, &mut object);
+    temporary_kubernetes_documentation(operation, &mut object);
+    kubernetes_online_documentation(operation, &mut object);
+    managed_device_documentation(operation, &mut object);
     invitation_documentation(operation, &mut object);
     agent_task_documentation(operation, &mut object);
     theme_documentation(operation, &mut object);
+    workload_documentation(operation, &mut object);
     if let Some(request_body) = group_request_body(operation) {
         object["requestBody"] = request_body;
     }
@@ -341,6 +351,7 @@ fn operation_parameters(operation: &Operation) -> Vec<Value> {
         parameters.push(json!({"name":"limit","in":"query","required":false,"schema":{"type":"integer","minimum":1,"maximum":100,"default":50},"description":"Rows per page; values outside one to one hundred are refused."}));
     }
 
+    outbound_scim_parameters(operation, &mut parameters);
     task_view_parameters(operation, &mut parameters);
     if operation.is_paginated() {
         parameters.push(json!({ "$ref": "#/components/parameters/cursor" }));
@@ -404,6 +415,28 @@ fn operation_parameters(operation: &Operation) -> Vec<Value> {
     }
 
     parameters
+}
+
+fn outbound_scim_parameters(operation: &Operation, parameters: &mut Vec<Value>) {
+    if operation.id().starts_with("outbound_scim.") {
+        for parameter in parameters.iter_mut() {
+            parameter["schema"] = outbound_scim_uuid_schema();
+            parameter["schema"]["pattern"] =
+                json!("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$");
+        }
+        if matches!(
+            operation.id(),
+            "outbound_scim.list" | "outbound_scim.assignments" | "outbound_scim.reconcile"
+        ) {
+            parameters.push(json!({"name":"after","in":"query","required":false,"schema":outbound_scim_uuid_schema(),"description":"UUID keyset cursor: use the exact last returned row UUID, or the reconcile response after UUID."}));
+        }
+        if matches!(
+            operation.id(),
+            "outbound_scim.list" | "outbound_scim.assignments"
+        ) {
+            parameters.push(json!({"name":"limit","in":"query","required":false,"schema":{"type":"integer","minimum":1,"maximum":100,"default":50},"description":"Values outside 1..100 are refused. No opaque cursor or offset is accepted."}));
+        }
+    }
 }
 
 fn conditional_documentation(operation: &Operation, object: &mut Value) {
@@ -496,6 +529,44 @@ fn agent_task_documentation(operation: &Operation, object: &mut Value) {
     object["description"] = json!(
         "Tenant-local public identifiers only, no user names, emails, raw credentials or private JTIs. No-store current read-only snapshot independent of recorded audit. Withdrawal uses the existing owner-bound grant endpoint and admin.grants:write, with offline signed-expiry limits."
     );
+}
+
+fn workload_documentation(operation: &Operation, object: &mut Value) {
+    if !operation.id().starts_with("workload.trusts.") {
+        return;
+    }
+    object["description"] = json!(
+        "Tenant-scoped operator-pinned Kubernetes, GitHub or explicitly approved SPIFFE JWT-SVID subject trust. SPIFFE requires a canonical exact domain/ID, independent confidential OAuth client authentication, DPoP, and operator-installed public jwt-svid authorities. A SVID is never OAuth client authentication. Static bundle delivery has no automatic remote revocation bound; accepted SVID and child expiry are bounded to 300 seconds. Empty SPIFFE bundles revoke issuance; recorded upstream sequence cannot roll back or disappear, including across trust deletion/recreation. Reads omit raw bundles and assertions."
+    );
+    if operation.id() == crate::WORKLOAD_TRUST_PUT_ID {
+        let keys = json!({"oneOf":[
+            {"type":"object","additionalProperties":false,"required":["kind","jwks"],"properties":{"kind":{"const":"inline"},"jwks":{"type":"object"}}},
+            {"type":"object","additionalProperties":false,"required":["kind","uri"],"properties":{"kind":{"const":"remote"},"uri":{"type":"string","format":"uri","maxLength":2048}}},
+            {"type":"object","additionalProperties":false,"required":["kind","trust_domain","bundle"],"properties":{"kind":{"const":"spiffe_bundle"},"trust_domain":{"type":"string","maxLength":255},"bundle":{"type":"string","maxLength":65536,"description":"Raw SPIFFE JSON preserves duplicate-key rejection; public-only keys with use=jwt-svid; <=16 total entries"}}}
+        ]});
+        object["requestBody"] = json!({"required":true,"content":{"application/json":{"schema":{
+            "type":"object","additionalProperties":false,"required":["config"],
+            "properties":{"expected_version":{"type":["integer","null"],"minimum":1},"config":{
+                "type":"object","additionalProperties":false,
+                "required":["issuer","audience","subject","provider","principal","clients","scopes","resources","actions","required_claims","algorithms","keys"],
+                "properties":{
+                    "issuer":{"type":"string","maxLength":1024,"format":"uri"},
+                    "audience":{"type":"string","description":"Exact urn:asterius:workload:<tenant>:<trust-id>"},
+                    "subject":{"type":"string","maxLength":2048,"description":"SPIFFE: exact lowercase canonical scheme/domain, byte-exact path; other providers at most1024 bytes"},
+                    "provider":{"type":"string","enum":["kubernetes","github","spiffe"]},
+                    "principal":{"type":"string","pattern":"^workload:[a-z0-9][a-z0-9_-]{0,62}$"},
+                    "clients":{"type":"array","minItems":1,"maxItems":16,"uniqueItems":true,"items":{"type":"string","maxLength":512}},
+                    "scopes":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"string","maxLength":128}},
+                    "resources":{"type":"array","minItems":1,"maxItems":16,"uniqueItems":true,"items":{"type":"string","format":"uri"}},
+                    "actions":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"string","maxLength":128}},
+                    "required_claims":{"type":"object","maxProperties":32,"additionalProperties":{"type":"string","maxLength":1024},"description":"Provider-specific exact pins; empty for SPIFFE"},
+                    "algorithms":{"type":"array","minItems":1,"uniqueItems":true,"items":{"enum":["RS256","PS256","ES256","EdDSA"]},"description":"SPIFFE subset excludes EdDSA"},
+                    "enabled":{"type":"boolean","default":false},
+                    "keys": keys
+                }
+            }}
+        }}}});
+    }
 }
 
 fn invitation_documentation(operation: &Operation, object: &mut Value) {
@@ -955,6 +1026,155 @@ fn path_parameters(path: &str) -> Vec<&str> {
         .collect()
 }
 
+fn outbound_scim_uuid_schema() -> Value {
+    json!({"type":"string","format":"uuid","not":{"const":"00000000-0000-0000-0000-000000000000"}})
+}
+fn outbound_scim_optional_uuid_schema() -> Value {
+    json!({"oneOf":[outbound_scim_uuid_schema(),{"type":"null"}]})
+}
+fn outbound_scim_optional_etag_schema() -> Value {
+    json!({"oneOf":[{"type":"string","maxLength":128,"pattern":"^W/\"[1-9][0-9]*\"$","description":"Saved weak target ETag; bounded positive i64 revision, never wildcard."},{"type":"null"}]})
+}
+fn outbound_scim_failure_schema() -> Value {
+    json!({"enum":[null,"paused","credential_unavailable","credential_binding_mismatch","authentication_refused","target_unavailable","ownership_mismatch","target_absent","target_version_changed","source_protected","source_projection_invalid","user_dependencies_pending","snapshot_bound_exceeded","lease_superseded"]})
+}
+fn outbound_scim_credential_schema() -> Value {
+    json!({"type":"object","additionalProperties":false,"required":["reference","generation","target_issuer","target_client"],"properties":{
+        "reference":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},"generation":outbound_scim_uuid_schema(),
+        "target_issuer":{"type":"string","format":"uri","maxLength":2048,"description":"Canonical HTTPS issuer of the distinct, operator-approved target tenant."},
+        "target_client":{"type":"string","minLength":1,"maxLength":2048}
+    },"description":"SOURCE-tenant-filtered deployment descriptor only. Contains no private key, file path, assertion, access token or DPoP secret."})
+}
+fn outbound_scim_connector_schema() -> Value {
+    json!({"type":"object","additionalProperties":false,"required":["id","revision","target_issuer","target_client","credential_ref","credential_generation","enabled","allow_reviewed_delete"],"properties":{
+        "id":outbound_scim_uuid_schema(),"revision":outbound_scim_uuid_schema(),
+        "target_issuer":{"type":"string","format":"uri","maxLength":2048},"target_client":{"type":"string","minLength":1,"maxLength":2048},
+        "credential_ref":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},"credential_generation":outbound_scim_uuid_schema(),
+        "enabled":{"type":"boolean"},"allow_reviewed_delete":{"type":"boolean"}
+    },"description":"Current configuration revision; target issuer/client stay pinned while any assignment history exists. Credential reference authority depends on the complete source/destination context."})
+}
+fn outbound_scim_assignment_schema() -> Value {
+    json!({"type":"object","additionalProperties":false,"required":["id","kind","source","generation","selected","target","observed_etag","retired","state","failure_code","dirty"],"properties":{
+        "id":outbound_scim_uuid_schema(),"kind":{"enum":["user","group"]},"source":outbound_scim_uuid_schema(),"generation":outbound_scim_uuid_schema(),
+        "selected":{"type":"boolean"},"target":outbound_scim_optional_uuid_schema(),"observed_etag":outbound_scim_optional_etag_schema(),"retired":{"type":"boolean"},
+        "state":{"enum":["pending","waiting_dependencies","applied","paused","conflict","dead_letter","deleted"]},"failure_code":outbound_scim_failure_schema(),"dirty":{"type":"boolean"}
+    },"description":"Public IDs and fixed diagnostics only; no personal-data snapshot, signing material or raw peer error. Unselection retains mapping authority until explicitly verified archival."})
+}
+fn outbound_scim_lifecycle_receipt_schema() -> Value {
+    json!({"type":"object","additionalProperties":false,"required":["id","kind","completed","replacement","failure_code","cancelled"],"properties":{
+        "id":outbound_scim_uuid_schema(),"kind":{"enum":["archive","delete","recreate"]},"completed":{"type":"boolean"},"replacement":outbound_scim_optional_uuid_schema(),
+        "failure_code":outbound_scim_failure_schema(),"cancelled":{"type":"boolean"}
+    },"description":"Durable explicit approval result. Completed retries are no-ops; replacement is the fresh local assignment UUID, not permission to adopt another remote UUID."})
+}
+fn outbound_scim_assignment_preview_schema() -> Value {
+    json!({"type":"object","additionalProperties":false,"required":["assignment","generation","desired_revision","action","target","target_version"],"properties":{
+        "assignment":outbound_scim_uuid_schema(),"generation":outbound_scim_uuid_schema(),"desired_revision":outbound_scim_uuid_schema(),
+        "action":{"enum":["recover_deprovision","unchanged_absent","create","unchanged","disable","empty_group","update"]},
+        "target":outbound_scim_optional_uuid_schema(),"target_version":outbound_scim_optional_etag_schema()
+    },"description":"Observed ownership/drift from authenticated GET only. This response never establishes a mapping, mutates a target, or authorizes a future write."})
+}
+fn outbound_scim_page_schema(name: &str, bound: usize) -> Value {
+    json!({"type":"object","additionalProperties":false,"required":["items"],"properties":{"items":{"type":"array","maxItems":bound,"items":{"$ref":format!("#/components/schemas/{name}")}}}})
+}
+fn outbound_scim_documentation(operation: &Operation, object: &mut Value) {
+    if !operation.id().starts_with("outbound_scim.") {
+        return;
+    }
+    object["security"] = json!([{"consoleSession":[]}]);
+    object["x-console-only"] = json!(true);
+    object["x-fresh-phishing-resistant-write"] =
+        json!(operation.authority().scope().ends_with(":write"));
+    object["x-candidate-contract-review"] = json!(
+        "ast-dd1y.6.2 Proposed; delivery/shared enablement awaits review and real first-target acceptance"
+    );
+    object["description"] = json!(
+        "Same-realm human administration only; tokens and foreign reserved administrators cannot act for this tenant. Writes require current active tenant administrator, fresh console proof, CSRF and declared scope. Only configured SOURCE-tenant-bound deployment credentials can be selected. No posted actor, private key, filesystem path, token or personal-data snapshot is accepted. Pausing fences subsequent admissions but cannot cancel a remote request already dispatched. Target mappings require immutable ownership and version checks; missing mapped UUIDs do not authorize automatic recreation."
+    );
+    let revision = json!({"type":"object","additionalProperties":false,"required":["expected_revision"],"properties":{"expected_revision":outbound_scim_uuid_schema()}});
+    let request = match operation.id() {
+        "outbound_scim.create" | "outbound_scim.configure" => {
+            let creating = operation.id() == "outbound_scim.create";
+            let mut required = vec![
+                "target_issuer",
+                "target_client",
+                "credential_ref",
+                "credential_generation",
+                "enabled",
+                "allow_reviewed_delete",
+            ];
+            if !creating {
+                required.push("expected_revision");
+            }
+            Some(
+                json!({"type":"object","additionalProperties":false,"required":required,"properties":{
+                "expected_revision":if creating{json!({"type":"null"})}else{outbound_scim_uuid_schema()},
+                "target_issuer":{"type":"string","format":"uri","maxLength":2048,"description":"Canonical, operator-approved distinct HTTPS issuer; no userinfo/query/fragment/IP/localhost/redirect aliases."},
+                "target_client":{"type":"string","minLength":1,"maxLength":2048},"credential_ref":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
+                "credential_generation":outbound_scim_uuid_schema(),"enabled":if creating{json!({"const":false})}else{json!({"type":"boolean"})},"allow_reviewed_delete":{"type":"boolean"}
+            },"description":"Create mints its UUID server-side and starts disabled; max100 live connectors per source tenant. Enable requires exact authenticated preview within five minutes. Credential rotation needs pause/configure/preview/enable. Target principal remains pinned by retained history."}),
+            )
+        }
+        "outbound_scim.select" => Some(
+            json!({"type":"object","additionalProperties":false,"required":["expected_revision","kind","sources"],"properties":{"expected_revision":outbound_scim_uuid_schema(),"kind":{"enum":["user","group"]},"sources":{"type":"array","minItems":1,"maxItems":100,"uniqueItems":true,"items":outbound_scim_uuid_schema()}},"description":"Select explicit current local sources; inbound SCIM ownership is refused. Max100 non-retired assignments per kind, including quiescing assignments. Group direct active selected User projection is separately bounded to100 members."}),
+        ),
+        "outbound_scim.lifecycle" => Some(
+            json!({"type":"object","additionalProperties":false,"required":["expected_revision","expected_generation","kind","target","etag","confirmed"],"properties":{"expected_revision":outbound_scim_uuid_schema(),"expected_generation":outbound_scim_uuid_schema(),"kind":{"enum":["archive","delete","recreate"]},"target":outbound_scim_optional_uuid_schema(),"etag":outbound_scim_optional_etag_schema(),"confirmed":{"const":true}},"allOf":[{"if":{"properties":{"kind":{"const":"delete"}}},"then":{"properties":{"target":outbound_scim_uuid_schema(),"etag":{"type":"string","maxLength":128,"pattern":"^W/\"[1-9][0-9]*\"$"}}}},{"oneOf":[{"properties":{"target":{"type":"null"},"etag":{"type":"null"}}},{"properties":{"target":outbound_scim_uuid_schema(),"etag":{"type":"string"}}}]}],"description":"Exact connector/generation/target/ETag CAS and explicit human confirmation. Five-minute database-clock approval; each mutation rechecks admission. Archive fences inactive/empty owned target or safe never-created absence. DELETE additionally requires enabled policy and a disabled/empty owned saved UUID; admitted same-UUID404 may recover only that delete receipt. Recreate verifies absence or fences inactive/empty old incarnation and queues a fresh generation while retaining history."}),
+        ),
+        "outbound_scim.unselect"
+        | "outbound_scim.reconcile"
+        | "outbound_scim.preview"
+        | "outbound_scim.dry_run" => Some(revision),
+        _ => None,
+    };
+    if let Some(schema) = request {
+        object["requestBody"] =
+            json!({"required":true,"content":{"application/json":{"schema":schema}}});
+    }
+    let response = match operation.id() {
+        "outbound_scim.list" => outbound_scim_page_schema("OutboundScimConnector", 100),
+        "outbound_scim.credentials" => outbound_scim_page_schema("OutboundScimCredential", 100),
+        "outbound_scim.assignments" | "outbound_scim.select" => {
+            outbound_scim_page_schema("OutboundScimAssignment", 100)
+        }
+        "outbound_scim.lifecycle_read" => {
+            outbound_scim_page_schema("OutboundScimLifecycleReceipt", 25)
+        }
+        "outbound_scim.lifecycle" => {
+            json!({"$ref":"#/components/schemas/OutboundScimLifecycleReceipt"})
+        }
+        "outbound_scim.dry_run" => {
+            json!({"$ref":"#/components/schemas/OutboundScimAssignmentPreview"})
+        }
+        "outbound_scim.preview" => {
+            json!({"type":"object","additionalProperties":false,"required":["connector","revision","filter_supported","etag_supported"],"properties":{"connector":outbound_scim_uuid_schema(),"revision":outbound_scim_uuid_schema(),"filter_supported":{"const":true},"etag_supported":{"const":true}},"description":"Authenticated GET verified filter/ETag and exact reserved-incarnation capability; receipt authorizes enablement only for this revision/credential generation within five minutes."})
+        }
+        "outbound_scim.reconcile" => {
+            json!({"type":"object","additionalProperties":false,"required":["after"],"properties":{"after":outbound_scim_optional_uuid_schema()},"description":"At most25 jobs queued. Continue with the returned after UUID; null means the final page. Queue acknowledgement is not target delivery."})
+        }
+        "outbound_scim.unselect" => {
+            json!({"type":"object","additionalProperties":false,"required":["accepted"],"properties":{"accepted":{"const":true}}})
+        }
+        _ => json!({"$ref":"#/components/schemas/OutboundScimConnector"}),
+    };
+    if let Some(responses) = object["responses"].as_object_mut() {
+        responses.retain(|status, _| !status.starts_with('2'));
+    }
+    object["responses"]["200"] = json!({"description":"Current tenant-scoped result; queued commands are not target completion","content":{"application/json":{"schema":response}}});
+    for (status, description) in [
+        ("400", "Malformed, oversized or closed-profile input"),
+        ("401", "Authentication or fresh console step-up required"),
+        ("403", "Same-realm human authority, scope or CSRF refused"),
+        ("404", "Source-tenant connector or assignment absent"),
+        (
+            "409",
+            "Configuration/generation/version conflict, ownership refusal, paused peer, approval expiry or bounded catalogue refusal",
+        ),
+        ("503", "Deployment registry/runtime or storage unavailable"),
+    ] {
+        object["responses"][status] = error_response(description);
+    }
+}
+
 fn governance_documentation(operation: &Operation, object: &mut Value) {
     if operation.id() == "governance.findings" {
         governance_reports_documentation(object);
@@ -1153,6 +1373,145 @@ fn temporary_entitlement_documentation(operation: &Operation, object: &mut Value
         json!({"required":true,"content":{"application/json":{"schema":schema}}});
 }
 
+fn managed_device_documentation(operation: &Operation, object: &mut Value) {
+    let id = operation.id();
+    if !matches!(
+        id,
+        crate::DEVICE_SOURCES_LIST_ID
+            | crate::DEVICE_SOURCE_CREATE_ID
+            | crate::DEVICE_SOURCE_UPDATE_ID
+            | crate::DEVICES_LIST_ID
+            | crate::DEVICE_REMOVE_ID
+            | crate::DEVICE_ENROLL_ID
+            | crate::DEVICE_POSTURE_ID
+    ) {
+        return;
+    }
+    object["description"] = json!(
+        "Managed-device-relay/v1. Device possession uses an independently authenticated pinned proxy TLS hop and dedicated tenant device CA; this is distinct from OAuth client mTLS. No arbitrary browser field, public token device claim, session proof or another grant can establish device authority. Latest posture is bounded to 300 seconds and rechecked under the publication fence through final signing. Source/enrollment generations fence disable, renewal and removal; removal erases identifying attributes. Software PKI is not hardware attestation."
+    );
+    object["responses"]["400"] = error_response("Closed bounded device input validation failed.");
+    object["responses"]["404"] =
+        error_response("No current matching record/relay authority in the exact routed tenant.");
+    object["responses"]["409"] =
+        error_response("Exact revision or monotonic observation sequence conflict.");
+    let uuid = json!({"type":"string","format":"uuid"});
+    let client = json!({"type":"string","minLength":1,"maxLength":256});
+    let schema = match id {
+        crate::DEVICE_SOURCE_CREATE_ID | crate::DEVICE_SOURCE_UPDATE_ID => {
+            let update = id == crate::DEVICE_SOURCE_UPDATE_ID;
+            let required = if update {
+                json!(["client_id", "expected_revision"])
+            } else {
+                json!(["client_id"])
+            };
+            let revision = if update { uuid } else { json!({"type":"null"}) };
+            json!({"type":"object","additionalProperties":false,"required":required,"properties":{
+                "client_id":client,"enabled":{"type":"boolean","default":false},"expected_revision":revision
+            }})
+        }
+        crate::DEVICE_REMOVE_ID => {
+            json!({"type":"object","additionalProperties":false,"required":["expected_revision"],"properties":{"expected_revision":uuid}})
+        }
+        crate::DEVICE_ENROLL_ID => {
+            object["security"] =
+                json!([{"adminToken":[asterius_domain::managed_devices::ENROLLMENT_SCOPE]}]);
+            json!({"type":"object","additionalProperties":false,"required":["user_id","leaf_sha256","allowed_client_ids"],"properties":{
+                "user_id":uuid,"leaf_sha256":{"type":"string","pattern":"^[a-f0-9]{64}$","writeOnly":true},
+                "allowed_client_ids":{"type":"array","maxItems":64,"uniqueItems":true,"items":client}
+            },"description":"The current exact source client needs a private successful client-credentials issuance receipt. User/task/workload/delegated tokens and deployment-wide authority are refused; caller cannot choose a device UUID or generation."})
+        }
+        crate::DEVICE_POSTURE_ID => {
+            object["security"] =
+                json!([{"adminToken":[asterius_domain::managed_devices::POSTURE_SCOPE]}]);
+            json!({"type":"object","additionalProperties":false,"required":["profile","source_generation","observations"],"properties":{
+                "profile":{"const":asterius_domain::managed_devices::PROFILE},"source_generation":{"type":"integer","minimum":1},
+                "observations":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"object","additionalProperties":false,"required":["device_id","enrollment_generation","sequence","observed_at","expires_at","posture"],"properties":{
+                    "device_id":uuid,"enrollment_generation":{"type":"integer","minimum":1},"sequence":{"type":"integer","minimum":0},"observed_at":{"type":"integer"},"expires_at":{"type":"integer"},
+                    "posture":{"type":"object","additionalProperties":false,"properties":{"managed":{"type":["boolean","null"]},"compliant":{"type":["boolean","null"]},"disk_encrypted":{"type":["boolean","null"]},"risk":{"type":["string","null"],"enum":["low","medium","high","unknown",null]}}}
+                }}}
+            },"description":"At most 8192 bytes, 32 distinct device UUIDs; all generations/sequences must be current. Whole batch commits atomically. Observations older than 300 seconds or over five seconds ahead are refused; expiry and authority are rechecked after lock waits."})
+        }
+        _ => return,
+    };
+    object["requestBody"] = json!({"required":true,"content":{"application/json":{"schema":schema}},"description":"At most 8192 bytes (1024 for removal). Private credentials/certificates are never returned."});
+}
+
+fn kubernetes_online_documentation(operation: &Operation, object: &mut Value) {
+    if !matches!(
+        operation.id(),
+        crate::KUBERNETES_ONLINE_READ_ID
+            | crate::KUBERNETES_ONLINE_UPDATE_ID
+            | crate::KUBERNETES_REVIEW_ID
+    ) {
+        return;
+    }
+    object["description"] = json!(
+        "Opt-in primary-backed online Kubernetes authentication. Exact current human public-subject confidential ES256 profile, stable public SID and original signed-token digest bind one grant. Metadata changes terminally disable the mode and invalidate its UUID revision. Online and JIT modes cannot be enabled together. No incoming identity fields establish authority, no session heartbeat occurs, and no bearer token is stored. The complete review deadline is three seconds; errors and late results never release an identity. Kubernetes 1.35 still has a global ten-second success cache plus up to thirty seconds of detached upstream lookup: conservative source-derived revocation bound is forty seconds plus measured scheduling/transport margin, not instant revocation."
+    );
+    let profile = json!({"type":"object","additionalProperties":false,"required":["reviewer_client_id","revision","enabled"],"properties":{
+        "reviewer_client_id":{"type":"string","minLength":1,"maxLength":2048},
+        "revision":{"type":"string","format":"uuid"},"enabled":{"type":"boolean"}
+    }});
+    if operation.id() == crate::KUBERNETES_REVIEW_ID {
+        object["security"] =
+            json!([{"adminToken":[asterius_domain::kubernetes_online::REVIEW_SCOPE]}]);
+        object["description"] = json!(format!(
+            "{} Dedicated same-tenant reviewer only: DPoP, private-key JWT and exclusive client_credentials registration are required, together with the private exact successful CC issuance receipt. Console and deployment-wide credentials are refused. The route selects the tenant and human client; requested audiences cannot select either.",
+            object["description"].as_str().unwrap_or_default()
+        ));
+        object["requestBody"] = json!({"required":true,"content":{"application/json":{"schema":{
+            "type":"object","additionalProperties":false,"required":["apiVersion","kind","spec"],"description":"At most 65536 UTF-8 bytes; duplicate JSON members rejected. Only absent or exact zero-value metadata/status are accepted and ignored.",
+            "properties":{"apiVersion":{"const":"authentication.k8s.io/v1"},"kind":{"const":"TokenReview"},
+                "metadata":{"type":"object","additionalProperties":false,"properties":{"creationTimestamp":{"type":"null"}}},
+                "status":{"type":"object","additionalProperties":false,"required":["user"],"properties":{"user":{"type":"object","additionalProperties":false}}},
+                "spec":{"type":"object","additionalProperties":false,"required":["token","audiences"],"properties":{
+                    "token":{"type":"string","minLength":1,"maxLength":16384,"pattern":"^[!-~]+$","writeOnly":true},
+                    "audiences":{"type":"array","minItems":1,"maxItems":16,"uniqueItems":true,"items":{"type":"string","minLength":1,"maxLength":2048}}
+                }}
+            }
+        }}}});
+        object["responses"]["200"]["description"] = json!(
+            "Closed TokenReview v1. A refusal has authenticated:false without user or audiences. A positive response releases only the validated stable username, at most 100 distinct current-and-issued groups and the route audience; no spec/token/extra/email."
+        );
+    } else {
+        object["responses"]["200"]["content"]["application/json"]["schema"] = profile;
+        if operation.id() == crate::KUBERNETES_ONLINE_UPDATE_ID {
+            object["responses"]["409"] = error_response(
+                "Exact profile revision conflict or mutually exclusive JIT mode enabled.",
+            );
+            object["requestBody"] = json!({"required":true,"content":{"application/json":{"schema":{
+                "type":"object","additionalProperties":false,"required":["reviewer_client_id","enabled"],"properties":{
+                    "reviewer_client_id":{"type":"string","minLength":1,"maxLength":2048},"enabled":{"type":"boolean"},
+                    "expected_revision":{"type":["string","null"],"format":"uuid","description":"Omitted/null expects no saved profile. Existing configuration requires its exact current revision."}
+                }
+            }}}});
+        }
+    }
+}
+
+fn temporary_kubernetes_documentation(operation: &Operation, object: &mut Value) {
+    if !operation.id().starts_with("temporary_kubernetes.") {
+        return;
+    }
+    object["description"] = json!(
+        "Current complete projection is limited to one immutable owner-approved controller/entitlement/current public-subject Kubernetes profile. No actor, username, role or namespace is accepted from the controller. Subjects use the exact stable public subject and distinct asterius-jit mapping-revision prefix; pending, revoked, stale, disabled and expired approvals contribute no authority. A snapshot is limited to 100 subjects and refuses overflow; its RFC3339 database observed_at and exclusive deadlines bound freshness. Healthy reconciliation bounds revocation latency. During controller failure, signed temporary-only ID provenance and activation-capped exp bound residual access; ordinary tokens retain their separate baseline username and cannot reuse stale JIT bindings. Owner GET additionally returns a structured AuthenticationConfiguration example for the exact reviewed tuple; legacy OIDC flags cannot implement this mapping."
+    );
+    object["responses"]["409"] =
+        error_response("Binding revision conflict or complete projection exceeds bound.");
+    if operation.id() == crate::TEMPORARY_KUBERNETES_PROJECT_ID {
+        object["security"] = json!([{"adminToken":[]}]);
+    } else {
+        object["security"] = json!([{"consoleSession":[]}]);
+    }
+    if operation.id() == crate::TEMPORARY_KUBERNETES_BINDING_WRITE_ID {
+        object["requestBody"] = json!({"required":true,"content":{"application/json":{"schema":{
+            "type":"object","additionalProperties":false,"required":["controller_client_id","expected_revision","enabled"],
+            "properties":{"controller_client_id":{"type":"string","minLength":1,"maxLength":200},"expected_revision":{"type":["string","null"],"format":"uuid"},"enabled":{"type":"boolean"}}
+        }}}});
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1173,6 +1532,39 @@ mod tests {
             CHECKED_IN, generated,
             "docs/admin-api-openapi.json is stale. Regenerate it:\n    {REGENERATE_COMMAND}"
         );
+    }
+
+    #[test]
+    fn outbound_provisioning_contract_is_console_only_closed_and_exactly_scoped() {
+        let document = value();
+        let create = &document["paths"][crate::OUTBOUND_SCIM_CREATE.full_path()]["post"];
+        assert_eq!(create["security"], json!([{"consoleSession":[]}]));
+        assert_eq!(create["x-fresh-phishing-resistant-write"], json!(true));
+        assert!(create["responses"].get("201").is_none());
+        let command = &create["requestBody"]["content"]["application/json"]["schema"];
+        assert_eq!(command["additionalProperties"], json!(false));
+        assert_eq!(command["properties"]["enabled"]["const"], json!(false));
+        for forbidden in ["id", "actor", "key_file", "private_key", "access_token"] {
+            assert!(command["properties"].get(forbidden).is_none());
+        }
+        let lifecycle = &document["paths"][crate::OUTBOUND_SCIM_LIFECYCLE.full_path()]["post"]["requestBody"]
+            ["content"]["application/json"]["schema"];
+        assert_eq!(lifecycle["properties"]["confirmed"]["const"], json!(true));
+        for required in ["expected_revision", "expected_generation", "target", "etag"] {
+            assert!(
+                lifecycle["required"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!(required))
+            );
+        }
+        let receipts = &document["paths"][crate::OUTBOUND_SCIM_LIFECYCLE_READ.full_path()]["get"];
+        assert_eq!(
+            receipts["responses"]["200"]["content"]["application/json"]["schema"]["properties"]["items"]
+                ["maxItems"],
+            json!(25)
+        );
+        assert!(receipts.get("requestBody").is_none());
     }
 
     #[test]

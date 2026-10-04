@@ -381,6 +381,8 @@ impl DeviceCode<'_> {
             .sign_access(
                 &tenant.id,
                 asterius_domain::keys::AccessIssuance {
+                    held_authority: None,
+                    device_binding: None,
                     implicit_resources: &issuance::implicit_resources(
                         tenant,
                         issuance::ImplicitResources {
@@ -403,6 +405,7 @@ impl DeviceCode<'_> {
         // carried one — the device never spoke to a browser.
         let id_token = if grant.scopes.contains("openid") {
             let parts = issuance::IdTokenParts {
+                device_binding: None,
                 grant: &role_grant,
                 require_ipsie_assurance: false,
                 rp_session_lifetime_seconds: None,

@@ -581,6 +581,8 @@ impl PgArchitectureFlows {
             .iter()
             .map(|uri| uri.as_str().to_owned())
             .collect::<Vec<_>>();
+        let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
+        crate::PgClientRepository::lifecycle_fence_on(&mut transaction, tenant).await?;
         let changed = sqlx::query(
             "update clients set client_name = $4, redirect_uris = $5, jwks_uri = $6, jwks = $7
              where tenant_id = $1 and client_id = $2 and updated_at = $3
@@ -593,11 +595,12 @@ impl PgArchitectureFlows {
         .bind(redirects)
         .bind(jwks_uri)
         .bind(jwks)
-        .execute(&self.pool)
+        .execute(&mut *transaction)
         .await
         .map_err(to_domain_error)?
         .rows_affected();
         if changed == 1 {
+            transaction.commit().await.map_err(to_domain_error)?;
             Ok(())
         } else {
             Err(DomainError::Conflict(
@@ -614,14 +617,17 @@ impl PgArchitectureFlows {
         client: &str,
         resource: &str,
     ) -> Result<(), DomainError> {
+        let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
+        crate::PgClientRepository::lifecycle_fence_on(&mut transaction, tenant).await?;
         let changed = sqlx::query(
             "update clients set resources = (select array_agg(distinct value order by value)
                from unnest(resources || array[$3]::text[]) as items(value))
              where tenant_id = $1 and client_id = $2
                and exists (select 1 from resource_servers where tenant_id = $1 and identifier = $3)"
-        ).bind(tenant.as_str()).bind(client).bind(resource).execute(&self.pool).await
+        ).bind(tenant.as_str()).bind(client).bind(resource).execute(&mut *transaction).await
             .map_err(to_domain_error)?.rows_affected();
         if changed == 1 {
+            transaction.commit().await.map_err(to_domain_error)?;
             Ok(())
         } else {
             Err(DomainError::Conflict(

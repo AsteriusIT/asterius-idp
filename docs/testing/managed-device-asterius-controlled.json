@@ -1,0 +1,90 @@
+{
+  "component": "real isolated Asterius protected TLS / FAPI DPoP",
+  "status": "pass",
+  "checks": [
+    "successful_cc_signature_creates_private_exact_relay_receipt",
+    "relay_issuance_does_not_grant_human_source_administration",
+    "authenticated_relay_enrolls_exact_user_leaf_and_application",
+    "routed_tenant_source_and_local_user_identity_bounds_refuse_foreign_records",
+    "sequence_replay_stale_observation_and_wrong_incarnation_refused",
+    "invalid_whole_batch_and_failed_audit_do_not_advance_posture",
+    "seeded_human_refresh_baseline_preserves_fapi_and_dpop",
+    "actual_tls_device_and_current_posture_permit_fapi_refresh_without_public_device_claim",
+    "fresh_tls_exact_parent_preflight_and_persisted_child_final_exchange",
+    "parent_device_success_does_not_bootstrap_child_request_possession",
+    "pdp_exact_verified_grant_requires_its_own_current_tls_possession",
+    "revoked_exact_exchange_parent_refused_without_other_grant_fallback",
+    "old_grant_and_previous_success_do_not_supply_new_request_possession",
+    "caller_public_certificate_header_cannot_create_possession",
+    "real_browser_device_tls_password_par_pkce_completion",
+    "exact_original_interaction_proof_transferred_to_code_and_final_signed_identity",
+    "spent_authorization_code_and_private_proof_cannot_be_replayed",
+    "local_tenant_administrator_creates_source_disabled_by_default",
+    "real_fresh_uv_webauthn_human_source_default_disabled_enable_cas_disable_and_inspection",
+    "latest_noncompliance_overrides_previous_compliant_authority",
+    "unknown_management_compliance_and_current_stale_observation_deny",
+    "owner_list_private_csrf_and_foreign_owner_removal_refused",
+    "owner_removal_erases_private_state_and_refuses_new_access_within_five_seconds",
+    "explicit_reenrollment_gets_fresh_server_uuid_and_generation",
+    "source_writer_publication_fence_wait_then_committed_disable_refuses_signature",
+    "revoked_exact_cc_grant_invalidates_relay_authority"
+  ],
+  "passed": 26,
+  "binary_source_commit": "fd2c8ae1a388f3dcaadf31b3e38a6281ae0d187f",
+  "binary_sha256": "86f5fdc9eb82a795a0ac83a437815f6f248c89976b88ffbbdef7ad549b8136e4",
+  "migration_count": 116,
+  "observed_at": "2026-10-04T00:32:39Z",
+  "human_authentication": {
+    "refresh": "seeded offline refresh grants",
+    "authorization_code": "actual Chromium password and UV WebAuthn registration/assertion via virtual CTAP2 authenticator; signed ID amr pop+user verified; no seeded authentication class proof"
+  },
+  "source_registration": "primary source seeded; secondary real ConsoleTenant create/default-disabled/enable/CAS/disable/read",
+  "device_attestation": "controlled_software_pki_not_hardware_or_live_mdm",
+  "original_interaction_code_transfer": "real_browser_password_fapi_par_pkce_and_exact_code_spend",
+  "owned_database_only": true,
+  "human_normative_review": "pending; candidate validation only",
+  "fixture_sha256": {
+    "scripts/managed-devices/acceptance.py": "758748b52a235dc3def41c9463e2f16eb3745d70c95bd2c7ea3f24402c1982d0",
+    "scripts/managed-devices/runtime_controls.py": "0076dae501919280f15cc61fce78f79ddb6636feeb71d3736a6bacf0578c4a8b",
+    "scripts/managed-devices/browser_controls.mjs": "c1bd54613525739f3192f91abc334812119643d3cc134069bca96e1c40a9e490",
+    "scripts/managed-devices/proxy.mjs": "9e2a5be152f904fae4a5e7cffe95e25572b92d2e26968f996db6ab22798cf5bc",
+    "scripts/managed-devices/prepare-pki.sh": "a41730f257eac2ef1e6093b249a59c8b8d573a64e63f99d2fa4614fe6971ea73"
+  },
+  "removal_to_refusal_seconds": 0.34,
+  "stale_time_test": "controlled_database_timestamp_perturbation_not_real_300_second_wait",
+  "source_admission": "existing exact-realm tenant administrator role/session policy and CSRF; no additional UV requirement",
+  "candidate_gate": {
+    "source_commit": "372a51de",
+    "targeted_rust_checks": 156,
+    "fuzz_smoke_targets": 115,
+    "strict_clippy": "pass",
+    "fmt": "pass",
+    "reported_by": "parent integration agent"
+  },
+  "additional_assertions": [
+    "source PUT omitted revision returns400",
+    "source PUT null revision returns400"
+  ],
+  "previous_runtime_baseline": {
+    "binary_source_commit": "372a51de",
+    "binary_sha256": "11f0d89427097dd2d4797311abea5e0fb26b973838fa3bebb70e531f453785ca",
+    "migration_count": 114,
+    "observed_at": "2026-10-03T22:00:34Z",
+    "passed": 26,
+    "removal_to_refusal_seconds": 0.357
+  },
+  "final_identity_grant_fence": {
+    "normal_original_code_issuance": "passed on corrected composed binary",
+    "concurrent_withdrawal_regression": "separate ignored PostgreSQL tests; reserved for CI, not run by this HTTP/browser fixture",
+    "owned_resources": "all owned database, private PKI directory and three listeners cleaned"
+  },
+  "source_verification": "parent frozen candidate fmt/strict clippy, 628 targeted nextest checks and 157 exact OpenAPI controls passed; ignored PostgreSQL races compiled for CI and not executed locally",
+  "fixture_source_commit": "479557cc784e47fc5c6b915b302c4f7ef0a5759a",
+  "baseline_115_migration_run": {
+    "binary_source_commit": "d3f395c5",
+    "binary_sha256": "6c8cd8c81dc7ab3f144aba650321074bf19ece522e637a1295cf2cdbf3a1b95a",
+    "observed_at": "2026-10-03T23:14:22Z",
+    "passed": 26,
+    "removal_to_refusal_seconds": 0.367
+  }
+}

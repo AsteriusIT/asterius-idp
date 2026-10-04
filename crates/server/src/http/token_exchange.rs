@@ -115,6 +115,9 @@ pub struct WorkloadContext<'a> {
 }
 
 pub struct TokenExchange<'a> {
+    /// This request's verified device transport; never inherited from a token.
+    pub device_request: Option<crate::managed_devices::DeviceIssuanceContext<'a>>,
+
     pub workloads: Option<WorkloadContext<'a>>,
     /// Operator-approved cross-domain relationships for this routed tenant.
     pub id_jag_approvals: &'a [crate::config::IdJagApproval],
@@ -186,6 +189,7 @@ impl<'a> TokenExchange<'a> {
         native_sso_approvals: &'a [crate::config::NativeSsoApproval],
     ) -> Self {
         Self {
+            device_request: code.device_request,
             workloads: None,
             id_jag_approvals,
             native_sso_approvals,
@@ -267,6 +271,8 @@ struct Ceiling {
     user: Option<asterius_domain::UserId>,
     /// The grant the subject token was minted from, when there is one.
     parent: Option<GrantId>,
+    /// Private exact source revision captured before any ceiling is copied.
+    parent_derivation: Option<asterius_domain::ParentDerivation>,
     /// The scopes the exchanged token may not exceed.
     scopes: BTreeSet<String>,
     /// The RFC 8707 resources the exchanged token may not exceed. Empty means
@@ -550,6 +556,8 @@ impl TokenExchange<'_> {
         grant.scopes = scopes.clone();
         grant.resources.insert(tenant.issuer.as_str().to_owned());
         grant.parent = Some(source_grant.id.clone());
+        grant.parent_derivation =
+            Some(asterius_domain::ParentDerivation::from_grant(&source_grant));
         grant.session = Some(SessionId::new(binding.session_digest.clone()));
         grant.authentication = source_grant.authentication.clone();
         grant.claimed_at = Some(self.now);
@@ -619,6 +627,8 @@ impl TokenExchange<'_> {
             .sign_access(
                 &tenant.id,
                 asterius_domain::keys::AccessIssuance {
+                    held_authority: None,
+                    device_binding: None,
                     grant: &grant,
                     kind: GrantType::TokenExchange,
                     implicit_resources: &[],
@@ -636,6 +646,7 @@ impl TokenExchange<'_> {
             tenant,
             client,
             issuance::IdTokenParts {
+                device_binding: None,
                 grant: &grant,
                 require_ipsie_assurance: false,
                 rp_session_lifetime_seconds: None,
@@ -714,14 +725,24 @@ impl TokenExchange<'_> {
         client: &Client,
         grant: &Grant,
     ) -> Result<(), Failure> {
+        self.permitted_bound(tenant, client, grant, None).await
+    }
+    async fn permitted_bound(
+        &self,
+        tenant: &Tenant,
+        client: &Client,
+        grant: &Grant,
+        device_binding: Option<&asterius_domain::managed_devices::DeviceBinding>,
+    ) -> Result<(), Failure> {
         self.agent_policy
-            .permits(
+            .permits_bound(
                 tenant,
                 client,
                 grant,
                 &grant.resources.iter().cloned().collect(),
                 GrantType::TokenExchange,
                 self.now,
+                device_binding,
             )
             .await
             .map_err(|refusal| Failure::Client(refusal.code, refusal.description))
@@ -838,6 +859,9 @@ impl TokenExchange<'_> {
         grant.resources = subject.resources.clone();
         grant.actor_chain = chain.clone();
         grant.parent = subject.parent.clone();
+        grant
+            .parent_derivation
+            .clone_from(&subject.parent_derivation);
         // Claimed at birth: the row exists because a credential is being taken
         // from it, and a `Pending` grant here would be collected by the sweep
         // that deletes abandoned ones while its token was still live.
@@ -867,7 +891,12 @@ impl TokenExchange<'_> {
                 self.audit,
             )
             .await?;
-        self.permitted(tenant, client, &grant).await?;
+        let device_binding = match self.device_request {
+            Some(context) => context.bind(&tenant.id, &grant, self.now).await?,
+            None => None,
+        };
+        self.permitted_bound(tenant, client, &grant, device_binding.as_ref())
+            .await?;
 
         let claimed = grant
             .claim(self.now)
@@ -897,6 +926,8 @@ impl TokenExchange<'_> {
             .sign_access(
                 &tenant.id,
                 asterius_domain::keys::AccessIssuance {
+                    held_authority: None,
+                    device_binding: device_binding.as_ref(),
                     implicit_resources: &issuance::implicit_resources(
                         tenant,
                         issuance::ImplicitResources {
@@ -985,6 +1016,7 @@ impl TokenExchange<'_> {
                     subject,
                     user: None,
                     parent: None,
+                    parent_derivation: None,
                     scopes: BTreeSet::new(),
                     resources: BTreeSet::new(),
                     chain: Vec::new(),
@@ -1074,7 +1106,9 @@ impl TokenExchange<'_> {
             };
             resources = resources.intersection(&token_resources).cloned().collect();
         }
+        let parent_derivation = Some(asterius_domain::ParentDerivation::from_grant(&parent));
         Ok(Ceiling {
+            parent_derivation,
             subject: subject.or_else(|| parent.subject.clone()),
             user: parent.user,
             parent: Some(parent.id),
@@ -1774,6 +1808,8 @@ impl TokenExchange<'_> {
             .sign_access(
                 &tenant.id,
                 asterius_domain::keys::AccessIssuance {
+                    held_authority: None,
+                    device_binding: None,
                     grant: &conditional_grant,
                     kind: GrantType::TokenExchange,
                     implicit_resources: &[],

@@ -153,6 +153,23 @@ impl Row {
 }
 
 impl PgUserRepository {
+    /// Serialize lifecycle writes with final issuance before locking a user.
+    /// The caller keeps this tenant lock through commit on the same connection.
+    /// An inactive tenant remains writable for cleanup; absence is refused.
+    pub(crate) async fn lifecycle_fence_on(
+        connection: &mut sqlx::PgConnection,
+        tenant: &TenantId,
+    ) -> Result<(), DomainError> {
+        let found: Option<String> = sqlx::query_scalar(
+            "select tenant_id from tenants where tenant_id = $1 for no key update",
+        )
+        .bind(tenant.as_str())
+        .fetch_optional(connection)
+        .await
+        .map_err(to_domain_error)?;
+        found.ok_or(DomainError::NotFound).map(|_| ())
+    }
+
     /// Conditionally replaces the approved SCIM profile and external ID.
     /// The revision predicate and both writes share one transaction.
     pub async fn scim_replace_profile(
@@ -166,6 +183,7 @@ impl PgUserRepository {
             ));
         }
         let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
+        Self::lifecycle_fence_on(&mut tx, &self.tenant).await?;
         let previous_status: Option<String> = sqlx::query_scalar(
             "select status from users where tenant_id = $1 and user_id = $2 for update",
         )
@@ -278,6 +296,7 @@ impl PgUserRepository {
     /// in the same transaction. Repeating a disable never queues a second set.
     pub async fn disable_with_provider_commands(&self, user: UserId) -> Result<(), DomainError> {
         let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
+        Self::lifecycle_fence_on(&mut tx, &self.tenant).await?;
         let previous: Option<String> = sqlx::query_scalar(
             "select status from users where tenant_id = $1 and user_id = $2 for update",
         )
@@ -325,11 +344,24 @@ impl PgUserRepository {
         }
         // SCIM deactivation is narrower than clearing an administrator's lock:
         // keep Locked through disable/delete so a later active=true cannot bypass it.
+        // A reviewed reserved-incarnation DELETE retains its identity tombstone but
+        // releases personal email. Disable/archive and ordinary SCIM lifecycles
+        // retain email; active-account uniqueness is never weakened.
         let updated = sqlx::query(
-            "update users set username = $4, email = $5,
+            "with retirement as (
+               select $7::boolean and exists(
+                 select 1 from scim_user_external_ids
+                 where tenant_id=$1 and client_id=$8 and user_id=$2
+                   and external_id=$9 and deleted_at is null
+                   and scim_outbound_reserved_external(external_id,'user')
+               ) as erase_email
+             )
+             update users set username = $4,
+             email = case when retirement.erase_email then null else $5 end,
              status = case when status = 'locked' then 'locked' else $6 end,
-             email_verified = case when email is distinct from $5
+             email_verified = case when retirement.erase_email or email is distinct from $5
                                    then false else email_verified end
+             from retirement
              where tenant_id = $1 and user_id = $2 and scim_revision = $3
                and (status <> 'locked' or $6 <> 'active')",
         )
@@ -343,6 +375,9 @@ impl PgUserRepository {
         } else {
             replacement.status.as_str()
         })
+        .bind(replacement.delete)
+        .bind(replacement.client.as_str())
+        .bind(&replacement.external_id)
         .execute(&mut *connection)
         .await
         .map_err(to_domain_error)?
@@ -919,6 +954,8 @@ impl PgUserRepository {
         }
         let claims = serde_json::to_value(&user.claims)
             .map_err(|e| DomainError::invalid("claims", e.to_string()))?;
+        let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
+        Self::lifecycle_fence_on(&mut tx, &self.tenant).await?;
         sqlx::query!(
             "insert into users (tenant_id, user_id, username, email, email_verified,
                                 status, claims)
@@ -937,10 +974,10 @@ impl PgUserRepository {
             user.status.as_str(),
             claims
         )
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
-        .map(|_| ())
-        .map_err(to_domain_error)
+        .map_err(to_domain_error)?;
+        tx.commit().await.map_err(to_domain_error)
     }
 
     /// Turns a proved address into OIDC Core §5.1's `email_verified`
@@ -1007,18 +1044,20 @@ impl PgUserRepository {
     /// Returns [`DomainError::NotFound`] when there was no such user, or a
     /// storage error.
     pub async fn delete(&self, id: UserId) -> Result<(), DomainError> {
+        let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
+        Self::lifecycle_fence_on(&mut tx, &self.tenant).await?;
         let result = sqlx::query!(
             "delete from users where tenant_id = $1 and user_id = $2",
             self.tenant.as_str(),
             id.as_uuid()
         )
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(to_domain_error)?;
         if result.rows_affected() == 0 {
             return Err(DomainError::NotFound);
         }
-        Ok(())
+        tx.commit().await.map_err(to_domain_error)
     }
 
     /// The `sub` this user is known by in `sector`, minting it if this is the
@@ -1268,6 +1307,124 @@ mod scim_security_tests {
     use super::*;
 
     #[tokio::test]
+    #[ignore = "slow PostgreSQL reserved SCIM retirement regression; CI only"]
+    async fn reserved_delete_releases_email_but_ordinary_delete_retains_it() {
+        let url = std::env::var("DATABASE_URL").expect("CI database URL");
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("test database");
+        crate::MIGRATOR.run(&pool).await.expect("migrated fixture");
+        let tenant = TenantId::parse(&format!("scim-retire-{}", Uuid::new_v4().simple()))
+            .expect("fixture tenant");
+        let client = ClientId::new("retirement-fixture".to_owned());
+        sqlx::query("insert into tenants(tenant_id,issuer,display_name,default_resource) values($1,$2,'Retirement fixture','https://api.example/')")
+            .bind(tenant.as_str()).bind(format!("https://id.example/t/{}",tenant.as_str()))
+            .execute(&pool).await.expect("fixture tenant");
+        sqlx::query("insert into clients(tenant_id,client_id,client_name,token_endpoint_auth_method,redirect_uris,jwks_uri) values($1,$2,'SCIM fixture','private_key_jwt','{}','https://keys.example/jwks')")
+            .bind(tenant.as_str())
+            .bind(client.as_str())
+            .execute(&pool)
+            .await
+            .expect("fixture client");
+        let repository = PgUserRepository {
+            pool: pool.clone(),
+            tenant: tenant.clone(),
+            kek: Arc::new(asterius_jose::LocalKek::from_bytes(&[0x58; 32]).expect("fixture KEK")),
+        };
+        let (_, reserved) = asterius_domain::outbound_scim::resource_identity(
+            &tenant,
+            Uuid::new_v4(),
+            asterius_domain::outbound_scim::ResourceKind::User,
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+        );
+        let malformed_source = reserved.replacen(tenant.as_str(), "INVALID", 1);
+        for (name, external, erase) in [
+            ("reserved", reserved.as_str(), true),
+            ("ordinary", "ordinary-owned", false),
+            ("malformed", malformed_source.as_str(), false),
+        ] {
+            let user = UserId::generate();
+            let email = format!("{name}@example.test");
+            sqlx::query("insert into users(tenant_id,user_id,username,email,email_verified,status) values($1,$2,$3,$4,true,'locked')")
+                .bind(tenant.as_str()).bind(user.as_uuid()).bind(name).bind(&email)
+                .execute(&pool).await.expect("locked owned user");
+            sqlx::query("insert into scim_user_external_ids(tenant_id,client_id,user_id,external_id) values($1,$2,$3,$4)")
+                .bind(tenant.as_str()).bind(client.as_str()).bind(user.as_uuid()).bind(external)
+                .execute(&pool).await.expect("SCIM ownership");
+            let held = repository
+                .scim_find(&client, user)
+                .await
+                .expect("read user")
+                .expect("owned user");
+            let mut edit = ScimProfileReplacement {
+                operation: "patch",
+                tenant: tenant.clone(),
+                client: client.clone(),
+                user,
+                expected_revision: held.revision,
+                username: name.to_owned(),
+                email: Some(email.clone()),
+                external_id: Some(external.to_owned()),
+                status: UserStatus::Disabled,
+                delete: false,
+            };
+            let (disabled, _) = repository
+                .scim_replace_profile(&edit)
+                .await
+                .expect("disable");
+            assert_eq!(disabled.user.email.as_deref(), Some(email.as_str()));
+            edit.expected_revision = disabled.revision;
+            edit.delete = true;
+            let (deleted, _) = repository
+                .scim_replace_profile(&edit)
+                .await
+                .expect("delete");
+            assert_eq!(deleted.user.status, UserStatus::Locked);
+            assert_eq!(deleted.user.email.is_none(), erase);
+            assert_eq!(deleted.user.email_verified, !erase);
+            assert_eq!(deleted.external_id.as_deref(), Some(external));
+            let retained: bool = sqlx::query_scalar("select deleted_at is not null from scim_user_external_ids where tenant_id=$1 and client_id=$2 and user_id=$3")
+                .bind(tenant.as_str()).bind(client.as_str()).bind(user.as_uuid())
+                .fetch_one(&pool).await.expect("retained identity");
+            assert!(retained);
+            assert_retirement_key(&pool, &tenant, &client, user, erase).await;
+            if erase {
+                sqlx::query("insert into users(tenant_id,user_id,username,email) values($1,$2,'fresh-generation',$3)")
+                    .bind(tenant.as_str()).bind(Uuid::new_v4()).bind(&email)
+                    .execute(&pool).await.expect("fresh generation may use same email");
+            }
+        }
+        sqlx::query("delete from tenants where tenant_id=$1")
+            .bind(tenant.as_str())
+            .execute(&pool)
+            .await
+            .expect("fixture cleanup");
+    }
+
+    async fn assert_retirement_key(
+        pool: &PgPool,
+        tenant: &TenantId,
+        client: &ClientId,
+        user: UserId,
+        expected: bool,
+    ) {
+        let present: bool = sqlx::query_scalar(
+            "select exists(select 1 from scim_outbound_incarnation_tombstones
+             where tenant_id=$1 and client_id=$2 and kind='user' and target_id=$3)",
+        )
+        .bind(tenant.as_str())
+        .bind(client.as_str())
+        .bind(user.as_uuid())
+        .fetch_one(pool)
+        .await
+        .expect("read reserved retirement key");
+        assert_eq!(present, expected);
+    }
+
+    #[tokio::test]
     #[ignore = "slow PostgreSQL SCIM security-lock regression; CI only"]
     // One persisted lifecycle proves disable, reactivation refusal and delete retain the same lock.
     #[allow(clippy::too_many_lines)]
@@ -1286,7 +1443,7 @@ mod scim_security_tests {
         sqlx::query("insert into tenants(tenant_id,issuer,display_name,default_resource) values($1,$2,'Security fixture','https://api.example/')")
             .bind(tenant.as_str()).bind(format!("https://id.example/t/{}",tenant.as_str()))
             .execute(&pool).await.expect("fixture tenant");
-        sqlx::query("insert into clients(tenant_id,client_id,redirect_uris) values($1,$2,'{}')")
+        sqlx::query("insert into clients(tenant_id,client_id,client_name,token_endpoint_auth_method,redirect_uris,jwks_uri) values($1,$2,'SCIM fixture','private_key_jwt','{}','https://keys.example/jwks')")
             .bind(tenant.as_str())
             .bind(client.as_str())
             .execute(&pool)
@@ -1368,3 +1525,7 @@ mod scim_security_tests {
         pool.close().await;
     }
 }
+
+#[cfg(test)]
+#[path = "users_lifecycle_tests.rs"]
+mod lifecycle_tests;

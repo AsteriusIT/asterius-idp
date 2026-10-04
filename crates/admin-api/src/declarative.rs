@@ -184,6 +184,7 @@ mod authority_tests {
     use crate::{auth::Principal, rbac::Held};
     fn service(tenant: Option<&str>, scopes: Vec<&str>) -> Principal {
         Principal::Automation {
+            credential: None,
             subject: "controller".to_owned(),
             held: Held::Scopes {
                 tenant: tenant

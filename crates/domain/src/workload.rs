@@ -35,19 +35,29 @@ impl Algorithm {
 pub enum Provider {
     Kubernetes,
     Github,
+    Spiffe,
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Keys {
-    Inline { jwks: Value },
-    Remote { uri: String },
+    Inline {
+        jwks: Value,
+    },
+    Remote {
+        uri: String,
+    },
+    SpiffeBundle {
+        trust_domain: String,
+        bundle: String,
+    },
 }
 impl std::fmt::Debug for Keys {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::Inline { .. } => "Inline(public keys withheld)",
             Self::Remote { .. } => "Remote(pinned location withheld)",
+            Self::SpiffeBundle { .. } => "SpiffeBundle(public authorities withheld)",
         })
     }
 }
@@ -128,7 +138,14 @@ impl Config {
             || !text(&self.issuer, 1024)
             || Issuer::parse(&self.issuer).map_or(true, |issuer| issuer.as_str() != self.issuer)
             || self.audience != format!("urn:asterius:workload:{}:{id}", tenant.as_str())
-            || !text(&self.subject, 1024)
+            || !text(
+                &self.subject,
+                if self.provider == Provider::Spiffe {
+                    2048
+                } else {
+                    1024
+                },
+            )
             || !self
                 .principal
                 .strip_prefix("workload:")
@@ -183,6 +200,18 @@ impl Config {
                     return Err(invalid());
                 }
             }
+            Keys::SpiffeBundle {
+                trust_domain,
+                bundle,
+            } => {
+                if self.provider != Provider::Spiffe
+                    || spiffe_domain(&self.subject) != Some(trust_domain.as_str())
+                    || bundle.is_empty()
+                    || bundle.len() > MAX_JWKS_BYTES
+                {
+                    return Err(invalid());
+                }
+            }
         }
         Ok(())
     }
@@ -202,6 +231,7 @@ impl Config {
                 "/workflow_ref",
                 "/workflow_sha",
             ],
+            Provider::Spiffe => &[],
         };
         if required
             .iter()
@@ -239,6 +269,16 @@ impl Config {
                     return Err(invalid());
                 }
             }
+            Provider::Spiffe => {
+                if !matches!(self.keys, Keys::SpiffeBundle { .. })
+                    || !self.issuer.starts_with("https://")
+                    || self.algorithms.contains(&Algorithm::EdDSA)
+                    || !self.required_claims.is_empty()
+                    || spiffe_domain(&self.subject).is_none()
+                {
+                    return Err(invalid());
+                }
+            }
         }
         Ok(())
     }
@@ -262,11 +302,38 @@ impl Config {
             key_source: match self.keys {
                 Keys::Inline { .. } => "inline",
                 Keys::Remote { .. } => "remote",
+                Keys::SpiffeBundle { .. } => "spiffe_bundle",
             }
             .to_owned(),
             fingerprints,
         }
     }
+}
+
+/// The approved profile compares a canonical identity without URL normalization.
+// fuzz-target: workload_token
+#[must_use]
+pub fn spiffe_domain(id: &str) -> Option<&str> {
+    if id.len() > 2048 || !id.is_ascii() {
+        return None;
+    }
+    let (domain, path) = id.strip_prefix("spiffe://")?.split_once('/')?;
+    if domain.is_empty()
+        || domain.len() > 255
+        || !domain.bytes().all(|b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'-' | b'_')
+        })
+        || path.split('/').any(|segment| {
+            segment.is_empty()
+                || matches!(segment, "." | "..")
+                || !segment
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+        })
+    {
+        return None;
+    }
+    Some(domain)
 }
 
 #[derive(Debug, Clone)]
@@ -277,6 +344,8 @@ pub struct Verified {
     pub trust_id: String,
     pub trust_version: i64,
     pub principal: String,
+    pub source_subject: String,
+    pub trust_domain: Option<String>,
     pub expires_at: OffsetDateTime,
     pub digest: [u8; 32],
     pub scopes: BTreeSet<String>,
@@ -454,5 +523,61 @@ mod action_tests {
             assert!(validate_actions(&[bad], &allowed, &targets).is_err());
         }
         assert!(validate_actions(&[], &allowed, &targets).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod spiffe_tests {
+    use super::*;
+
+    #[test]
+    fn spiffe_identity_is_canonical_and_bounded() {
+        assert_eq!(
+            spiffe_domain("spiffe://example.test/ns/Workload_1"),
+            Some("example.test")
+        );
+        for id in [
+            "SPIFFE://example.test/a",
+            "spiffe://EXAMPLE.test/a",
+            "spiffe://example.test",
+            "spiffe://example.test/",
+            "spiffe://example.test/a/",
+            "spiffe://example.test/a//b",
+            "spiffe://example.test/../b",
+            "spiffe://example.test/%61",
+            "spiffe://example.test/a?b",
+            "spiffe://user@example.test/a",
+            "spiffe://example.test:443/a",
+            "spiffe://example.test/é",
+        ] {
+            assert!(spiffe_domain(id).is_none(), "{id}");
+        }
+        let max = format!("spiffe://example.test/{}", "a".repeat(2026));
+        assert_eq!(max.len(), 2048);
+        assert!(spiffe_domain(&max).is_some());
+        assert!(spiffe_domain(&(max + "a")).is_none());
+    }
+
+    #[test]
+    fn spiffe_trust_requires_its_own_domain_bundle_and_algorithms() {
+        let mut config: Config = serde_json::from_value(serde_json::json!({
+            "issuer":"https://spire.example.test", "audience":"urn:asterius:workload:acme:inventory",
+            "subject":"spiffe://example.test/inventory", "provider":"spiffe", "principal":"workload:inventory",
+            "clients":["client-one"], "scopes":["inventory:read"], "resources":["https://api.example/"],
+            "actions":["read"], "required_claims":{}, "algorithms":["ES256"],
+            "keys":{"kind":"spiffe_bundle","trust_domain":"example.test","bundle":"{\"keys\":[]}"}
+        })).expect("config");
+        let tenant = TenantId::new("acme");
+        assert!(config.validate(&tenant, "inventory").is_ok());
+        config.algorithms.insert(Algorithm::EdDSA);
+        assert!(config.validate(&tenant, "inventory").is_err());
+        config.algorithms.remove(&Algorithm::EdDSA);
+        config.subject = "spiffe://other.test/inventory".to_owned();
+        assert!(config.validate(&tenant, "inventory").is_err());
+        config.subject = "spiffe://example.test/inventory".to_owned();
+        config.keys = Keys::Inline {
+            jwks: serde_json::json!({"keys":[]}),
+        };
+        assert!(config.validate(&tenant, "inventory").is_err());
     }
 }

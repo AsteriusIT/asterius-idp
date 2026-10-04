@@ -103,6 +103,7 @@ pub mod interaction;
 pub mod introspection;
 pub mod invitation;
 pub mod issuance;
+pub mod kubernetes_online;
 pub mod limits;
 pub mod logout;
 pub mod native_sso;

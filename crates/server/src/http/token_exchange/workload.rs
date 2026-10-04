@@ -75,6 +75,8 @@ impl TokenExchange<'_> {
             .sign_access(
                 &tenant.id,
                 asterius_domain::keys::AccessIssuance {
+                    held_authority: None,
+                    device_binding: None,
                     grant: &grant,
                     kind: asterius_domain::GrantType::TokenExchange,
                     implicit_resources: &[],
@@ -106,6 +108,7 @@ impl TokenExchange<'_> {
             subject: Some(SubjectId::new(&verified.principal)),
             user: None,
             parent: None,
+            parent_derivation: None,
             scopes: verified.scopes.clone(),
             resources: verified.resources.clone(),
             chain: Vec::new(),

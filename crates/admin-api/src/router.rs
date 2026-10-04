@@ -21,6 +21,7 @@
 
 mod governance;
 mod governance_reports;
+mod outbound_scim;
 
 use asterius_domain::entities::session::{SessionId, SessionRevocation};
 use asterius_domain::{
@@ -151,7 +152,26 @@ impl AdminApi {
         for operation in operations {
             let operation = *operation;
             let state = state.clone();
-            let handler = move |request: Request| dispatch(operation, state, request);
+            let handler = move |request: Request| async move {
+                if operation.id() == crate::KUBERNETES_REVIEW_ID {
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(3),
+                        dispatch(operation, state, request),
+                    )
+                    .await
+                    {
+                        Ok(response) => response,
+                        Err(_) => json_no_store(
+                            StatusCode::OK,
+                            &serde_json::json!(
+                                asterius_domain::kubernetes_online::TokenReviewResponse::denied()
+                            ),
+                        ),
+                    }
+                } else {
+                    dispatch(operation, state, request).await
+                }
+            };
             let method_router = match operation.method() {
                 Method::Get => axum::routing::get(handler),
                 Method::Post => axum::routing::post(handler),
@@ -326,6 +346,12 @@ async fn route(
     context: &Handling<'_>,
     body: axum::body::Body,
 ) -> Result<Response, AdminError> {
+    if id.starts_with("temporary_kubernetes.") {
+        return context.temporary_kubernetes(id, body).await;
+    }
+    if id.starts_with("outbound_scim.") {
+        return context.outbound_scim(id, body).await;
+    }
     if id == "governance.findings" {
         return context.governance_findings().await;
     }
@@ -401,6 +427,9 @@ async fn route_standard(
         crate::CONDITIONAL_SETTINGS_UPDATE_ID => context.update_conditional_settings(body).await,
         crate::KUBERNETES_PROFILE_READ_ID => context.read_kubernetes_profile().await,
         crate::KUBERNETES_PROFILE_UPDATE_ID => context.update_kubernetes_profile(body).await,
+        crate::KUBERNETES_ONLINE_READ_ID => context.read_kubernetes_online().await,
+        crate::KUBERNETES_ONLINE_UPDATE_ID => context.update_kubernetes_online(body).await,
+        crate::KUBERNETES_REVIEW_ID => context.review_kubernetes_identity(body).await,
         crate::CLIENT_CREATE_ID => context.create_client(body).await,
         crate::CLIENT_UPDATE_ID => context.update_client(body).await,
         crate::CLIENT_RESOURCES_UPDATE_ID => context.update_client_resources(body).await,
@@ -466,6 +495,13 @@ async fn route_standard(
         crate::ID_JAG_SUBJECT_REMOVE_ID => context.remove_id_jag_subject(body).await,
         crate::SAML_SP_LIST_ID => context.list_saml_sp_trust().await,
         crate::OIDC_PROVIDER_CHECK_ID => context.check_oidc_provider(body).await,
+        crate::DEVICE_SOURCES_LIST_ID => context.list_device_sources().await,
+        crate::DEVICE_SOURCE_CREATE_ID => context.save_device_source(body, false).await,
+        crate::DEVICE_SOURCE_UPDATE_ID => context.save_device_source(body, true).await,
+        crate::DEVICES_LIST_ID => context.list_devices().await,
+        crate::DEVICE_REMOVE_ID => context.remove_device(body).await,
+        crate::DEVICE_ENROLL_ID => context.enroll_device(body).await,
+        crate::DEVICE_POSTURE_ID => context.ingest_device_posture(body).await,
         crate::WORKLOAD_TRUSTS_LIST_ID => context.list_workload_trusts().await,
         crate::WORKLOAD_TRUST_READ_ID => context.read_workload_trust().await,
         crate::WORKLOAD_TRUST_PUT_ID => context.put_workload_trust(body).await,
@@ -2279,6 +2315,89 @@ impl Handling<'_> {
         Ok(json_no_store(StatusCode::OK, &result))
     }
 
+    async fn read_kubernetes_online(&self) -> Result<Response, AdminError> {
+        let client = self.client_in_path("/kubernetes/online")?;
+        let port = self
+            .state
+            .backend
+            .kubernetes_online()
+            .ok_or(AdminError::Unavailable)?;
+        let profile = port
+            .profile(&self.tenant.id, &client)
+            .await
+            .map_err(|e| group_error(crate::KUBERNETES_ONLINE_READ_ID, e))?
+            .ok_or(AdminError::NotFound)?;
+        Ok(json_no_store(StatusCode::OK, &serde_json::json!(profile)))
+    }
+
+    async fn update_kubernetes_online(
+        &self,
+        body: axum::body::Body,
+    ) -> Result<Response, AdminError> {
+        let client = self.client_in_path("/kubernetes/online")?;
+        let change: asterius_domain::kubernetes_online::ProfileChange =
+            self.parse_body(body).await?;
+        let port = self
+            .state
+            .backend
+            .kubernetes_online()
+            .ok_or(AdminError::Unavailable)?;
+        let actor = asterius_domain::Actor::Admin(self.principal.audit_actor());
+        let profile = port
+            .replace_profile(&self.tenant.id, &client, &actor, &change)
+            .await
+            .map_err(|e| group_error(crate::KUBERNETES_ONLINE_UPDATE_ID, e))?;
+        Ok(json_no_store(StatusCode::OK, &serde_json::json!(profile)))
+    }
+
+    async fn review_kubernetes_identity(
+        &self,
+        body: axum::body::Body,
+    ) -> Result<Response, AdminError> {
+        use asterius_domain::kubernetes_online::{TokenReviewRequest, TokenReviewResponse};
+        let Principal::Automation { subject, held, .. } = self.principal else {
+            return Err(AdminError::Forbidden);
+        };
+        let crate::rbac::Held::Scopes {
+            tenant: Some(realm),
+            ..
+        } = held
+        else {
+            return Err(AdminError::Forbidden);
+        };
+        if realm != &self.tenant.id {
+            return Err(AdminError::Forbidden);
+        }
+        let client = self.client_in_path("/kubernetes/reviews")?;
+        let denied = || {
+            Ok(json_no_store(
+                StatusCode::OK,
+                &serde_json::json!(TokenReviewResponse::denied()),
+            ))
+        };
+        let Ok(bytes) =
+            axum::body::to_bytes(body, asterius_domain::kubernetes_online::MAX_REQUEST_BYTES).await
+        else {
+            return denied();
+        };
+        let Ok(request) = TokenReviewRequest::parse(&bytes) else {
+            return denied();
+        };
+        let Some(port) = self.state.backend.kubernetes_online() else {
+            return denied();
+        };
+        let response = port
+            .review(
+                self.tenant,
+                &asterius_domain::ClientId::new(subject.clone()),
+                &client,
+                &request,
+            )
+            .await
+            .unwrap_or_else(|_| TokenReviewResponse::denied());
+        Ok(json_no_store(StatusCode::OK, &serde_json::json!(response)))
+    }
+
     async fn update_kubernetes_profile(
         &self,
         body: axum::body::Body,
@@ -3752,6 +3871,200 @@ impl Handling<'_> {
                 other => AdminError::from_storage(crate::OIDC_PROVIDER_CHECK_ID, &other),
             })?;
         Ok(json_no_store(StatusCode::OK, &report))
+    }
+
+    fn device_id_in_path(&self, relay: bool) -> Result<uuid::Uuid, AdminError> {
+        let mut segments = self.path.rsplit('/');
+        let segment = if relay {
+            segments.nth(1)
+        } else {
+            segments.next()
+        };
+        segment
+            .and_then(|s| uuid::Uuid::parse_str(s).ok())
+            .filter(|id| !id.is_nil())
+            .ok_or(AdminError::NotFound)
+    }
+    async fn list_device_sources(&self) -> Result<Response, AdminError> {
+        let registry = self
+            .state
+            .backend
+            .device_registry()
+            .ok_or(AdminError::NotFound)?;
+        let sources = registry
+            .sources(&self.tenant.id)
+            .await
+            .map_err(|e| device_storage_error(crate::DEVICE_SOURCES_LIST_ID, &e))?;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({"sources":sources}),
+        ))
+    }
+    async fn save_device_source(
+        &self,
+        body: axum::body::Body,
+        replace: bool,
+    ) -> Result<Response, AdminError> {
+        let bytes = axum::body::to_bytes(body, asterius_domain::managed_devices::MAX_UPDATE_BYTES)
+            .await
+            .map_err(|_| AdminError::Invalid("device source body exceeds its limit".into()))?;
+        let change = asterius_domain::managed_devices::SourceChange::parse(&bytes)
+            .map_err(|_| AdminError::Invalid("invalid device source".into()))?;
+        if replace != change.expected_revision.is_some() {
+            return Err(AdminError::Invalid(
+                "source revision does not match the operation".into(),
+            ));
+        }
+        let id = if replace {
+            Some(self.device_id_in_path(false)?)
+        } else {
+            None
+        };
+        let registry = self
+            .state
+            .backend
+            .device_registry()
+            .ok_or(AdminError::NotFound)?;
+        let source = registry
+            .save_source(
+                &self.tenant.id,
+                id,
+                &change,
+                Actor::Admin(self.principal.audit_actor()),
+                self.now,
+            )
+            .await
+            .map_err(|e| device_storage_error(crate::DEVICE_SOURCE_UPDATE_ID, &e))?;
+        Ok(json_no_store(
+            if replace {
+                StatusCode::OK
+            } else {
+                StatusCode::CREATED
+            },
+            &serde_json::json!(source),
+        ))
+    }
+    async fn list_devices(&self) -> Result<Response, AdminError> {
+        let after = query_value(&self.query, "after")
+            .map(|s| uuid::Uuid::parse_str(&s))
+            .transpose()
+            .map_err(|_| AdminError::Invalid("invalid device cursor".into()))?;
+        let limit: u16 = query_value(&self.query, "limit")
+            .map_or(Ok(50), |s| s.parse())
+            .map_err(|_| AdminError::Invalid("invalid device page limit".into()))?;
+        if !(1..=100).contains(&limit) {
+            return Err(AdminError::Invalid(
+                "device page limit must be between 1 and 100".into(),
+            ));
+        }
+        let registry = self
+            .state
+            .backend
+            .device_registry()
+            .ok_or(AdminError::NotFound)?;
+        let devices = registry
+            .devices(&self.tenant.id, None, after, limit)
+            .await
+            .map_err(|e| device_storage_error(crate::DEVICES_LIST_ID, &e))?;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({"devices":devices}),
+        ))
+    }
+    async fn remove_device(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Input {
+            expected_revision: uuid::Uuid,
+        }
+        let bytes = axum::body::to_bytes(body, 1024)
+            .await
+            .map_err(|_| AdminError::Invalid("device removal body exceeds its limit".into()))?;
+        let input: Input = serde_json::from_slice(&bytes)
+            .map_err(|_| AdminError::Invalid("invalid device removal".into()))?;
+        let registry = self
+            .state
+            .backend
+            .device_registry()
+            .ok_or(AdminError::NotFound)?;
+        registry
+            .remove(
+                &self.tenant.id,
+                self.device_id_in_path(false)?,
+                input.expected_revision,
+                asterius_domain::managed_devices::RemovalAuthority::Administrator(Actor::Admin(
+                    self.principal.audit_actor(),
+                )),
+                self.now,
+            )
+            .await
+            .map_err(|e| device_storage_error(crate::DEVICE_REMOVE_ID, &e))?;
+        Ok(StatusCode::NO_CONTENT.into_response())
+    }
+    fn device_relay_credential(
+        &self,
+    ) -> Result<asterius_domain::managed_devices::RelayCredential, AdminError> {
+        let Principal::Automation { subject, .. } = &self.principal else {
+            return Err(AdminError::NotFound);
+        };
+        let jti = self
+            .principal
+            .verified_machine_jti()
+            .ok_or(AdminError::NotFound)?;
+        asterius_domain::managed_devices::RelayCredential::from_verified(
+            asterius_domain::ClientId::new(subject.clone()),
+            jti,
+        )
+        .map_err(|_| AdminError::NotFound)
+    }
+    async fn enroll_device(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let bytes = axum::body::to_bytes(body, asterius_domain::managed_devices::MAX_UPDATE_BYTES)
+            .await
+            .map_err(|_| AdminError::Invalid("device enrollment body exceeds its limit".into()))?;
+        let request = asterius_domain::managed_devices::EnrollmentRequest::parse(&bytes)
+            .map_err(|_| AdminError::Invalid("invalid device enrollment".into()))?;
+        let relay = self
+            .state
+            .backend
+            .device_relay()
+            .ok_or(AdminError::NotFound)?;
+        let id = relay
+            .enroll(
+                &self.tenant.id,
+                self.device_id_in_path(true)?,
+                &self.device_relay_credential()?,
+                &request,
+                self.now,
+            )
+            .await
+            .map_err(|e| device_storage_error(crate::DEVICE_ENROLL_ID, &e))?;
+        Ok(json_no_store(
+            StatusCode::CREATED,
+            &serde_json::json!({"id":id}),
+        ))
+    }
+    async fn ingest_device_posture(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let bytes = axum::body::to_bytes(body, asterius_domain::managed_devices::MAX_UPDATE_BYTES)
+            .await
+            .map_err(|_| AdminError::Invalid("device posture body exceeds its limit".into()))?;
+        let update = asterius_domain::managed_devices::Update::parse(&bytes, self.now)
+            .map_err(|_| AdminError::Invalid("invalid device posture update".into()))?;
+        let relay = self
+            .state
+            .backend
+            .device_relay()
+            .ok_or(AdminError::NotFound)?;
+        relay
+            .ingest(
+                &self.tenant.id,
+                self.device_id_in_path(true)?,
+                &self.device_relay_credential()?,
+                &update,
+                self.now,
+            )
+            .await
+            .map_err(|e| device_storage_error(crate::DEVICE_POSTURE_ID, &e))?;
+        Ok(StatusCode::NO_CONTENT.into_response())
     }
 
     fn workload_trust_in_path(&self) -> Result<&str, AdminError> {
@@ -8452,7 +8765,7 @@ pub const CLIENT_ADDRESS_EXTENSION: &str = "asterius_admin_api::ClientAddress";
 
 impl Handling<'_> {
     fn management_owner(&self) -> Result<String, AdminError> {
-        let Principal::Automation { subject, held } = self.principal else {
+        let Principal::Automation { subject, held, .. } = self.principal else {
             return Err(AdminError::Forbidden);
         };
         let crate::rbac::Held::Scopes { tenant, .. } = held else {
@@ -8899,6 +9212,173 @@ impl Handling<'_> {
     }
 }
 
+impl Handling<'_> {
+    async fn temporary_kubernetes(
+        &self,
+        operation: &str,
+        body: axum::body::Body,
+    ) -> Result<Response, AdminError> {
+        use asterius_domain::temporary_kubernetes::KubernetesBindingChange;
+        let segments: Vec<_> = self
+            .path
+            .split('/')
+            .filter(|part| !part.is_empty())
+            .collect();
+        let marker = if operation == crate::TEMPORARY_KUBERNETES_PROJECT_ID {
+            "temporary-access"
+        } else {
+            "temporary-entitlements"
+        };
+        let index = segments
+            .iter()
+            .position(|part| *part == marker)
+            .ok_or(AdminError::NotFound)?;
+        let id = segments
+            .get(index + 1)
+            .and_then(|part| uuid::Uuid::parse_str(part).ok())
+            .ok_or(AdminError::NotFound)?;
+        let error = |e| group_error(crate::TEMPORARY_KUBERNETES_BINDING_WRITE_ID, e);
+        if operation == crate::TEMPORARY_KUBERNETES_PROJECT_ID {
+            let Principal::Automation { subject, held, .. } = &self.principal else {
+                return Err(AdminError::Forbidden);
+            };
+            let crate::rbac::Held::Scopes {
+                tenant: Some(realm),
+                ..
+            } = held
+            else {
+                return Err(AdminError::Forbidden);
+            };
+            if realm != &self.tenant.id {
+                return Err(AdminError::Forbidden);
+            }
+            let port = self
+                .state
+                .backend
+                .temporary_kubernetes()
+                .ok_or(AdminError::Unavailable)?;
+            let result = port
+                .project(
+                    &self.tenant.id,
+                    &asterius_domain::ClientId::new(subject.clone()),
+                    id,
+                )
+                .await
+                .map_err(error)?;
+            return Ok(json_no_store(StatusCode::OK, &serde_json::json!(result)));
+        }
+        let Principal::Console {
+            tenant: realm,
+            user,
+            ..
+        } = &self.principal
+        else {
+            return Err(AdminError::Forbidden);
+        };
+        if realm != &self.tenant.id {
+            return Err(AdminError::Forbidden);
+        }
+        let port = self
+            .state
+            .backend
+            .temporary_kubernetes()
+            .ok_or(AdminError::Unavailable)?;
+        match operation {
+            crate::TEMPORARY_KUBERNETES_BINDING_READ_ID => {
+                let result = port
+                    .binding(&self.tenant.id, user, id)
+                    .await
+                    .map_err(error)?;
+                let authentication = match &result {
+                    Some(binding) if binding.enabled => {
+                        Some(self.temporary_kubernetes_example(user, binding).await?)
+                    }
+                    _ => None,
+                };
+                Ok(json_no_store(
+                    StatusCode::OK,
+                    &serde_json::json!({"binding":result,"authentication_configuration":authentication}),
+                ))
+            }
+            crate::TEMPORARY_KUBERNETES_BINDING_WRITE_ID => {
+                let change =
+                    KubernetesBindingChange::parse(self.parse_body(body).await?).map_err(error)?;
+                let result = port
+                    .replace_binding(&self.tenant.id, user, id, change)
+                    .await
+                    .map_err(error)?;
+                Ok(json_no_store(StatusCode::OK, &serde_json::json!(result)))
+            }
+            _ => Err(AdminError::NotFound),
+        }
+    }
+    async fn temporary_kubernetes_example(
+        &self,
+        owner: &asterius_domain::UserId,
+        binding: &asterius_domain::temporary_kubernetes::KubernetesEntitlementBinding,
+    ) -> Result<serde_json::Value, AdminError> {
+        let operation = crate::TEMPORARY_KUBERNETES_BINDING_READ_ID;
+        let port = self
+            .state
+            .backend
+            .temporary_entitlements()
+            .ok_or(AdminError::Unavailable)?;
+        let entitlement = port
+            .get(&self.tenant.id, owner, binding.entitlement_id)
+            .await
+            .map_err(|error| group_error(operation, error))?;
+        let client_id = asterius_domain::ClientId::new(binding.cluster_client_id.clone());
+        let client = self.load_client(&client_id, operation).await?;
+        let profile = self
+            .state
+            .backend
+            .groups()
+            .kubernetes_profile(&self.tenant.id, &client_id)
+            .await
+            .map_err(|error| group_error(operation, error))?
+            .ok_or(AdminError::NotFound)?;
+        if profile.revision() != binding.profile_revision
+            || profile.cluster() != binding.cluster
+            || profile.namespace() != binding.namespace
+        {
+            return Err(AdminError::Conflict(
+                "Kubernetes profile revision changed".into(),
+            ));
+        }
+        let tuple = asterius_domain::temporary_kubernetes::KubernetesJitIdentity {
+            binding_revision: binding.revision,
+            entitlement_id: binding.entitlement_id,
+            client_id: binding.cluster_client_id.clone(),
+            resource: entitlement.configuration.resource,
+            permissions: entitlement.configuration.permissions,
+            role: entitlement.configuration.role_name,
+            cluster: binding.cluster.clone(),
+            namespace: binding.namespace.clone(),
+            profile_revision: binding.profile_revision,
+            // No deadline is pinned in a configuration template. The renderer
+            // validates each actual token's exclusive server-resolved deadline.
+            expires_at: 1,
+        };
+        Ok(crate::kubernetes::temporary_authentication_document(
+            self.tenant,
+            &client,
+            &profile,
+            &tuple,
+        ))
+    }
+}
+
+fn device_storage_error(operation: &'static str, error: &DomainError) -> AdminError {
+    match error {
+        DomainError::NotFound => AdminError::NotFound,
+        DomainError::Conflict(message) => AdminError::Conflict(message.clone()),
+        DomainError::Invalid { .. } => {
+            AdminError::Invalid("invalid managed-device operation".into())
+        }
+        other => AdminError::from_storage(operation, other),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -8956,6 +9436,8 @@ mod tests {
 
     #[derive(Debug, Default)]
     struct Fake {
+        /// Governance ports reached by the registry walk, with exact realm.
+        governance_calls: Mutex<Vec<(TenantId, &'static str)>>,
         tenants: Mutex<Vec<Tenant>>,
         sessions: Mutex<BTreeMap<String, Session>>,
         roles: Mutex<BTreeMap<String, Vec<Role>>>,
@@ -9093,6 +9575,146 @@ mod tests {
 
     #[derive(Debug, Clone)]
     struct Handle(Arc<Fake>);
+
+    impl Handle {
+        fn record_governance_call(&self, tenant: &TenantId, operation: &'static str) {
+            self.0
+                .governance_calls
+                .lock()
+                .expect("an uncontended lock")
+                .push((tenant.clone(), operation));
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl asterius_domain::governance_reports::GovernanceReports for Handle {
+        async fn findings(
+            &self,
+            tenant: &TenantId,
+            _actor: UserId,
+            query: &asterius_domain::governance_reports::Query,
+        ) -> Result<asterius_domain::governance_reports::Page, DomainError> {
+            self.record_governance_call(tenant, "findings");
+            Ok(asterius_domain::governance_reports::Page {
+                section: query.section,
+                observed_at: OffsetDateTime::UNIX_EPOCH,
+                thresholds: asterius_domain::governance_reports::Thresholds::default(),
+                items: Vec::new(),
+                next: None,
+                scanned: 0,
+                read_only: true,
+            })
+        }
+    }
+
+    // An empty configured governance service: list operations succeed, but no
+    // ownership, review or item exists for detail/mutation requests. These
+    // adapters are test-only; production absence and storage outages still 503.
+    #[async_trait::async_trait]
+    impl asterius_domain::access_reviews::AccessReviews for Handle {
+        async fn reviewers(
+            &self,
+            tenant: &TenantId,
+            _after: Option<uuid::Uuid>,
+            _limit: u16,
+        ) -> Result<Vec<asterius_domain::access_reviews::Reviewer>, DomainError> {
+            self.record_governance_call(tenant, "reviewers");
+            Ok(Vec::new())
+        }
+        async fn ownerships(
+            &self,
+            tenant: &TenantId,
+            _after: Option<uuid::Uuid>,
+            _limit: u16,
+        ) -> Result<Vec<asterius_domain::access_reviews::Ownership>, DomainError> {
+            self.record_governance_call(tenant, "ownership.list");
+            Ok(Vec::new())
+        }
+        async fn configure(
+            &self,
+            tenant: &TenantId,
+            _actor: UserId,
+            _request: asterius_domain::access_reviews::ConfigureOwnership,
+        ) -> Result<asterius_domain::access_reviews::Ownership, DomainError> {
+            self.record_governance_call(tenant, "ownership.configure");
+            Err(DomainError::NotFound)
+        }
+        async fn start(
+            &self,
+            tenant: &TenantId,
+            _actor: UserId,
+            _request: asterius_domain::access_reviews::StartReview,
+        ) -> Result<asterius_domain::access_reviews::Review, DomainError> {
+            self.record_governance_call(tenant, "review.start");
+            Err(DomainError::NotFound)
+        }
+        async fn review(
+            &self,
+            tenant: &TenantId,
+            _actor: UserId,
+            _administrative: bool,
+            _id: uuid::Uuid,
+        ) -> Result<asterius_domain::access_reviews::Review, DomainError> {
+            self.record_governance_call(tenant, "review.read");
+            Err(DomainError::NotFound)
+        }
+        async fn reviews(
+            &self,
+            tenant: &TenantId,
+            _actor: UserId,
+            _administrative: bool,
+            _after: Option<uuid::Uuid>,
+            _limit: u16,
+        ) -> Result<Vec<asterius_domain::access_reviews::Review>, DomainError> {
+            self.record_governance_call(tenant, "review.list");
+            Ok(Vec::new())
+        }
+        async fn items(
+            &self,
+            tenant: &TenantId,
+            _actor: UserId,
+            _administrative: bool,
+            _review: uuid::Uuid,
+            _after: Option<uuid::Uuid>,
+            _limit: u16,
+        ) -> Result<Vec<asterius_domain::access_reviews::Item>, DomainError> {
+            self.record_governance_call(tenant, "review.items");
+            Err(DomainError::NotFound)
+        }
+        async fn decide(
+            &self,
+            tenant: &TenantId,
+            _actor: UserId,
+            _review: uuid::Uuid,
+            _item: uuid::Uuid,
+            _decision: asterius_domain::access_reviews::Decision,
+            _reason: String,
+        ) -> Result<asterius_domain::access_reviews::Item, DomainError> {
+            self.record_governance_call(tenant, "review.decide");
+            Err(DomainError::NotFound)
+        }
+        async fn apply(
+            &self,
+            tenant: &TenantId,
+            _actor: UserId,
+            _review: uuid::Uuid,
+            _item: uuid::Uuid,
+        ) -> Result<asterius_domain::access_reviews::Item, DomainError> {
+            self.record_governance_call(tenant, "review.apply");
+            Err(DomainError::NotFound)
+        }
+        async fn cancel(
+            &self,
+            tenant: &TenantId,
+            _actor: UserId,
+            _review: uuid::Uuid,
+        ) -> Result<asterius_domain::access_reviews::Review, DomainError> {
+            self.record_governance_call(tenant, "review.cancel");
+            Err(DomainError::NotFound)
+        }
+    }
+
+    include!("router/registry_optional.rs");
 
     #[async_trait::async_trait]
     impl asterius_domain::GroupDirectory for Handle {
@@ -11356,6 +11978,37 @@ mod tests {
 
     #[async_trait::async_trait]
     impl AdminBackend for Handle {
+        fn kubernetes_online(
+            &self,
+        ) -> Option<Arc<dyn asterius_domain::kubernetes_online::KubernetesOnline>> {
+            Some(Arc::new(self.clone()))
+        }
+        fn temporary_kubernetes(
+            &self,
+        ) -> Option<Arc<dyn asterius_domain::temporary_kubernetes::TemporaryKubernetes>> {
+            Some(Arc::new(self.clone()))
+        }
+        fn temporary_entitlements(
+            &self,
+        ) -> Option<Arc<dyn asterius_domain::temporary_entitlements::TemporaryEntitlements>>
+        {
+            Some(Arc::new(self.clone()))
+        }
+        fn device_registry(&self) -> Option<Arc<dyn asterius_domain::managed_devices::Registry>> {
+            Some(Arc::new(self.clone()))
+        }
+
+        fn governance_reports(
+            &self,
+        ) -> Option<Arc<dyn asterius_domain::governance_reports::GovernanceReports>> {
+            Some(Arc::new(self.clone()))
+        }
+        fn access_reviews(
+            &self,
+        ) -> Option<Arc<dyn asterius_domain::access_reviews::AccessReviews>> {
+            Some(Arc::new(self.clone()))
+        }
+
         fn agent_tasks(
             &self,
         ) -> Option<Arc<dyn asterius_domain::agent_task_views::Administration>> {
@@ -12566,8 +13219,21 @@ mod tests {
         let path = operation
             .full_path()
             .replace("{tenant_id}", "acme")
+            .replace("{review_id}", "10000000-0000-4000-8000-000000000001")
+            .replace("{item_id}", "10000000-0000-4000-8000-000000000002")
+            .replace("{activation_id}", "10000000-0000-4000-8000-000000000003")
+            .replace("{source_id}", "10000000-0000-4000-8000-000000000004")
+            .replace("{device_id}", "10000000-0000-4000-8000-000000000005")
+            .replace("{eligibility_id}", "10000000-0000-4000-8000-000000000006")
             .replace("{import_id}", "WyJhY21lIiwicG9saWN5IiwicG9saWN5Il0")
-            .replace("{id}", "1")
+            .replace(
+                "{id}",
+                if operation.id().starts_with("temporary_") {
+                    "10000000-0000-4000-8000-000000000007"
+                } else {
+                    "1"
+                },
+            )
             .replace("{kid}", SEEDED_KID)
             .replace("{client_id}", SEEDED_CLIENT_ID)
             .replace("{flow_id}", SEEDED_INVITATION_ID)
@@ -12643,17 +13309,19 @@ mod tests {
         Body::from(bytes)
     }
 
-    /// A body each mutating route will accept.
-    ///
-    /// Keyed on the `operationId` rather than on the verb, because the table
-    /// tests assert that every registered route *succeeds* for a caller holding
-    /// the authority it declares — so a route reached with a body it rejects
-    /// would fail those tests for the wrong reason and hide a real refusal.
-    fn body_for(operation: &Operation) -> Body {
-        if operation.id() == crate::THEME_LOGO_UPLOAD_ID {
-            return test_logo_body();
-        }
-        let document = match operation.id() {
+    fn registry_profile_body(operation_id: &str) -> Option<serde_json::Value> {
+        Some(match operation_id {
+            "governance.ownership.configure" => serde_json::json!({
+                "target":{"kind":"membership","group_id":SEEDED_GROUP_ID,"user_id":SEEDED_USER_ID},
+                "owner_user_id":SEEDED_USER_ID,"reviewers":[SEEDED_USER_ID],"enabled":true,"expected_revision":null
+            }),
+            "governance.review.start" => {
+                serde_json::json!({"ownership_ids":["10000000-0000-4000-8000-000000000001"],"reviewer_id":SEEDED_USER_ID,"due_at":"2050-01-01T00:00:00Z"})
+            }
+            "governance.review.decide" => {
+                serde_json::json!({"decision":"retain","reason":"Registry fixture review"})
+            }
+
             crate::WORKLOAD_TRUST_PUT_ID => registry_workload_trust_body(),
             crate::WORKLOAD_TRUST_DELETE_ID => serde_json::json!({"expected_version":1}),
             crate::KUBERNETES_PROFILE_UPDATE_ID => {
@@ -12662,6 +13330,27 @@ mod tests {
             crate::CONDITIONAL_SETTINGS_UPDATE_ID => {
                 serde_json::json!({"sensitivity":"standard","expected_revision":null})
             }
+            _ => return None,
+        })
+    }
+
+    /// A body each mutating route will accept.
+    ///
+    /// Keyed on the `operationId` rather than on the verb, because the table
+    /// tests assert that every registered route *succeeds* for a caller holding
+    /// the authority it declares — so a route reached with a body it rejects
+    /// would fail those tests for the wrong reason and hide a real refusal.
+    fn body_for(operation: &Operation) -> Body {
+        if let Some(document) = registry_optional::body(operation) {
+            return Body::from(document.to_string());
+        }
+        if operation.id() == crate::THEME_LOGO_UPLOAD_ID {
+            return test_logo_body();
+        }
+        if let Some(document) = registry_profile_body(operation.id()) {
+            return Body::from(document.to_string());
+        }
+        let document = match operation.id() {
             crate::TENANT_CREATE_ID => serde_json::json!({
                 "tenant_id": "brand-new",
                 "issuer": format!("{ORIGIN}/t/brand-new"),
@@ -14796,6 +15485,39 @@ mod tests {
             // This fixture intentionally supplies neither settings nor trust ports;
             // valid requests must reach that precise unavailable boundary.
             assert_eq!(status, StatusCode::NOT_FOUND);
+        } else if matches!(
+            operation.id(),
+            "outbound_scim.list"
+                | "outbound_scim.credentials"
+                | "outbound_scim.assignments"
+                | "outbound_scim.read"
+                | "outbound_scim.create"
+                | "outbound_scim.configure"
+                | "outbound_scim.select"
+                | "outbound_scim.unselect"
+                | "outbound_scim.reconcile"
+                | "outbound_scim.preview"
+                | "outbound_scim.dry_run"
+                | "outbound_scim.lifecycle_read"
+                | "outbound_scim.lifecycle"
+        ) {
+            // Optional outbound ports are intentionally absent in this fixture.
+            // A mounted handler must identify absence rather than mask it as an outage.
+            assert_eq!(status, StatusCode::NOT_FOUND);
+        } else if matches!(
+            operation.id(),
+            "governance.ownership.configure"
+                | "governance.review.start"
+                | "governance.review.read"
+                | "governance.review.items"
+                | "governance.review.decide"
+                | "governance.review.apply"
+                | "governance.review.cancel"
+        ) {
+            // The deterministic configured service has no persisted targets.
+            assert_eq!(status, StatusCode::NOT_FOUND);
+        } else if let Some(expected) = registry_optional::missing_state_status(operation) {
+            assert_eq!(status, expected);
         } else if operation.id() == crate::KUBERNETES_PROFILE_READ_ID {
             // This fixture has no cluster profile persisted.
             assert_eq!(status, StatusCode::NOT_FOUND);
@@ -14832,6 +15554,42 @@ mod tests {
     /// Every mounted route has a handler. Without this the `match` in
     /// [`handle`] would answer 503 for a route somebody registered and forgot
     /// to wire, which looks like an outage rather than a mistake.
+    #[tokio::test]
+    async fn absent_outbound_scim_ports_do_not_bypass_console_authority() {
+        let world = World::new();
+        let administrator = world.sign_in("acme", &[Role::TenantAdmin]);
+        let unprivileged = world.sign_in("acme", &[]);
+        let foreign = world.sign_in("asterius-admin", &[Role::DeploymentAdmin]);
+        for operation in [
+            &crate::OUTBOUND_SCIM_LIST,
+            &crate::OUTBOUND_SCIM_READ,
+            &crate::OUTBOUND_SCIM_CREDENTIALS,
+            &crate::OUTBOUND_SCIM_ASSIGNMENTS,
+            &crate::OUTBOUND_SCIM_LIFECYCLE_READ,
+        ] {
+            assert_eq!(
+                world.get(operation, &administrator).await.status(),
+                StatusCode::NOT_FOUND
+            );
+            assert_eq!(
+                world.get(operation, &unprivileged).await.status(),
+                StatusCode::FORBIDDEN
+            );
+            assert_eq!(
+                world.get(operation, &foreign).await.status(),
+                StatusCode::FORBIDDEN
+            );
+        }
+        let no_role_write = world
+            .send(
+                as_console(&crate::OUTBOUND_SCIM_CREATE, &unprivileged)
+                    .body(Body::from("{}"))
+                    .expect("controlled request"),
+            )
+            .await;
+        assert_eq!(no_role_write.status(), StatusCode::FORBIDDEN);
+    }
+
     #[tokio::test]
     async fn every_registered_operation_has_a_handler() {
         // Arrange
@@ -14902,6 +15660,40 @@ mod tests {
 
             assert_registered_status(operation, response.status());
         }
+        let calls = world
+            .handle
+            .0
+            .governance_calls
+            .lock()
+            .expect("an uncontended lock");
+        assert!(calls.iter().all(|(realm, _)| realm == &tenant));
+        registry_optional::assert_calls(&calls);
+        let reached: std::collections::BTreeSet<_> = calls
+            .iter()
+            .map(|(_, operation)| *operation)
+            .filter(|operation| {
+                !operation.contains("online.")
+                    && !operation.contains("devices.")
+                    && !operation.contains("temporary.")
+                    && !operation.contains("jit.")
+            })
+            .collect();
+        assert_eq!(
+            reached,
+            std::collections::BTreeSet::from([
+                "findings",
+                "reviewers",
+                "ownership.list",
+                "ownership.configure",
+                "review.list",
+                "review.start",
+                "review.read",
+                "review.items",
+                "review.decide",
+                "review.apply",
+                "review.cancel"
+            ])
+        );
     }
 
     #[tokio::test]
@@ -16253,7 +17045,7 @@ mod tests {
                 .status(),
             StatusCode::FORBIDDEN
         );
-        // The same UUID in the correct realm reaches the missing fixture port,
+        // The same UUID in the correct realm reaches the configured empty port,
         // proving the refusal above came before any owner persistence lookup.
         let local = world.sign_in_as("acme", seeded_user_id(), &[Role::TenantAdmin]);
         assert_eq!(
@@ -16261,7 +17053,17 @@ mod tests {
                 .get(&crate::TEMPORARY_ENTITLEMENT_LIST, &local)
                 .await
                 .status(),
-            StatusCode::SERVICE_UNAVAILABLE
+            StatusCode::OK
+        );
+        assert_eq!(
+            world
+                .handle
+                .0
+                .governance_calls
+                .lock()
+                .expect("an uncontended lock")
+                .as_slice(),
+            &[(TenantId::new("acme"), "temporary.list")]
         );
     }
 

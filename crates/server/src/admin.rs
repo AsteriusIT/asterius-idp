@@ -261,21 +261,43 @@ impl AdminTokens for AutomationTokens {
             return Ok(None);
         }
 
-        let scopes = verified
+        let scopes: std::collections::BTreeSet<String> = verified
             .claim_str("scope")
             .unwrap_or_default()
             .split_ascii_whitespace()
             .map(str::to_owned)
             .collect();
+        // These dedicated scopes require an exact private receipt created only
+        // after successful client-credentials signing, not merely a client-shaped sub.
+        if scopes.contains("admin.kubernetes_reviews:read")
+            && !self
+                .status
+                .reviewer_token_current(&issuer.id, &client_id, jti)
+                .await?
+        {
+            return Ok(None);
+        }
+        if (scopes.contains(asterius_domain::managed_devices::ENROLLMENT_SCOPE)
+            || scopes.contains(asterius_domain::managed_devices::POSTURE_SCOPE))
+            && !self
+                .status
+                .device_relay_token_current(&issuer.id, &client_id, jti)
+                .await?
+        {
+            return Ok(None);
+        }
         let tenant = if self.reserved_tenant.as_ref() == Some(&issuer.id) {
             None
         } else {
             Some(issuer.id)
         };
         Ok(Some(TokenPrincipal {
+            credential: Some(
+                asterius_admin_api::backend::VerifiedMachineCredential::from_verified_jti(jti)?,
+            ),
             subject: client.to_owned(),
             tenant,
-            scopes,
+            scopes: scopes.into_iter().collect(),
         }))
     }
 }
@@ -288,6 +310,24 @@ trait AutomationTokenStatus: std::fmt::Debug + Send + Sync {
         query: &asterius_domain::agent_tasks::TokenQuery,
     ) -> Result<bool, DomainError> {
         Ok(query.approval.is_none())
+    }
+
+    async fn reviewer_token_current(
+        &self,
+        _tenant: &TenantId,
+        _client: &ClientId,
+        _jti: &str,
+    ) -> Result<bool, DomainError> {
+        Ok(false)
+    }
+
+    async fn device_relay_token_current(
+        &self,
+        _tenant: &TenantId,
+        _client: &ClientId,
+        _jti: &str,
+    ) -> Result<bool, DomainError> {
+        Ok(false)
     }
 
     async fn is_denylisted(&self, tenant: &TenantId, jti: &str) -> Result<bool, DomainError>;
@@ -317,6 +357,32 @@ impl AutomationTokenStatus for PgAutomationTokenStatus {
             .grants()
             .task_token_active(query)
             .await
+    }
+
+    async fn reviewer_token_current(
+        &self,
+        tenant: &TenantId,
+        client: &ClientId,
+        jti: &str,
+    ) -> Result<bool, DomainError> {
+        asterius_store_pg::kubernetes_online::PgKubernetesOnline::new(self.store.pool().clone())
+            .reviewer_token_current(tenant, client, jti)
+            .await
+    }
+
+    async fn device_relay_token_current(
+        &self,
+        tenant: &TenantId,
+        client: &ClientId,
+        jti: &str,
+    ) -> Result<bool, DomainError> {
+        asterius_store_pg::PgManagedDevices::relay_token_current_in(
+            self.store.pool(),
+            tenant,
+            client,
+            jti,
+        )
+        .await
     }
 
     async fn is_denylisted(&self, tenant: &TenantId, jti: &str) -> Result<bool, DomainError> {
@@ -386,6 +452,7 @@ impl SsfUpstreamRuntime {
 /// This deployment, as the admin API sees it.
 #[derive(Clone)]
 pub struct Deployment {
+    outbound_scim: Option<Arc<crate::outbound_scim::OutboundScimRuntime>>,
     governance_ldap_sources: std::collections::BTreeMap<String, String>,
     rate_limit_policy: Option<(
         asterius_domain::LoginLimits,
@@ -418,6 +485,15 @@ impl std::fmt::Debug for Deployment {
 }
 
 impl Deployment {
+    #[must_use]
+    pub fn with_outbound_scim(
+        mut self,
+        runtime: Option<Arc<crate::outbound_scim::OutboundScimRuntime>>,
+    ) -> Self {
+        self.outbound_scim = runtime;
+        self
+    }
+
     /// Exact operator source identities, without bind credentials or network probes.
     #[must_use]
     pub fn with_governance_ldap_sources(
@@ -463,6 +539,7 @@ impl Deployment {
     #[must_use]
     pub fn new(parts: DeploymentParts) -> Self {
         Self {
+            outbound_scim: None,
             governance_ldap_sources: std::collections::BTreeMap::new(),
             rate_limit_policy: None,
             store: parts.store,
@@ -3021,6 +3098,15 @@ impl asterius_domain::agent_task_views::Administration for DeploymentTaskViews {
 
 #[async_trait::async_trait]
 impl AdminBackend for Deployment {
+    fn kubernetes_online(
+        &self,
+    ) -> Option<Arc<dyn asterius_domain::kubernetes_online::KubernetesOnline>> {
+        Some(crate::http::kubernetes_online::OnlineAuthentication::new(
+            asterius_store_pg::kubernetes_online::PgKubernetesOnline::new(
+                self.store.pool().clone(),
+            ),
+        ))
+    }
     fn agent_tasks(&self) -> Option<Arc<dyn asterius_domain::agent_task_views::Administration>> {
         Some(Arc::new(DeploymentTaskViews {
             store: self.store.clone(),
@@ -3653,6 +3739,38 @@ impl AdminBackend for Deployment {
         )))
     }
 
+    fn outbound_scim(
+        &self,
+    ) -> Option<Arc<dyn asterius_domain::outbound_scim::OutboundScimAdministration>> {
+        self.outbound_scim
+            .as_ref()
+            .map(|runtime| runtime.administration())
+    }
+
+    fn outbound_scim_lifecycle(
+        &self,
+    ) -> Option<Arc<dyn asterius_domain::outbound_scim::OutboundScimLifecycle>> {
+        self.outbound_scim
+            .as_ref()
+            .map(|runtime| runtime.lifecycle())
+    }
+
+    fn outbound_scim_inspection(
+        &self,
+    ) -> Option<Arc<dyn asterius_domain::outbound_scim::OutboundScimInspection>> {
+        self.outbound_scim.as_ref().map(|runtime| {
+            Arc::clone(runtime) as Arc<dyn asterius_domain::outbound_scim::OutboundScimInspection>
+        })
+    }
+
+    fn outbound_scim_credentials(
+        &self,
+    ) -> Option<Arc<dyn asterius_domain::outbound_scim::OutboundScimCredentialCatalogue>> {
+        self.outbound_scim
+            .as_ref()
+            .map(|runtime| runtime.credential_catalogue())
+    }
+
     fn governance_reports(
         &self,
     ) -> Option<Arc<dyn asterius_domain::governance_reports::GovernanceReports>> {
@@ -3707,6 +3825,19 @@ impl AdminBackend for Deployment {
         }))
     }
 
+    fn device_registry(&self) -> Option<Arc<dyn asterius_domain::managed_devices::Registry>> {
+        Some(Arc::new(asterius_store_pg::PgManagedDevices::new(
+            self.store.pool().clone(),
+            self.audit(),
+        )))
+    }
+    fn device_relay(&self) -> Option<Arc<dyn asterius_domain::managed_devices::Relay>> {
+        Some(Arc::new(asterius_store_pg::PgManagedDevices::new(
+            self.store.pool().clone(),
+            self.audit(),
+        )))
+    }
+
     fn workload_trusts(&self) -> Option<Arc<dyn asterius_domain::workload::Registry>> {
         Some(Arc::new(crate::workload::Administration::new(
             asterius_store_pg::PgWorkloadTrusts::new(self.store.pool().clone()),
@@ -3729,6 +3860,14 @@ impl AdminBackend for Deployment {
             store: self.store.clone(),
             kek: Arc::clone(&self.kek),
         }))
+    }
+
+    fn temporary_kubernetes(
+        &self,
+    ) -> Option<Arc<dyn asterius_domain::temporary_kubernetes::TemporaryKubernetes>> {
+        Some(Arc::new(asterius_store_pg::PgTemporaryEntitlements::new(
+            self.store.pool().clone(),
+        )))
     }
 
     fn temporary_entitlements(
@@ -4123,6 +4262,42 @@ mod automation_tests {
         assert_eq!(resolved.subject, "admin-automation");
         assert_eq!(resolved.tenant, Some(routed.id));
         assert_eq!(resolved.scopes, ["admin.users:read"]);
+    }
+
+    #[tokio::test]
+    async fn dedicated_service_scopes_require_exact_private_cc_receipts() {
+        let routed = tenant("acme");
+        let fixture = Fixture::new(vec![routed.clone()], None);
+        let audience = admin_url(&routed, asterius_admin_api::BASE_PATH);
+        let url = admin_url(&routed, "/admin/api/v1/devices");
+        for (index, scope) in [
+            "admin.kubernetes_reviews:read",
+            asterius_domain::managed_devices::ENROLLMENT_SCOPE,
+            asterius_domain::managed_devices::POSTURE_SCOPE,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let token = fixture.token(&routed, &audience, &[scope]).await;
+            let proof = fixture.proof(&token, "GET", &url, &format!("receipt-denied-{index}"));
+            let result = fixture
+                .resolver
+                .resolve(
+                    &routed,
+                    &PresentedToken {
+                        token: &token,
+                        proof: &proof,
+                        method: "GET",
+                        url: &url,
+                    },
+                )
+                .await
+                .expect("the stores answer");
+            assert!(
+                result.is_none(),
+                "a signed client-shaped subject alone must not grant {scope}"
+            );
+        }
     }
 
     #[tokio::test]

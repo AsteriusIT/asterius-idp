@@ -1,0 +1,52 @@
+{
+  "ticket": "ast-dd1y.6.3",
+  "status": "historical_diagnostics_resolved_by_owned116_runtime_pending_review",
+  "normative_review": "pending",
+  "isolated_owned_resources_only": true,
+  "shared_runtime_serve_funnel_resolver_changed": false,
+  "checkpoints": [
+    {
+      "binary_sha256": "5bbb5821340129df95f42c8177ebe187f28c38009ea4322a8ed6fa447379eed0",
+      "source_checkpoint": "260519fa",
+      "passed_before_failure": [
+        "real_fresh_webauthn_and_verified_id_token",
+        "guarded_tls_fapi_dpop_capability_preview",
+        "selection_revision_invalidates_old_preview",
+        "user_committed_post_response_loss_recovers_one_uuid",
+        "remote_user_has_no_authenticators_or_role_assignments",
+        "dry_run_scim_get_only",
+        "real_target503_durable_retry",
+        "current_source_email_projection",
+        "direct_selected_group_membership",
+        "source_disable_and_group_member_removal",
+        "target_security_lock_blocks_source_reactivation",
+        "explicit_reconcile_after_operator_lock_resolution",
+        "pause_retains_dirty_work",
+        "resume_reconciles_current_projection",
+        "key_rotation_refuses_uninstalled_key_then_recovers",
+        "unselection_disables_user",
+        "reviewed_delete_response_loss_recovers_saved_uuid_absence",
+        "completed_deletion_local_archive"
+      ],
+      "failure": "fresh_incarnation_post409_due_to_retained_email_uniqueness",
+      "confirmed_constraint": "users_by_email",
+      "sqlstate": "23505",
+      "correction_checkpoint": "5ee285c5",
+      "corrected_full_matrix_not_yet_executed": true
+    },
+    {
+      "binary_sha256": "b32367b9a218c461be693095f5d5405df405682bd9760c9d8bec2038639bfd64",
+      "source_checkpoint": "b8688905",
+      "reproductions": 3,
+      "failure_stage": "fresh_authorization_code_token_exchange_before_connector_creation",
+      "http_status": 503,
+      "oauth_error": "temporarily_unavailable",
+      "redacted_storage_classification": "Invalid grant_authority",
+      "confirmed_cause": "Baseline grants_set_updated_at trigger changes updated_at during claim; candidate timestamp authority pin incorrectly treated that claim as an authority mutation",
+      "fix_owner": "parent/workload UUID authority generation candidate",
+      "all_owned_containers_databases_and_diagnostic_metadata_cleaned": true
+    }
+  ],
+  "remaining": "Normative human review and orchestrator delivery gates; complete owned116 runtime matrix passed29 controls with UUID authority generations.",
+  "resolved_by_receipt": "runtime-acceptance-2026-10-04.json"
+}

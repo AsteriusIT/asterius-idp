@@ -2822,3 +2822,194 @@ No scheduler silently revokes access and no notification transport is enabled.
 The console-only governance reports recheck current same-tenant administrator or security-auditor read authority in a repeatable-read, read-only transaction. Closed query fields and tenant/section-bound keyset cursors cannot select another tenant or arbitrary SQL. Each request inspects at most 100 records and returns at most 50 findings; an empty scan may still expose continuation. Evidence includes bounded public source identifiers, never credentials, session handles or vendor external identifiers.
 
 A retained session is incomplete activity history, not evidence that an upstream account was deleted. Missing SCIM registrations and LDAP source configuration are distinct from explicit SCIM tombstones and complete LDAP snapshot absence; no report asserts network reachability. Local administrative accounts remain possible recovery accounts. Managed group evidence preserves SCIM, LDAP, builder and controller provenance and proposes review through the existing owner lifecycle. Historical campaign coverage requires matching current assignment generation, ownership revision and the complete account/group/catalogue/client context, including updates that prevent status ABA. Oversized contexts remain uncertain. Temporary entitlement configuration and built-in administrative roles are reported separately from standing campaign coverage. Reports provide no mutation, notification or automatic cleanup port.
+
+### Temporary Kubernetes identity and native RBAC
+
+The owner-CAS mapping binds an exact same-tenant DPoP machine reader to one
+entitlement and current public-subject Kubernetes profile. Machine reads cannot
+configure eligibility, approve requests, choose a subject, or borrow reserved-realm
+Console authority. Projections contain bounded current public subjects and deadlines;
+overflow refuses incomplete authority. Configuration/client/profile invalidation is
+terminal until an explicit new owner revision.
+
+A final fenced ID signature may include closed `asterius_jit` provenance only for
+an actual released client role supplied exclusively by a live temporary activation.
+Standing role overlap does not supply this private identity. The signer resolves the
+actual human nondelegated single-resource grant, exact permissions and frozen proof
+on its held publication connection, caps exp and rechecks deadlines after cryptography.
+Posted private provenance is refused. Structured CEL pins the reviewed complete tuple
+and maps it to `asterius-jit:<mapping-revision>:<public-sub>`; ordinary tokens retain
+the separate baseline prefix. Unknown generations cannot reuse a stale native binding.
+
+The independently reviewed Kubernetes Role is the controller's ceiling. Its
+ServiceAccount can GET/PATCH one named/UID-pinned RoleBinding and bind one fixed
+namespaced Role; no create/delete, Role write, ClusterRole bind or impersonation is
+granted. Healthy reconciliation removes revoked/expired subjects within a measured
+window. During controller outage native bindings may linger, but old JIT credentials
+expire at their signed activation-capped deadline and newly ordinary credentials
+cannot match that identity. Offline revocation during outage retains only the bounded
+already issued JWT residual plus the independently verified successful-authentication
+cache and clock skew. Kubernetes v1.35 retains a ten-second success cache, but
+its detached authenticator can complete an already-started lookup for thirty
+seconds. The pinned OIDC verifier checks expiry before awaited key resolution;
+a late positive can populate that cache. The conservative source-derived residual
+is expiry plus forty seconds and scheduling/clock margin. Healthy warm-key
+acceptance does not establish the worst-case delayed-key-resolution bound.
+Baseline bindings and credentials remain independent.
+
+### Candidate Kubernetes online review boundary (`ast-dd1y.1.5`)
+
+This candidate is isolated pending normative human review and acceptance; it is
+not enabled in the shared local deployment. The API server authenticates to a
+small HTTPS adapter with a dedicated CA and exact client SPKI pin. The adapter
+uses a separate confidential private-key-JWT/DPoP reviewer credential for one
+pinned tenant and human-client route. Private successful client_credentials
+JTI receipts prevent historical workload/delegated/task credentials from being
+reinterpreted as this reviewer mode merely because their public subject matches
+the client ID.
+
+Human authentication verifies the exact issuer/audience/ES256 ID signature and
+complete signed-token digest recorded with its exact original grant, active
+user and stable public browser SID. Profile UUID and cluster revision bind
+configuration; relevant metadata changes terminally disable the mode and cannot
+revive old credentials on restore. Current expiry, logout, revocation and group
+removal narrow authority. Added groups never widen an old signed release.
+No bearer token, session heartbeat, arbitrary user extras, credential echo or
+positive identity cache is added by Asterius or the adapter. Online and JIT
+configuration is mutually exclusive; keeping an equivalent native offline OIDC
+authenticator would bypass the online check and is forbidden for this tuple.
+
+Kubernetes 1.35's outer success cache remains ten seconds even with the inner
+webhook cache disabled. Its detached lookup and upstream HTTP transport allow
+thirty seconds for a successful response already in flight; the conservative
+source-derived bound is forty seconds plus measured scheduling/transport margin.
+The local three-second review deadline does not establish a shorter wire-level
+bound. Actual delayed-response, outage and replica evidence is still required;
+healthy-network latency alone is not worst-case acceptance evidence.
+The shared signer caches decrypted signing material with a sixty-second lease.
+Prepared signing checks the lease deadline, tenant and algorithm, but does not
+serialize emergency key retirement/purge with final signature release or online
+digest registration. A withdrawn key can therefore still sign until that existing
+lease expires. Normal retiring-key overlap remains published intentionally;
+emergency withdrawal is a distinct unresolved boundary (`ast-psi2`). Actual
+authentication also depends on current published-key resolution and verifier
+JWKS caches, so neither immediate usability loss nor continued usability after
+purge is guaranteed by this source review. This limit is independent of the
+Kubernetes authentication cache bound and remains part of pending human review.
+
+## Candidate managed-device registry and protected ingress (ast-dd1y.4.5)
+
+The isolated managed-device candidate introduces three explicit authorities:
+the tenant's device CA, a separately authenticated and leaf-pinned proxy TLS
+hop, and its registered confidential client-credentials relay. A trusted proxy
+IP or publicly readable certificate header alone proves no possession. The
+edge must verify the actual device TLS handshake, strip caller evidence and
+forward only that leaf over its authenticated hop. Device and proxy CA/pin
+generations are included in the current operator trust revision. OAuth client
+authentication remains independent; a device key raises no user assurance.
+
+Only an exact successful client-credentials access signature creates a private
+JTI/grant receipt for dedicated enrollment/posture ingress. The writer rechecks
+this receipt, current client mode/status and source generation after acquiring
+the tenant publication fence, before any device lock. Delegated/user/task-shaped
+tokens cannot substitute for relay authority. Bounded batches and monotonic
+sequences commit together with prepared audit events; audit failure rolls back
+state. Human source CRUD retains existing exact-realm console role/session/CSRF
+admission and does not inherit machine tokens or deployment-wide shortcuts.
+
+Private original proofs transfer only from a winning interaction to its exact
+code digest, with a nonrenewable five-minute/certificate deadline. Refresh, ordinary local exchange and PDP require newly verified
+request possession and an exact current grant. Only early exchange may use an
+explicit verified parent's provisional child; final signing requires the
+persisted claimed child. No other session, strongest grant, caller device hint,
+public claim or stale source observation supplies missing authority. The same
+publication connection holds current source/enrollment/authority facts through
+decisions/signing, and original proof/source/certificate/grant deadlines bound
+their release. Fresh clocks after awaited audit/cryptographic work re-evaluate
+those original deadlines. Unknown management/compliance, removal, disable and expiry deny
+active required-fact rules without a positive authority cache.
+
+Removal erases the leaf/user/application/posture association and private proof
+sidecars, retaining only a minimal generation tombstone for 30 days. Re-enrollment
+receives a new server UUID and generation. This changes new protected decisions;
+it cannot withdraw already-issued offline JWTs before their expiry. A malicious
+relay or trusted proxy remains capable of lying within its explicit authority,
+and copied software keys remain usable. The controlled HTTPS/browser evidence
+uses disposable software PKI, seeded refresh/source inputs and real local user
+authentication; it claims neither live MDM verification nor hardware attestation.
+Human normative review remains pending before delivery of this candidate.
+
+The shared private Tailscale bridge forwards no device certificate and cannot
+exercise this separately configured candidate device source.
+
+
+### Outbound SCIM candidate (normative review pending)
+
+The isolated outbound candidate uses an operator signing catalogue keyed by the
+complete source tenant and destination issuer/client/resource/origin/generation.
+Reference knowledge cannot borrow another tenant's key, and the admin API never
+resolves a path or stores credentials. The sole HTTPS transport repeats DNS
+address validation on every request, connects to the vetted address, verifies
+TLS and refuses redirects. Internally derived token/SCIM paths and canonical
+UUIDs constrain egress; response Location/$ref values grant no authority.
+
+Each dispatch checks database-clock lease, connector and credential revisions,
+assignment generation and source revision after acquiring current locks. A
+request already transmitted may finish after pause, but its local receipt cannot
+cross a changed fence. SCIM source ownership is refused and audited; no password,
+role, grant, authenticator or key is projected. Remote mappings require exact
+immutable alias/externalId, canonical UUID and a bounded weak ETag. PUT and DELETE
+keep If-Match; conflicts cannot strip the condition or adopt another UUID.
+
+Explicit five-minute human lifecycle approvals are durably ordered with normal
+assignment work. Archive advances the owned inactive/empty target's version to
+fence prior PUTs before retiring local authority. Reviewed deletion additionally
+requires separately enabled policy and a saved same-incarnation UUID/version;
+durable DELETE admission permits404 recovery only for that saved UUID. A missing
+ordinary mapping never authorizes recreation. Fresh generation is a separate
+confirmed lifecycle and preserves prior history. Source tenant deletion is
+refused while current assignments remain. Target incarnation tombstones cover
+only the closed outbound externalId namespace and are verified by an explicit
+SCIM configuration capability. Their per-client/kind bound is 10,000; capacity
+refuses retirement rather than expiring keys that could permit late POSTs.
+Ordinary SCIM delete/recreate semantics remain unchanged.
+
+Diagnostics persist closed codes and IDs; assertions, access tokens, DPoP keys,
+response bodies and source attributes are excluded from logs/outbox/audit.
+Source and peer snapshots are bounded; dry run uses authenticated GETs only and
+cannot establish a mapping or target mutation. These candidate boundaries still
+require the proposed contract review and real source-to-target acceptance before
+delivery or shared enablement.
+
+
+### Approved SPIRE JWT-SVID workload subject boundary (ast-dd1y.2.6)
+
+The user approved the bounded SPIRE JWT-SVID contract on 2026-10-04. The
+operator installs public SPIFFE JSON under an exact tenant/trust/domain tuple;
+no SVID claim, matching domain name, URL or certificate enrolls a trust. Native
+SPIRE workload attestation is upstream evidence, while exact SPIFFE identity,
+HTTPS issuer, single trust audience, typed iat/exp and the 300-second lifetime
+are independently checked here. Path spelling is byte-exact; aliases and
+unregistered IDs fail. This profile supports only ES256/PS256/RS256, restricted
+JOSE headers and public jwt-svid authorities. Unknown bundle uses do not authorize
+JWT verification; malformed, duplicate or private key material is refused.
+
+A JWT-SVID remains a bearer subject assertion. Independent confidential OAuth
+client authentication and DPoP are required before exchange and API access.
+Durable assertion consumption, policy intersection and a final locked trust
+revision prevent replay, scope/resource/action widening and stale trusted-key
+issuance. Empty bundles revoke issuance. The bundle sequence floor survives
+trust deletion/recreation and cannot be omitted after first installation;
+equal sequence with changed content fails. Operator writes serialize this
+history with the existing tenant workload-trust administration lock. Trusts
+without an upstream sequence have no upstream ordering guarantee.
+
+Static bundle delivery has no automatic remote revocation bound. Removal of
+upstream workload registration leaves already-issued SVIDs usable until signed
+expiry, at most 300 seconds from iat. Children cannot outlive that expiry.
+Compromised upstream signing keys remain trusted until the operator removes
+installed authority or disables the trust; offline access tokens retain their
+existing resource-server expiry/revocation semantics. Source provenance retains
+the exact SPIFFE domain/ID and provider without storing raw SVIDs. X.509-SVID
+client authentication, automatic federation, bundle URLs and Workload API
+watchers are outside this adapter.

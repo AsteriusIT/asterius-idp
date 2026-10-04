@@ -125,7 +125,39 @@ pub trait PolicyTrial: std::fmt::Debug + Send + Sync {
 /// What an admin API request needs from below the API.
 #[async_trait::async_trait]
 pub trait AdminBackend: std::fmt::Debug + Send + Sync {
+    /// Managed-device registries are distinct from OAuth client certificates.
+    fn device_registry(&self) -> Option<Arc<dyn asterius_domain::managed_devices::Registry>> {
+        None
+    }
+    fn device_relay(&self) -> Option<Arc<dyn asterius_domain::managed_devices::Relay>> {
+        None
+    }
+
     /// Read-only evidence; absent adapters do not synthesize healthy reports.
+    fn outbound_scim(
+        &self,
+    ) -> Option<Arc<dyn asterius_domain::outbound_scim::OutboundScimAdministration>> {
+        None
+    }
+
+    fn outbound_scim_lifecycle(
+        &self,
+    ) -> Option<Arc<dyn asterius_domain::outbound_scim::OutboundScimLifecycle>> {
+        None
+    }
+
+    fn outbound_scim_inspection(
+        &self,
+    ) -> Option<Arc<dyn asterius_domain::outbound_scim::OutboundScimInspection>> {
+        None
+    }
+
+    fn outbound_scim_credentials(
+        &self,
+    ) -> Option<Arc<dyn asterius_domain::outbound_scim::OutboundScimCredentialCatalogue>> {
+        None
+    }
+
     fn governance_reports(
         &self,
     ) -> Option<Arc<dyn asterius_domain::governance_reports::GovernanceReports>> {
@@ -590,9 +622,22 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
     /// [`asterius_domain::Role`]: there is no method on it that takes one.
     fn application_roles(&self) -> Arc<dyn asterius_domain::ApplicationRoleDirectory>;
 
+    /// Machine projection is a separate port; it grants no owner lifecycle commands.
+    fn temporary_kubernetes(
+        &self,
+    ) -> Option<Arc<dyn asterius_domain::temporary_kubernetes::TemporaryKubernetes>> {
+        None
+    }
+
     fn temporary_entitlements(
         &self,
     ) -> Option<Arc<dyn asterius_domain::temporary_entitlements::TemporaryEntitlements>> {
+        None
+    }
+
+    fn kubernetes_online(
+        &self,
+    ) -> Option<Arc<dyn asterius_domain::kubernetes_online::KubernetesOnline>> {
         None
     }
 
@@ -812,9 +857,47 @@ pub struct PresentedToken<'a> {
     pub url: &'a str,
 }
 
+/// Private metadata supplied only after an adapter verifies the exact signed
+/// access token, issuer/audience, sender constraint and current token status.
+/// This is not an HTTP field and is never serialized in an admin response.
+#[derive(Debug)]
+pub struct VerifiedMachineCredential {
+    jti: asterius_domain::Secret<String>,
+}
+// Clone only the verified private metadata envelope; Secret remains non-Clone.
+impl Clone for VerifiedMachineCredential {
+    fn clone(&self) -> Self {
+        Self {
+            jti: asterius_domain::Secret::new(self.jti.expose().clone()),
+        }
+    }
+}
+impl VerifiedMachineCredential {
+    /// Seal the verified JWT's identifier; parsing an identifier does not prove
+    /// a credential mode. Dedicated consumers must check the exact private
+    /// successful-issuance receipt and current grant on their transaction.
+    pub fn from_verified_jti(jti: &str) -> Result<Self, DomainError> {
+        if jti.is_empty() || jti.len() > 256 || !jti.bytes().all(|byte| byte.is_ascii_graphic()) {
+            return Err(DomainError::invalid(
+                "token",
+                "invalid verified token identifier",
+            ));
+        }
+        Ok(Self {
+            jti: asterius_domain::Secret::new(jti.to_owned()),
+        })
+    }
+    #[must_use]
+    pub fn jti(&self) -> &str {
+        self.jti.expose()
+    }
+}
+
 /// A resolved automation caller.
 #[derive(Debug, Clone)]
 pub struct TokenPrincipal {
+    /// Exact signed identifier for private dedicated-service mode receipts.
+    pub credential: Option<VerifiedMachineCredential>,
     /// The subject the audit trail records, which under ADR-0009 is a user
     /// identifier when a human's authority is behind the token.
     pub subject: String,

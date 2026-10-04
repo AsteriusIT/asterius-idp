@@ -66,6 +66,8 @@ pub enum Principal {
     },
     /// An automation client, holding a DPoP-bound access token.
     Automation {
+        /// Exact verified signed metadata, never a caller-selected header.
+        credential: Option<crate::backend::VerifiedMachineCredential>,
         /// What the audit trail records.
         subject: String,
         /// The authority the token was found to carry.
@@ -74,6 +76,18 @@ pub enum Principal {
 }
 
 impl Principal {
+    /// Dedicated service consumers use this exact signed identifier for private
+    /// issuance-mode linkage; it is never derived from an HTTP field.
+    #[must_use]
+    pub fn verified_machine_jti(&self) -> Option<&str> {
+        match self {
+            Self::Automation { credential, .. } => credential
+                .as_ref()
+                .map(crate::backend::VerifiedMachineCredential::jti),
+            Self::Console { .. } => None,
+        }
+    }
+
     /// The authority this principal holds.
     #[must_use]
     pub const fn held(&self) -> &Held {
@@ -367,12 +381,14 @@ async fn automation(
         .ok_or(AdminError::InvalidToken)?;
 
     let TokenPrincipal {
+        credential,
         subject,
         tenant,
         scopes,
     } = resolved;
 
     Ok(Principal::Automation {
+        credential,
         subject,
         held: Held::Scopes { tenant, scopes },
     })
@@ -487,6 +503,7 @@ mod tests {
     fn only_the_console_is_subject_to_csrf() {
         // Arrange
         let automation = Principal::Automation {
+            credential: None,
             subject: "svc".to_owned(),
             held: Held::Scopes {
                 tenant: None,

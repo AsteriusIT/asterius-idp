@@ -122,6 +122,9 @@ pub struct ProtocolState {
 /// Separate from [`ProtocolState`] so that the discovery and JWKS handlers —
 /// which need none of it — can be tested without a database.
 pub struct ClientEndpoints {
+    /// Current operator bundle revisions, never values supplied by a request.
+    pub device_anchors:
+        Arc<std::collections::BTreeMap<String, asterius_domain::managed_devices::LeafFingerprint>>,
     /// Persistent external workload verifier; absence disables external exchange.
     pub workloads: Option<Arc<dyn asterius_domain::workload::Verifier>>,
     /// Identity binding for verified upstream issuer/subject pairs. Absent
@@ -1002,6 +1005,12 @@ fn account_pages(endpoints: Arc<ClientEndpoints>) -> Router {
         .route(
             crate::http::account::PAGE_PATH,
             get(account_home).with_state(Arc::clone(&endpoints)),
+        )
+        .route(
+            "/account/devices",
+            get(account_devices_read)
+                .post(account_devices_remove)
+                .with_state(Arc::clone(&endpoints)),
         )
         .route(
             account_passkeys::PAGE_PATH,
@@ -2843,6 +2852,7 @@ async fn access_evaluation_endpoint(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
     certificate: Option<Extension<Arc<crate::mtls::PresentedCertificate>>>,
+    device_leaf: Option<Extension<Arc<crate::managed_devices::VerifiedDeviceLeaf>>>,
     client: Option<Extension<crate::http::forwarded::ClientAddr>>,
     method: axum::http::Method,
     headers: axum::http::HeaderMap,
@@ -2852,6 +2862,7 @@ async fn access_evaluation_endpoint(
         &endpoints,
         &tenant,
         certificate.as_deref().map(|presented| &**presented),
+        device_leaf.as_ref().map(|Extension(leaf)| leaf.as_ref()),
         client.as_deref(),
         &method,
         &headers,
@@ -2873,6 +2884,7 @@ async fn access_evaluations_endpoint(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
     certificate: Option<Extension<Arc<crate::mtls::PresentedCertificate>>>,
+    device_leaf: Option<Extension<Arc<crate::managed_devices::VerifiedDeviceLeaf>>>,
     client: Option<Extension<crate::http::forwarded::ClientAddr>>,
     method: axum::http::Method,
     headers: axum::http::HeaderMap,
@@ -2882,6 +2894,7 @@ async fn access_evaluations_endpoint(
         &endpoints,
         &tenant,
         certificate.as_deref().map(|presented| &**presented),
+        device_leaf.as_ref().map(|Extension(leaf)| leaf.as_ref()),
         client.as_deref(),
         &method,
         &headers,
@@ -3008,7 +3021,8 @@ async fn access_search_dispatch(
             endpoints.capabilities,
             Arc::clone(&endpoints.kek),
             Arc::clone(&endpoints.audit),
-        ),
+        )
+        .with_device_anchors(Arc::clone(&endpoints.device_anchors)),
         tenant.clone(),
         now,
     );
@@ -3027,6 +3041,7 @@ async fn access_search_dispatch(
 
     let context = crate::http::access_search::AccessSearchContext {
         pdp: AccessEvaluationContext {
+            device_certificate: None,
             tenant,
             engine: &engine,
             subjects: &subjects,
@@ -3104,6 +3119,7 @@ async fn access_evaluation_dispatch(
     endpoints: &Arc<ClientEndpoints>,
     tenant: &Tenant,
     certificate: Option<&crate::mtls::PresentedCertificate>,
+    device_leaf: Option<&crate::managed_devices::VerifiedDeviceLeaf>,
     client: Option<&crate::http::forwarded::ClientAddr>,
     method: &axum::http::Method,
     headers: &axum::http::HeaderMap,
@@ -3128,7 +3144,8 @@ async fn access_evaluation_dispatch(
             endpoints.capabilities,
             Arc::clone(&endpoints.kek),
             Arc::clone(&endpoints.audit),
-        ),
+        )
+        .with_device_anchors(Arc::clone(&endpoints.device_anchors)),
         tenant.clone(),
         now,
     );
@@ -3142,7 +3159,12 @@ async fn access_evaluation_dispatch(
         grants: scope.grants(),
     };
 
+    let device_request =
+        device_leaf.map(crate::managed_devices::VerifiedDeviceLeaf::request_evidence);
     let context = AccessEvaluationContext {
+        device_certificate: device_request
+            .as_ref()
+            .map(crate::managed_devices::DeviceRequestEvidence::certificate),
         tenant,
         engine: &engine,
         subjects: &subjects,
@@ -3936,6 +3958,7 @@ async fn token_endpoint(
     Extension(tenant): Extension<Arc<Tenant>>,
     client: Option<Extension<crate::http::forwarded::ClientAddr>>,
     certificate: Option<Extension<Arc<crate::mtls::PresentedCertificate>>>,
+    device_leaf: Option<Extension<Arc<crate::managed_devices::VerifiedDeviceLeaf>>>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
@@ -3953,7 +3976,17 @@ async fn token_endpoint(
         &limits,
         asterius_domain::LimitedEndpoint::Token,
         claimed.as_deref(),
-        async || token_endpoint_inner(&endpoints, &tenant, &headers, &body, certificate).await,
+        async || {
+            token_endpoint_inner(
+                &endpoints,
+                &tenant,
+                &headers,
+                &body,
+                certificate,
+                device_leaf.as_ref().map(|Extension(leaf)| leaf.as_ref()),
+            )
+            .await
+        },
     )
     .await
 }
@@ -3965,6 +3998,7 @@ async fn token_endpoint_inner(
     headers: &axum::http::HeaderMap,
     body: &axum::body::Bytes,
     certificate: Option<&asterius_oidc::mtls::ClientCertificate>,
+    device_leaf: Option<&crate::managed_devices::VerifiedDeviceLeaf>,
 ) -> Response {
     let scope = endpoints.store.scope(tenant.id.clone());
 
@@ -3993,12 +4027,15 @@ async fn token_endpoint_inner(
             }
         };
 
+    let device_request =
+        device_leaf.map(crate::managed_devices::VerifiedDeviceLeaf::request_evidence);
     dispatch_grants(
         endpoints,
         tenant,
         &scope,
         issuing,
         Dispatching {
+            device_request: device_request.as_ref(),
             certificate,
             headers,
             body,
@@ -4016,6 +4053,7 @@ async fn token_endpoint_inner(
 /// signature matched by position is one in which the headers and the body can
 /// be swapped.
 struct Dispatching<'a> {
+    device_request: Option<&'a crate::managed_devices::DeviceRequestEvidence>,
     certificate: Option<&'a asterius_oidc::mtls::ClientCertificate>,
     headers: &'a axum::http::HeaderMap,
     body: &'a axum::body::Bytes,
@@ -4067,12 +4105,15 @@ fn agent_policy<'a>(
         )) as Arc<dyn asterius_domain::issuance::IssuancePolicy>
     });
     crate::http::agent_issuance::AgentPolicy {
-        conditional: Some(Arc::new(crate::http::conditional::ConditionalAccess::new(
-            endpoints.store.clone(),
-            endpoints.capabilities,
-            Arc::clone(&endpoints.kek),
-            Arc::clone(&endpoints.audit),
-        ))),
+        conditional: Some(Arc::new(
+            crate::http::conditional::ConditionalAccess::new(
+                endpoints.store.clone(),
+                endpoints.capabilities,
+                Arc::clone(&endpoints.kek),
+                Arc::clone(&endpoints.audit),
+            )
+            .with_device_anchors(Arc::clone(&endpoints.device_anchors)),
+        )),
         policy: pdp,
         fail_open: endpoints
             .issuance
@@ -4145,7 +4186,8 @@ async fn dispatch_grants(
             endpoints.capabilities,
             Arc::clone(&endpoints.kek),
             Arc::clone(&endpoints.audit),
-        ),
+        )
+        .with_device_anchors(Arc::clone(&endpoints.device_anchors)),
         tenant.as_ref().clone(),
     );
     let task_signer = asterius_store_pg::agent_tasks::TaskSigner {
@@ -4184,6 +4226,12 @@ async fn dispatch_grants(
     };
     let agent_policy = agent_policy(endpoints, &acr_policy, &tenant.id, now);
     let authorization_code = AuthorizationCode {
+        device_request: request.device_request.map(|request| {
+            crate::managed_devices::DeviceIssuanceContext {
+                store: &endpoints.store,
+                request,
+            }
+        }),
         agent_policy: agent_policy.clone(),
         ipsie_identity_only_clients: endpoints
             .ipsie_identity_only_clients
@@ -4778,12 +4826,15 @@ async fn run_authorize(
 
     authorize::authorize(
         AuthorizeContext {
-            conditional: Some(Arc::new(super::conditional::ConditionalAccess::new(
-                endpoints.store.clone(),
-                endpoints.capabilities,
-                Arc::clone(&endpoints.kek),
-                Arc::clone(&endpoints.audit),
-            ))),
+            conditional: Some(Arc::new(
+                super::conditional::ConditionalAccess::new(
+                    endpoints.store.clone(),
+                    endpoints.capabilities,
+                    Arc::clone(&endpoints.kek),
+                    Arc::clone(&endpoints.audit),
+                )
+                .with_device_anchors(Arc::clone(&endpoints.device_anchors)),
+            )),
             tenant,
             signer: Some(endpoints.signer.as_ref()),
             language: &language,
@@ -5477,6 +5528,7 @@ async fn interaction_show(
     client: Option<Extension<crate::http::forwarded::ClientAddr>>,
     mount: Option<Extension<MountPrefix>>,
     headers: axum::http::HeaderMap,
+    device_leaf: Option<Extension<Arc<crate::managed_devices::VerifiedDeviceLeaf>>>,
 ) -> Response {
     let theme = crate::http::theme_of(theme.as_ref());
     let settings =
@@ -5553,12 +5605,16 @@ async fn interaction_show(
     let mail = scope.mail();
     interaction::show(
         InteractionContext {
-            conditional: Some(Arc::new(super::conditional::ConditionalAccess::new(
-                endpoints.store.clone(),
-                endpoints.capabilities,
-                Arc::clone(&endpoints.kek),
-                Arc::clone(&endpoints.audit),
-            ))),
+            device_leaf: device_leaf.as_ref().map(|Extension(leaf)| leaf.as_ref()),
+            conditional: Some(Arc::new(
+                super::conditional::ConditionalAccess::new(
+                    endpoints.store.clone(),
+                    endpoints.capabilities,
+                    Arc::clone(&endpoints.kek),
+                    Arc::clone(&endpoints.audit),
+                )
+                .with_device_anchors(Arc::clone(&endpoints.device_anchors)),
+            )),
             upstream_providers: &upstream_providers,
             tenant: &tenant,
             signer: Some(endpoints.signer.as_ref()),
@@ -5623,6 +5679,7 @@ async fn interaction_submit(
     client: Option<Extension<crate::http::forwarded::ClientAddr>>,
     mount: Option<Extension<MountPrefix>>,
     headers: axum::http::HeaderMap,
+    device_leaf: Option<Extension<Arc<crate::managed_devices::VerifiedDeviceLeaf>>>,
     body: axum::body::Bytes,
 ) -> Response {
     let theme = crate::http::theme_of(theme.as_ref());
@@ -5700,12 +5757,16 @@ async fn interaction_submit(
     let mail = scope.mail();
     interaction::submit(
         InteractionContext {
-            conditional: Some(Arc::new(super::conditional::ConditionalAccess::new(
-                endpoints.store.clone(),
-                endpoints.capabilities,
-                Arc::clone(&endpoints.kek),
-                Arc::clone(&endpoints.audit),
-            ))),
+            device_leaf: device_leaf.as_ref().map(|Extension(leaf)| leaf.as_ref()),
+            conditional: Some(Arc::new(
+                super::conditional::ConditionalAccess::new(
+                    endpoints.store.clone(),
+                    endpoints.capabilities,
+                    Arc::clone(&endpoints.kek),
+                    Arc::clone(&endpoints.audit),
+                )
+                .with_device_anchors(Arc::clone(&endpoints.device_anchors)),
+            )),
             upstream_providers: &upstream_providers,
             tenant: &tenant,
             signer: Some(endpoints.signer.as_ref()),
@@ -5828,6 +5889,7 @@ async fn upstream_callback(
     client: Option<Extension<crate::http::forwarded::ClientAddr>>,
     mount: Option<Extension<MountPrefix>>,
     headers: axum::http::HeaderMap,
+    device_leaf: Option<Extension<Arc<crate::managed_devices::VerifiedDeviceLeaf>>>,
 ) -> Response {
     let theme = crate::http::theme_of(theme.as_ref());
     let mount = mount_of(mount);
@@ -6025,12 +6087,16 @@ async fn upstream_callback(
     let mail = scope.mail();
     interaction::complete_external(
         InteractionContext {
-            conditional: Some(Arc::new(super::conditional::ConditionalAccess::new(
-                endpoints.store.clone(),
-                endpoints.capabilities,
-                Arc::clone(&endpoints.kek),
-                Arc::clone(&endpoints.audit),
-            ))),
+            device_leaf: device_leaf.as_ref().map(|Extension(leaf)| leaf.as_ref()),
+            conditional: Some(Arc::new(
+                super::conditional::ConditionalAccess::new(
+                    endpoints.store.clone(),
+                    endpoints.capabilities,
+                    Arc::clone(&endpoints.kek),
+                    Arc::clone(&endpoints.audit),
+                )
+                .with_device_anchors(Arc::clone(&endpoints.device_anchors)),
+            )),
             upstream_providers: &upstream_providers,
             tenant: &tenant,
             signer: Some(endpoints.signer.as_ref()),
@@ -7688,6 +7754,125 @@ fn sessions_account_context<'a>(
 }
 
 /// `GET /account` — the account pages, as links.
+/// Owner-only inspect/removal; no account ID can be supplied by the browser.
+async fn account_devices_read(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
+) -> Response {
+    use asterius_domain::managed_devices::Registry;
+    let Ok(parts) = account_parts(&endpoints, &tenant).await else {
+        return unavailable();
+    };
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    let context = account_context(&tenant, &parts, &text, &nonce, mount);
+    let now = time::OffsetDateTime::now_utc();
+    let Some(session) = crate::http::account::admitted(&context, &headers, now).await else {
+        return axum::http::StatusCode::UNAUTHORIZED.into_response();
+    };
+    let raw_query = query.as_deref().unwrap_or_default();
+    if raw_query.len() > 1024 {
+        return axum::http::StatusCode::BAD_REQUEST.into_response();
+    }
+    let query = asterius_oidc::form::Parameters::from_pairs(
+        url::form_urlencoded::parse(raw_query.as_bytes())
+            .map(|(k, v)| (k.into_owned(), v.into_owned())),
+    );
+    if query.names().any(|name| !matches!(name, "after" | "limit")) {
+        return axum::http::StatusCode::BAD_REQUEST.into_response();
+    }
+    let (Ok(after), Ok(limit)) = (query.get("after"), query.get("limit")) else {
+        return axum::http::StatusCode::BAD_REQUEST.into_response();
+    };
+    let Ok(after) = after.map(uuid::Uuid::parse_str).transpose() else {
+        return axum::http::StatusCode::BAD_REQUEST.into_response();
+    };
+    let Ok(limit) = limit.map_or(Ok(50_u16), str::parse) else {
+        return axum::http::StatusCode::BAD_REQUEST.into_response();
+    };
+    if !(1..=100).contains(&limit) {
+        return axum::http::StatusCode::BAD_REQUEST.into_response();
+    }
+    let registry = asterius_store_pg::PgManagedDevices::new(
+        endpoints.store.pool().clone(),
+        Arc::clone(&endpoints.audit),
+    );
+    match registry.devices(&tenant.id, Some(asterius_domain::UserId::new(session.user)), after, limit).await {
+        Ok(devices) => (crate::http::account::no_store(), axum::Json(serde_json::json!({"devices":devices,"csrf":crate::http::account::csrf_for(&session,"managed-devices")}))).into_response(),
+        Err(_) => unavailable(),
+    }
+}
+
+async fn account_devices_remove(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    use asterius_domain::managed_devices::{Registry, RemovalAuthority};
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Input {
+        id: uuid::Uuid,
+        expected_revision: uuid::Uuid,
+        csrf: String,
+    }
+    let Ok(parts) = account_parts(&endpoints, &tenant).await else {
+        return unavailable();
+    };
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    let context = account_context(&tenant, &parts, &text, &nonce, mount);
+    let now = time::OffsetDateTime::now_utc();
+    let Some(session) = crate::http::account::admitted(&context, &headers, now).await else {
+        return axum::http::StatusCode::UNAUTHORIZED.into_response();
+    };
+    if body.len() > crate::http::account::MAX_BODY {
+        return axum::http::StatusCode::PAYLOAD_TOO_LARGE.into_response();
+    }
+    let Ok(input) = serde_json::from_slice::<Input>(&body) else {
+        return axum::http::StatusCode::BAD_REQUEST.into_response();
+    };
+    if !crate::http::account::fresh(&session, now)
+        || !crate::http::account::checked_csrf(&session, "managed-devices", &input.csrf)
+    {
+        return axum::http::StatusCode::FORBIDDEN.into_response();
+    }
+    let registry = asterius_store_pg::PgManagedDevices::new(
+        endpoints.store.pool().clone(),
+        Arc::clone(&endpoints.audit),
+    );
+    match registry
+        .remove(
+            &tenant.id,
+            input.id,
+            input.expected_revision,
+            RemovalAuthority::Owner(asterius_domain::UserId::new(session.user)),
+            now,
+        )
+        .await
+    {
+        Ok(()) => (
+            crate::http::account::no_store(),
+            axum::http::StatusCode::NO_CONTENT,
+        )
+            .into_response(),
+        Err(asterius_domain::DomainError::NotFound) => {
+            axum::http::StatusCode::NOT_FOUND.into_response()
+        }
+        Err(asterius_domain::DomainError::Conflict(_)) => {
+            axum::http::StatusCode::CONFLICT.into_response()
+        }
+        Err(_) => unavailable(),
+    }
+}
+
 async fn account_home(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,

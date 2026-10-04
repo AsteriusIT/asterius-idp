@@ -98,6 +98,7 @@ export const DESTINATIONS: readonly Destination[] = [
   { route: 'users', label: 'Users', reach: 'tenant', scope: 'admin.users:read', bead: 'ast-f7m.6', group: 'People' },
   { route: 'temporary-privileges', label: 'Temporary privileges', reach: 'tenant', scope: 'admin.app_roles:read', bead: 'ast-dd1y.5.2', group: 'People' },
   { route: 'groups', label: 'Groups', reach: 'tenant', scope: 'admin.groups:read', bead: 'ast-6uqw.13', group: 'People' },
+  { route: 'outbound-scim', label: 'Outbound provisioning', reach: 'tenant', scope: 'admin.outbound_scim:read', bead: 'ast-dd1y.6.3', group: 'Applications' },
   { route: 'scim', label: 'SCIM provisioning', reach: 'tenant', scope: 'admin.clients:read', bead: 'ast-s36.13.5', group: 'Applications' },
   { route: 'clients', label: 'Applications', reach: 'tenant', scope: 'admin.clients:read', bead: 'ast-f7m.5', group: 'Applications' },
   { route: 'oidc-providers', label: 'Sign-in providers', reach: 'tenant', scope: 'admin.oidc_providers:read', bead: 'ast-7vbr.1', group: 'Sign-in & trust' },

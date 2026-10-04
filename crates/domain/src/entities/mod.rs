@@ -55,7 +55,7 @@ pub use email_verification::{
 };
 pub use grant::{
     ClaimedGrant, Grant, GrantAuthentication, GrantError, GrantRecord, GrantStatus,
-    LiveAccessToken, RevocationReason,
+    LiveAccessToken, ParentDerivation, RevocationReason,
 };
 pub use identity_assurance::{
     MAX_VERIFIED_CLAIMS, Verification, VerifiedClaimName, VerifiedClaims, VerifiedClaimsError,

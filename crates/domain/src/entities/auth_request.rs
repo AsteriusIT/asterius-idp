@@ -295,6 +295,8 @@ impl InteractionRecord {
 /// at both ends.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodeBinding {
+    /// Server-verified proof from the winning interaction, owned by this code alone.
+    pub device_binding: Option<crate::managed_devices::DeviceBinding>,
     /// The client the code was issued to.
     pub client_id: String,
     /// The grant it draws its authority from.

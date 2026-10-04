@@ -66,6 +66,16 @@ pub trait ConditionalAuthorization: std::fmt::Debug + Send + Sync {
         grant: &asterius_domain::Grant,
         now: OffsetDateTime,
     ) -> Result<bool, asterius_domain::DomainError>;
+    async fn permits_bound(
+        &self,
+        tenant: &Tenant,
+        client: &asterius_domain::Client,
+        grant: &asterius_domain::Grant,
+        now: OffsetDateTime,
+        _binding: Option<&asterius_domain::managed_devices::DeviceBinding>,
+    ) -> Result<bool, asterius_domain::DomainError> {
+        self.permits(tenant, client, grant, now).await
+    }
 }
 
 /// What the handler needs.

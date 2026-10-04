@@ -73,6 +73,9 @@ const INVALID_GRANT: &str = "the authorization code cannot be redeemed";
 /// with it. [`crate::http::protocol`] constructs it inside the token endpoint,
 /// where both are already in hand.
 pub struct AuthorizationCode<'a> {
+    /// This request's verified device transport; never inherited from a token.
+    pub device_request: Option<crate::managed_devices::DeviceIssuanceContext<'a>>,
+
     /// Current issuance policy and correlated audit adapter.
     pub agent_policy: crate::http::agent_issuance::AgentPolicy<'a>,
     /// Client IDs whose issued access tokens must target only this OP.
@@ -373,6 +376,23 @@ impl AuthorizationCode<'_> {
                 "device_secret requires device_sso",
             ));
         }
+        let targeting = self.targeting(tenant, client, &grant, params).await?;
+        // One read for both tokens of this response (`ast-mqt`): two reads
+        // could disagree, and the disagreement would be a role withdrawn
+        // between them.
+        let role_grant = issuance::role_grant(&grant, &targeting);
+        self.agent_policy
+            .permits_bound(
+                tenant,
+                client,
+                &role_grant,
+                &role_grant.resources,
+                GrantType::AuthorizationCode,
+                self.now,
+                binding.device_binding.as_ref(),
+            )
+            .await
+            .map_err(|refusal| Failure::Client(refusal.code, refusal.description))?;
         let claimed = self
             .grants
             .claim_for_issuance(&binding.grant_id, self.now)
@@ -401,11 +421,6 @@ impl AuthorizationCode<'_> {
         // client a participant in this person's session.
         issuance::remember_participant(self.sessions, &grant, self.now).await;
 
-        let targeting = self.targeting(tenant, client, &grant, params).await?;
-        // One read for both tokens of this response (`ast-mqt`): two reads
-        // could disagree, and the disagreement would be a role withdrawn
-        // between them.
-        let role_grant = issuance::role_grant(&grant, &targeting);
         let held = issuance::held_roles(self.roles, &role_grant).await?;
 
         let access_lifetime = self
@@ -460,6 +475,8 @@ impl AuthorizationCode<'_> {
             .sign_access(
                 &tenant.id,
                 asterius_domain::keys::AccessIssuance {
+                    held_authority: None,
+                    device_binding: binding.device_binding.as_ref(),
                     grant: &grant,
                     implicit_resources: &issuance::implicit_resources(
                         tenant,
@@ -481,6 +498,7 @@ impl AuthorizationCode<'_> {
         // than on the request, because the scope was settled at consent.
         let id_token = if grant.scopes.contains("openid") {
             let parts = issuance::IdTokenParts {
+                device_binding: binding.device_binding.as_ref(),
                 grant: &role_grant,
                 require_ipsie_assurance: self
                     .ipsie_identity_only_clients

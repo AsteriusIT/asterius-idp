@@ -72,6 +72,8 @@ pub const SIGN_IN_QUERY: &str = "signin";
 /// What the handlers need.
 pub struct InteractionContext<'a> {
     /// Current application/action guard, independent of optional agent PDP.
+    /// Verified possession from this request's dedicated authenticated proxy hop.
+    pub device_leaf: Option<&'a crate::managed_devices::VerifiedDeviceLeaf>,
     pub conditional: Option<std::sync::Arc<dyn super::authorize::ConditionalAuthorization>>,
     /// Enabled provider choices loaded from this tenant's public config.
     pub upstream_providers: &'a [asterius_store_pg::OidcProvider],
@@ -1750,20 +1752,42 @@ async fn complete(
     let state = string("state");
     let issuer = context.tenant.issuer.as_str().to_owned();
 
-    if let Err(error) = context
+    if matches!(decision, Decision::Approved { .. })
+        && let Some(leaf) = context.device_leaf
+    {
+        let certificate = asterius_domain::managed_devices::DeviceCertificateEvidence {
+            leaf: leaf.leaf().clone(),
+            anchor: leaf.anchor().clone(),
+            expires_at: leaf.expires_at(),
+        };
+        if context
+            .requests
+            .capture_device(&presented.digest(), &certificate, now)
+            .await
+            .is_err()
+        {
+            return error_page(
+                context,
+                StatusCode::BAD_REQUEST,
+                InteractionError::NotAvailable,
+            );
+        }
+    }
+    let device_binding = match context
         .requests
-        .complete_interaction(&presented.digest(), now)
+        .complete_interaction_with_device(&presented.digest(), now)
         .await
     {
-        // Some other submission got here first, or the window closed. Either
-        // way this one must not send a second authorization response.
-        tracing::warn!(%error, tenant = %context.tenant.id, "nothing live to complete");
-        return error_page(
-            context,
-            StatusCode::BAD_REQUEST,
-            InteractionError::NotAvailable,
-        );
-    }
+        Ok(binding) => binding,
+        Err(error) => {
+            tracing::warn!(%error, tenant = %context.tenant.id, "nothing live to complete");
+            return error_page(
+                context,
+                StatusCode::BAD_REQUEST,
+                InteractionError::NotAvailable,
+            );
+        }
+    };
 
     let response = match decision {
         // RFC 6749 §4.1.2.1. A refusal travels the same road as an approval.
@@ -1773,7 +1797,17 @@ async fn complete(
             issuer,
         },
         Decision::Approved { scopes } => {
-            match mint(context, scopes, request, record, source, now).await {
+            match mint(
+                context,
+                scopes,
+                request,
+                record,
+                source,
+                now,
+                device_binding.as_ref(),
+            )
+            .await
+            {
                 Ok(code) => AuthorizationResponse::Code {
                     code,
                     state,
@@ -1921,6 +1955,7 @@ async fn mint(
     record: &InteractionRecord,
     source: ConsentSource,
     now: OffsetDateTime,
+    device_binding: Option<&asterius_domain::managed_devices::DeviceBinding>,
 ) -> Result<String, &'static str> {
     let string = |name: &str| {
         request
@@ -2036,7 +2071,10 @@ async fn mint(
         return Err("invalid_request");
     }
     if let Some(guard) = &context.conditional {
-        match guard.permits(context.tenant, &client, &grant, now).await {
+        match guard
+            .permits_bound(context.tenant, &client, &grant, now, device_binding)
+            .await
+        {
             Ok(true) => {}
             Ok(false) => return Err("access_denied"),
             Err(error) => {
@@ -2067,13 +2105,14 @@ async fn mint(
         return Err("server_error");
     };
     let minted = MintedCode::generate();
-    let binding = code_binding(
+    let mut binding = code_binding(
         request,
         grant_id,
         code_challenge,
         &string,
         now + context.code_lifetime,
     );
+    binding.device_binding = device_binding.cloned();
     if let Err(error) = context.codes.issue(minted.digest(), &binding, now).await {
         tracing::error!(%error, tenant = %context.tenant.id, "cannot store a code");
         return Err("server_error");
@@ -2129,6 +2168,7 @@ fn code_binding(
     expires_at: OffsetDateTime,
 ) -> CodeBinding {
     CodeBinding {
+        device_binding: None,
         client_id: request.client.as_str().to_owned(),
         grant_id,
         code_challenge,

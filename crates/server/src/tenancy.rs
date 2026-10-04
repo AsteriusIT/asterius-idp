@@ -242,6 +242,11 @@ pub struct TenantState {
     /// read and no extension is inserted, so a deployment without the flag
     /// cannot be talked into looking at a certificate.
     pub mtls: Option<Arc<crate::mtls::MtlsConfig>>,
+    /// Dedicated device PKI and separate verified-proxy certificate field.
+    pub devices: Option<(
+        Arc<crate::managed_devices::DeviceConfig>,
+        Arc<crate::managed_devices::TenantDeviceRoots>,
+    )>,
 }
 
 impl TenantState {
@@ -253,6 +258,7 @@ impl TenantState {
             themes: None,
             trusted_proxies: Arc::new(config.trusted_proxies.clone()),
             mtls: None,
+            devices: None,
         }
     }
 
@@ -260,6 +266,17 @@ impl TenantState {
     #[must_use]
     pub fn with_themes(mut self, themes: crate::themes::ThemeDirectory) -> Self {
         self.themes = Some(themes);
+        self
+    }
+
+    /// Install the separate operator device PKI. No roots means no evidence.
+    #[must_use]
+    pub fn with_managed_devices(
+        mut self,
+        config: Arc<crate::managed_devices::DeviceConfig>,
+        roots: Arc<crate::managed_devices::TenantDeviceRoots>,
+    ) -> Self {
+        self.devices = Some((config, roots));
         self
     }
 
@@ -371,6 +388,26 @@ pub async fn layer(State(state): State<TenantState>, mut request: Request, next:
         )
     {
         request.extensions_mut().insert(Arc::new(presented));
+    }
+    // This field is independent of OAuth mTLS. The trusted immediate proxy
+    // must verify the TLS handshake, strip spoofed input and protect this hop.
+    if let Some((config, roots)) = &state.devices
+        && let Some(anchors) = roots.for_tenant(&resolved.tenant.id)
+        && let Some(hop) = request
+            .extensions()
+            .get::<Arc<crate::managed_devices::VerifiedProxyHop>>()
+        && let Some(proof) = anchors.verify_proxy_leaf(
+            crate::managed_devices::DeviceProxyRequest {
+                hop,
+                peer,
+                headers: request.headers(),
+                trusted_proxies: &state.trusted_proxies,
+                header_name: &config.certificate_header,
+            },
+            time::OffsetDateTime::now_utc(),
+        )
+    {
+        request.extensions_mut().insert(Arc::new(proof));
     }
     request
         .extensions_mut()
@@ -574,6 +611,7 @@ mod tests {
             themes: None,
             trusted_proxies: Arc::new(Vec::new()),
             mtls: None,
+            devices: None,
         }
     }
 

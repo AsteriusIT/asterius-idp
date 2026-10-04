@@ -308,6 +308,7 @@ impl Fixture {
         let claims_providers = asterius_server::claims_provider::ClaimsProviders::default();
         let ida_frameworks = std::collections::BTreeSet::new();
         let handler = RefreshToken {
+            device_request: None,
             ipsie_identity_only_clients: None,
             ipsie_rp_session_lifetimes: None,
             native_sso: &asterius_store_pg::PgNativeSso::new(
@@ -401,6 +402,7 @@ impl Fixture {
             resources: BTreeSet::new(),
             actor_chain: Vec::new(),
             parent: None,
+            parent_derivation: None,
             task: None,
             session: Some(asterius_domain::SessionId::new(session.id_digest.clone())),
             // What the authorization copied off the session (`ast-dlk`), which
@@ -415,6 +417,7 @@ impl Fixture {
             }),
             created_at: self.now,
             updated_at: self.now,
+            authority_revision: uuid::Uuid::new_v4(),
             expires_at: None,
             revoked_at: None,
             revocation_reason: None,
@@ -484,6 +487,7 @@ impl Fixture {
             .issue(
                 minted.digest(),
                 &CodeBinding {
+                    device_binding: None,
                     client_id: client.id.as_str().to_owned(),
                     grant_id: grant.id.clone(),
                     // RFC 7636 Appendix B's published pair, as in
@@ -521,6 +525,7 @@ impl Fixture {
         let claims_providers = asterius_server::claims_provider::ClaimsProviders::default();
         let ida_frameworks = std::collections::BTreeSet::new();
         let handler = AuthorizationCode {
+            device_request: None,
             agent_policy: asterius_server::http::agent_issuance::AgentPolicy::unenforced(
                 self.audit.as_ref(),
             ),
@@ -599,6 +604,7 @@ impl Fixture {
         let claims_providers = asterius_server::claims_provider::ClaimsProviders::default();
         let ida_frameworks = std::collections::BTreeSet::new();
         let handler = RefreshToken {
+            device_request: None,
             ipsie_identity_only_clients: None,
             ipsie_rp_session_lifetimes: None,
             native_sso: &asterius_store_pg::PgNativeSso::new(

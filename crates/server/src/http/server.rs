@@ -204,18 +204,64 @@ pub async fn serve_on(
                 &tls.private_key,
             )?);
             tracing::info!(%local, "listening (TLS 1.2/1.3, BCP 195 suites)");
-            serve_tls(listener, acceptor, app, shutdown).await?;
+            serve_tls(listener, acceptor, app, None, shutdown).await?;
         }
     }
     Ok(())
+}
+
+/// The selected managed-device profile protects the edge-to-AS hop with
+/// mandatory TLS client authentication and an exact operator proxy leaf pin.
+/// Existing unconfigured listeners cannot create a verified hop extension.
+///
+/// # Errors
+/// Refuses bad material/pins or a listener that is not behind the trusted proxy.
+pub async fn serve_authenticated_proxy(
+    config: &ServerConfig,
+    hop: &crate::managed_devices::ProxyHopConfig,
+    app: Router,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> Result<(), DeviceProxyServeError> {
+    if config.mode != TransportMode::BehindProxy || hop.client_fingerprints.is_empty() {
+        return Err(DeviceProxyServeError::Invalid);
+    }
+    let roots = crate::managed_devices::DeviceTrustRoots::load(&hop.trust_anchors)?;
+    let acceptor = tokio_rustls::TlsAcceptor::from(tls::server_config_for_proxy(
+        &hop.certificate,
+        &hop.private_key,
+        roots.certificates(),
+    )?);
+    let listener = bind(config).await?;
+    serve_tls(
+        listener,
+        acceptor,
+        app,
+        Some(std::sync::Arc::new(hop.client_fingerprints.clone())),
+        shutdown,
+    )
+    .await?;
+    Ok(())
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum DeviceProxyServeError {
+    #[error("managed-device proxy listener configuration is invalid")]
+    Invalid,
+    #[error("cannot bind managed-device authenticated proxy listener: {0}")]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Anchors(#[from] crate::managed_devices::DeviceAnchorError),
+    #[error(transparent)]
+    Tls(#[from] tls::TlsError),
 }
 
 async fn serve_tls(
     listener: TcpListener,
     acceptor: tokio_rustls::TlsAcceptor,
     app: Router,
+    proxy_pins: Option<std::sync::Arc<Vec<asterius_domain::managed_devices::LeafFingerprint>>>,
     shutdown: impl Future<Output = ()> + Send + 'static,
-) -> anyhow::Result<()> {
+) -> std::io::Result<()> {
     let graceful = hyper_util::server::graceful::GracefulShutdown::new();
     let mut shutdown = std::pin::pin!(shutdown);
 
@@ -235,6 +281,7 @@ async fn serve_tls(
         let acceptor = acceptor.clone();
         let app = app.clone();
         let watcher = graceful.watcher();
+        let proxy_pins = proxy_pins.clone();
 
         tokio::spawn(async move {
             let stream = match acceptor.accept(stream).await {
@@ -247,10 +294,28 @@ async fn serve_tls(
                 }
             };
 
+            let proxy_hop = if let Some(pins) = &proxy_pins {
+                let Some(proof) = crate::managed_devices::VerifiedProxyHop::from_authenticated_tls(
+                    stream.get_ref().1,
+                    pins,
+                ) else {
+                    // A CA-valid client outside the exact proxy pin set may
+                    // not inject any request into the protected backend.
+                    tracing::debug!(%peer, "authenticated proxy pin mismatch");
+                    return;
+                };
+                Some(std::sync::Arc::new(proof))
+            } else {
+                None
+            };
+
             let service = hyper_util::service::TowerToHyperService::new(
                 app.into_service::<hyper::body::Incoming>().map_request(
                     move |mut request: axum::extract::Request<_>| {
                         request.extensions_mut().insert(ConnectInfo(peer));
+                        if let Some(hop) = &proxy_hop {
+                            request.extensions_mut().insert(std::sync::Arc::clone(hop));
+                        }
                         request
                     },
                 ),

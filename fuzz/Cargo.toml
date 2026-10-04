@@ -533,6 +533,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "kubernetes_token_review"
+path = "fuzz_targets/kubernetes_token_review.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "login_bucket"
 path = "fuzz_targets/login_bucket.rs"
 test = false
@@ -542,6 +549,41 @@ bench = false
 [[bin]]
 name = "logout_request"
 path = "fuzz_targets/logout_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "managed_device_input"
+path = "fuzz_targets/managed_device_input.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "outbound_scim_commands"
+path = "fuzz_targets/outbound_scim_commands.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "outbound_scim_document"
+path = "fuzz_targets/outbound_scim_document.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "outbound_scim_identity"
+path = "fuzz_targets/outbound_scim_identity.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "outbound_scim_peer"
+path = "fuzz_targets/outbound_scim_peer.rs"
 test = false
 doc = false
 bench = false

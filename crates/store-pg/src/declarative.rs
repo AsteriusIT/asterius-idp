@@ -46,6 +46,16 @@ async fn lock(
     require_parent: bool,
 ) -> Result<(), Error> {
     id.validate()?;
+    if id.kind == Kind::Application {
+        // Reads take the publication lock before the ownership advisory lock;
+        // writers already hold its exclusive counterpart in this transaction.
+        sqlx::query("select tenant_id from tenants where tenant_id=$1 for share")
+            .bind(id.tenant.as_str())
+            .fetch_optional(&mut *connection)
+            .await
+            .map_err(storage)?
+            .ok_or(Error::NotFound)?;
+    }
     if matches!(id.kind, Kind::Membership | Kind::Group) {
         sqlx::query("select declarative_lock($1,'group',$2)")
             .bind(id.tenant.as_str())
@@ -397,6 +407,28 @@ impl Management for PgDeclarative {
         mutation: Mutation,
     ) -> Result<Option<Document>, Error> {
         let mut tx = self.pool.begin().await.map_err(storage)?;
+        let kind = match &mutation {
+            Mutation::Create { kind, .. } => *kind,
+            Mutation::Replace { identity, .. }
+            | Mutation::Adopt { identity, .. }
+            | Mutation::Release { identity, .. }
+            | Mutation::Delete { identity, .. } => {
+                if &identity.tenant != tenant {
+                    return Err(Error::Invalid);
+                }
+                identity.kind
+            }
+        };
+        if kind == Kind::Application {
+            // Admit publication before creation/ownership advisory locks, so
+            // ordinary client writers cannot form the opposite dependency.
+            crate::PgClientRepository::lifecycle_fence_on(&mut tx, tenant)
+                .await
+                .map_err(|error| match error {
+                    asterius_domain::DomainError::NotFound => Error::NotFound,
+                    other => Error::Storage(other),
+                })?;
+        }
         sqlx::query("select set_config('asterius.declarative_owner',$1,true)")
             .bind(owner)
             .execute(&mut *tx)

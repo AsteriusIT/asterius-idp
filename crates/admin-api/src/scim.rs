@@ -531,7 +531,12 @@ pub fn accept_external_id(value: Option<&str>) -> Result<Option<&str>, AdminErro
 pub fn discovery_response(id: &str, base: &str) -> Response {
     let body = match id {
         crate::SCIM_CONFIG_ID => json!({
-            "schemas": [CONFIG],
+            "schemas": [CONFIG, asterius_domain::outbound_scim::INCARNATION_PROTECTION_SCHEMA],
+            asterius_domain::outbound_scim::INCARNATION_PROTECTION_SCHEMA: {
+                "supported": true, "namespace": "urn:asterius:outbound:",
+                "maxRetiredPerClientKind": 10000, "automaticExpiry": false,
+                "reservedUserDeleteReleasesEmail": true,
+            },
             "patch": {"supported": true},
             "bulk": {"supported": false, "maxOperations": 0, "maxPayloadSize": 0},
             "pagination": {"cursor": false, "index": true,
@@ -550,7 +555,15 @@ pub fn discovery_response(id: &str, base: &str) -> Response {
             }],
             "meta": {"resourceType": "ServiceProviderConfig", "location": format!("{base}/ServiceProviderConfig")},
         }),
-        crate::SCIM_SCHEMAS_ID => list(&[user_schema(), crate::scim_groups::schema()], 2, 1),
+        crate::SCIM_SCHEMAS_ID => list(
+            &[
+                user_schema(),
+                crate::scim_groups::schema(),
+                outbound_incarnation_schema(),
+            ],
+            3,
+            1,
+        ),
         crate::SCIM_RESOURCE_TYPES_ID => list(
             &[
                 json!({
@@ -570,6 +583,27 @@ pub fn discovery_response(id: &str, base: &str) -> Response {
         _ => return error_response(&AdminError::NotFound),
     };
     response(StatusCode::OK, body)
+}
+
+fn outbound_incarnation_schema() -> Value {
+    let attributes = [
+        ("supported", "boolean"),
+        ("namespace", "string"),
+        ("maxRetiredPerClientKind", "integer"),
+        ("automaticExpiry", "boolean"),
+        ("reservedUserDeleteReleasesEmail", "boolean"),
+    ]
+    .into_iter()
+    .map(|(name, kind)| {
+        json!({
+            "name":name,"type":kind,"multiValued":false,"required":true,
+            "mutability":"readOnly","returned":"always","caseExact":true,"uniqueness":"none"
+        })
+    })
+    .collect::<Vec<_>>();
+    json!({"schemas":["urn:ietf:params:scim:schemas:core:2.0:Schema"],"id":asterius_domain::outbound_scim::INCARNATION_PROTECTION_SCHEMA,
+        "name":"AsteriusOutboundIncarnations","description":"Reserved outbound incarnation retention; ordinary SCIM externalIds retain their existing lifecycle",
+        "attributes":attributes})
 }
 
 fn user_schema() -> Value {

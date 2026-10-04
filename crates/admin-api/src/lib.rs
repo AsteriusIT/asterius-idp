@@ -140,6 +140,9 @@ pub const CLIENT_HEALTH_ID: &str = "clients.health";
 pub const CONDITIONAL_SETTINGS_READ_ID: &str = "clients.conditional.read";
 pub const CONDITIONAL_SETTINGS_UPDATE_ID: &str = "clients.conditional.update";
 pub const KUBERNETES_PROFILE_READ_ID: &str = "clients.kubernetes.read";
+pub const KUBERNETES_ONLINE_READ_ID: &str = "clients.kubernetes_online.read";
+pub const KUBERNETES_ONLINE_UPDATE_ID: &str = "clients.kubernetes_online.update";
+pub const KUBERNETES_REVIEW_ID: &str = "clients.kubernetes_online.review";
 /// Replaces a cluster's tenant-owned group release profile.
 pub const KUBERNETES_PROFILE_UPDATE_ID: &str = "clients.kubernetes.update";
 /// The `operationId` of `POST /clients`.
@@ -219,6 +222,14 @@ pub const ID_JAG_SUBJECT_BIND_ID: &str = "id_jag.subject.bind";
 pub const ID_JAG_SUBJECT_REMOVE_ID: &str = "id_jag.subject.remove";
 pub const SAML_SP_LIST_ID: &str = "saml.sp.list";
 pub const OIDC_PROVIDER_CHECK_ID: &str = "oidc.providers.check";
+pub const DEVICE_SOURCES_LIST_ID: &str = "devices.sources.list";
+pub const DEVICE_SOURCE_CREATE_ID: &str = "devices.sources.create";
+pub const DEVICE_SOURCE_UPDATE_ID: &str = "devices.sources.update";
+pub const DEVICES_LIST_ID: &str = "devices.list";
+pub const DEVICE_REMOVE_ID: &str = "devices.remove";
+pub const DEVICE_ENROLL_ID: &str = "devices.enroll";
+pub const DEVICE_POSTURE_ID: &str = "devices.posture";
+
 pub const WORKLOAD_TRUSTS_LIST_ID: &str = "workload.trusts.list";
 pub const WORKLOAD_TRUST_READ_ID: &str = "workload.trusts.read";
 pub const WORKLOAD_TRUST_PUT_ID: &str = "workload.trusts.put";
@@ -617,6 +628,31 @@ pub const KUBERNETES_PROFILE_UPDATE: Operation = Operation::mutation(
     M::Put,
     A::new(R::Tenant, "admin.clients:write"),
     "Replaces a cluster's exact managed-group release allow-list",
+);
+
+pub const KUBERNETES_ONLINE_READ: Operation = Operation::read(
+    KUBERNETES_ONLINE_READ_ID,
+    "/clients/{client_id}/kubernetes/online",
+    S::Get,
+    A::new(R::Tenant, "admin.clients:read"),
+    "Reads the selected online authentication reviewer",
+);
+pub const KUBERNETES_ONLINE_UPDATE: Operation = Operation::mutation(
+    KUBERNETES_ONLINE_UPDATE_ID,
+    "/clients/{client_id}/kubernetes/online",
+    M::Put,
+    A::new(R::Tenant, "admin.clients:write"),
+    "Selects an exact service reviewer using the saved revision",
+);
+pub const KUBERNETES_REVIEW: Operation = Operation::probe(
+    KUBERNETES_REVIEW_ID,
+    "/clients/{client_id}/kubernetes/reviews",
+    M::Post,
+    A::new(
+        R::AutomationTenant,
+        asterius_domain::kubernetes_online::REVIEW_SCOPE,
+    ),
+    "Reviews one issued identity against current exact grant and session authority",
 );
 
 /// Registers a client from the console, through the RFC 7591 validator.
@@ -1119,6 +1155,56 @@ pub const OIDC_PROVIDER_CHECK: Operation = Operation::probe(
     M::Post,
     A::new(R::Tenant, "admin.oidc_providers:read"),
     "Checks stored provider discovery and public keys without using client credentials",
+);
+
+pub const DEVICE_SOURCES_LIST: Operation = Operation::read(
+    DEVICE_SOURCES_LIST_ID,
+    "/device-sources",
+    S::Get,
+    A::new(R::ConsoleTenant, "admin.device_sources:read"),
+    "Lists device source generations without credentials",
+);
+pub const DEVICE_SOURCE_CREATE: Operation = Operation::mutation(
+    DEVICE_SOURCE_CREATE_ID,
+    "/device-sources",
+    M::Post,
+    A::new(R::ConsoleTenant, "admin.device_sources:write"),
+    "Creates a default-disabled device source",
+);
+pub const DEVICE_SOURCE_UPDATE: Operation = Operation::mutation(
+    DEVICE_SOURCE_UPDATE_ID,
+    "/device-sources/{source_id}",
+    M::Put,
+    A::new(R::ConsoleTenant, "admin.device_sources:write"),
+    "Changes a source with an exact revision fence",
+);
+pub const DEVICES_LIST: Operation = Operation::read(
+    DEVICES_LIST_ID,
+    "/devices",
+    S::Get,
+    A::new(R::ConsoleTenant, "admin.devices:read"),
+    "Lists bounded device metadata without certificates",
+);
+pub const DEVICE_REMOVE: Operation = Operation::mutation(
+    DEVICE_REMOVE_ID,
+    "/devices/{device_id}",
+    M::Delete,
+    A::new(R::ConsoleTenant, "admin.devices:write"),
+    "Erases identifying device state and invalidates proofs",
+);
+pub const DEVICE_ENROLL: Operation = Operation::mutation(
+    DEVICE_ENROLL_ID,
+    "/device-sources/{source_id}/enrollments",
+    M::Post,
+    A::new(R::AutomationTenant, "device.enrollments:write"),
+    "Enrolls an account-bound device from its exact authorized relay",
+);
+pub const DEVICE_POSTURE: Operation = Operation::mutation(
+    DEVICE_POSTURE_ID,
+    "/device-sources/{source_id}/posture",
+    M::Post,
+    A::new(R::AutomationTenant, "device.posture:write"),
+    "Atomically accepts bounded monotonic posture updates",
 );
 
 pub const WORKLOAD_TRUSTS_LIST: Operation = Operation::read(
@@ -2171,7 +2257,117 @@ pub const GOVERNANCE_FINDINGS: Operation = Operation::read(
     "Reports missing ownership, source disconnection, activity uncertainty and overdue privileged reviews without changing access",
 );
 
+pub const OUTBOUND_SCIM_LIST: Operation = Operation::read(
+    "outbound_scim.list",
+    "/outbound-scim/connectors",
+    S::Get,
+    A::new(R::ConsoleTenant, "admin.outbound_scim:read"),
+    "Lists bounded outbound SCIM connectors",
+);
+pub const OUTBOUND_SCIM_CREDENTIALS: Operation = Operation::read(
+    "outbound_scim.credentials",
+    "/outbound-scim/credentials",
+    S::Get,
+    A::new(R::ConsoleTenant, "admin.outbound_scim:read"),
+    "Lists only operator credential references bound to this source tenant",
+);
+pub const OUTBOUND_SCIM_ASSIGNMENTS: Operation = Operation::read(
+    "outbound_scim.assignments",
+    "/outbound-scim/connectors/{connector_id}/assignments",
+    S::Get,
+    A::new(R::ConsoleTenant, "admin.outbound_scim:read"),
+    "Lists current outbound assignments and retained mapping evidence",
+);
+pub const OUTBOUND_SCIM_CREATE: Operation = Operation::mutation(
+    "outbound_scim.create",
+    "/outbound-scim/connectors",
+    M::Post,
+    A::new(R::ConsoleTenant, "admin.outbound_scim:write"),
+    "Creates a disabled outbound connector without credential bytes",
+);
+pub const OUTBOUND_SCIM_CONFIGURE: Operation = Operation::mutation(
+    "outbound_scim.configure",
+    "/outbound-scim/connectors/{connector_id}",
+    M::Put,
+    A::new(R::ConsoleTenant, "admin.outbound_scim:write"),
+    "Changes an outbound connector using its exact configuration revision",
+);
+pub const OUTBOUND_SCIM_SELECT: Operation = Operation::mutation(
+    "outbound_scim.select",
+    "/outbound-scim/connectors/{connector_id}/assignments",
+    M::Post,
+    A::new(R::ConsoleTenant, "admin.outbound_scim:write"),
+    "Explicitly selects bounded local Users or Groups for provisioning",
+);
+pub const OUTBOUND_SCIM_UNSELECT: Operation = Operation::mutation(
+    "outbound_scim.unselect",
+    "/outbound-scim/connectors/{connector_id}/assignments/{assignment_id}/unselect",
+    M::Post,
+    A::new(R::ConsoleTenant, "admin.outbound_scim:write"),
+    "Queues disable or group-empty work while retaining mapping authority",
+);
+pub const OUTBOUND_SCIM_RECONCILE: Operation = Operation::mutation(
+    "outbound_scim.reconcile",
+    "/outbound-scim/connectors/{connector_id}/reconcile",
+    M::Post,
+    A::new(R::ConsoleTenant, "admin.outbound_scim:write"),
+    "Queues one bounded page of ownership-checked drift reconciliation",
+);
+
+pub const OUTBOUND_SCIM_PREVIEW: Operation = Operation::mutation(
+    "outbound_scim.preview",
+    "/outbound-scim/connectors/{connector_id}/preview",
+    M::Post,
+    A::new(R::ConsoleTenant, "admin.outbound_scim:write"),
+    "Authenticates the exact pinned peer and reads SCIM configuration before bounded enablement; no target mappings are written",
+);
+
+pub const OUTBOUND_SCIM_READ: Operation = Operation::read(
+    "outbound_scim.read",
+    "/outbound-scim/connectors/{connector_id}",
+    S::Get,
+    A::new(R::ConsoleTenant, "admin.outbound_scim:read"),
+    "Reads the current configuration revision of one source-tenant connector",
+);
+
+pub const OUTBOUND_SCIM_DRY_RUN: Operation = Operation::mutation(
+    "outbound_scim.dry_run",
+    "/outbound-scim/connectors/{connector_id}/assignments/{assignment_id}/dry-run",
+    M::Post,
+    A::new(R::ConsoleTenant, "admin.outbound_scim:write"),
+    "Reads current source and owned target drift with authentication but no SCIM mutation or mapping write",
+);
+
+pub const OUTBOUND_SCIM_LIFECYCLE_READ: Operation = Operation::read(
+    "outbound_scim.lifecycle_read",
+    "/outbound-scim/connectors/{connector_id}/assignments/{assignment_id}/lifecycle",
+    S::Get,
+    A::new(R::ConsoleTenant, "admin.outbound_scim:read"),
+    "Reads the latest 25 explicit lifecycle approvals and retained completion receipts",
+);
+
+pub const OUTBOUND_SCIM_LIFECYCLE: Operation = Operation::mutation(
+    "outbound_scim.lifecycle",
+    "/outbound-scim/connectors/{connector_id}/assignments/{assignment_id}/lifecycle",
+    M::Post,
+    A::new(R::ConsoleTenant, "admin.outbound_scim:write"),
+    "Queues an explicitly confirmed archive, recreate or separately enabled reviewed DELETE for the exact saved target incarnation and version",
+);
+
 static REGISTRY: &[Operation] = &[
+    OUTBOUND_SCIM_LIFECYCLE_READ,
+    OUTBOUND_SCIM_LIFECYCLE,
+    OUTBOUND_SCIM_DRY_RUN,
+    OUTBOUND_SCIM_READ,
+    OUTBOUND_SCIM_PREVIEW,
+    OUTBOUND_SCIM_LIST,
+    OUTBOUND_SCIM_CREDENTIALS,
+    OUTBOUND_SCIM_ASSIGNMENTS,
+    OUTBOUND_SCIM_CREATE,
+    OUTBOUND_SCIM_CONFIGURE,
+    OUTBOUND_SCIM_SELECT,
+    OUTBOUND_SCIM_UNSELECT,
+    OUTBOUND_SCIM_RECONCILE,
     GOVERNANCE_FINDINGS,
     GOVERNANCE_REVIEW_READ,
     GOVERNANCE_REVIEWERS,
@@ -2217,6 +2413,9 @@ static REGISTRY: &[Operation] = &[
     CONDITIONAL_SETTINGS_UPDATE,
     KUBERNETES_PROFILE_READ,
     KUBERNETES_PROFILE_UPDATE,
+    KUBERNETES_ONLINE_READ,
+    KUBERNETES_ONLINE_UPDATE,
+    KUBERNETES_REVIEW,
     CLIENT_CREATE,
     CLIENT_UPDATE,
     CLIENT_RESOURCES_UPDATE,
@@ -2258,6 +2457,13 @@ static REGISTRY: &[Operation] = &[
     ID_JAG_SUBJECT_BIND,
     ID_JAG_SUBJECT_REMOVE,
     SAML_SP_LIST,
+    DEVICE_SOURCES_LIST,
+    DEVICE_SOURCE_CREATE,
+    DEVICE_SOURCE_UPDATE,
+    DEVICES_LIST,
+    DEVICE_REMOVE,
+    DEVICE_ENROLL,
+    DEVICE_POSTURE,
     WORKLOAD_TRUSTS_LIST,
     WORKLOAD_TRUST_READ,
     WORKLOAD_TRUST_PUT,
@@ -2346,6 +2552,9 @@ static REGISTRY: &[Operation] = &[
     TEMPORARY_ENTITLEMENT_REQUESTS,
     TEMPORARY_ENTITLEMENT_ACTIVATIONS,
     TEMPORARY_ENTITLEMENT_REVOKE,
+    TEMPORARY_KUBERNETES_BINDING_READ,
+    TEMPORARY_KUBERNETES_BINDING_WRITE,
+    TEMPORARY_KUBERNETES_PROJECT,
     APP_ROLE_CREATE,
     APP_ROLE_DELETE,
     CLIENT_APP_ROLES_LIST,
@@ -2568,6 +2777,31 @@ pub const TEMPORARY_ENTITLEMENT_REVOKE: Operation = Operation::mutation(
     "Console-only owner-scoped temporary entitlement revoke",
 );
 
+pub const TEMPORARY_KUBERNETES_BINDING_READ_ID: &str = "temporary_kubernetes.binding_read";
+pub const TEMPORARY_KUBERNETES_BINDING_READ: Operation = Operation::read(
+    TEMPORARY_KUBERNETES_BINDING_READ_ID,
+    "/temporary-entitlements/{id}/kubernetes-binding",
+    S::Get,
+    A::new(R::Tenant, "admin.app_roles:read"),
+    "Console-only entitlement owner reads the exact Kubernetes controller binding",
+);
+pub const TEMPORARY_KUBERNETES_BINDING_WRITE_ID: &str = "temporary_kubernetes.binding_write";
+pub const TEMPORARY_KUBERNETES_BINDING_WRITE: Operation = Operation::mutation(
+    TEMPORARY_KUBERNETES_BINDING_WRITE_ID,
+    "/temporary-entitlements/{id}/kubernetes-binding",
+    M::Put,
+    A::new(R::Tenant, "admin.app_roles:write"),
+    "Console-only entitlement owner configures one immutable controller with explicit revision CAS",
+);
+pub const TEMPORARY_KUBERNETES_PROJECT_ID: &str = "temporary_kubernetes.project";
+pub const TEMPORARY_KUBERNETES_PROJECT: Operation = Operation::read(
+    TEMPORARY_KUBERNETES_PROJECT_ID,
+    "/kubernetes/temporary-access/{id}",
+    S::Get,
+    A::new(R::Tenant, "admin.app_roles:read"),
+    "Exact mapped same-tenant DPoP controller reads complete bounded current public subjects and expiry",
+).for_services();
+
 /// The registry.
 #[must_use]
 pub fn registry() -> &'static [Operation] {
@@ -2711,9 +2945,25 @@ mod tests {
     /// The scope strings are the vocabulary an automation client is granted,
     /// so they are a namespace and not free text.
     #[test]
-    fn every_declared_scope_is_in_the_admin_namespace() {
+    fn every_declared_scope_is_admin_or_exact_device_relay_authority() {
         for operation in registry() {
             let scope = operation.authority().scope();
+            // Relay observations are machine-only publication, distinct from
+            // human device administration. Only these exact registered routes
+            // may use the two dedicated service scopes.
+            let relay_scope = match operation.id() {
+                DEVICE_ENROLL_ID => Some("device.enrollments:write"),
+                DEVICE_POSTURE_ID => Some("device.posture:write"),
+                _ => None,
+            };
+            if let Some(expected) = relay_scope {
+                assert_eq!(scope, expected);
+                assert_eq!(
+                    operation.authority().reach(),
+                    crate::rbac::Reach::AutomationTenant
+                );
+                continue;
+            }
             assert!(
                 scope.starts_with("admin.") && scope.contains(':'),
                 "{} declares {scope}, which is not admin.<resource>:<action>",

@@ -9,6 +9,135 @@ use uuid::Uuid;
 
 #[tokio::test]
 #[ignore = "requires DATABASE_URL; CI runs ignored store tests"]
+// Keep the transaction/sequence/deletion journey together in one owned schema.
+#[allow(clippy::too_many_lines)]
+async fn spiffe_sequence_floor_survives_deletion_and_recreation() {
+    use asterius_domain::workload::{Algorithm, Keys, Provider};
+    let url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
+    let schema = format!("spire_bundles_{}", Uuid::new_v4().simple());
+    let admin = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .expect("database");
+    sqlx::query(&format!("create schema {schema}"))
+        .execute(&admin)
+        .await
+        .expect("schema");
+    let options = PgConnectOptions::from_str(&url)
+        .expect("URL")
+        .options([("search_path", schema.as_str())]);
+    let pool = PgPoolOptions::new()
+        .max_connections(4)
+        .connect_with(options)
+        .await
+        .expect("pool");
+    MIGRATOR.run(&pool).await.expect("migrations");
+    sqlx::query("insert into tenants(tenant_id,issuer,display_name,default_resource) values('one','https://id.example/one','one','https://api.example/')").execute(&pool).await.expect("tenant");
+    let tenant = TenantId::new("one");
+    let registry = PgWorkloadTrusts::new(pool.clone());
+    let now = OffsetDateTime::now_utc();
+    let mut config = Config {
+        issuer: "https://spire.example.test".into(),
+        audience: "urn:asterius:workload:one:inventory".into(),
+        subject: "spiffe://example.test/inventory".into(),
+        provider: Provider::Spiffe,
+        principal: "workload:inventory".into(),
+        clients: ["client".into()].into(),
+        scopes: ["read".into()].into(),
+        resources: ["https://api.example/".into()].into(),
+        actions: ["read".into()].into(),
+        required_claims: std::collections::BTreeMap::default(),
+        algorithms: [Algorithm::ES256].into(),
+        enabled: true,
+        keys: Keys::SpiffeBundle {
+            trust_domain: "example.test".into(),
+            bundle: r#"{"keys":[],"spiffe_sequence":7}"#.into(),
+        },
+    };
+    let first = registry
+        .put(&tenant, "inventory", &config, None, Actor::System, now)
+        .await
+        .expect("create empty revocation snapshot");
+    assert!(first.fingerprints.is_empty());
+    for bundle in [
+        r#"{"keys":[],"spiffe_sequence":6}"#,
+        r#"{"keys":[]}"#,
+        r#"{"keys":[],"spiffe_sequence":7,"spiffe_refresh_hint":1}"#,
+    ] {
+        config.keys = Keys::SpiffeBundle {
+            trust_domain: "example.test".into(),
+            bundle: bundle.into(),
+        };
+        assert!(
+            registry
+                .put(
+                    &tenant,
+                    "inventory",
+                    &config,
+                    Some(first.version),
+                    Actor::System,
+                    now
+                )
+                .await
+                .is_err()
+        );
+    }
+    config.keys = Keys::SpiffeBundle {
+        trust_domain: "example.test".into(),
+        bundle: r#"{"keys":[],"spiffe_sequence":8}"#.into(),
+    };
+    let next = registry
+        .put(
+            &tenant,
+            "inventory",
+            &config,
+            Some(first.version),
+            Actor::System,
+            now,
+        )
+        .await
+        .expect("advance");
+    registry
+        .delete(&tenant, "inventory", next.version, Actor::System, now)
+        .await
+        .expect("delete");
+    config.keys = Keys::SpiffeBundle {
+        trust_domain: "example.test".into(),
+        bundle: r#"{"keys":[],"spiffe_sequence":7}"#.into(),
+    };
+    assert!(
+        registry
+            .put(&tenant, "inventory", &config, None, Actor::System, now)
+            .await
+            .is_err()
+    );
+    config.keys = Keys::SpiffeBundle {
+        trust_domain: "example.test".into(),
+        bundle: r#"{"keys":[],"spiffe_sequence":9}"#.into(),
+    };
+    let recreated = registry
+        .put(&tenant, "inventory", &config, None, Actor::System, now)
+        .await
+        .expect("new sequence");
+    assert!(recreated.version > next.version);
+    let count: i64 = sqlx::query_scalar(
+        "select count(*) from workload_spiffe_bundle_history where tenant_id='one'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("history");
+    assert_eq!(count, 1);
+    pool.close().await;
+    sqlx::query(&format!("drop schema {schema} cascade"))
+        .execute(&admin)
+        .await
+        .expect("cleanup");
+    admin.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL; CI runs ignored store tests"]
 // The single schema test checks rollback, replay and authoritative version fences together.
 #[allow(clippy::too_many_lines)]
 async fn revisions_replay_and_audit_are_tenant_bound() {
@@ -87,6 +216,8 @@ async fn revisions_replay_and_audit_are_tenant_bound() {
         trust_id: "inventory".into(),
         trust_version: enabled.version,
         principal: config.principal.clone(),
+        source_subject: config.subject.clone(),
+        trust_domain: None,
         expires_at: now + Duration::seconds(300),
         digest: [17; 32],
         scopes: config.scopes.clone(),

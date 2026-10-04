@@ -216,6 +216,28 @@ impl TenantScoped for PgClientRepository {
 }
 
 impl PgClientRepository {
+    /// Acquire publication admission before any client row or its trigger locks.
+    /// Supplied-connection callers retain it in their transaction through commit.
+    pub(crate) async fn lifecycle_fence_on(
+        connection: &mut sqlx::PgConnection,
+        tenant: &TenantId,
+    ) -> Result<(), DomainError> {
+        crate::users::PgUserRepository::lifecycle_fence_on(connection, tenant).await
+    }
+
+    async fn creation_fence_on(
+        connection: &mut sqlx::PgConnection,
+        tenant: &TenantId,
+    ) -> Result<(), DomainError> {
+        Self::lifecycle_fence_on(connection, tenant)
+            .await
+            .map_err(|error| match error {
+                // Preserve the registration/upsert foreign-key conflict contract.
+                DomainError::NotFound => DomainError::Conflict("tenant does not exist".to_owned()),
+                other => other,
+            })
+    }
+
     /// Reads the live command endpoint without exposing a stale outbox URL.
     /// Disabled or deleted clients have no delivery target.
     pub async fn command_endpoint_for_delivery(
@@ -400,6 +422,8 @@ impl PgClientRepository {
             backchannel_logout_columns(registration);
         let (agent, agent_policy) = agent_columns(registration);
 
+        let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
+        Self::creation_fence_on(&mut transaction, &self.tenant).await?;
         bind_all!(
             sqlx::query(
                 "insert into clients (tenant_id, client_id, client_name, compliance_profile,
@@ -528,10 +552,10 @@ impl PgClientRepository {
                 .as_ref()
                 .map(|modes| modes.iter().cloned().collect::<Vec<_>>()),
         )
-        .execute(&self.pool)
+        .execute(&mut *transaction)
         .await
-        .map(|_| ())
-        .map_err(to_domain_error)
+        .map_err(to_domain_error)?;
+        transaction.commit().await.map_err(to_domain_error)
     }
 
     /// Creates a client that did not exist, with the digest of its RFC 7592
@@ -629,6 +653,7 @@ impl PgClientRepository {
         client: &Client,
         registration_access_token: Option<&[u8; 32]>,
     ) -> Result<Row, DomainError> {
+        Self::creation_fence_on(connection, tenant).await?;
         let registration = &client.registration;
         let lists = ListColumns::of(registration);
         let (jwks, jwks_uri) = key_columns(registration);
@@ -885,15 +910,17 @@ impl PgClientRepository {
         client: &Client,
         client_secret: ClientSecretUpdate,
     ) -> Result<Client, DomainError> {
-        let mut connection = self.pool.acquire().await.map_err(to_domain_error)?;
-        Self::replace_on_connection(
-            &mut connection,
+        let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
+        let replaced = Self::replace_on_connection(
+            &mut transaction,
             &self.tenant,
             self.capabilities,
             client,
             client_secret,
         )
-        .await
+        .await?;
+        transaction.commit().await.map_err(to_domain_error)?;
+        Ok(replaced)
     }
 
     /// Uses the existing metadata update and agent ceilings on the supplied transaction.
@@ -915,6 +942,7 @@ impl PgClientRepository {
             ));
         }
         check_response_encryption(&client.registration)?;
+        Self::lifecycle_fence_on(connection, tenant).await?;
         let registration = &client.registration;
         let lists = ListColumns::of(registration);
         let (jwks, jwks_uri) = key_columns(registration);
@@ -1052,6 +1080,7 @@ impl PgClientRepository {
         resources: &BTreeSet<String>,
     ) -> Result<Client, DomainError> {
         let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
+        Self::lifecycle_fence_on(&mut transaction, &self.tenant).await?;
         let requested: Vec<String> = resources.iter().cloned().collect();
 
         let registered = sqlx::query(
@@ -1172,6 +1201,7 @@ impl PgClientRepository {
         now: OffsetDateTime,
     ) -> Result<(), DomainError> {
         let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
+        Self::lifecycle_fence_on(&mut transaction, &self.tenant).await?;
 
         let result = sqlx::query!(
             "delete from clients where tenant_id = $1 and client_id = $2",

@@ -13,6 +13,43 @@ use sqlx::PgPool;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
+async fn redemption_client_current_on(
+    connection: &mut sqlx::PgConnection,
+    tenant: &TenantId,
+    client: &str,
+) -> Result<bool, DomainError> {
+    let current: Option<String> = sqlx::query_scalar(
+        "select tenant_id from tenants where tenant_id=$1 and status='active' for share",
+    )
+    .bind(tenant.as_str())
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(to_domain_error)?;
+    if current.is_none() {
+        return Ok(false);
+    }
+    let current: Option<String> = sqlx::query_scalar("select c.client_id from clients c where c.tenant_id=$1 and c.client_id=$2 and c.status='active' and not exists(select 1 from agent_task_clients t where t.tenant_id=c.tenant_id and t.client_id=c.client_id) for share of c")
+        .bind(tenant.as_str()).bind(client).fetch_optional(&mut *connection).await.map_err(to_domain_error)?;
+    if current.is_none() {
+        return Ok(false);
+    }
+    let document: Option<serde_json::Value> =
+        sqlx::query_scalar("select document from tenant_policies where tenant_id=$1")
+            .bind(tenant.as_str())
+            .fetch_optional(connection)
+            .await
+            .map_err(to_domain_error)?;
+    let Some(document) = document else {
+        return Ok(true);
+    };
+    let rules = asterius_domain::policy::RuleSet::from_json(&document)
+        .map_err(|error| DomainError::invalid("tenant_policies.document", error.to_string()))?;
+    Ok(!rules.conditional_scopes().iter().any(|scope| {
+        scope.mode == asterius_domain::policy::conditional::EnforcementMode::Active
+            && scope.clients.iter().any(|id| id.as_str() == client)
+    }))
+}
+
 /// One tenant's external subject bindings and authorized replay claims.
 #[derive(Debug, Clone)]
 pub struct PgIdJagRedemption {
@@ -516,6 +553,10 @@ impl PgIdJagRedemption {
 
         let jti_hash = sha256(jti.as_bytes());
         let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
+        if !redemption_client_current_on(&mut transaction, &self.tenant, client_id).await? {
+            return Ok(false);
+        }
+
         let user = sqlx::query_scalar::<_, Uuid>(
             "with eligible as (
                  select b.user_id

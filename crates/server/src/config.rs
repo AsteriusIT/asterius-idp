@@ -91,6 +91,8 @@ pub struct Config {
     /// `[features] mtls` gets a deployment that does not look at certificates,
     /// which is the same posture every other flag has.
     pub mtls: crate::mtls::MtlsConfig,
+    /// Separate operator device PKI; empty roots leave device evidence unavailable.
+    pub managed_devices: crate::managed_devices::DeviceConfig,
     /// AuthZEN settings that are not capability flags (`ast-pj0.3`).
     ///
     /// Read only where `[features] authzen` is on, like `[mtls]` and `[dpop]`:
@@ -327,6 +329,8 @@ pub struct TenantConfig {
     /// Optional operator-pinned LDAPS source. No synchronization runs merely
     /// because this configuration exists.
     pub ldap_source: Option<LdapSourceConfig>,
+    /// Fixed deployment credentials; no synchronization is enabled by this catalogue.
+    pub outbound_scim_credentials: Vec<crate::outbound_scim::OperatorCredential>,
     /// Client IDs for which PAR requires signed JAR and `response_mode=jwt`.
     pub fapi_message_signing_clients: Vec<String>,
     /// Client IDs whose authorization callback must use HTTPS for IPSIE SL1.
@@ -673,6 +677,8 @@ struct RawConfig {
     #[serde(default)]
     mtls: RawMtls,
     #[serde(default)]
+    managed_devices: RawManagedDevices,
+    #[serde(default)]
     authzen: RawAuthzen,
 }
 
@@ -698,6 +704,23 @@ struct RawMtls {
     /// Tenant id to PEM file. `[mtls.trust_anchors]` in the file.
     #[serde(default)]
     trust_anchors: std::collections::BTreeMap<String, PathBuf>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawManagedDevices {
+    certificate_header: Option<String>,
+    #[serde(default)]
+    trust_anchors: std::collections::BTreeMap<String, PathBuf>,
+    proxy_hop: Option<RawDeviceProxyHop>,
+}
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawDeviceProxyHop {
+    certificate: PathBuf,
+    private_key: PathBuf,
+    trust_anchors: PathBuf,
+    client_fingerprints: Vec<String>,
 }
 
 /// The `[login]` table.
@@ -892,6 +915,7 @@ struct RawTenant {
     http_signature_peer: Option<Vec<RawHttpSignaturePeer>>,
     ssf_upstream_peer: Option<Vec<RawSsfUpstreamPeer>>,
     ldap_source: Option<RawLdapSource>,
+    outbound_scim_credential: Option<Vec<RawOutboundScimCredential>>,
     fapi_message_signing_client: Option<Vec<String>>,
     ipsie_https_only_client: Option<Vec<String>>,
     ipsie_identity_only_client: Option<Vec<String>>,
@@ -903,6 +927,26 @@ struct RawTenant {
 struct RawIpsieRpSession {
     client_id: String,
     lifetime_seconds: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawOutboundScimCredential {
+    reference: String,
+    generation: uuid::Uuid,
+    target_issuer: String,
+    target_client: String,
+    key_file: PathBuf,
+    kid: String,
+    algorithm: String,
+}
+impl std::fmt::Debug for RawOutboundScimCredential {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RawOutboundScimCredential")
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1444,6 +1488,27 @@ impl RawConfig {
         let mail = validate_mail(self.mail, env, &mut errors);
         let dpop = validate_dpop(self.dpop, env, &mut errors);
         let mtls = validate_mtls(self.mtls, &tenants, &mut errors);
+        let managed_devices = validate_managed_devices(self.managed_devices, &tenants, &mut errors);
+        if !managed_devices.trust_anchors.is_empty() || managed_devices.proxy_hop.is_some() {
+            if managed_devices.proxy_hop.is_none() || server.trusted_proxies.is_empty() {
+                errors.problem(
+                    "managed_devices.proxy_hop",
+                    "requires authenticated proxy TLS material and trusted immediate proxy CIDRs",
+                );
+            }
+            if server.mode != TransportMode::BehindProxy {
+                errors.problem(
+                    "managed_devices",
+                    "device possession requires the trusted TLS proxy profile",
+                );
+            }
+            if managed_devices.certificate_header == mtls.certificate_header {
+                errors.problem(
+                    "managed_devices.certificate_header",
+                    "must differ from OAuth client authentication header",
+                );
+            }
+        }
 
         errors.finish(Config {
             server,
@@ -1461,6 +1526,7 @@ impl RawConfig {
             mail,
             dpop,
             mtls,
+            managed_devices,
             authzen: AuthzenConfig {
                 signed_metadata: self.authzen.signed_metadata.unwrap_or_default(),
                 search: self.authzen.search.unwrap_or_default(),
@@ -1526,6 +1592,72 @@ fn validate_mtls(
     crate::mtls::MtlsConfig {
         certificate_header,
         trust_anchors,
+    }
+}
+
+/// Validate the independently configured device trust boundary.
+fn validate_managed_devices(
+    raw: RawManagedDevices,
+    tenants: &[TenantConfig],
+    errors: &mut Collector,
+) -> crate::managed_devices::DeviceConfig {
+    let certificate_header = raw.certificate_header.map_or_else(
+        || crate::managed_devices::DEFAULT_DEVICE_CERTIFICATE_HEADER.to_owned(),
+        |name| {
+            if axum::http::HeaderName::try_from(name.as_str()).is_err() {
+                errors.problem(
+                    "managed_devices.certificate_header",
+                    "must be a valid HTTP header name: lowercase letters, digits and \
+                     `-`. A name no header can carry means no certificate is ever read",
+                );
+            }
+            name.to_ascii_lowercase()
+        },
+    );
+
+    let mut trust_anchors = std::collections::BTreeMap::new();
+    for (tenant, path) in raw.trust_anchors {
+        if !tenants.iter().any(|known| known.id.as_str() == tenant) {
+            errors.problem(
+                "managed_devices.trust_anchors",
+                format!(
+                    "`{tenant}` is not a tenant this deployment serves; its trust anchors \
+                     would vouch for nobody"
+                ),
+            );
+            continue;
+        }
+        trust_anchors.insert(TenantId::new(tenant), path);
+    }
+
+    let proxy_hop = raw.proxy_hop.map(|hop| {
+        let mut client_fingerprints = Vec::new();
+        if hop.client_fingerprints.is_empty() || hop.client_fingerprints.len() > 32 {
+            errors.problem(
+                "managed_devices.proxy_hop.client_fingerprints",
+                "requires between one and32 exact SHA256 proxy client leaf pins",
+            );
+        }
+        for pin in hop.client_fingerprints {
+            match asterius_domain::managed_devices::LeafFingerprint::parse(&pin) {
+                Ok(pin) if !client_fingerprints.contains(&pin) => client_fingerprints.push(pin),
+                _ => errors.problem(
+                    "managed_devices.proxy_hop.client_fingerprints",
+                    "pins must be distinct lower-case SHA256 hex digests",
+                ),
+            }
+        }
+        crate::managed_devices::ProxyHopConfig {
+            certificate: hop.certificate,
+            private_key: hop.private_key,
+            trust_anchors: hop.trust_anchors,
+            client_fingerprints,
+        }
+    });
+    crate::managed_devices::DeviceConfig {
+        certificate_header,
+        trust_anchors,
+        proxy_hop,
     }
 }
 
@@ -2269,6 +2401,13 @@ fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantCo
         let ldap_source = tenant
             .ldap_source
             .and_then(|source| validate_ldap_source(index, source, errors));
+        let outbound_scim_credentials = validate_outbound_scim_credentials(
+            index,
+            id.as_ref(),
+            issuer.as_ref(),
+            tenant.outbound_scim_credential,
+            errors,
+        );
         let fapi_message_signing_clients = validate_fapi_message_signing_clients(
             index,
             tenant.fapi_message_signing_client,
@@ -2304,6 +2443,7 @@ fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantCo
                 http_signature_peers,
                 ssf_upstream_peers,
                 ldap_source,
+                outbound_scim_credentials,
                 fapi_message_signing_clients,
                 ipsie_https_only_clients,
                 ipsie_identity_only_clients,
@@ -2312,6 +2452,65 @@ fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantCo
         }
     }
     tenants
+}
+
+fn validate_outbound_scim_credentials(
+    tenant_index: usize,
+    tenant: Option<&TenantId>,
+    issuer: Option<&Issuer>,
+    raw: Option<Vec<RawOutboundScimCredential>>,
+    errors: &mut Collector,
+) -> Vec<crate::outbound_scim::OperatorCredential> {
+    use asterius_domain::outbound_scim::ConfigureConnector;
+    let path = format!("tenant[{tenant_index}].outbound_scim_credential");
+    let raw = raw.unwrap_or_default();
+    if raw.len() > 100 {
+        errors.problem(path, "credential catalogue exceeds 100 entries");
+        return Vec::new();
+    }
+    let Some(tenant) = tenant else {
+        return Vec::new();
+    };
+    let mut entries: Vec<crate::outbound_scim::OperatorCredential> = Vec::new();
+    for entry in raw {
+        let command = ConfigureConnector {
+            id: entry.generation,
+            expected_revision: None,
+            target_issuer: entry.target_issuer,
+            target_client: entry.target_client,
+            credential_ref: entry.reference,
+            credential_generation: entry.generation,
+            enabled: false,
+            allow_reviewed_delete: false,
+        };
+        let binding = command.binding(tenant);
+        let algorithm = SigningAlgorithm::parse(&entry.algorithm);
+        let valid = entry.key_file.is_absolute()
+            && !entry.kid.is_empty()
+            && entry.kid.len() <= 128
+            && entry
+                .kid
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+            && issuer.is_some_and(|issuer| issuer.as_str() != command.target_issuer);
+        match (binding, algorithm) {
+            (Ok(binding), Some(algorithm))
+                if valid && !entries.iter().any(|existing| existing.binding == binding) =>
+            {
+                entries.push(crate::outbound_scim::OperatorCredential {
+                    binding,
+                    algorithm,
+                    key_file: entry.key_file,
+                    kid: asterius_domain::Kid::new(entry.kid),
+                });
+            }
+            _ => errors.problem(
+                path.clone(),
+                "invalid or duplicate scoped credential configuration",
+            ),
+        }
+    }
+    entries
 }
 
 fn validate_ssf_upstream_peers(
@@ -3528,6 +3727,11 @@ pub fn declared_keys() -> BTreeMap<&'static str, Vec<String>> {
         ("mail", accepted_keys::<RawMail>()),
         ("dpop", accepted_keys::<RawDpop>()),
         ("mtls", accepted_keys::<RawMtls>()),
+        ("managed_devices", accepted_keys::<RawManagedDevices>()),
+        (
+            "managed_devices.proxy_hop",
+            accepted_keys::<RawDeviceProxyHop>(),
+        ),
         ("authzen", accepted_keys::<RawAuthzen>()),
     ]
     .into_iter()
@@ -4940,5 +5144,89 @@ mod tests {
             problems.paths().any(|p| p == "admin.issuer"),
             "{problems:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod outbound_scim_credential_tests {
+    use super::*;
+
+    fn entry() -> RawOutboundScimCredential {
+        RawOutboundScimCredential {
+            reference: "peer-key".into(),
+            generation: uuid::Uuid::from_u128(1),
+            target_issuer: "https://target.example/t/remote".into(),
+            target_client: "provisioner".into(),
+            key_file: PathBuf::from("/run/private/peer.der"),
+            kid: "peer-key-1".into(),
+            algorithm: "ES256".into(),
+        }
+    }
+
+    #[test]
+    fn operator_credentials_bind_source_tenant_without_exposing_key_path() {
+        let tenant = TenantId::new("source");
+        let issuer = Issuer::parse("https://source.example/t/source").unwrap();
+        let mut errors = Collector::default();
+        let entries = validate_outbound_scim_credentials(
+            0,
+            Some(&tenant),
+            Some(&issuer),
+            Some(vec![entry()]),
+            &mut errors,
+        );
+        assert!(errors.0.is_empty());
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].binding.source_tenant, tenant);
+        assert_eq!(
+            entries[0].binding.target_admin_resource,
+            "https://target.example/t/remote/admin/api/v1"
+        );
+        let debug = format!("{:?}", entries[0]);
+        assert!(!debug.contains("peer.der"));
+        assert!(!debug.contains("target.example"));
+    }
+
+    #[test]
+    fn same_source_issuer_relative_path_and_duplicate_context_are_refused() {
+        let tenant = TenantId::new("source");
+        let issuer = Issuer::parse("https://target.example/t/remote").unwrap();
+        let mut errors = Collector::default();
+        assert!(
+            validate_outbound_scim_credentials(
+                0,
+                Some(&tenant),
+                Some(&issuer),
+                Some(vec![entry()]),
+                &mut errors,
+            )
+            .is_empty()
+        );
+        assert!(!errors.0.is_empty());
+        let issuer = Issuer::parse("https://source.example/t/source").unwrap();
+        let mut invalid = entry();
+        invalid.key_file = PathBuf::from("peer.der");
+        let mut errors = Collector::default();
+        assert!(
+            validate_outbound_scim_credentials(
+                0,
+                Some(&tenant),
+                Some(&issuer),
+                Some(vec![invalid]),
+                &mut errors,
+            )
+            .is_empty()
+        );
+        assert!(!errors.0.is_empty());
+        let mut errors = Collector::default();
+        let entries = validate_outbound_scim_credentials(
+            0,
+            Some(&tenant),
+            Some(&issuer),
+            Some(vec![entry(), entry()]),
+            &mut errors,
+        );
+        assert_eq!(entries.len(), 1);
+        assert!(!errors.0.is_empty());
     }
 }

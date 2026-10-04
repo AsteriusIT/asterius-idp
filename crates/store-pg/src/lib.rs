@@ -9,7 +9,9 @@
 
 mod access_reviews;
 mod governance_reports;
+mod managed_devices;
 pub use governance_reports::PgGovernanceReports;
+pub use managed_devices::PgManagedDevices;
 mod admin_seed;
 mod agent_task_lifecycle;
 mod agent_task_views;
@@ -41,6 +43,7 @@ mod initial_access_tokens;
 mod invitations;
 mod key_store;
 mod keys;
+pub mod kubernetes_online;
 mod ldap_sync;
 mod native_sso;
 mod notifications;
@@ -49,7 +52,11 @@ mod oid4vp_transactions;
 mod oidc_bindings;
 mod oidc_providers;
 mod oidc_upstream_pending;
+mod outbound_scim;
 mod outbox;
+pub use outbound_scim::{
+    PgOutboundScimAdministration, PgOutboundScimJobs, PgOutboundScimLifecycle,
+};
 mod overview;
 mod passkeys;
 mod passwords;
@@ -111,7 +118,7 @@ pub use error::to_domain_error;
 pub use federation_keys::{
     FederationKeyRecord, FederationKeySnapshot, PgFederationKeys, ROTATION_PERIOD,
 };
-pub use grants::{PgGrantRepository, Revocation};
+pub use grants::{GrantAuthorityFence, PgGrantRepository, Revocation};
 pub use id_jag_redemption::{IdJagConsent, MAX_CONSENT_LIFETIME, PgIdJagRedemption};
 pub use initial_access_tokens::PgInitialAccessTokens;
 pub use invitations::{
