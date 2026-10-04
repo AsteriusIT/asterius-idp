@@ -2980,3 +2980,36 @@ Source and peer snapshots are bounded; dry run uses authenticated GETs only and
 cannot establish a mapping or target mutation. These candidate boundaries still
 require the proposed contract review and real source-to-target acceptance before
 delivery or shared enablement.
+
+
+### Approved SPIRE JWT-SVID workload subject boundary (ast-dd1y.2.6)
+
+The user approved the bounded SPIRE JWT-SVID contract on 2026-10-04. The
+operator installs public SPIFFE JSON under an exact tenant/trust/domain tuple;
+no SVID claim, matching domain name, URL or certificate enrolls a trust. Native
+SPIRE workload attestation is upstream evidence, while exact SPIFFE identity,
+HTTPS issuer, single trust audience, typed iat/exp and the 300-second lifetime
+are independently checked here. Path spelling is byte-exact; aliases and
+unregistered IDs fail. This profile supports only ES256/PS256/RS256, restricted
+JOSE headers and public jwt-svid authorities. Unknown bundle uses do not authorize
+JWT verification; malformed, duplicate or private key material is refused.
+
+A JWT-SVID remains a bearer subject assertion. Independent confidential OAuth
+client authentication and DPoP are required before exchange and API access.
+Durable assertion consumption, policy intersection and a final locked trust
+revision prevent replay, scope/resource/action widening and stale trusted-key
+issuance. Empty bundles revoke issuance. The bundle sequence floor survives
+trust deletion/recreation and cannot be omitted after first installation;
+equal sequence with changed content fails. Operator writes serialize this
+history with the existing tenant workload-trust administration lock. Trusts
+without an upstream sequence have no upstream ordering guarantee.
+
+Static bundle delivery has no automatic remote revocation bound. Removal of
+upstream workload registration leaves already-issued SVIDs usable until signed
+expiry, at most 300 seconds from iat. Children cannot outlive that expiry.
+Compromised upstream signing keys remain trusted until the operator removes
+installed authority or disables the trust; offline access tokens retain their
+existing resource-server expiry/revocation semantics. Source provenance retains
+the exact SPIFFE domain/ID and provider without storing raw SVIDs. X.509-SVID
+client authentication, automatic federation, bundle URLs and Workload API
+watchers are outside this adapter.

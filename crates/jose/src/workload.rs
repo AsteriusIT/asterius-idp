@@ -144,6 +144,26 @@ impl std::fmt::Debug for Parsed<'_> {
 impl<'a> Parsed<'a> {
     // fuzz-target: workload_token
     pub fn parse(token: &'a str) -> Result<Self, Invalid> {
+        Self::parse_profile(token, false)
+    }
+
+    /// SPIFFE header and subject rules apply only to the explicitly selected provider.
+    // fuzz-target: workload_token
+    pub fn parse_spiffe(token: &'a str) -> Result<Self, Invalid> {
+        let parsed = Self::parse_profile(token, true)?;
+        if parsed.algorithm == Algorithm::EdDSA
+            || parsed
+                .payload
+                .get("sub")
+                .and_then(Value::as_str)
+                .is_none_or(|id| asterius_domain::workload::spiffe_domain(id).is_none())
+        {
+            return Err(Invalid);
+        }
+        Ok(parsed)
+    }
+
+    fn parse_profile(token: &'a str, spiffe: bool) -> Result<Self, Invalid> {
         if token.is_empty() || token.len() > MAX_ASSERTION_BYTES {
             return Err(Invalid);
         }
@@ -153,13 +173,11 @@ impl<'a> Parsed<'a> {
         };
         let header = strict(&B64.decode(header).map_err(|_| Invalid)?, 1024, 1024)?;
         let header = header.as_object().ok_or(Invalid)?;
-        if header
-            .keys()
-            .any(|key| !matches!(key.as_str(), "alg" | "kid" | "typ" | "x5t"))
-            || header
-                .get("typ")
-                .is_some_and(|typ| typ.as_str() != Some("JWT"))
-        {
+        if header.keys().any(|key| {
+            !(matches!(key.as_str(), "alg" | "kid" | "typ") || (key == "x5t" && !spiffe))
+        }) || header.get("typ").is_some_and(|typ| {
+            typ.as_str() != Some("JWT") && !(spiffe && typ.as_str() == Some("JOSE"))
+        }) {
             return Err(Invalid);
         }
         // GitHub supplies this RFC 7515 metadata. It never selects a key or
@@ -185,8 +203,17 @@ impl<'a> Parsed<'a> {
         let payload = strict(
             &B64.decode(payload).map_err(|_| Invalid)?,
             MAX_CLAIMS_BYTES,
-            1024,
+            if spiffe { 2048 } else { 1024 },
         )?;
+        if spiffe {
+            let object = payload.as_object().ok_or(Invalid)?;
+            if object
+                .iter()
+                .any(|(key, value)| key != "sub" && !bounded_claim_strings(value))
+            {
+                return Err(Invalid);
+            }
+        }
         let issuer = payload
             .get("iss")
             .and_then(Value::as_str)
@@ -238,6 +265,7 @@ impl<'a> Parsed<'a> {
         now: OffsetDateTime,
     ) -> Result<OffsetDateTime, Invalid> {
         if !config.algorithms.contains(&self.algorithm)
+            || (config.provider == Provider::Spiffe && Self::parse_spiffe(self.token).is_err())
             || (self.certificate_thumbprint && config.provider != Provider::Github)
             || !keys.verifies(
                 &self.kid,
@@ -257,6 +285,7 @@ impl<'a> Parsed<'a> {
         let limit = match config.provider {
             Provider::Kubernetes => 3600,
             Provider::Github => 600,
+            Provider::Spiffe => 300,
         };
         let now = now.unix_timestamp();
         if issuer != config.issuer
@@ -317,6 +346,19 @@ impl std::fmt::Debug for KeySet {
     }
 }
 impl KeySet {
+    /// Public SPIFFE authorities are validated before projection into JOSE keys.
+    pub fn for_config(config: &Config) -> Result<Self, Invalid> {
+        match &config.keys {
+            asterius_domain::workload::Keys::Inline { jwks } => Self::parse(
+                &serde_json::to_vec(jwks).map_err(|_| Invalid)?,
+                &config.algorithms,
+            ),
+            asterius_domain::workload::Keys::SpiffeBundle { bundle, .. } => {
+                SpiffeBundle::parse(bundle.as_bytes(), &config.algorithms).map(|bundle| bundle.keys)
+            }
+            asterius_domain::workload::Keys::Remote { .. } => Err(Invalid),
+        }
+    }
     // fuzz-target: workload_token
     pub fn parse(bytes: &[u8], algorithms: &BTreeSet<Algorithm>) -> Result<Self, Invalid> {
         let document = strict(bytes, MAX_JWKS_BYTES, 8192)?;
@@ -407,6 +449,116 @@ impl KeySet {
             })
     }
 }
+
+fn bounded_claim_strings(value: &Value) -> bool {
+    match value {
+        Value::String(value) => value.len() <= 1024,
+        Value::Array(values) => values.iter().all(bounded_claim_strings),
+        Value::Object(values) => values.values().all(bounded_claim_strings),
+        _ => true,
+    }
+}
+
+/// A bounded SPIFFE bundle, including empty revocation snapshots.
+#[derive(Debug)]
+pub struct SpiffeBundle {
+    pub keys: KeySet,
+    pub sequence: Option<u64>,
+    /// Canonical complete bundle bytes; sequence equality must not hide changes.
+    pub canonical: Vec<u8>,
+}
+impl SpiffeBundle {
+    // fuzz-target: workload_token
+    pub fn parse(bytes: &[u8], algorithms: &BTreeSet<Algorithm>) -> Result<Self, Invalid> {
+        if algorithms.is_empty() || algorithms.contains(&Algorithm::EdDSA) {
+            return Err(Invalid);
+        }
+        let document = strict(bytes, MAX_JWKS_BYTES, 8192)?;
+        let object = document.as_object().ok_or(Invalid)?;
+        if object.keys().any(|key| {
+            !matches!(
+                key.as_str(),
+                "keys" | "spiffe_sequence" | "spiffe_refresh_hint"
+            )
+        }) {
+            return Err(Invalid);
+        }
+        let sequence = object
+            .get("spiffe_sequence")
+            .map(|value| value.as_u64().ok_or(Invalid))
+            .transpose()?;
+        if object
+            .get("spiffe_refresh_hint")
+            .is_some_and(|value| value.as_u64().is_none())
+        {
+            return Err(Invalid);
+        }
+        let entries = object
+            .get("keys")
+            .and_then(Value::as_array)
+            .filter(|keys| keys.len() <= MAX_KEYS)
+            .ok_or(Invalid)?;
+        let mut kids = BTreeSet::new();
+        let mut projected = Vec::new();
+        for value in entries {
+            let key = value.as_object().ok_or(Invalid)?;
+            if has_private_members(key) {
+                return Err(Invalid);
+            }
+            if let Some(kid) = key.get("kid") {
+                let kid = kid
+                    .as_str()
+                    .filter(|kid| {
+                        !kid.is_empty() && kid.len() <= 128 && !kid.chars().any(char::is_control)
+                    })
+                    .ok_or(Invalid)?;
+                if !kids.insert(kid) {
+                    return Err(Invalid);
+                }
+            }
+            if key.get("use").and_then(Value::as_str) != Some("jwt-svid") {
+                continue;
+            }
+            if !key.contains_key("kid") {
+                return Err(Invalid);
+            }
+            let mut key = key.clone();
+            key.insert("use".to_owned(), Value::String("sig".to_owned()));
+            projected.push(Value::Object(key));
+        }
+        let keys = if projected.is_empty() {
+            KeySet {
+                keys: Vec::new(),
+                fingerprints: Vec::new(),
+            }
+        } else {
+            KeySet::parse(
+                &serde_json::to_vec(&serde_json::json!({"keys":projected})).map_err(|_| Invalid)?,
+                algorithms,
+            )?
+        };
+        Ok(Self {
+            keys,
+            sequence,
+            canonical: serde_json::to_vec(&document).map_err(|_| Invalid)?,
+        })
+    }
+
+    pub fn follows(
+        &self,
+        previous_sequence: Option<u64>,
+        previous_canonical: &[u8],
+    ) -> Result<(), Invalid> {
+        if let Some(old) = previous_sequence
+            && !self.sequence.is_some_and(|new| {
+                new > old || (new == old && self.canonical == previous_canonical)
+            })
+        {
+            return Err(Invalid);
+        }
+        Ok(())
+    }
+}
 fn local_algorithm(algorithm: Algorithm) -> SigningAlgorithm {
     match algorithm {
         Algorithm::ES256 => SigningAlgorithm::Es256,
@@ -453,6 +605,111 @@ fn valid_key(algorithm: Algorithm, key: &Map<String, Value>) -> bool {
         // RS256 signature verification uses the isolated upstream helper only.
     }
     verifying_key(local_algorithm(algorithm), key).is_some()
+}
+
+#[cfg(test)]
+mod spiffe_tests {
+    use super::*;
+    use crate::{SigningKey, jws};
+    use asterius_domain::workload::Keys;
+    use asterius_domain::{Kid, TenantId};
+    use serde_json::json;
+    const NOW: i64 = 1_790_000_000;
+
+    fn fixture() -> (SigningKey, Config, Value) {
+        let key = SigningKey::generate(SigningAlgorithm::Es256).expect("key");
+        let mut public = key.public_jwk().expect("public");
+        public["kid"] = json!("one");
+        public["use"] = json!("jwt-svid");
+        let config: Config = serde_json::from_value(json!({
+            "issuer":"https://spire.example.test","audience":"urn:asterius:workload:acme:inventory",
+            "subject":"spiffe://example.test/inventory","provider":"spiffe","principal":"workload:inventory",
+            "clients":["client-one"],"scopes":["inventory:read"],"resources":["https://api.example/"],
+            "actions":["read"],"required_claims":{},"algorithms":["ES256"],"enabled":true,
+            "keys":{"kind":"spiffe_bundle","trust_domain":"example.test","bundle":json!({"keys":[public],"spiffe_sequence":1}).to_string()}
+        })).expect("config");
+        let claims = json!({"iss":config.issuer,"sub":config.subject,"aud":[config.audience],"iat":NOW,"exp":NOW+300});
+        (key, config, claims)
+    }
+
+    #[test]
+    fn spiffe_jose_type_works_only_for_explicit_spiffe_and_exact_claims() {
+        let (key, config, claims) = fixture();
+        assert!(config.validate(&TenantId::new("acme"), "inventory").is_ok());
+        let keys = KeySet::for_config(&config).expect("keys");
+        let now = OffsetDateTime::from_unix_timestamp(NOW).expect("time");
+        let token = jws::sign(&key, &Kid::new("one"), "JOSE", &claims).expect("SVID");
+        assert!(Parsed::parse(token.as_str()).is_err());
+        assert!(
+            Parsed::parse_spiffe(token.as_str())
+                .expect("parsed")
+                .verify(&config, &keys, now)
+                .is_ok()
+        );
+        for (field, value) in [
+            ("sub", json!("spiffe://other.test/inventory")),
+            ("iss", json!("https://other.test")),
+            ("aud", json!([config.audience, "other"])),
+            ("iat", json!(NOW - 301)),
+            ("iat", json!(NOW + 31)),
+            ("iat", Value::Null),
+            ("exp", json!(NOW)),
+            ("exp", json!(NOW + 301)),
+        ] {
+            let mut bad = claims.clone();
+            bad[field] = value;
+            let token = jws::sign(&key, &Kid::new("one"), "JOSE", &bad).expect("SVID");
+            assert!(
+                Parsed::parse_spiffe(token.as_str())
+                    .and_then(|parsed| parsed.verify(&config, &keys, now))
+                    .is_err(),
+                "{field}"
+            );
+        }
+    }
+
+    #[test]
+    fn spiffe_bundle_rotation_empty_snapshot_and_ordering_fail_closed() {
+        let (_, config, _) = fixture();
+        let Keys::SpiffeBundle { bundle, .. } = &config.keys else {
+            panic!("bundle");
+        };
+        let old = SpiffeBundle::parse(bundle.as_bytes(), &config.algorithms).expect("bundle");
+        assert!(old.follows(old.sequence, &old.canonical).is_ok());
+        let removed =
+            SpiffeBundle::parse(br#"{"keys":[],"spiffe_sequence":2}"#, &config.algorithms)
+                .expect("revocation");
+        assert!(!removed.keys.contains("one"));
+        assert!(removed.follows(old.sequence, &old.canonical).is_ok());
+        assert!(old.follows(removed.sequence, &removed.canonical).is_err());
+        for bytes in [
+            br#"{"keys":[],"spiffe_sequence":1}"#.as_slice(),
+            br#"{"keys":[]}"#,
+        ] {
+            let bad = SpiffeBundle::parse(bytes, &config.algorithms).expect("snapshot");
+            assert!(bad.follows(old.sequence, &old.canonical).is_err());
+        }
+        for bytes in [
+            br#"{"keys":[],"keys":[]}"#.as_slice(),
+            br#"{"keys":[],"spiffe_sequence":-1}"#,
+            br#"{"keys":[],"spiffe_sequence":1.0}"#,
+            br#"{"keys":[],"unknown":true}"#,
+        ] {
+            assert!(SpiffeBundle::parse(bytes, &config.algorithms).is_err());
+        }
+        let mut document: Value = serde_json::from_str(bundle).expect("bundle");
+        document["keys"][0]["use"] = json!("sig");
+        assert!(
+            SpiffeBundle::parse(document.to_string().as_bytes(), &config.algorithms)
+                .expect("unknown-use")
+                .keys
+                .fingerprints()
+                .is_empty()
+        );
+        document["keys"][0]["use"] = json!("jwt-svid");
+        document["keys"][0]["d"] = json!("private");
+        assert!(SpiffeBundle::parse(document.to_string().as_bytes(), &config.algorithms).is_err());
+    }
 }
 
 #[cfg(test)]

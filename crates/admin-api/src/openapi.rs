@@ -217,6 +217,7 @@ fn operation_object(operation: &Operation) -> Value {
     invitation_documentation(operation, &mut object);
     agent_task_documentation(operation, &mut object);
     theme_documentation(operation, &mut object);
+    workload_documentation(operation, &mut object);
     if let Some(request_body) = group_request_body(operation) {
         object["requestBody"] = request_body;
     }
@@ -528,6 +529,44 @@ fn agent_task_documentation(operation: &Operation, object: &mut Value) {
     object["description"] = json!(
         "Tenant-local public identifiers only, no user names, emails, raw credentials or private JTIs. No-store current read-only snapshot independent of recorded audit. Withdrawal uses the existing owner-bound grant endpoint and admin.grants:write, with offline signed-expiry limits."
     );
+}
+
+fn workload_documentation(operation: &Operation, object: &mut Value) {
+    if !operation.id().starts_with("workload.trusts.") {
+        return;
+    }
+    object["description"] = json!(
+        "Tenant-scoped operator-pinned Kubernetes, GitHub or explicitly approved SPIFFE JWT-SVID subject trust. SPIFFE requires a canonical exact domain/ID, independent confidential OAuth client authentication, DPoP, and operator-installed public jwt-svid authorities. A SVID is never OAuth client authentication. Static bundle delivery has no automatic remote revocation bound; accepted SVID and child expiry are bounded to 300 seconds. Empty SPIFFE bundles revoke issuance; recorded upstream sequence cannot roll back or disappear, including across trust deletion/recreation. Reads omit raw bundles and assertions."
+    );
+    if operation.id() == crate::WORKLOAD_TRUST_PUT_ID {
+        let keys = json!({"oneOf":[
+            {"type":"object","additionalProperties":false,"required":["kind","jwks"],"properties":{"kind":{"const":"inline"},"jwks":{"type":"object"}}},
+            {"type":"object","additionalProperties":false,"required":["kind","uri"],"properties":{"kind":{"const":"remote"},"uri":{"type":"string","format":"uri","maxLength":2048}}},
+            {"type":"object","additionalProperties":false,"required":["kind","trust_domain","bundle"],"properties":{"kind":{"const":"spiffe_bundle"},"trust_domain":{"type":"string","maxLength":255},"bundle":{"type":"string","maxLength":65536,"description":"Raw SPIFFE JSON preserves duplicate-key rejection; public-only keys with use=jwt-svid; <=16 total entries"}}}
+        ]});
+        object["requestBody"] = json!({"required":true,"content":{"application/json":{"schema":{
+            "type":"object","additionalProperties":false,"required":["config"],
+            "properties":{"expected_version":{"type":["integer","null"],"minimum":1},"config":{
+                "type":"object","additionalProperties":false,
+                "required":["issuer","audience","subject","provider","principal","clients","scopes","resources","actions","required_claims","algorithms","keys"],
+                "properties":{
+                    "issuer":{"type":"string","maxLength":1024,"format":"uri"},
+                    "audience":{"type":"string","description":"Exact urn:asterius:workload:<tenant>:<trust-id>"},
+                    "subject":{"type":"string","maxLength":2048,"description":"SPIFFE: exact lowercase canonical scheme/domain, byte-exact path; other providers at most1024 bytes"},
+                    "provider":{"type":"string","enum":["kubernetes","github","spiffe"]},
+                    "principal":{"type":"string","pattern":"^workload:[a-z0-9][a-z0-9_-]{0,62}$"},
+                    "clients":{"type":"array","minItems":1,"maxItems":16,"uniqueItems":true,"items":{"type":"string","maxLength":512}},
+                    "scopes":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"string","maxLength":128}},
+                    "resources":{"type":"array","minItems":1,"maxItems":16,"uniqueItems":true,"items":{"type":"string","format":"uri"}},
+                    "actions":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"string","maxLength":128}},
+                    "required_claims":{"type":"object","maxProperties":32,"additionalProperties":{"type":"string","maxLength":1024},"description":"Provider-specific exact pins; empty for SPIFFE"},
+                    "algorithms":{"type":"array","minItems":1,"uniqueItems":true,"items":{"enum":["RS256","PS256","ES256","EdDSA"]},"description":"SPIFFE subset excludes EdDSA"},
+                    "enabled":{"type":"boolean","default":false},
+                    "keys": keys
+                }
+            }}
+        }}}});
+    }
 }
 
 fn invitation_documentation(operation: &Operation, object: &mut Value) {

@@ -24622,6 +24622,7 @@
     },
     "/admin/api/v1/workload-trusts": {
       "get": {
+        "description": "Tenant-scoped operator-pinned Kubernetes, GitHub or explicitly approved SPIFFE JWT-SVID subject trust. SPIFFE requires a canonical exact domain/ID, independent confidential OAuth client authentication, DPoP, and operator-installed public jwt-svid authorities. A SVID is never OAuth client authentication. Static bundle delivery has no automatic remote revocation bound; accepted SVID and child expiry are bounded to 300 seconds. Empty SPIFFE bundles revoke issuance; recorded upstream sequence cannot roll back or disappear, including across trust deletion/recreation. Reads omit raw bundles and assertions.",
         "operationId": "workload.trusts.list",
         "responses": {
           "200": {
@@ -24692,6 +24693,7 @@
     },
     "/admin/api/v1/workload-trusts/{trust_id}": {
       "delete": {
+        "description": "Tenant-scoped operator-pinned Kubernetes, GitHub or explicitly approved SPIFFE JWT-SVID subject trust. SPIFFE requires a canonical exact domain/ID, independent confidential OAuth client authentication, DPoP, and operator-installed public jwt-svid authorities. A SVID is never OAuth client authentication. Static bundle delivery has no automatic remote revocation bound; accepted SVID and child expiry are bounded to 300 seconds. Empty SPIFFE bundles revoke issuance; recorded upstream sequence cannot roll back or disappear, including across trust deletion/recreation. Reads omit raw bundles and assertions.",
         "operationId": "workload.trusts.delete",
         "parameters": [
           {
@@ -24780,6 +24782,7 @@
         "x-asterius-scope": "admin.workload_trusts:write"
       },
       "get": {
+        "description": "Tenant-scoped operator-pinned Kubernetes, GitHub or explicitly approved SPIFFE JWT-SVID subject trust. SPIFFE requires a canonical exact domain/ID, independent confidential OAuth client authentication, DPoP, and operator-installed public jwt-svid authorities. A SVID is never OAuth client authentication. Static bundle delivery has no automatic remote revocation bound; accepted SVID and child expiry are bounded to 300 seconds. Empty SPIFFE bundles revoke issuance; recorded upstream sequence cannot roll back or disappear, including across trust deletion/recreation. Reads omit raw bundles and assertions.",
         "operationId": "workload.trusts.read",
         "parameters": [
           {
@@ -24858,6 +24861,7 @@
         "x-asterius-scope": "admin.workload_trusts:read"
       },
       "put": {
+        "description": "Tenant-scoped operator-pinned Kubernetes, GitHub or explicitly approved SPIFFE JWT-SVID subject trust. SPIFFE requires a canonical exact domain/ID, independent confidential OAuth client authentication, DPoP, and operator-installed public jwt-svid authorities. A SVID is never OAuth client authentication. Static bundle delivery has no automatic remote revocation bound; accepted SVID and child expiry are bounded to 300 seconds. Empty SPIFFE bundles revoke issuance; recorded upstream sequence cannot roll back or disappear, including across trust deletion/recreation. Reads omit raw bundles and assertions.",
         "operationId": "workload.trusts.put",
         "parameters": [
           {
@@ -24869,6 +24873,201 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "config": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "actions": {
+                        "items": {
+                          "maxLength": 128,
+                          "type": "string"
+                        },
+                        "maxItems": 64,
+                        "type": "array",
+                        "uniqueItems": true
+                      },
+                      "algorithms": {
+                        "description": "SPIFFE subset excludes EdDSA",
+                        "items": {
+                          "enum": [
+                            "RS256",
+                            "PS256",
+                            "ES256",
+                            "EdDSA"
+                          ]
+                        },
+                        "minItems": 1,
+                        "type": "array",
+                        "uniqueItems": true
+                      },
+                      "audience": {
+                        "description": "Exact urn:asterius:workload:<tenant>:<trust-id>",
+                        "type": "string"
+                      },
+                      "clients": {
+                        "items": {
+                          "maxLength": 512,
+                          "type": "string"
+                        },
+                        "maxItems": 16,
+                        "minItems": 1,
+                        "type": "array",
+                        "uniqueItems": true
+                      },
+                      "enabled": {
+                        "default": false,
+                        "type": "boolean"
+                      },
+                      "issuer": {
+                        "format": "uri",
+                        "maxLength": 1024,
+                        "type": "string"
+                      },
+                      "keys": {
+                        "oneOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "jwks": {
+                                "type": "object"
+                              },
+                              "kind": {
+                                "const": "inline"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "jwks"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "kind": {
+                                "const": "remote"
+                              },
+                              "uri": {
+                                "format": "uri",
+                                "maxLength": 2048,
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "uri"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "bundle": {
+                                "description": "Raw SPIFFE JSON preserves duplicate-key rejection; public-only keys with use=jwt-svid; <=16 total entries",
+                                "maxLength": 65536,
+                                "type": "string"
+                              },
+                              "kind": {
+                                "const": "spiffe_bundle"
+                              },
+                              "trust_domain": {
+                                "maxLength": 255,
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "trust_domain",
+                              "bundle"
+                            ],
+                            "type": "object"
+                          }
+                        ]
+                      },
+                      "principal": {
+                        "pattern": "^workload:[a-z0-9][a-z0-9_-]{0,62}$",
+                        "type": "string"
+                      },
+                      "provider": {
+                        "enum": [
+                          "kubernetes",
+                          "github",
+                          "spiffe"
+                        ],
+                        "type": "string"
+                      },
+                      "required_claims": {
+                        "additionalProperties": {
+                          "maxLength": 1024,
+                          "type": "string"
+                        },
+                        "description": "Provider-specific exact pins; empty for SPIFFE",
+                        "maxProperties": 32,
+                        "type": "object"
+                      },
+                      "resources": {
+                        "items": {
+                          "format": "uri",
+                          "type": "string"
+                        },
+                        "maxItems": 16,
+                        "minItems": 1,
+                        "type": "array",
+                        "uniqueItems": true
+                      },
+                      "scopes": {
+                        "items": {
+                          "maxLength": 128,
+                          "type": "string"
+                        },
+                        "maxItems": 64,
+                        "type": "array",
+                        "uniqueItems": true
+                      },
+                      "subject": {
+                        "description": "SPIFFE: exact lowercase canonical scheme/domain, byte-exact path; other providers at most1024 bytes",
+                        "maxLength": 2048,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "issuer",
+                      "audience",
+                      "subject",
+                      "provider",
+                      "principal",
+                      "clients",
+                      "scopes",
+                      "resources",
+                      "actions",
+                      "required_claims",
+                      "algorithms",
+                      "keys"
+                    ],
+                    "type": "object"
+                  },
+                  "expected_version": {
+                    "minimum": 1,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "config"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {

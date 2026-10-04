@@ -58,9 +58,8 @@ impl ExternalWorkloads {
         now: OffsetDateTime,
     ) -> Result<Arc<KeySet>, DomainError> {
         match &trust.config.keys {
-            Keys::Inline { jwks } => {
-                let encoded = serde_json::to_vec(jwks).map_err(|_| invalid())?;
-                return KeySet::parse(&encoded, &trust.config.algorithms)
+            Keys::Inline { .. } | Keys::SpiffeBundle { .. } => {
+                return KeySet::for_config(&trust.config)
                     .map(Arc::new)
                     .map_err(|_| invalid());
             }
@@ -135,10 +134,17 @@ impl ExternalWorkloads {
         token: &str,
         now: OffsetDateTime,
     ) -> Result<Verified, DomainError> {
-        let parsed = Parsed::parse(token).map_err(|_| invalid())?;
-        let trusts = self.registry.candidates(tenant, parsed.issuer()).await?;
+        let issuer = asterius_jose::workload::issuer_hint(token).map_err(|_| invalid())?;
+        let trusts = self.registry.candidates(tenant, &issuer).await?;
         let mut selected = None;
         for trust in trusts {
+            let parsed = match trust.config.provider {
+                asterius_domain::workload::Provider::Spiffe => Parsed::parse_spiffe(token),
+                _ => Parsed::parse(token),
+            };
+            let Ok(parsed) = parsed else {
+                continue;
+            };
             if trust.tenant != *tenant
                 || !trust.config.enabled
                 || !trust.config.clients.contains(client.as_str())
@@ -163,6 +169,11 @@ impl ExternalWorkloads {
                 tenant: tenant.clone(),
                 trust_id: trust.id,
                 trust_version: trust.version,
+                source_subject: trust.config.subject.clone(),
+                trust_domain: match &trust.config.keys {
+                    Keys::SpiffeBundle { trust_domain, .. } => Some(trust_domain.clone()),
+                    _ => None,
+                },
                 principal: trust.config.principal,
                 expires_at,
                 digest: Sha256::digest(token.as_bytes()).into(),
@@ -192,6 +203,19 @@ impl Verifier for ExternalWorkloads {
         let detail = match &result {
             Ok(verified) => Detail::new()
                 .text("trust_id", &verified.trust_id)
+                .text("source_subject", &verified.source_subject)
+                .text(
+                    "trust_domain",
+                    verified.trust_domain.as_deref().unwrap_or(""),
+                )
+                .label(
+                    "provider",
+                    match verified.provider {
+                        asterius_domain::workload::Provider::Kubernetes => "kubernetes",
+                        asterius_domain::workload::Provider::Github => "github",
+                        asterius_domain::workload::Provider::Spiffe => "spiffe",
+                    },
+                )
                 .number("version", verified.trust_version),
             Err(_) => Detail::new(),
         };
@@ -409,6 +433,51 @@ mod tests {
                 enabled: true,
             },
         }
+    }
+
+    #[tokio::test]
+    async fn spiffe_jose_subject_uses_only_its_domain_bundle_and_never_remote_fetch() {
+        let key = SigningKey::generate(SigningAlgorithm::Es256).expect("key");
+        let mut public = key.public_jwk().expect("public");
+        public["kid"] = json!("svid-one");
+        public["use"] = json!("jwt-svid");
+        let bundle = json!({"keys":[public],"spiffe_sequence":1});
+        let mut row = trust(Keys::SpiffeBundle {
+            trust_domain: "example.test".to_owned(),
+            bundle: bundle.to_string(),
+        });
+        row.config.provider = Provider::Spiffe;
+        row.config.subject = "spiffe://example.test/inventory".to_owned();
+        row.config.algorithms = [Algorithm::ES256].into();
+        row.config.required_claims.clear();
+        let token = jws::sign(&key, &Kid::new("svid-one"), "JOSE", &json!({
+            "iss":row.config.issuer,"sub":row.config.subject,"aud":row.config.audience,"iat":NOW,"exp":NOW+300
+        })).expect("SVID");
+        let (verifier, registry, fetch, _) = verifier(row, &bundle);
+        let tenant = TenantId::new("acme");
+        let client = ClientId::new("client-one");
+        let identity = verifier
+            .verify(&tenant, &client, token.as_str(), at(0))
+            .await
+            .expect("verified");
+        assert_eq!(identity.provider, Provider::Spiffe);
+        assert_eq!(identity.trust_domain.as_deref(), Some("example.test"));
+        assert_eq!(identity.source_subject, "spiffe://example.test/inventory");
+        {
+            let mut rows = registry.0.write().expect("registry");
+            rows[0].version += 1;
+            rows[0].config.keys = Keys::SpiffeBundle {
+                trust_domain: "example.test".to_owned(),
+                bundle: json!({"keys":[],"spiffe_sequence":2}).to_string(),
+            };
+        }
+        assert!(
+            verifier
+                .verify(&tenant, &client, token.as_str(), at(0))
+                .await
+                .is_err()
+        );
+        assert_eq!(fetch.calls.load(Ordering::SeqCst), 0);
     }
     fn verifier(
         trust: Trust,

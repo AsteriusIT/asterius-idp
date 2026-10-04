@@ -12,6 +12,10 @@ fuzz_target!(|bytes: &[u8]| {
     .into_iter()
     .collect();
     if bytes.len() <= 65536 {
+        let spiffe_algorithms = [Algorithm::RS256, Algorithm::PS256, Algorithm::ES256]
+            .into_iter()
+            .collect();
+        let _ = asterius_jose::workload::SpiffeBundle::parse(bytes, &spiffe_algorithms);
         if let Ok(config) = serde_json::from_slice::<asterius_domain::workload::Config>(bytes) {
             let _ = config.validate(&asterius_domain::TenantId::new("fuzz"), "source");
         }
@@ -29,6 +33,8 @@ fuzz_target!(|bytes: &[u8]| {
     }
     if let Ok(token) = std::str::from_utf8(bytes) {
         let _ = asterius_jose::workload::issuer_hint(token);
+        let _ = asterius_jose::workload::Parsed::parse_spiffe(token);
+        let _ = asterius_domain::workload::spiffe_domain(token);
     }
     if let Ok(token) = std::str::from_utf8(bytes)
         && let Ok(parsed) = asterius_jose::workload::Parsed::parse(token)
