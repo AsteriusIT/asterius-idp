@@ -177,6 +177,10 @@ impl PgSsfReceiver {
         notifications: &dyn ReceiverNotificationPreparer,
     ) -> Result<ReceiverOutcome, DomainError> {
         let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
+        if action == ReceiverAction::AccountDisabled {
+            crate::users::PgUserRepository::lifecycle_fence_on(&mut transaction, &self.tenant)
+                .await?;
+        }
         let duplicate: bool = sqlx::query_scalar(
             "select exists(
                  select 1 from ssf_receiver_events

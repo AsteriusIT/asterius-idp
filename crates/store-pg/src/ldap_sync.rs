@@ -134,6 +134,8 @@ impl PgLdapSync {
             }
         }
         let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
+        // Lifecycle and group changes take the issuance fence before source/user locks.
+        crate::users::PgUserRepository::lifecycle_fence_on(&mut tx, tenant).await?;
         // A per-tenant run lock also serializes concurrent command invocations.
         sqlx::query("select pg_advisory_xact_lock(hashtext($1), 198541)")
             .bind(tenant.as_str())

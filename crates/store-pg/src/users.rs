@@ -153,6 +153,23 @@ impl Row {
 }
 
 impl PgUserRepository {
+    /// Serialize lifecycle writes with final issuance before locking a user.
+    /// The caller keeps this tenant lock through commit on the same connection.
+    /// An inactive tenant remains writable for cleanup; absence is refused.
+    pub(crate) async fn lifecycle_fence_on(
+        connection: &mut sqlx::PgConnection,
+        tenant: &TenantId,
+    ) -> Result<(), DomainError> {
+        let found: Option<String> = sqlx::query_scalar(
+            "select tenant_id from tenants where tenant_id = $1 for no key update",
+        )
+        .bind(tenant.as_str())
+        .fetch_optional(connection)
+        .await
+        .map_err(to_domain_error)?;
+        found.ok_or(DomainError::NotFound).map(|_| ())
+    }
+
     /// Conditionally replaces the approved SCIM profile and external ID.
     /// The revision predicate and both writes share one transaction.
     pub async fn scim_replace_profile(
@@ -166,6 +183,7 @@ impl PgUserRepository {
             ));
         }
         let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
+        Self::lifecycle_fence_on(&mut tx, &self.tenant).await?;
         let previous_status: Option<String> = sqlx::query_scalar(
             "select status from users where tenant_id = $1 and user_id = $2 for update",
         )
@@ -278,6 +296,7 @@ impl PgUserRepository {
     /// in the same transaction. Repeating a disable never queues a second set.
     pub async fn disable_with_provider_commands(&self, user: UserId) -> Result<(), DomainError> {
         let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
+        Self::lifecycle_fence_on(&mut tx, &self.tenant).await?;
         let previous: Option<String> = sqlx::query_scalar(
             "select status from users where tenant_id = $1 and user_id = $2 for update",
         )
@@ -935,6 +954,8 @@ impl PgUserRepository {
         }
         let claims = serde_json::to_value(&user.claims)
             .map_err(|e| DomainError::invalid("claims", e.to_string()))?;
+        let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
+        Self::lifecycle_fence_on(&mut tx, &self.tenant).await?;
         sqlx::query!(
             "insert into users (tenant_id, user_id, username, email, email_verified,
                                 status, claims)
@@ -953,10 +974,10 @@ impl PgUserRepository {
             user.status.as_str(),
             claims
         )
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
-        .map(|_| ())
-        .map_err(to_domain_error)
+        .map_err(to_domain_error)?;
+        tx.commit().await.map_err(to_domain_error)
     }
 
     /// Turns a proved address into OIDC Core §5.1's `email_verified`
@@ -1023,18 +1044,20 @@ impl PgUserRepository {
     /// Returns [`DomainError::NotFound`] when there was no such user, or a
     /// storage error.
     pub async fn delete(&self, id: UserId) -> Result<(), DomainError> {
+        let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
+        Self::lifecycle_fence_on(&mut tx, &self.tenant).await?;
         let result = sqlx::query!(
             "delete from users where tenant_id = $1 and user_id = $2",
             self.tenant.as_str(),
             id.as_uuid()
         )
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(to_domain_error)?;
         if result.rows_affected() == 0 {
             return Err(DomainError::NotFound);
         }
-        Ok(())
+        tx.commit().await.map_err(to_domain_error)
     }
 
     /// The `sub` this user is known by in `sector`, minting it if this is the
@@ -1479,3 +1502,7 @@ mod scim_security_tests {
         pool.close().await;
     }
 }
+
+#[cfg(test)]
+#[path = "users_lifecycle_tests.rs"]
+mod lifecycle_tests;
