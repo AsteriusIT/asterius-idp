@@ -1,6 +1,6 @@
 {
   "ticket": "ast-dd1y.6.3",
-  "status": "partial_runtime_diagnostics_not_completion",
+  "status": "historical_diagnostics_resolved_by_owned116_runtime_pending_review",
   "normative_review": "pending",
   "isolated_owned_resources_only": true,
   "shared_runtime_serve_funnel_resolver_changed": false,
@@ -47,5 +47,6 @@
       "all_owned_containers_databases_and_diagnostic_metadata_cleaned": true
     }
   ],
-  "remaining": "Rerun complete owned matrix with corrected composed UUID-authority runtime; include scoped retirement capability, ordinary DELETE metadata retention, late old externalId denial, same-email fresh generation and group response-loss recovery."
+  "remaining": "Normative human review and orchestrator delivery gates; complete owned116 runtime matrix passed29 controls with UUID authority generations.",
+  "resolved_by_receipt": "runtime-acceptance-2026-10-04.json"
 }

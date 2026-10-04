@@ -96,8 +96,12 @@ creates and removes its own schema-cloned database. It checks source producers,
 coalescing, bounds, tenant cleanup, reserved late-create fences and actual
 concurrent delete/create serialization. It copies no source accounts/secrets.
 This SQL smoke does not prove OAuth/DPoP interoperability. The real acceptance
-matrix is `scripts/outbound-scim/acceptance-matrix.json`; it remains unexecuted
-until the owned first-target fixture and targeted final verification are run.
+matrix is `scripts/outbound-scim/acceptance-matrix.json`. The owned116-migration
+run passed 29 actual HTTP/browser controls; the exact binary, executed checks,
+cleanup and limitations are recorded in
+`scripts/outbound-scim/runtime-acceptance-2026-10-04.json`. The broader planned
+case list retains its independent SQL/unit/CI coverage requirements. Candidate
+runtime validation does not replace the pending human contract review.
 
 ## Proposed retirement email handling
 
