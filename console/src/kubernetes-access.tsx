@@ -67,7 +67,7 @@ export function KubernetesAccess({session}: {session:Session}):JSX.Element {
 function ClusterDetail({session,cluster,onBack}:{session:Session;cluster:Cluster;onBack:()=>void}):JSX.Element {
   const [saved,setSaved]=useState(cluster.profile);const [name,setName]=useState(cluster.profile?.cluster_id??'');
   const [namespace,setNamespace]=useState(cluster.profile?.namespace??'default');const [selected,setSelected]=useState<string[]>(cluster.profile?.group_ids??[]);
-  const [groups,setGroups]=useState<GroupRow[]>([]);const [knownGroups,setKnownGroups]=useState<Record<string,string>>({});const [term,setTerm]=useState('');const [groupCursor,setGroupCursor]=useState<string|null>(null);
+  const [groups,setGroups]=useState<GroupRow[]>([]);const [knownGroups,setKnownGroups]=useState<Record<string,string>>({});const [term,setTerm]=useState('');const [groupCursor,setGroupCursor]=useState<string|null>(null);const [groupPage,setGroupPage]=useState(false);
   const [groupError,setGroupError]=useState<string|null>(null);const [groupBusy,setGroupBusy]=useState(false);const groupGeneration=useRef(0);
   const [busy,setBusy]=useState(false);const [error,setError]=useState<string|null>(null);const [notice,setNotice]=useState('');
   const [online,setOnline]=useState<OnlineProfile|null>(null);const [modeError,setModeError]=useState<string|null>(null);const [modeBusy,setModeBusy]=useState(true);
@@ -79,7 +79,7 @@ function ClusterDetail({session,cluster,onBack}:{session:Session;cluster:Cluster
     if(!groupsReadable)return;const request=++groupGeneration.current;setGroupBusy(true);setGroupError(null);
     try{
       const page=await read(`groups?q=${encodeURIComponent(term)}${after?`&cursor=${encodeURIComponent(after)}`:''}`) as Page<GroupRow>;
-      if(request===groupGeneration.current){setGroups(page.items);setKnownGroups(previous=>({...previous,...Object.fromEntries(page.items.map(g=>[g.id,`${g.display_name} (${g.name})`]))}));setGroupCursor(page.next_cursor);}
+      if(request===groupGeneration.current){setGroups(page.items);setGroupPage(after!==null);setKnownGroups(previous=>({...previous,...Object.fromEntries(page.items.map(g=>[g.id,`${g.display_name} (${g.name})`]))}));setGroupCursor(page.next_cursor);}
     }catch(e){if(request===groupGeneration.current)setGroupError(failure(e));}
     finally{if(request===groupGeneration.current)setGroupBusy(false);}
   },[groupsReadable,term]);
@@ -108,7 +108,7 @@ function ClusterDetail({session,cluster,onBack}:{session:Session;cluster:Cluster
         <fieldset disabled={!writable||busy||groupBusy}><legend>Released managed groups ({selected.length}/100)</legend>
           {groups.map(group=><label key={group.id} className="flex items-center gap-3 py-2"><input type="checkbox" checked={selected.includes(group.id)} disabled={!selected.includes(group.id)&&selected.length>=100} onChange={e=>setSelected(previous=>e.target.checked?[...previous,group.id]:previous.filter(id=>id!==group.id))}/><span>{group.display_name}<span className="muted"> ({group.name})</span></span></label>)}
           {!groupBusy&&groups.length===0&&<p>No matching groups.</p>}
-        </fieldset>{groupCursor&&<Button disabled={groupBusy} onClick={()=>void loadGroups(groupCursor)}>Next group page</Button>}
+        </fieldset><Actions>{groupPage&&<Button disabled={groupBusy} onClick={()=>void loadGroups()}>First group page</Button>}{groupCursor&&<Button disabled={groupBusy} onClick={()=>void loadGroups(groupCursor)}>Next group page</Button>}</Actions>
         <p className="muted">Selections from other pages and searches are preserved.</p>
       </>}
       <Actions><Button disabled={!writable||busy||!dirty||!name.trim()||!namespace.trim()} onClick={()=>void save()}>{busy?'Saving…':'Save cluster profile'}</Button><Button disabled={busy||!dirty} variant="ghost" onClick={()=>{setName(saved?.cluster_id??'');setNamespace(saved?.namespace??'default');setSelected(saved?.group_ids??[]);}}>Discard changes</Button></Actions>

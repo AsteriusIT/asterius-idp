@@ -29,7 +29,7 @@ async function fixture(scopes=['admin.session:read','admin.clients:read','admin.
    if(path==='clients/broker/kubernetes')return json(saved);
    if(path==='clients/second/kubernetes')return json({error:{message:'Backend unavailable'}},503);
    if(path==='clients/broker/kubernetes/online')return json({enabled:saved.revision===7,reviewer_client_id:'reviewer',revision:'online-revision'});
-   if(path==='groups')return json({items:[{id:g1,name:'developers',display_name:'Developers'}],next_cursor:null});
+   if(path==='groups')return json({items:url.searchParams.has('cursor')?[{id:g2,name:'operators',display_name:'Operators'}]:[{id:g1,name:'developers',display_name:'Developers'}],next_cursor:url.searchParams.has('cursor')?null:'group-next'});
    if(path===`groups/${g2}`)return json({id:g2,name:'operators',display_name:'Operators'});
    if(path==='temporary-entitlements')return json({items:[{entitlement_id:'owned',client_id:'broker',role_name:'cluster-view',enabled:true}]});
    if(path==='temporary-entitlements/owned/kubernetes-binding')return json({binding:{cluster_client_id:'broker',controller_client_id:'controller',namespace:'tools',enabled:false},authentication_configuration:null});
@@ -50,6 +50,7 @@ try {
  await page.getByRole('button',{name:'View production'}).click();
  await page.getByText('Online checks enabled',{exact:true}).waitFor();await page.getByText('Operators (operators)',{exact:true}).first().waitFor();
  await page.getByText('pending',{exact:true}).waitFor();checks.push('group_names_authentication_and_owned_approval_status');
+ await page.getByRole('button',{name:'Next group page'}).click();await page.getByLabel('Operators (operators)').waitFor();await page.getByRole('button',{name:'First group page'}).click();await page.getByLabel('Developers (developers)').waitFor();checks.push('group_pagination_returns_to_first_page_without_losing_selection');
  await page.getByLabel('Developers (developers)').check();await page.getByRole('button',{name:'Save cluster profile'}).click();
  await page.getByText('Cluster profile saved. Onboarding below uses this saved revision.').waitFor();
  assert.deepEqual(new Set(f.writes[0].group_ids),new Set([g1,g2]));assert.equal(f.writes[0].revision,7);await page.getByText('Signed tokens',{exact:true}).waitFor();checks.push('authentication_refreshes_after_profile_save');checks.push('save_preserves_offpage_group_and_exact_revision');
