@@ -107,28 +107,28 @@ pub const MAX_BATCHES: usize = 100;
 pub const POLICY: &[Retention] = &[
     Retention { table: "managed_device_sources", rule: Rule::Kept("bounded tenant-owned relay trust; defaults disabled, generation changes invalidate enrollments, cascades with its client") },
     Retention { table: "managed_devices", rule: Rule::Sweep {
-        statement: "delete from managed_devices where ctid = any(array(select ctid from managed_devices where tenant_id=$1 and removed_at<=$2 limit $3))",
+        statement: "delete from managed_devices where ctid = any(array(select ctid from managed_devices where tenant_id = $1 and removed_at<=$2 limit $3))",
         grace: Duration::days(30),
     } },
     Retention { table: "managed_device_interaction_proofs", rule: Rule::Sweep {
-        statement: "delete from managed_device_interaction_proofs where ctid = any(array(select ctid from managed_device_interaction_proofs where tenant_id=$1 and expires_at<=$2 limit $3))",
+        statement: "delete from managed_device_interaction_proofs where ctid = any(array(select ctid from managed_device_interaction_proofs where tenant_id = $1 and expires_at<=$2 limit $3))",
         grace: Duration::ZERO,
     } },
     Retention { table: "managed_device_code_proofs", rule: Rule::Sweep {
-        statement: "delete from managed_device_code_proofs where ctid = any(array(select ctid from managed_device_code_proofs where tenant_id=$1 and expires_at<=$2 limit $3))",
+        statement: "delete from managed_device_code_proofs where ctid = any(array(select ctid from managed_device_code_proofs where tenant_id = $1 and expires_at<=$2 limit $3))",
         grace: Duration::ZERO,
     } },
     Retention { table: "managed_device_relay_tokens", rule: Rule::Sweep {
-        statement: "delete from managed_device_relay_tokens where ctid = any(array(select ctid from managed_device_relay_tokens where tenant_id=$1 and expires_at<=$2 limit $3))",
+        statement: "delete from managed_device_relay_tokens where ctid = any(array(select ctid from managed_device_relay_tokens where tenant_id = $1 and expires_at<=$2 limit $3))",
         grace: Duration::ZERO,
     } },
     Retention { table: "kubernetes_online_reviewer_tokens", rule: Rule::Sweep {
-        statement: "delete from kubernetes_online_reviewer_tokens where ctid = any (array(select ctid from kubernetes_online_reviewer_tokens where tenant_id=$1 and expires_at <= $2 limit $3))",
+        statement: "delete from kubernetes_online_reviewer_tokens where ctid = any (array(select ctid from kubernetes_online_reviewer_tokens where tenant_id = $1 and expires_at <= $2 limit $3))",
         grace: Duration::ZERO,
     } },
     Retention { table: "kubernetes_online_profiles", rule: Rule::Kept("tenant-owned online mode and revision tombstone; cascades with selected cluster client") },
     Retention { table: "kubernetes_online_tokens", rule: Rule::Sweep {
-        statement: "delete from kubernetes_online_tokens where ctid = any (array(select ctid from kubernetes_online_tokens where tenant_id=$1 and expires_at <= $2 limit $3))",
+        statement: "delete from kubernetes_online_tokens where ctid = any (array(select ctid from kubernetes_online_tokens where tenant_id = $1 and expires_at <= $2 limit $3))",
         grace: Duration::ZERO,
     } },
     Retention { table: "temporary_kubernetes_bindings", rule: Rule::Kept("owner-approved bounded controller mapping and disabled tombstone; active projection checks current catalogue and DB expiry; cascades with entitlement/tenant") },
