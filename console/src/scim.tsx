@@ -1,12 +1,13 @@
-import { FormSelect } from './components/ui/select';
-import { DirectorySearch } from './directory-controls';
 import { ConnectionDocument } from './components/connection-document';
-import { useCallback, useEffect, useState } from 'react';
+import { Command, CommandInput, CommandItem, CommandList } from './components/ui/command';
+import { Popover, PopoverContent, PopoverTrigger } from './components/ui/popover';
+import { CheckIcon, ChevronsUpDownIcon } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { JSX } from 'react';
 import { read, type Session } from './api';
 import type { ClientDocument } from './client-draft';
 import { hrefOf } from './routes';
-import { Badge, EmptyState, Field, LoadFailure, Panel, Screen, Skeleton } from './ui';
+import { Badge, Button, LoadFailure, Panel, Screen, Skeleton } from './ui';
 
 interface ClientSummary {
   readonly client_id: string;
@@ -59,23 +60,31 @@ export function ScimProvisioning({ session }: Readonly<{ session: Session }>): J
   const [inventory, setInventory] = useState<Inventory>({ kind: 'loading' });
   const [inspection, setInspection] = useState<Inspection>({ kind: 'idle' });
   const [query, setQuery] = useState('');
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [selectedId, setSelectedId] = useState('');
+  const [selectedName, setSelectedName] = useState('');
+  const clientRequest = useRef(0);
+  const inspectionRequest = useRef(0);
   const [resources, setResources] = useState<ResourceCheck>({ kind: 'unavailable' });
   const urls = scimUrls();
 
   const loadClients = useCallback((term: string) => {
+    const request = ++clientRequest.current;
     setInventory({ kind: 'loading' });
     const path = term.trim() === '' ? 'clients' : `clients?q=${encodeURIComponent(term.trim())}`;
     read(path).then(
-      (body) => setInventory({ kind: 'ready', page: body as ClientPage }),
-      (error: unknown) => setInventory({
+      (body) => { if (request === clientRequest.current) setInventory({ kind: 'ready', page: body as ClientPage }); },
+      (error: unknown) => { if (request === clientRequest.current) setInventory({
         kind: 'failed',
         message: error instanceof Error ? error.message : 'Client registrations could not be read.',
-      }),
+      }); },
     );
   }, []);
 
-  useEffect(() => loadClients(''), [loadClients]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => loadClients(query), query === '' ? 0 : 220);
+    return () => { window.clearTimeout(timer); clientRequest.current++; };
+  }, [loadClients, query]);
 
   useEffect(() => {
     if (!session.scopes.includes('admin.resource_servers:read')) return;
@@ -89,16 +98,30 @@ export function ScimProvisioning({ session }: Readonly<{ session: Session }>): J
   }, [session.scopes]);
 
   const inspect = useCallback((id: string) => {
+    const request = ++inspectionRequest.current;
     setSelectedId(id);
     setInspection({ kind: 'loading' });
     read(`clients/${encodeURIComponent(id)}`).then(
-      (body) => setInspection({ kind: 'ready', client: body as ClientDocument }),
-      (error: unknown) => setInspection({
+      (body) => { if (request === inspectionRequest.current) setInspection({ kind: 'ready', client: body as ClientDocument }); },
+      (error: unknown) => { if (request === inspectionRequest.current) setInspection({
         kind: 'failed',
         message: error instanceof Error ? error.message : 'The client could not be read.',
-      }),
+      }); },
     );
   }, []);
+  const chooseClient = (client: ClientSummary): void => {
+    setSelectedName(client.client_name);
+    setPickerOpen(false);
+    setQuery('');
+    inspect(client.client_id);
+  };
+  const clearClient = (): void => {
+    inspectionRequest.current++;
+    setSelectedId('');
+    setSelectedName('');
+    setInspection({ kind: 'idle' });
+    setPickerOpen(false);
+  };
 
   const selected = inspection.kind === 'ready' ? inspection.client : null;
   const scopes = selected === null ? new Set<string>() : scopeSet(selected);
@@ -129,16 +152,29 @@ export function ScimProvisioning({ session }: Readonly<{ session: Session }>): J
       </Panel>
 
       <Panel title="Provisioning client" description="Inspect a registered application. This checks its stored configuration; it does not issue a token or call the SCIM endpoint.">
-        <div className="directory-toolbar"><DirectorySearch label="Find application" value={query} placeholder="Name or client ID" onChange={setQuery} onSubmit={() => loadClients(query)} actionLabel="Search applications" /></div>
-        {inventory.kind === 'loading' && <Skeleton label="Loading applications" />}
-        {inventory.kind === 'failed' && <LoadFailure message={inventory.message} onRetry={() => loadClients(query)} />}
-        {inventory.kind === 'ready' && inventory.page.items.length === 0 && (
-          <EmptyState title="No matching applications" body="Register a client in Applications or search by another name." />
-        )}
-        {inventory.kind === 'ready' && inventory.page.items.length > 0 && <>
-          <Field label="Application">{props => <FormSelect {...props} value={selectedId} onValueChange={value => value === '' ? (setSelectedId(''), setInspection({ kind: 'idle' })) : inspect(value)} options={[{ value: '', label: 'Choose an application' }, ...inventory.page.items.map(client => ({ value: client.client_id, label: `${client.client_name} (${client.client_id})` }))]} />}</Field>
-          {inventory.page.next_cursor !== null && <p className="muted">More applications exist. Search by name or client ID to find one outside this page.</p>}
-        </>}
+        <div className="field"><label id="provisioning-client-label">Application</label>
+          <Popover open={pickerOpen} onOpenChange={open => { setPickerOpen(open); if (open) setQuery(''); }}>
+            <PopoverTrigger asChild><Button variant="secondary" role="combobox" aria-labelledby="provisioning-client-label" aria-expanded={pickerOpen} className="kubernetes-picker-trigger">
+              <span>{selectedId === '' ? 'Choose an application' : `${selectedName} (${selectedId})`}</span><ChevronsUpDownIcon aria-hidden="true" />
+            </Button></PopoverTrigger>
+            <PopoverContent align="start" className="kubernetes-picker-popover"><Command shouldFilter={false}>
+              <CommandInput value={query} onValueChange={value => { setQuery(value); setInventory({ kind: 'loading' }); }} placeholder="Search by name or client ID…" aria-label="Search provisioning applications" />
+              <CommandList>
+                {inventory.kind === 'loading' && <p className="kubernetes-picker-note" role="status">Searching applications…</p>}
+                {inventory.kind === 'failed' && <div className="kubernetes-picker-note"><p>{inventory.message}</p><Button small onClick={() => loadClients(query)}>Retry search</Button></div>}
+                {inventory.kind === 'ready' && inventory.page.items.length === 0 && <p className="kubernetes-picker-note">No applications match. Try a name or client ID.</p>}
+                {inventory.kind === 'ready' && inventory.page.items.map(client => <CommandItem key={client.client_id} value={client.client_id} onSelect={() => chooseClient(client)}>
+                  <span className="kubernetes-picker-option"><strong>{client.client_name}</strong><small>{client.client_id}</small></span>
+                  {selectedId === client.client_id && <CheckIcon className="ml-auto size-4" aria-hidden="true" />}
+                </CommandItem>)}
+              </CommandList>
+              {(selectedId !== '' || (inventory.kind === 'ready' && inventory.page.next_cursor !== null)) && <div className="kubernetes-picker-footer">
+                {inventory.kind === 'ready' && inventory.page.next_cursor !== null && <span className="muted">More results exist. Refine your search.</span>}
+                {selectedId !== '' && <Button small variant="ghost" onClick={clearClient}>Clear selection</Button>}
+              </div>}
+            </Command></PopoverContent>
+          </Popover>
+        </div>
         {inspection.kind === 'loading' && <Skeleton label="Checking client registration" />}
         {inspection.kind === 'failed' && <LoadFailure message={inspection.message} onRetry={() => inspect(selectedId)} />}
         {selected !== null && <>

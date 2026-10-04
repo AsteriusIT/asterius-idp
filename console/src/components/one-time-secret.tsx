@@ -1,13 +1,14 @@
 import { useState } from 'react';
 import { CheckIcon, EyeIcon, EyeOffIcon, KeyRoundIcon } from 'lucide-react';
-import { Actions, Button, Panel } from '../ui';
+import { Actions, Button } from '../ui';
 import { CopyValue } from './copy-value';
 
 /** Ephemeral credentials remain in the editor; reveal and clipboard are explicit actions. */
 export function OneTimeSecret({ value, onStored }: Readonly<{ value: string; onStored: () => void }>) {
   const [revealed, setRevealed] = useState(false);
   const [acknowledged, setAcknowledged] = useState(false);
-  return <Panel className="credential-secret-panel" title="Save your new client secret" description="This value is shown once. Store it in your application’s secret manager before leaving.">
+  return <div className="credential-secret-issued">
+    <p>This value is shown once. Store it in your application’s secret manager before leaving.</p>
     <div className="secret-value-row">
       <KeyRoundIcon aria-hidden="true" />
       <code aria-label={revealed ? undefined : 'Client secret hidden'}>{revealed ? value : '••••••••••••••••••••••••'}</code>
@@ -19,5 +20,5 @@ export function OneTimeSecret({ value, onStored }: Readonly<{ value: string; onS
     </Actions>
     {acknowledged && <p className="secret-saved" role="status"><CheckIcon aria-hidden="true" />Secret acknowledged. You can leave this page.</p>}
     <p className="muted">Asterius stores only a digest. The original secret cannot be retrieved.</p>
-  </Panel>;
+  </div>;
 }

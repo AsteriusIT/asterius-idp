@@ -238,8 +238,8 @@ pub struct PdpIssuance {
     /// What this server knows about the subject named in the request.
     ///
     /// An agent is not an account, so this resolves no groups, no roles and no
-    /// grants for it — the lookup is by subject identifier and a `client_id` is
-    /// deliberately not one (`ClientId::MINTED_PREFIX`). It is still asked,
+    /// grants for it — the lookup is by subject identifier and this code must
+    /// keep client and user principals typed separately. It is still asked,
     /// because the decision has to be taken by the same function the endpoint
     /// and the bench use, and that function resolves facts before it evaluates.
     subjects: Box<dyn SubjectFacts>,

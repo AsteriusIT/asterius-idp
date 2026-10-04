@@ -5,6 +5,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
+import YAML from "yaml";
 import {
   createLocalJWKSet,
   importJWK,
@@ -20,6 +21,7 @@ import {
   Helper,
   execCredential,
   kubeconfig,
+  kubeconfigYaml,
   validateExecInfo,
 } from "../src/helper.mjs";
 import {
@@ -467,6 +469,9 @@ test("helper validates pinned ExecInfo, emits v1 credential and produces kubecon
   const config = JSON.stringify(
     kubeconfig(f.cluster, "/etc/kube-helper.json", "account"),
   );
+  const rendered = kubeconfigYaml(f.cluster, "/etc/kube-helper.json", "account");
+  assert.deepEqual(YAML.parse(rendered), JSON.parse(config));
+  assert.match(rendered, /^apiVersion: v1\nkind: Config\n/);
   assert.ok(
     !config.includes(result.handle) &&
       !config.includes(result.idToken) &&

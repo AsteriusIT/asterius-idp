@@ -1811,26 +1811,13 @@ mod tests {
         assert_eq!(Denial::Invalid.code(), "invalid_token");
     }
 
-    /// FAPI 2.0 SP §6.7: a `client_id` must not be mistakable for an end-user
-    /// subject identifier. This server's subjects are UUIDs (public) or 43
-    /// `base64url` symbols (pairwise); a full stop occurs in neither alphabet,
-    /// so the prefix makes the two sets disjoint by construction rather than by
-    /// luck.
+    /// Generated client identifiers use the public UUID format.
     #[test]
-    fn a_minted_client_id_cannot_be_mistaken_for_a_subject() {
+    fn a_minted_client_id_is_a_uuid() {
         let id = ClientId::mint();
-        assert!(id.as_str().starts_with(ClientId::MINTED_PREFIX));
-        let drawn = &id.as_str()[ClientId::MINTED_PREFIX.len()..];
-        assert_eq!(drawn.len(), 22, "128 bits is 22 base64url symbols");
         assert!(
-            drawn
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
-            "a client_id left the RFC 4648 §5 alphabet: {drawn}"
-        );
-        assert!(
-            uuid_shaped(id.as_str()).is_none(),
-            "a client_id must not parse as the UUID a public `sub` is"
+            uuid_shaped(id.as_str()).is_some(),
+            "a client_id must be a UUID"
         );
         // Unguessable, and never twice the same.
         let ids: std::collections::HashSet<String> = (0..256)

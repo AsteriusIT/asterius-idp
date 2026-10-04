@@ -10,7 +10,7 @@ export function profileChange(profile: ClusterProfile | null, cluster: string, n
 }
 export function shellQuote(value: string): string { return `'${value.replaceAll("'", "'\\''")}'`; }
 export function loginCommand(cluster: string, account: string): string {
-  return `node tools/kubernetes-login/src/helper.mjs kubeconfig --config /etc/asterius/kube-helper.json --cluster ${shellQuote(cluster)} --account ${shellQuote(account)} > reviewed-kubeconfig.json\nkubectl --kubeconfig reviewed-kubeconfig.json get pods`;
+  return `node tools/kubernetes-login/src/helper.mjs kubeconfig --config /etc/asterius/kube-helper.json --cluster ${shellQuote(cluster)} --account ${shellQuote(account)} > reviewed-kubeconfig.yaml\nkubectl --kubeconfig reviewed-kubeconfig.yaml get pods`;
 }
 export function authenticationLabel(online: OnlineProfile | null, jit: boolean): string {
   return jit ? 'Temporary identity' : online?.enabled ? 'Online checks enabled' : 'Signed tokens';

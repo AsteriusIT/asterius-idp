@@ -19,7 +19,7 @@
 
 use asterius_admin_api::clients::RegistrationGate;
 use asterius_admin_api::{
-    AdminBackend, AdminTokens, ClientAddress, PresentedToken, TokenPrincipal,
+    AdminBackend, AdminTokens, ClientAddress, PresentedToken, TestTokenIssuer, TokenPrincipal,
 };
 use asterius_domain::MailSender as _;
 use asterius_domain::keys::{KeyAdministration, KeyStore};
@@ -3096,8 +3096,89 @@ impl asterius_domain::agent_task_views::Administration for DeploymentTaskViews {
     }
 }
 
+#[derive(Clone)]
+struct DeploymentTestTokenIssuer {
+    store: Store,
+    capabilities: Capabilities,
+    kek: Arc<dyn asterius_jose::Kek>,
+    signer: Arc<dyn asterius_domain::keys::Signer>,
+}
+
+impl std::fmt::Debug for DeploymentTestTokenIssuer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeploymentTestTokenIssuer")
+            .finish_non_exhaustive()
+    }
+}
+
+#[async_trait::async_trait]
+impl TestTokenIssuer for DeploymentTestTokenIssuer {
+    async fn issue_id_token(
+        &self,
+        tenant: &Tenant,
+        client_id: &ClientId,
+        user_id: UserId,
+        now: time::OffsetDateTime,
+    ) -> Result<String, DomainError> {
+        let scope = self.store.scope(tenant.id.clone());
+        let client = scope
+            .clients(self.capabilities)
+            .find(client_id)
+            .await?
+            .ok_or(DomainError::NotFound)?;
+        let users = scope.users(Arc::clone(&self.kek));
+        let user = users.find(user_id).await?.ok_or(DomainError::NotFound)?;
+        if client.status != asterius_domain::ClientStatus::Active || !user.can_authenticate() {
+            return Err(DomainError::NotFound);
+        }
+        if client.registration.encrypt_id_token {
+            return Err(DomainError::Conflict(
+                "This client requires encrypted ID tokens; the test console cannot issue one"
+                    .to_owned(),
+            ));
+        }
+        let subject = if client.registration.subject_type == asterius_domain::SubjectType::Ephemeral
+        {
+            asterius_domain::SubjectId::mint_ephemeral()
+        } else {
+            let sector = asterius_domain::SectorIdentifier::of_client(&client)
+                .map_err(|_| DomainError::NotFound)?;
+            users.subject_for_notification(user_id, &sector).await?
+        };
+        // No `auth_time`, ACR, AMR, or session claim: no user authenticated.
+        // The private marker makes this administrative issuance visible to an RP.
+        let claims = serde_json::json!({
+            "iss": tenant.issuer.as_str(),
+            "sub": subject.as_str(),
+            "aud": client_id.as_str(),
+            "iat": now.unix_timestamp(),
+            "exp": now.unix_timestamp() + 60,
+            "jti": uuid::Uuid::new_v4().to_string(),
+            "asterius_test": true,
+        });
+        let signed = self
+            .signer
+            .sign(
+                &tenant.id,
+                Some(client.registration.id_token_signed_response_alg),
+                "JWT",
+                &claims,
+            )
+            .await?;
+        Ok(signed.as_str().to_owned())
+    }
+}
+
 #[async_trait::async_trait]
 impl AdminBackend for Deployment {
+    fn test_token_issuer(&self) -> Option<Arc<dyn TestTokenIssuer>> {
+        Some(Arc::new(DeploymentTestTokenIssuer {
+            store: self.store.clone(),
+            capabilities: self.capabilities,
+            kek: Arc::clone(&self.kek),
+            signer: Arc::clone(&self.signer),
+        }))
+    }
     fn kubernetes_online(
         &self,
     ) -> Option<Arc<dyn asterius_domain::kubernetes_online::KubernetesOnline>> {

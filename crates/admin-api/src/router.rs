@@ -423,6 +423,7 @@ async fn route_standard(
         crate::CLIENTS_LIST_ID => context.list_clients().await,
         crate::CLIENT_READ_ID => context.read_client().await,
         crate::CLIENT_HEALTH_ID => context.check_client_health().await,
+        crate::CLIENT_TEST_TOKEN_ID => context.issue_client_test_token(body).await,
         crate::CONDITIONAL_SETTINGS_READ_ID => context.read_conditional_settings().await,
         crate::CONDITIONAL_SETTINGS_UPDATE_ID => context.update_conditional_settings(body).await,
         crate::KUBERNETES_PROFILE_READ_ID => context.read_kubernetes_profile().await,
@@ -2483,6 +2484,73 @@ impl Handling<'_> {
             );
         }
         Ok(json_no_store(StatusCode::OK, &response))
+    }
+
+    /// A console administrator explicitly issues one short-lived OIDC test ID
+    /// token. The intent is durably audited before any signature is made.
+    async fn issue_client_test_token(
+        &self,
+        body: axum::body::Body,
+    ) -> Result<Response, AdminError> {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Request {
+            user_id: uuid::Uuid,
+        }
+        if !matches!(self.principal, Principal::Console { .. }) {
+            return Err(AdminError::Forbidden);
+        }
+        let request: Request = self.parse_body(body).await?;
+        let client = self.client_in_path("/test-token")?;
+        let issuer = self
+            .state
+            .backend
+            .test_token_issuer()
+            .ok_or(AdminError::Unavailable)?;
+        let user = asterius_domain::UserId::new(request.user_id);
+        let event = AuditEvent::new(
+            self.tenant.id.clone(),
+            EventType::TEST_TOKEN_REQUESTED,
+            Outcome::Success,
+            Actor::Admin(self.principal.audit_actor()),
+            self.now,
+        )
+        .subject(request.user_id.to_string())
+        .client(client.clone())
+        .detail(Detail::new().label("operation", crate::CLIENT_TEST_TOKEN_ID));
+        self.state
+            .backend
+            .audit()
+            .record(event)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::CLIENT_TEST_TOKEN_ID, &error))?;
+        let token = issuer
+            .issue_id_token(self.tenant, &client, user, self.now)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::CLIENT_TEST_TOKEN_ID, &error))?;
+        let event = AuditEvent::new(
+            self.tenant.id.clone(),
+            EventType::TEST_TOKEN_ISSUED,
+            Outcome::Success,
+            Actor::Admin(self.principal.audit_actor()),
+            self.now,
+        )
+        .subject(request.user_id.to_string())
+        .client(client)
+        .detail(Detail::new().label("operation", crate::CLIENT_TEST_TOKEN_ID));
+        self.state
+            .backend
+            .audit()
+            .record(event)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::CLIENT_TEST_TOKEN_ID, &error))?;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({
+                "id_token": token,
+                "expires_in": 60,
+            }),
+        ))
     }
 
     /// `POST /clients` — registers a client from the console.
@@ -4844,8 +4912,8 @@ impl Handling<'_> {
     ///
     /// Taken as it arrived, with no decoding step, for the reason
     /// [`Self::retire_key`] gives about a `kid`: a `client_id` this server
-    /// mints is `c.` and 22 `base64url` symbols, none of which a URL encodes,
-    /// and a segment carrying anything else names no client here and gets a 404
+    /// mints is a UUID, none of whose characters a URL encodes, and a segment
+    /// carrying anything else names no minted client here and gets a 404
     /// from the lookup. A decoder would be a parser added to the attack surface
     /// in order to accept identifiers this server never issues.
     fn client_in_path(&self, suffix: &str) -> Result<asterius_domain::ClientId, AdminError> {
@@ -9455,6 +9523,7 @@ mod tests {
         keys: Mutex<Vec<PublicKeyRecord>>,
         key_schedules: Mutex<BTreeMap<String, RotationSchedule>>,
         minted: Mutex<u32>,
+        test_tokens: Mutex<Vec<(TenantId, asterius_domain::ClientId, UserId)>>,
         clients: Mutex<Vec<Client>>,
         resource_servers: Mutex<Vec<(TenantId, asterius_domain::ResourceServer)>>,
         authorization_details_types:
@@ -11977,7 +12046,28 @@ mod tests {
     }
 
     #[async_trait::async_trait]
+    impl crate::backend::TestTokenIssuer for Handle {
+        async fn issue_id_token(
+            &self,
+            tenant: &Tenant,
+            client: &asterius_domain::ClientId,
+            user: UserId,
+            _now: OffsetDateTime,
+        ) -> Result<String, DomainError> {
+            self.0
+                .test_tokens
+                .lock()
+                .expect("an uncontended lock")
+                .push((tenant.id.clone(), client.clone(), user));
+            Ok("header.payload.signature".to_owned())
+        }
+    }
+
+    #[async_trait::async_trait]
     impl AdminBackend for Handle {
+        fn test_token_issuer(&self) -> Option<Arc<dyn crate::backend::TestTokenIssuer>> {
+            Some(Arc::new(self.clone()))
+        }
         fn kubernetes_online(
             &self,
         ) -> Option<Arc<dyn asterius_domain::kubernetes_online::KubernetesOnline>> {
@@ -12555,8 +12645,7 @@ mod tests {
     /// The `client_id` the fixture's tenants hold a client under, and the value
     /// `{client_id}` is replaced with when a test walks the registry.
     ///
-    /// Shaped like one this server mints (`c.` and 22 `base64url` symbols) so
-    /// that the routes are exercised with the identifiers they will really see.
+    /// A legacy-shaped fixture also exercises the router's opaque path handling.
     const SEEDED_CLIENT_ID: &str = "c.SeededClientSeededClien";
     const SEEDED_RESOURCE: &str = "https://api.example/";
     const SEEDED_RESOURCE_PATH: &str = "https%3A%2F%2Fapi.example%2F";
@@ -13370,6 +13459,7 @@ mod tests {
             // the same document `POST /register` takes, validated by the same
             // call.
             crate::CLIENT_CREATE_ID | crate::CLIENT_UPDATE_ID => valid_registration(),
+            crate::CLIENT_TEST_TOKEN_ID => serde_json::json!({"user_id": SEEDED_USER_ID}),
             crate::FLOW_CREATE_ID => {
                 serde_json::json!({"name": "Walked", "graph": {"schema_version": 1, "nodes": [], "edges": []}})
             }
@@ -17305,6 +17395,51 @@ mod tests {
     }
 
     // ---- signing keys (`ast-f7m.7`) ---------------------------------------
+
+    #[tokio::test]
+    async fn test_token_requires_admin_and_records_selected_subject_before_issuance() {
+        let world = World::new().routed_at("acme");
+        let support = world.sign_in("acme", &[Role::UserSupport]);
+        let denied = world
+            .send(
+                as_console(&crate::CLIENT_TEST_TOKEN, &support)
+                    .body(body_for(&crate::CLIENT_TEST_TOKEN))
+                    .expect("request"),
+            )
+            .await;
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+        assert!(world.handle.0.test_tokens.lock().expect("lock").is_empty());
+
+        let admin = world.sign_in("acme", &[Role::TenantAdmin]);
+        let issued = world
+            .send(
+                as_console(&crate::CLIENT_TEST_TOKEN, &admin)
+                    .body(body_for(&crate::CLIENT_TEST_TOKEN))
+                    .expect("request"),
+            )
+            .await;
+        assert_eq!(issued.status(), StatusCode::OK);
+        assert_eq!(
+            body_of(issued).await["id_token"],
+            "header.payload.signature"
+        );
+        let calls = world.handle.0.test_tokens.lock().expect("lock");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0.as_str(), "acme");
+        assert_eq!(calls[0].1.as_str(), SEEDED_CLIENT_ID);
+        assert_eq!(calls[0].2, seeded_user_id());
+        let events = world.handle.0.events.lock().expect("lock");
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_type == EventType::TEST_TOKEN_REQUESTED)
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_type == EventType::TEST_TOKEN_ISSUED)
+        );
+    }
 
     /// A signed-in tenant administrator, and the console's way of calling a
     /// route: session cookie, synchroniser token, idempotency key.

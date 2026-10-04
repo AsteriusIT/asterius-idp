@@ -93,7 +93,7 @@ export function PageHeader({
 }
 
 export function Screen({
-  title, description, actions, children, back, identity,
+  title, description, actions, children, back, identity, className,
 }: Readonly<{
   title: string;
   description?: ReactNode;
@@ -101,13 +101,14 @@ export function Screen({
   children: ReactNode;
   back?: { label: string; onClick: () => void };
   identity?: string | undefined;
+  className?: string;
 }>): JSX.Element {
   useEffect(() => {
     document.title = `${title} — Asterius console`;
     document.querySelector<HTMLElement>('.screen-head h2')?.focus({ preventScroll: true });
   }, [title]);
   return (
-    <div className="screen">
+    <div className={cn('screen', className)}>
       {back && <button className="back-link" onClick={back.onClick}>← {back.label}</button>}
       <PageHeader title={title} description={description} actions={actions} identity={identity} />
       <UnsavedNotice />

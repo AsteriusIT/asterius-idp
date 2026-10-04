@@ -28,6 +28,19 @@ use asterius_domain::{
 };
 use std::sync::Arc;
 
+/// Narrow signing port for an explicitly administrator-issued OIDC test token.
+#[async_trait::async_trait]
+pub trait TestTokenIssuer: std::fmt::Debug + Send + Sync {
+    /// Returns one short-lived ID token for an active user and application.
+    async fn issue_id_token(
+        &self,
+        tenant: &Tenant,
+        client: &asterius_domain::ClientId,
+        user: UserId,
+        now: time::OffsetDateTime,
+    ) -> Result<String, DomainError>;
+}
+
 /// One address in an administrator's invitation request.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -125,6 +138,10 @@ pub trait PolicyTrial: std::fmt::Debug + Send + Sync {
 /// What an admin API request needs from below the API.
 #[async_trait::async_trait]
 pub trait AdminBackend: std::fmt::Debug + Send + Sync {
+    /// Absent adapters refuse test-token issuance.
+    fn test_token_issuer(&self) -> Option<Arc<dyn TestTokenIssuer>> {
+        None
+    }
     /// Managed-device registries are distinct from OAuth client certificates.
     fn device_registry(&self) -> Option<Arc<dyn asterius_domain::managed_devices::Registry>> {
         None

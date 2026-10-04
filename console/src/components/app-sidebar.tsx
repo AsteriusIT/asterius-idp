@@ -44,6 +44,7 @@ import {
 } from '@/components/ui/sidebar';
 import { sectionsFor } from '@/navigation';
 import { hrefOf } from '@/routes';
+import kubernetesIcon from '@/assets/kubernetes.svg';
 
 /** Icons are shared with the overview cards so one route keeps one symbol. */
 export const NAVIGATION_ICONS: Readonly<Record<string, LucideIcon>> = {
@@ -57,9 +58,9 @@ export const NAVIGATION_ICONS: Readonly<Record<string, LucideIcon>> = {
   clients: AppWindowIcon,
   resources: ServerIcon,
   architecture: NetworkIcon,
-  kubernetes: NetworkIcon,
   'authorization-details': ShapesIcon,
   keys: KeyRoundIcon,
+  'token-console': KeyRoundIcon,
   policy: ScaleIcon,
   ssf: RadioIcon,
   audit: ScrollTextIcon,
@@ -115,7 +116,7 @@ export function AppSidebar({
                               onClick={() => setOpenMobile(false)}
                               aria-current={active ? 'page' : undefined}
                             >
-                              {Icon !== undefined && <Icon className="size-[18px]" aria-hidden="true" />}
+                              {destination.route === 'kubernetes' ? <img src={kubernetesIcon} className="size-[18px]" alt="" /> : Icon !== undefined && <Icon className="size-[18px]" aria-hidden="true" />}
                               <span>{destination.label}</span>
                             </a>
                           </SidebarMenuButton>

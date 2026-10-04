@@ -79,7 +79,7 @@ mod theme_preview;
 pub mod throttle;
 pub mod users;
 
-pub use backend::{AdminBackend, AdminTokens, PresentedToken, TokenPrincipal};
+pub use backend::{AdminBackend, AdminTokens, PresentedToken, TestTokenIssuer, TokenPrincipal};
 pub use console::{Asset, Bundle};
 pub use error::AdminError;
 pub use operations::{Effect, Method, Mutating, Operation, Safe};
@@ -136,6 +136,8 @@ pub const CLIENTS_LIST_ID: &str = "clients.list";
 pub const CLIENT_READ_ID: &str = "clients.read";
 /// The `operationId` of `GET /clients/{client_id}/health`.
 pub const CLIENT_HEALTH_ID: &str = "clients.health";
+/// Issues an administrator-requested, short-lived OIDC test ID token.
+pub const CLIENT_TEST_TOKEN_ID: &str = "clients.test_token.issue";
 /// Reads a cluster's bounded onboarding profile and examples.
 pub const CONDITIONAL_SETTINGS_READ_ID: &str = "clients.conditional.read";
 pub const CONDITIONAL_SETTINGS_UPDATE_ID: &str = "clients.conditional.update";
@@ -597,6 +599,14 @@ pub const CLIENT_HEALTH: Operation = Operation::read(
     S::Get,
     A::new(R::Tenant, "admin.clients:read"),
     "Checks a registered client's integration configuration without issuing tokens",
+);
+
+pub const CLIENT_TEST_TOKEN: Operation = Operation::mutation(
+    CLIENT_TEST_TOKEN_ID,
+    "/clients/{client_id}/test-token",
+    M::Post,
+    A::new(R::Tenant, "admin.test_tokens:write"),
+    "Issues a short-lived OIDC test ID token for a selected active user",
 );
 
 /// Tenant-scoped, read-only cluster onboarding configuration.
@@ -2409,6 +2419,7 @@ static REGISTRY: &[Operation] = &[
     CLIENTS_LIST,
     CLIENT_READ,
     CLIENT_HEALTH,
+    CLIENT_TEST_TOKEN,
     CONDITIONAL_SETTINGS_READ,
     CONDITIONAL_SETTINGS_UPDATE,
     KUBERNETES_PROFILE_READ,
