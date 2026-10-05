@@ -21,7 +21,7 @@ import {
   parseScopes,
   scopesError,
 } from './resource-server-model';
-import { Button, ConfirmDialog, Field, LoadFailure, Message, Screen, Skeleton } from './ui';
+import { Actions, Button, ConfirmDialog, DataTable, EmptyState, Field, LoadFailure, Message, Screen, Skeleton } from './ui';
 
 interface ResourceServer {
   readonly identifier: string;
@@ -125,22 +125,30 @@ export function ResourceServers({ session }: Readonly<{ session: Session }>): JS
   return <Screen
     title="Resource servers"
     description={`Audiences and supported scopes for ${session.workspace}.`}
-    actions={mayWrite && <Button variant="primary" onClick={openCreate}><PlusIcon aria-hidden="true" /> Register resource server</Button>}
+    actions={mayWrite && <Button variant="primary" onClick={openCreate}><PlusIcon data-icon="inline-start" aria-hidden="true" /> Register resource server</Button>}
   >
     {notice !== null && <Message tone="success">{notice}</Message>}
-    {error !== null && !editorOpen && <Message tone="error">{error}</Message>}
+    {error !== null && !editorOpen && withdrawing === null && <Message tone="error">{error}</Message>}
     {withdrawing !== null && <ConfirmDialog title={`Withdraw ${withdrawing}?`}
       body={<><p>This removes the registration from {session.workspace}. Applications depending on it may no longer obtain the expected access. Already issued tokens retain their existing validity.</p>{error && <Message tone="error">{error}</Message>}</>}
       confirmLabel="Withdraw registration" busy={busy} onCancel={() => { setWithdrawing(null); setError(null); }} onConfirm={() => void withdraw(withdrawing)} />}
     <section className="resource-server-list" aria-label="Registered audiences">
       {load.kind === 'loading' && <Skeleton rows={3} label="Reading the resource servers." />}
       {load.kind === 'failed' && <LoadFailure message={load.message} onRetry={refresh} />}
-      {load.kind === 'ready' && (load.items.length === 0 ? <p className="muted">No resource servers are registered.</p> :
-        <div className="table-wrap"><table><caption className="visually-hidden">Registered resource servers</caption><thead><tr><th>Audience</th><th>Supported scopes</th><th>Token lifetime</th><th>Introspection clients</th>{mayWrite && <th>Actions</th>}</tr></thead>
-          <tbody>{load.items.map(item => <tr key={item.identifier}><td><code>{item.identifier}</code><FlowOrigin session={session} kind="api" resource={item.identifier} /></td><td>{scopeDescription(item.scopes)}</td>
-            <td>{item.default_token_lifetime_seconds === null ? 'Tenant default' : `${item.default_token_lifetime_seconds} seconds`}</td>
-            <td>{item.introspection_clients.length === 0 ? 'None' : item.introspection_clients.join(', ')}</td>
-            {mayWrite && <td><div className="resource-server-actions"><Button small className="resource-server-edit" disabled={busy} aria-label={`Edit ${item.identifier}`} title="Edit" onClick={() => openEdit(item)}><PencilIcon aria-hidden="true" /></Button><Button small variant="danger" disabled={busy} onClick={() => setWithdrawing(item.identifier)}>Withdraw</Button></div></td>}</tr>)}</tbody></table></div>)}
+      {load.kind === 'ready' && <DataTable
+        caption="Registered resource servers"
+        rows={load.items}
+        rowKey={item => item.identifier}
+        search={{ of: item => `${item.identifier} ${scopeDescription(item.scopes)} ${item.introspection_clients.join(' ')}`, label: 'Filter loaded resource servers' }}
+        empty={<EmptyState title="No resource servers" body="Register an audience before assigning it to applications." action={mayWrite ? <Button onClick={openCreate}>Register resource server</Button> : undefined} />}
+        columns={[
+          { key: 'audience', header: 'Audience', sortBy: item => item.identifier, cell: item => <><code>{item.identifier}</code><FlowOrigin session={session} kind="api" resource={item.identifier} /></> },
+          { key: 'scopes', header: 'Supported scopes', cell: item => scopeDescription(item.scopes) },
+          { key: 'lifetime', header: 'Token lifetime', sortBy: item => item.default_token_lifetime_seconds ?? 0, cell: item => item.default_token_lifetime_seconds === null ? 'Tenant default' : `${item.default_token_lifetime_seconds} seconds` },
+          { key: 'introspection', header: 'Introspection clients', cell: item => item.introspection_clients.length === 0 ? 'None' : item.introspection_clients.join(', ') },
+          ...(mayWrite ? [{ key: 'actions', header: 'Actions', actions: true, cell: (item: ResourceServer) => <Actions><Button small disabled={busy} aria-label={`Edit ${item.identifier}`} onClick={() => openEdit(item)}><PencilIcon data-icon="inline-start" aria-hidden="true" />Edit</Button><Button small variant="danger" disabled={busy} onClick={() => setWithdrawing(item.identifier)}>Withdraw</Button></Actions> }] : []),
+        ]}
+      />}
     </section>
     {mayWrite && <Dialog open={editorOpen} onOpenChange={(open) => {
       if (busy) return;

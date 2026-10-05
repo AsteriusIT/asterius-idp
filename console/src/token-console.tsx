@@ -73,7 +73,7 @@ export function TokenConsole({ session }: Readonly<{ session: Session }>): JSX.E
   };
   const decoded = token ? decodeJwt(token) : null;
 
-  return <Screen className="token-console-page" title="OIDC test console" description={`Issue and inspect a test ID token using an application and an active user in ${session.workspace}.`}>
+  return <Screen className="token-console-page" title="Token test console" description={`Issue and inspect a test ID token using an application and an active user in ${session.workspace}.`}>
     <section className="token-console" aria-label="Token workspace">
       <p className="token-console-intro">An administrator issues the token as the selected user. It expires after 60 seconds, carries <code>asterius_test: true</code>, and does not claim the user signed in.</p>
       {!mayIssue ? <Message tone="info">Issuing test tokens requires administrator access.</Message> : <div className="token-console-controls">

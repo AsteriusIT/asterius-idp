@@ -7,12 +7,12 @@ import { useUnsavedChanges } from './navigation-guard';
  * The Policy screen (`ast-f7m.9`): the tenant's AuthZEN rule document, and a
  * bench for asking what it decides.
  *
- * Three parts. The editor, which is the document `GET /policies` returns, put
- * back whole by `PUT /policies` — the API takes no partial write, because deny
- * precedence is a property of the rule *set* (ADR-0011). A structured reading
- * of the rules beside it, so that "what does this catalogue actually say" does
- * not require reading JSON. And the test bench, which sends Authorization API
- * 1.0 §6.1's request to `POST /policies/try` and shows §6.2's Decision.
+ * Three parts. The dedicated editor writes the document `GET /policies`
+ * returns back whole through `PUT /policies` — the API takes no partial write,
+ * because deny precedence is a property of the rule *set* (ADR-0011). The
+ * rules panel gives a structured reading without requiring JSON. The test
+ * bench sends Authorization API 1.0 §6.1's request to `POST /policies/try`
+ * and shows §6.2's Decision on the read view.
  *
  * # The validation is the server's
  *
@@ -276,7 +276,7 @@ export function Policy({ session }: Readonly<{ session: Session }>): JSX.Element
   const [load, setLoad] = useState<Load>({ kind: 'loading' });
   const [draft, setDraft] = useState('');
   const [baseline, setBaseline] = useState('');
-  useUnsavedChanges(draft !== baseline);
+  const leave = useUnsavedChanges(draft !== baseline);
   const [notice, setNotice] = useState<string | null>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -315,6 +315,7 @@ export function Policy({ session }: Readonly<{ session: Session }>): JSX.Element
     call().then(
       () => {
         setBusy(false);
+        setEditing(false);
         setNotice(success);
         // The announcement; the sentence above is the record (`ast-f9j5` (3)).
         // A policy screen is long enough that "Save policy" and the line that
@@ -383,18 +384,23 @@ export function Policy({ session }: Readonly<{ session: Session }>): JSX.Element
   const preview = rulesOf(draft);
   const location = refusal === null ? {} : locationOf(refusal);
   const line = location.line ?? (location.path === undefined ? undefined : lineOfRule(draft, location.path));
+  const closeEditor = (): void => leave(() => {
+    setDraft(baseline);
+    setEditing(false);
+    setRefusal(null);
+    setStale(false);
+  });
 
   return (
     <Screen
-      title="Access policy"
-      description={
-        <>
+      title={editing ? 'Edit access policy' : 'Access policy'}
+      description={editing ? 'Review the draft rules and simulate their effect before publishing.' : <>
           The rules <strong>{session.workspace}</strong> is decided by. An enforcement point asks
           whether a subject may take an action on a resource, and this document answers; an
           explicit deny wins, and a request no rule matches is denied.{' '}
           {policySummary(load.policy.rule_count, load.policy.updated_at)}
-        </>
-      }
+        </>}
+      {...(editing ? { back: { label: 'Back to access policy', onClick: closeEditor } } : {})}
     >
       {notice !== null && <Message tone="success">{notice}</Message>}
       {/*
@@ -423,11 +429,23 @@ export function Policy({ session }: Readonly<{ session: Session }>): JSX.Element
         </div>
       )}
 
-      <ConditionalPolicy draft={draft} revision={load.policy.revision} mayWrite={mayWrite} busy={busy}
-        onStage={text => { setDraft(text); setEditing(true); setRefusal(null); }} />
+      {!editing && <ConditionalPolicy draft={draft} revision={load.policy.revision} mayWrite={mayWrite} busy={busy}
+        onStage={text => { setDraft(text); setEditing(true); setRefusal(null); }} />}
+      {editing && <Panel title="Draft document" className="max-w-5xl" description="The server validates the policy when you save. A conflict keeps this draft for review.">
+        <Field
+          label="The rule document, as the evaluator reads it"
+          error={jsonDocument(draft, 'The document')}
+        >
+          {props => <textarea {...props} name="document" rows={20} spellCheck={false} value={draft} readOnly={!mayWrite} onChange={event => setDraft(event.target.value)} />}
+        </Field>
+        <Actions>
+          <Button disabled={busy} onClick={closeEditor}>Cancel editing</Button>
+          <Button variant="primary" disabled={busy || stale || !mayWrite} onClick={save}>Save policy</Button>
+        </Actions>
+      </Panel>}
       <Panel title="Rules">
       {preview === null ? (
-        <p className="muted">The draft below is not JSON yet, so there is nothing to summarise.</p>
+        <p className="muted">The draft document is not JSON yet, so there is nothing to summarise.</p>
       ) : (
         <DataTable
           rows={preview.map((rule, index) => ({ rule, index }))}
@@ -474,51 +492,12 @@ export function Policy({ session }: Readonly<{ session: Session }>): JSX.Element
       )}
       </Panel>
 
-      <Panel title="Document" actions={mayWrite && !editing ? <Button onClick={() => setEditing(true)}>Edit policy</Button> : undefined}>
-        {!editing ? <pre className="json-code" aria-label="Saved policy document">{baseline}</pre> : <><Field
-          label="The rule document, as the evaluator reads it"
-          // The one thing this screen is allowed to say about the draft before
-          // the server sees it: whether the braces close. It is the same
-          // `JSON.parse` `save` already runs — a few keystrokes earlier — and
-          // it says nothing about the *rules*, which are the server's subject
-          // and this module's opening paragraph.
-          error={jsonDocument(draft, 'The document')}
-        >
-          {(props) => (
-            <textarea
-              {...props}
-              name="document"
-              rows={20}
-              spellCheck={false}
-              value={draft}
-              readOnly={!mayWrite}
-              onChange={(event) => setDraft(event.target.value)}
-            />
-          )}
-        </Field>
-        {mayWrite ? (
-          <Actions>
-            <Button variant="danger" disabled={busy} onClick={() => setRemoving(true)}>
-              Remove policy
-            </Button>
-            <Button disabled={busy} onClick={refresh}>
-              Discard changes
-            </Button>
-            <Button variant="primary" disabled={busy || stale} onClick={save}>
-              Save policy
-            </Button>
-          </Actions>
-        ) : (
-          <p className="muted">
-            This session may read the policy and not change it (<code>admin.policies:write</code>{' '}
-            is what a change needs).
-          </p>
-        )}
-        <Button onClick={() => { setDraft(baseline); setEditing(false); }} disabled={busy}>Cancel editing</Button></>}
-      </Panel>
+      {!editing && <Panel title="Saved document" actions={mayWrite ? <Actions><Button onClick={() => setEditing(true)}>Edit policy</Button><Button variant="danger" onClick={() => setRemoving(true)}>Remove policy</Button></Actions> : undefined}>
+        <pre className="json-code" aria-label="Saved policy document">{baseline}</pre>
+      </Panel>}
 
-      <PolicyHistory revision={load.policy.revision} session={session} dirty={busy || draft !== baseline} onRestored={refresh} />
-      <TestBench session={session} />
+      {!editing && <PolicyHistory revision={load.policy.revision} session={session} dirty={busy || draft !== baseline} onRestored={refresh} />}
+      {!editing && <TestBench session={session} />}
       {load.kind === 'ready' && <PolicySimulation session={session} revision={load.policy.revision} draft={draft} />}
 
       {publishing !== null && <ConfirmDialog title="Publish conditional access changes?"

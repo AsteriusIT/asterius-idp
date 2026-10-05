@@ -686,7 +686,7 @@ export function DataTable<Row>({
           }
         />
       ) : (
-        <div className="table-wrap">
+        <div className="table-wrap" role="region" aria-label={`${caption ?? 'Results'} table, scroll horizontally for more columns`} tabIndex={0}>
           <Table aria-label={caption ?? "Table — scroll horizontally for more columns"}>
             {caption !== undefined && <TableCaption>{caption}</TableCaption>}
             <TableHeader>

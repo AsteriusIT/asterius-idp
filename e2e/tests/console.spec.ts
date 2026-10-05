@@ -358,6 +358,7 @@ async function openBranding(page: Page): Promise<void> {
   await page.getByRole('combobox', { name: /Switch tenant/ }).click();
   await page.getByRole('link', { name: 'Branding', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Branding', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Edit branding', exact: true }).click();
   await expect(page.getByLabel('Product name', { exact: true })).toBeVisible();
 }
 
@@ -384,6 +385,7 @@ test('branding previews locally, persists to a real sign-in page and resets', as
 
   await page.getByRole('button', { name: 'Save branding', exact: true }).click();
   await expect(page.getByRole('status').filter({ hasText: 'effective server model' })).toBeVisible();
+  await page.getByRole('button', { name: 'Edit branding', exact: true }).click();
   await page.getByLabel('Product name', { exact: true }).fill('Unsaved name');
   await page.getByRole('button', { name: 'Reload saved', exact: true }).click();
   await expect(page.getByLabel('Product name', { exact: true })).toHaveValue('Sweep Identity');
@@ -1236,6 +1238,8 @@ test('policy simulation uses actual references without saving a hypothetical dra
   });
   expect(stored.document.rules.some((rule) => rule.id === 'hypothetical-only')).toBe(false);
   await page.getByRole('button', { name: 'Cancel editing', exact: true }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Discard changes' }).click();
+  await expect(page.getByRole('heading', { name: 'Access policy', exact: true })).toBeVisible();
 });
 
 test('the shared-signals, audit and policy screens have no accessibility violation', async (

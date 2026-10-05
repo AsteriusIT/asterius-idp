@@ -397,6 +397,7 @@ input.capability-switch:disabled { opacity: .5; cursor: default; }
 .console-nav-link { min-height: 38px; height: auto; }
 .navigation-group, .tenant-context-label, .asterius-wordmark > span { font-size: 12px; }
 .field { max-width: 720px; }
+.editor-fields { min-width: 0; border: 0; padding: 0; margin: 0; gap: 20px; }
 .schema-editor { display: grid; gap: 24px; max-width: 960px; }
 .schema-editor .field { max-width: none; }
 .schema-editor textarea { min-height: 320px; font-family: var(--font-mono); }
@@ -671,9 +672,6 @@ input.capability-switch:disabled { opacity: .5; cursor: default; }
 .secret-saved svg { width: 16px; height: 16px; }
 .credential-secret-actions { background: transparent; border: 0; border-top: 1px solid var(--line); border-radius: 0; padding: 20px 0 0; }
 .resource-server-list { min-width: 0; }
-.resource-server-actions { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
-.resource-server-edit { width: 36px; height: 36px; padding: 0; display: inline-grid; place-items: center; }
-.resource-server-edit svg { width: 16px; height: 16px; }
 .resource-server-checkbox { display: inline-flex; align-items: center; gap: 10px; min-height: 40px; cursor: pointer; }
 .resource-server-checkbox input { flex: none; margin: 0; }
 .application-connection-grid dd { display: flex; align-items: center; gap: 4px; margin: 0; }

@@ -312,7 +312,7 @@ export function Users({ session }: Readonly<{ session: Session }>): JSX.Element 
       <Screen
         title="Add a user"
         description="Create a username now. Set up sign-in methods and access from the new user's page."
-        actions={<Button onClick={() => setView({ kind: 'directory' })}>Back to users</Button>}
+        back={{ label: 'Back to users', onClick: () => setView({ kind: 'directory' }) }}
       >
         <NewAccount
           session={session}
@@ -709,7 +709,7 @@ function Account({
     return (
       <Screen
         title="Account"
-        actions={<Button onClick={onBack}>Back to users</Button>}
+        back={{ label: 'Back to users', onClick: onBack }}
       >
         <Panel title="This account could not be read">
           <LoadFailure message={load.message} onRetry={refresh} />
