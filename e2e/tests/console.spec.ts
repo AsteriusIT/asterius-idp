@@ -1238,6 +1238,8 @@ test('policy simulation uses actual references without saving a hypothetical dra
   });
   expect(stored.document.rules.some((rule) => rule.id === 'hypothetical-only')).toBe(false);
   await page.getByRole('button', { name: 'Cancel editing', exact: true }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Discard changes' }).click();
+  await expect(page.getByRole('heading', { name: 'Access policy', exact: true })).toBeVisible();
 });
 
 test('the shared-signals, audit and policy screens have no accessibility violation', async (
