@@ -58,7 +58,7 @@ export function KubernetesAccess({session}: {session:Session}):JSX.Element {
       {rows.some(row=>row.error)&&<Message tone="error">Some application profiles could not be read. Refresh before treating this list as complete.<ul>{rows.filter(row=>row.error).map(row=><li key={row.client.client_id}>{row.client.client_name||row.client.client_id}: {row.error}</li>)}</ul></Message>}
       {cursor&&<div className="kubernetes-table-footer"><Button disabled={busy} variant="secondary" onClick={()=>void load(cursor)}>Load more applications</Button></div>}
     </section>
-    {creating&&<Panel title="Add a cluster profile" description="First register one confidential broker application per cluster, with OIDC compatibility, private_key_jwt, DPoP and ES256 public-subject ID tokens.">
+    {creating&&<Panel title="Add a cluster profile" description="First register one confidential broker application per cluster, with issuer discovery, private_key_jwt, DPoP and ES256 public-subject ID tokens.">
       <div className="field"><label id="broker-application-label">Broker application</label><BrokerApplicationPicker value={candidate} onChange={setCandidate} candidates={candidates}/></div>
       <Actions><a href={hrefOf('clients')} className="identity-link">Manage applications</a><Button variant="primary" disabled={!candidates.some(row=>row.client.client_id===candidate)} onClick={()=>{const row=candidates.find(row=>row.client.client_id===candidate);if(row)setSelected(row);}}>Configure cluster</Button></Actions>
       <p className="muted">Only loaded applications without a saved profile are listed. Load more above if your broker is missing.</p>
@@ -170,7 +170,7 @@ function Onboarding({profile,username}:{profile:ClusterProfile;username:string})
   return <>
     <Panel title="Cluster authentication" description={`Saved revision ${profile.revision}. Review these examples before applying; unsaved edits are excluded.`}>
     <div className="kubernetes-facts"><div><span>Issuer</span><code>{profile.issuer}</code><CopyValue value={profile.issuer} label="Copy issuer" iconOnly/></div><div><span>Audience</span><code>{profile.audience}</code><CopyValue value={profile.audience} label="Copy audience" iconOnly/></div></div>
-    <p>Use structured authentication or legacy OIDC flags. Configure trust in the issuer CA explicitly.</p>
+    <p>Use structured authentication configuration or legacy issuer flags. Configure trust in the issuer CA explicitly.</p>
     <YamlView label="Cluster authentication configuration" value={profile.authentication_configuration}/>
     <CopyValue value={profile.legacy_flags.map(shellQuote).join(' ')} label="Copy legacy API-server flags"/>
     <h3>Namespace access example</h3><p>These bindings grant read-only view access to the saved groups. Kubernetes RBAC remains the authority for cluster permissions.</p>

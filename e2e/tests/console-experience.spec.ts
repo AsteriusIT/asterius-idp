@@ -303,7 +303,7 @@ test('tenant-wide test console selects an application and user, then decodes an 
   });
   await page.setViewportSize({ width: 1920, height: 900 });
   await page.goto(`${entry}#/token-console`);
-  await expect(page.getByRole('heading', { name: 'OIDC test console' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Token test console' })).toBeVisible();
   await expect(page.getByRole('link', { name: 'Token test console' })).toHaveAttribute('aria-current', 'page');
   expect((await page.locator('.token-console-page').boundingBox())!.width).toBeGreaterThan(1480);
   if (process.env.E2E_SHOTS) await page.screenshot({ path: `${process.env.E2E_SHOTS}/tenant-token-console.png` });
@@ -1030,6 +1030,49 @@ test('conditional rollout stages locally and stale publication preserves the rev
   expect(writes[0]!.revision).toBe(`"${revision}"`);
   expect((writes[0]!.body as typeof document).conditional_scopes[0]!.mode).toBe('active');
   await expect(page.getByLabel('The rule document, as the evaluator reads it')).toContainText('"active"');
+  expect(errors).toEqual([]);
+});
+
+test('long policy editing uses a focused page and guarded return to saved rules', async ({ page }) => {
+  let document: { version: number; rules: { id: string; effect: string }[] } = { version: 1, rules: [] };
+  let writes = 0;
+  const errors = await prepare(page, (path, route) => {
+    if (path === 'session') return { body: { ...session, scopes: [...session.scopes, 'admin.policies:read', 'admin.policies:write'] } };
+    if (path === 'policies' && route.request().method() === 'PUT') {
+      writes++;
+      document = route.request().postDataJSON() as typeof document;
+      return { body: { revision: null } };
+    }
+    if (path === 'policies') return { body: { document, revision: null, rule_count: document.rules.length, updated_at: null } };
+    return undefined;
+  });
+  await page.goto(`${entry}#/policy`);
+  await page.getByRole('button', { name: 'Edit policy' }).click();
+  await expect(page.getByRole('heading', { name: 'Edit access policy' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Try a request' })).toHaveCount(0);
+  await page.setViewportSize({ width: 390, height: 800 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect((await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa']).analyze()).violations).toEqual([]);
+  if (process.env.E2E_SHOTS) {
+    await page.getByRole('heading', { name: 'Edit access policy' }).scrollIntoViewIfNeeded();
+    await page.screenshot({ path: `${process.env.E2E_SHOTS}/policy-editor-mobile.png` });
+  }
+  const editor = page.getByLabel('The rule document, as the evaluator reads it');
+  await editor.fill('{"version":1,"rules":[{"id":"draft","effect":"deny"}]}');
+  await page.getByRole('button', { name: 'Back to access policy' }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Keep editing' }).click();
+  await expect(editor).toContainText('draft');
+  await page.getByRole('button', { name: 'Cancel editing' }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Discard changes' }).click();
+  await expect(page.getByRole('heading', { name: 'Access policy', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Try a request' })).toBeVisible();
+  expect(writes).toBe(0);
+  await page.getByRole('button', { name: 'Edit policy' }).click();
+  await page.getByLabel('The rule document, as the evaluator reads it').fill('{"version":1,"rules":[{"id":"saved","effect":"deny"}]}');
+  await page.getByRole('button', { name: 'Save policy' }).click();
+  await expect(page.getByRole('heading', { name: 'Access policy', exact: true })).toBeVisible();
+  await expect(page.getByRole('cell', { name: 'saved' })).toBeVisible();
+  expect(writes).toBe(1);
   expect(errors).toEqual([]);
 });
 
