@@ -6,7 +6,7 @@ import type { JSX } from 'react';
 import { mutate, read, type Session } from './api';
 import { toast } from './components/ui/toast';
 import { providerCommand, draftFor, type OidcProvider, type ProviderDraft } from './oidc-providers-model';
-import { Badge, Button, ConfirmDialog, Field, LoadFailure, Message, Panel, Screen, Skeleton } from './ui';
+import { Actions, Badge, Button, ConfirmDialog, DataTable, EmptyState, Field, LoadFailure, Message, Panel, Screen, Skeleton } from './ui';
 
 interface Inventory {
   readonly providers: readonly OidcProvider[];
@@ -74,38 +74,23 @@ export function OidcProviders({ session }: Readonly<{ session: Session }>): JSX.
         toast.success('Provider removed');
         refresh();
       },
-      (cause: unknown) => { setBusy(false); setDeleting(null); setError(errorMessage(cause)); },
+      (cause: unknown) => { setBusy(false); setError(errorMessage(cause)); },
     );
   };
 
   const ready = load.kind === 'ready' ? load.inventory : null;
   const change = (patch: Partial<ProviderDraft>): void => setDraft((current) => current === null ? null : { ...current, ...patch });
+  const closeEditor = (): void => leave(() => { setDraft(null); setError(null); });
+  const openCreate = (): void => { setBaseline(JSON.stringify(EMPTY)); setDraft(EMPTY); setEditing(false); setError(null); };
 
-  return <Screen title="Sign-in providers" description="Register external sign-in providers for this tenant. Each provider has its own callback URL.">
-    <Message tone="info">Provider setup stores connection details. Users can then sign in through an enabled provider and link their account.</Message>
-    {error !== null && <Message tone="error">{error}</Message>}
-    <Panel title="External sign-in providers" description="Discovery and public keys are checked automatically while this page is visible, once per minute. These checks do not test client credentials or prove sign-in succeeds."
-      actions={canWrite && draft === null ? <Button variant="primary" onClick={() => { setBaseline(JSON.stringify(EMPTY)); setDraft(EMPTY); setEditing(false); setError(null); }}>Add provider</Button> : undefined}>
-      {load.kind === 'loading' && <Skeleton rows={3} label="Reading sign-in providers." />}
-      {load.kind === 'failed' && <LoadFailure message={load.message} onRetry={refresh} />}
-      {ready !== null && (ready.providers.length === 0 ? <p className="muted">No upstream sign-in providers are configured.</p> :
-        <div className="overflow-x-auto" tabIndex={0} role="region" aria-label="Sign-in providers"><table>
-          <caption className="visually-hidden">External sign-in providers</caption>
-          <thead><tr><th>Metadata health</th><th>Provider</th><th>Issuer</th><th>Status</th><th>Callback URL</th>{canWrite && <th>Actions</th>}</tr></thead>
-          <tbody>{ready.providers.map((provider) => <tr key={provider.id}><td><ProviderHealth id={provider.id} session={session} /></td>
-            <td><strong>{provider.name}</strong><br /><small>{provider.id}</small></td>
-            <td><code>{provider.issuer}</code><br /><small>Client: {provider.client_id}</small><br /><small>Username claim: {provider.username_claim ?? 'Generated name'}</small></td>
-            <td><Badge tone={provider.enabled ? 'ok' : 'neutral'}>{provider.enabled ? 'Enabled' : 'Disabled'}</Badge><br /><small>{provider.secret_configured ? 'Secret configured' : 'Secret needed'}</small><br /><small>{provider.allow_registration ? 'First login creates an account' : 'Existing linked accounts only'}</small></td>
-            <td><code className="break-all">{provider.callback_url}</code></td>
-            {canWrite && <td><div className="flex flex-wrap gap-2">
-              <Button small disabled={busy} onClick={() => leave(() => { setBaseline(JSON.stringify(draftFor(provider))); setDraft(draftFor(provider)); setEditing(true); setError(null); })}>Edit</Button>
-              <Button small variant="danger" disabled={busy} onClick={() => setDeleting(provider)}>Delete</Button>
-            </div></td>}
-          </tr>)}</tbody>
-        </table></div>)}
-    </Panel>
-    {draft !== null && canWrite && <Panel title={editing ? `Edit ${draft.name}` : 'Add a provider'} description="Use the issuer URL published by the external provider. The server fetches its discovery document securely.">
-      <fieldset disabled={busy} className="flex flex-col gap-3">
+  if (draft !== null && canWrite) return <Screen
+    title={editing ? 'Edit sign-in provider' : 'Add a provider'}
+    description="Use the issuer URL published by the external provider. The server fetches its discovery document securely."
+    back={{ label: 'Back to sign-in providers', onClick: closeEditor }}
+  >
+    <Panel title="Connection and sign-in settings" className="max-w-3xl">
+      {error !== null && <Message tone="error">{error}</Message>}
+      <fieldset disabled={busy} className="editor-fields">
         <Field label="Provider ID" required hint="A stable URL-safe name for this provider and its callback path.">{props => <input {...props} value={draft.id} disabled={editing} autoComplete="off" onChange={event => change({ id: event.target.value })} />}</Field>
         <Field label="Display name" required>{props => <input {...props} value={draft.name} onChange={event => change({ name: event.target.value })} />}</Field>
         <Field label="Issuer URL" required hint="Exact HTTPS issuer from the provider's discovery document.">{props => <input {...props} type="url" value={draft.issuer} placeholder="https://login.example.com" onChange={event => change({ issuer: event.target.value })} />}</Field>
@@ -116,9 +101,37 @@ export function OidcProviders({ session }: Readonly<{ session: Session }>): JSX.
         <label className="flex items-center gap-2"><input type="checkbox" checked={draft.allowRegistration} onChange={event => change({ allowRegistration: event.target.checked })} /> Create a new local account on first verified sign-in</label>
         <p className="muted">When off, only explicitly linked identities can sign in. New accounts never inherit an existing account through an email address.</p>
         {ready !== null && <p className="muted">Callback URL: <code className="break-all">{ready.callback_url_template.replace('{id}', draft.id || '{id}')}</code></p>}
-        <div className="flex flex-wrap gap-2"><Button variant="primary" onClick={save} disabled={busy}>{busy ? 'Saving…' : 'Save provider'}</Button><Button onClick={() => leave(() => { setDraft(null); setError(null); })} disabled={busy}>Cancel</Button></div>
+        <Actions><Button onClick={closeEditor} disabled={busy}>Cancel</Button><Button variant="primary" onClick={save} disabled={busy}>{busy ? 'Saving…' : editing ? 'Save changes' : 'Add provider'}</Button></Actions>
       </fieldset>
-    </Panel>}
-    {deleting !== null && <ConfirmDialog title={`Delete ${deleting.name}?`} body="The provider configuration and stored credential will be removed. Existing sign-in sessions are unaffected." confirmLabel="Delete provider" busy={busy} onConfirm={remove} onCancel={() => setDeleting(null)} />}
+    </Panel>
+  </Screen>;
+
+  return <Screen title="Sign-in providers" description="Register external sign-in providers for this tenant. Each provider has its own callback URL.">
+    <Message tone="info">Provider setup stores connection details. Users can then sign in through an enabled provider and link their account.</Message>
+    {error !== null && deleting === null && <Message tone="error">{error}</Message>}
+    <Panel title="External sign-in providers" description="Discovery and public keys are checked automatically while this page is visible, once per minute. These checks do not test client credentials or prove sign-in succeeds."
+      actions={canWrite ? <Button variant="primary" onClick={openCreate}>Add provider</Button> : undefined}>
+      {load.kind === 'loading' && <Skeleton rows={3} label="Reading sign-in providers." />}
+      {load.kind === 'failed' && <LoadFailure message={load.message} onRetry={refresh} />}
+      {ready !== null && <DataTable
+        caption="External sign-in providers"
+        rows={ready.providers}
+        rowKey={provider => provider.id}
+        search={{ of: provider => `${provider.name} ${provider.id} ${provider.issuer}`, label: 'Filter loaded sign-in providers' }}
+        empty={<EmptyState title="No sign-in providers" body="Add a provider to let people sign in with an external account." action={canWrite ? <Button onClick={openCreate}>Add provider</Button> : undefined} />}
+        columns={[
+          { key: 'health', header: 'Metadata health', cell: provider => <ProviderHealth id={provider.id} session={session} /> },
+          { key: 'provider', header: 'Provider', sortBy: provider => provider.name, cell: provider => <><strong>{provider.name}</strong><br /><small>{provider.id}</small></> },
+          { key: 'issuer', header: 'Issuer', cell: provider => <><code>{provider.issuer}</code><br /><small>Client: {provider.client_id}</small><br /><small>Username claim: {provider.username_claim ?? 'Generated name'}</small></> },
+          { key: 'status', header: 'Status', sortBy: provider => provider.enabled ? 1 : 0, cell: provider => <><Badge tone={provider.enabled ? 'ok' : 'neutral'}>{provider.enabled ? 'Enabled' : 'Disabled'}</Badge><br /><small>{provider.secret_configured ? 'Secret configured' : 'Secret needed'}</small><br /><small>{provider.allow_registration ? 'First login creates an account' : 'Existing linked accounts only'}</small></> },
+          { key: 'callback', header: 'Callback URL', cell: provider => <code className="break-all">{provider.callback_url}</code> },
+          ...(canWrite ? [{ key: 'actions', header: 'Actions', actions: true, cell: (provider: OidcProvider) => <div className="flex flex-wrap gap-2">
+              <Button small disabled={busy} onClick={() => leave(() => { setBaseline(JSON.stringify(draftFor(provider))); setDraft(draftFor(provider)); setEditing(true); setError(null); })}>Edit</Button>
+              <Button small variant="danger" disabled={busy} onClick={() => setDeleting(provider)}>Delete</Button>
+            </div> }] : []),
+        ]}
+      />}
+    </Panel>
+    {deleting !== null && <ConfirmDialog title={`Delete ${deleting.name}?`} body={<><p>The provider configuration and stored credential will be removed. Existing sign-in sessions are unaffected.</p>{error !== null && <Message tone="error">{error}</Message>}</>} confirmLabel="Delete provider" busy={busy} onConfirm={remove} onCancel={() => { setDeleting(null); setError(null); }} />}
   </Screen>;
 }

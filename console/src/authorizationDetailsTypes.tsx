@@ -5,7 +5,7 @@ import { PencilIcon, PlusIcon } from 'lucide-react';
 import { mutate, probe, read, type Session } from './api';
 
 import { draftError, parseSchema } from './authorization-details-type-model';
-import { Button, ConfirmDialog, Field, LoadFailure, Message, Panel, Screen, Skeleton } from './ui';
+import { Actions, Button, ConfirmDialog, DataTable, EmptyState, Field, LoadFailure, Message, Panel, Screen, Skeleton } from './ui';
 
 interface RegisteredType {
   readonly type: string;
@@ -100,31 +100,41 @@ export function AuthorizationDetailsTypes({ session }: Readonly<{ session: Sessi
     setName(item.type); setSchema(JSON.stringify(item.schema, null, 2)); setTemplate(item.consent_template ?? '');
     setEditing(true); setError(null); setEditorOpen(true);
   };
+  const closeEditor = (): void => leave(() => { setEditorOpen(false); clearDraft(); });
 
   // These are the authorization detail types defined by RFC 9396. Keep that
   // implementation reference here; the operator-facing copy uses product
   // language instead of asking its reader to interpret a specification number.
   return <Screen
-    title="Authorization details"
-    description={`Structured authorization request types accepted by ${session.workspace}.`}
-    actions={mayWrite && !editorOpen && <Button variant="primary" onClick={openCreate}><PlusIcon aria-hidden="true" /> Register type</Button>}
+    title={editorOpen ? (editing ? `Edit ${name}` : 'Register authorization details type') : 'Authorization details'}
+    description={editorOpen ? 'Validate the schema and review the consent wording before saving.' : `Structured authorization request types accepted by ${session.workspace}.`}
+    {...(editorOpen ? { back: { label: 'Back to authorization details', onClick: closeEditor } } : {})}
+    actions={mayWrite && !editorOpen && <Button variant="primary" onClick={openCreate}><PlusIcon data-icon="inline-start" aria-hidden="true" /> Register type</Button>}
   >
-    {notice !== null && <Message tone="success">{notice}</Message>}
-    {error !== null && !editorOpen && <Message tone="error">{error}</Message>}
+    {notice !== null && !editorOpen && <Message tone="success">{notice}</Message>}
+    {error !== null && !editorOpen && withdrawing === null && <Message tone="error">{error}</Message>}
     {withdrawing !== null && <ConfirmDialog title={`Withdraw ${withdrawing}?`}
       body={<><p>This removes the registration from {session.workspace}. Applications depending on it may no longer obtain the expected access. Already issued tokens retain their existing validity.</p>{error && <Message tone="error">{error}</Message>}</>}
       confirmLabel="Withdraw registration" busy={busy} onCancel={() => { setWithdrawing(null); setError(null); }} onConfirm={() => void withdraw(withdrawing)} />}
     {!editorOpen && <Panel title="Registered types">
       {load.kind === 'loading' && <Skeleton rows={3} label="Reading the authorization details types." />}
       {load.kind === 'failed' && <LoadFailure message={load.message} onRetry={refresh} />}
-      {load.kind === 'ready' && (load.items.length === 0 ? <p className="muted">No authorization details types are registered.</p> :
-        <div className="table-wrap"><table><caption className="visually-hidden">Registered authorization details types</caption><thead><tr><th>Type</th><th>Consent</th><th>Schema</th>{mayWrite && <th>Actions</th>}</tr></thead>
-          <tbody>{load.items.map(item => <tr key={item.type}><td><code>{item.type}</code></td><td>{item.consent_template ?? 'Undescribed'}</td><td><code>{JSON.stringify(item.schema)}</code></td>
-            {mayWrite && <td><Button small className="size-8 p-0" disabled={busy} aria-label={`Edit ${item.type}`} title="Edit" onClick={() => edit(item)}><PencilIcon aria-hidden="true" /></Button> <Button small variant="danger" disabled={busy} onClick={() => setWithdrawing(item.type)}>Withdraw</Button></td>}</tr>)}</tbody></table></div>)}
+      {load.kind === 'ready' && <DataTable
+        caption="Registered authorization details types"
+        rows={load.items}
+        rowKey={item => item.type}
+        search={{ of: item => `${item.type} ${item.consent_template ?? ''}`, label: 'Filter loaded authorization details types' }}
+        empty={<EmptyState title="No registered types" body="Register a type to accept structured authorization requests." action={mayWrite ? <Button onClick={openCreate}>Register type</Button> : undefined} />}
+        columns={[
+          { key: 'type', header: 'Type', sortBy: item => item.type, cell: item => <code>{item.type}</code> },
+          { key: 'consent', header: 'Consent', cell: item => item.consent_template ?? 'Undescribed' },
+          { key: 'schema', header: 'Schema', cell: item => <code>{JSON.stringify(item.schema)}</code> },
+          ...(mayWrite ? [{ key: 'actions', header: 'Actions', actions: true, cell: (item: RegisteredType) => <Actions><Button small disabled={busy} aria-label={`Edit ${item.type}`} onClick={() => edit(item)}><PencilIcon data-icon="inline-start" aria-hidden="true" />Edit</Button><Button small variant="danger" disabled={busy} onClick={() => setWithdrawing(item.type)}>Withdraw</Button></Actions> }] : []),
+        ]}
+      />}
     </Panel>}
-    {mayWrite && editorOpen && <section className="schema-editor" aria-label="Authorization type editor">
-      <h3>{editing ? 'Edit authorization details type' : 'Register authorization details type'}</h3>
-      <p className="muted">Validate the schema and review the consent wording before saving. The server validates the supported schema rules.</p>
+    {mayWrite && editorOpen && <Panel title="Schema and consent" description="The server validates the supported schema rules." className="max-w-5xl">
+      <div className="schema-editor">
         {error !== null && <Message tone="error">{error}</Message>}
         <Field label="Type name">{props => <input {...props} value={name} disabled={editing} onChange={event => setName(event.target.value)} placeholder="payment_initiation" />}</Field>
         <Field label="Consent template" hint="A user-facing sentence, up to 512 characters. Leave blank to mark the type undescribed.">{props => <input {...props} value={template} maxLength={512} onChange={event => setTemplate(event.target.value)} placeholder="Initiate the described payment" />}</Field>
@@ -137,10 +147,11 @@ export function AuthorizationDetailsTypes({ session }: Readonly<{ session: Sessi
         <Panel title="Consent wording preview" description="This is the operator-provided wording; the actual request may also show its actions, data and locations.">
           <p>{template.trim() || 'Perform an action this server has no description for'}</p><code>{name || 'Type name'}</code>
         </Panel>
-        <div className="actions">
-          <Button disabled={busy} onClick={() => leave(() => { setEditorOpen(false); clearDraft(); })}>Cancel</Button>
+        <Actions>
+          <Button disabled={busy} onClick={closeEditor}>Cancel</Button>
           <Button variant="primary" disabled={busy} onClick={() => void save()}>{busy ? 'Validating…' : editing ? 'Save changes' : 'Validate and register'}</Button>
-        </div>
-    </section>}
+        </Actions>
+      </div>
+    </Panel>}
   </Screen>;
 }

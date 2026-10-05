@@ -4,6 +4,7 @@ import {ApiError, mutate, read, type Session} from './api';
 import type {ClientRow} from './clients';
 import type {GroupRow} from './groups-model';
 import {Popover, PopoverContent, PopoverTrigger} from './components/ui/popover';
+import {Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle} from './components/ui/dialog';
 import {Command, CommandEmpty, CommandInput, CommandItem, CommandList} from './components/ui/command';
 import {CopyValue} from './components/copy-value';
 import {YamlView} from './components/yaml-view';
@@ -41,7 +42,7 @@ export function KubernetesAccess({session}: {session:Session}):JSX.Element {
   const configured=rows.filter(row=>row.profile!==null);
   const candidates=rows.filter(row=>row.profile===null && !row.error);
   return <Screen title="Kubernetes access" description="Connect a cluster, choose the groups it trusts and review how people receive access."
-    actions={<Actions><Button disabled={busy} variant="ghost" onClick={()=>void load()}><RefreshCwIcon aria-hidden="true"/>Refresh</Button>{session.scopes.includes('admin.clients:write')&&<Button variant="primary" onClick={()=>setCreating(!creating)}><PlusIcon aria-hidden="true"/>Add cluster</Button>}</Actions>}>
+    actions={<Actions><Button disabled={busy} variant="ghost" onClick={()=>void load()}><RefreshCwIcon aria-hidden="true"/>Refresh</Button>{session.scopes.includes('admin.clients:write')&&<Button variant="primary" onClick={()=>setCreating(true)}><PlusIcon aria-hidden="true"/>Add cluster</Button>}</Actions>}>
     <section className="kubernetes-clusters" aria-label="Connected clusters">
       <p className="muted">Saved authentication profiles in this workspace. Kubernetes RBAC determines what each identity can do.</p>
       {busy&&rows.length===0&&<Skeleton rows={3} label="Reading cluster applications."/>}
@@ -58,11 +59,15 @@ export function KubernetesAccess({session}: {session:Session}):JSX.Element {
       {rows.some(row=>row.error)&&<Message tone="error">Some application profiles could not be read. Refresh before treating this list as complete.<ul>{rows.filter(row=>row.error).map(row=><li key={row.client.client_id}>{row.client.client_name||row.client.client_id}: {row.error}</li>)}</ul></Message>}
       {cursor&&<div className="kubernetes-table-footer"><Button disabled={busy} variant="secondary" onClick={()=>void load(cursor)}>Load more applications</Button></div>}
     </section>
-    {creating&&<Panel title="Add a cluster profile" description="First register one confidential broker application per cluster, with OIDC compatibility, private_key_jwt, DPoP and ES256 public-subject ID tokens.">
-      <div className="field"><label id="broker-application-label">Broker application</label><BrokerApplicationPicker value={candidate} onChange={setCandidate} candidates={candidates}/></div>
-      <Actions><a href={hrefOf('clients')} className="identity-link">Manage applications</a><Button variant="primary" disabled={!candidates.some(row=>row.client.client_id===candidate)} onClick={()=>{const row=candidates.find(row=>row.client.client_id===candidate);if(row)setSelected(row);}}>Configure cluster</Button></Actions>
-      <p className="muted">Only loaded applications without a saved profile are listed. Load more above if your broker is missing.</p>
-    </Panel>}
+    <Dialog open={creating} onOpenChange={setCreating}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Add a cluster profile</DialogTitle><DialogDescription>Choose a dedicated confidential broker application to configure for this cluster.</DialogDescription></DialogHeader>
+        <div className="field"><label id="broker-application-label">Broker application</label><BrokerApplicationPicker value={candidate} onChange={setCandidate} candidates={candidates}/></div>
+        <p className="muted">Only loaded applications without a saved profile are listed. Load more above if your broker is missing. The broker needs issuer discovery, private_key_jwt, DPoP and ES256 public-subject ID tokens.</p>
+        <DialogFooter><Button onClick={()=>setCreating(false)}>Cancel</Button><Button variant="primary" disabled={!candidates.some(row=>row.client.client_id===candidate)} onClick={()=>{const row=candidates.find(row=>row.client.client_id===candidate);if(row){setCreating(false);setSelected(row);}}}>Configure cluster</Button></DialogFooter>
+        <a href={hrefOf('clients')} className="identity-link">Manage applications</a>
+      </DialogContent>
+    </Dialog>
   </Screen>;
 }
 
@@ -170,7 +175,7 @@ function Onboarding({profile,username}:{profile:ClusterProfile;username:string})
   return <>
     <Panel title="Cluster authentication" description={`Saved revision ${profile.revision}. Review these examples before applying; unsaved edits are excluded.`}>
     <div className="kubernetes-facts"><div><span>Issuer</span><code>{profile.issuer}</code><CopyValue value={profile.issuer} label="Copy issuer" iconOnly/></div><div><span>Audience</span><code>{profile.audience}</code><CopyValue value={profile.audience} label="Copy audience" iconOnly/></div></div>
-    <p>Use structured authentication or legacy OIDC flags. Configure trust in the issuer CA explicitly.</p>
+    <p>Use structured authentication configuration or legacy issuer flags. Configure trust in the issuer CA explicitly.</p>
     <YamlView label="Cluster authentication configuration" value={profile.authentication_configuration}/>
     <CopyValue value={profile.legacy_flags.map(shellQuote).join(' ')} label="Copy legacy API-server flags"/>
     <h3>Namespace access example</h3><p>These bindings grant read-only view access to the saved groups. Kubernetes RBAC remains the authority for cluster permissions.</p>

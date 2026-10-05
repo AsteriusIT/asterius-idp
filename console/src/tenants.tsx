@@ -214,7 +214,7 @@ export function Tenants({ session }: Readonly<{ session: Session }>): JSX.Elemen
       <Screen
         title="Add a tenant"
         description="Provision the tenant and its initial signing keys in one operation."
-        actions={<Button onClick={() => setCreating(false)}>Back to tenants</Button>}
+        back={{ label: 'Back to tenants', onClick: () => setCreating(false) }}
       >
         <NewTenant
           session={session}

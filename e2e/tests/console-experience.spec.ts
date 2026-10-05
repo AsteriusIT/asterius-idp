@@ -78,6 +78,7 @@ test('Kubernetes page uses searchable pickers, YAML examples and a separate term
   await page.getByRole('combobox', { name: 'Search broker applications' }).fill('unused');
   await expect(page.getByRole('option', { name: /Unused broker/ })).toBeVisible();
   await page.keyboard.press('Escape');
+  await page.getByRole('dialog', { name: 'Add a cluster profile' }).getByRole('button', { name: 'Cancel' }).click();
   await page.getByRole('button', { name: /View production/ }).click();
   await expect(page.getByRole('region', { name: 'Cluster authentication configuration' })).toContainText('apiVersion:');
   await expect(page.getByRole('region', { name: 'Cluster authentication configuration' })).not.toContainText('"apiVersion"');
@@ -202,7 +203,7 @@ test('schema editor reflows and remains accessible in both themes', async ({ pag
       await expect(save).toBeEnabled();
       await save.scrollIntoViewIfNeeded();
       await expect(save).toBeInViewport();
-      await page.getByRole('heading', { name: 'Authorization details', exact: true }).scrollIntoViewIfNeeded();
+      await page.getByRole('heading', { name: 'Register authorization details type', exact: true }).scrollIntoViewIfNeeded();
       if (width === 390 || width === 1440) {
         expect((await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa']).analyze()).violations).toEqual([]);
         if (process.env.E2E_SHOTS) await page.screenshot({ path: `${process.env.E2E_SHOTS}/schema-${width}-${dark ? 'dark' : 'light'}.png` });
@@ -303,7 +304,7 @@ test('tenant-wide test console selects an application and user, then decodes an 
   });
   await page.setViewportSize({ width: 1920, height: 900 });
   await page.goto(`${entry}#/token-console`);
-  await expect(page.getByRole('heading', { name: 'OIDC test console' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Token test console' })).toBeVisible();
   await expect(page.getByRole('link', { name: 'Token test console' })).toHaveAttribute('aria-current', 'page');
   expect((await page.locator('.token-console-page').boundingBox())!.width).toBeGreaterThan(1480);
   if (process.env.E2E_SHOTS) await page.screenshot({ path: `${process.env.E2E_SHOTS}/tenant-token-console.png` });
@@ -570,6 +571,67 @@ test('OIDC metadata checks run automatically and allow an explicit retry', async
   expect(checks).toBe(1);
   await page.getByRole('button', { name: 'Check now', exact: true }).click();
   await expect.poll(() => checks).toBe(2);
+  expect(errors).toEqual([]);
+});
+
+test('provider editing has its own page and failed deletion retains its confirmation', async ({ page }) => {
+  let deletes = 0;
+  const errors = await prepare(page, (path, route) => {
+    if (path === 'session') return { body: { ...session, scopes: [...session.scopes, 'admin.oidc_providers:read', 'admin.oidc_providers:write'] } };
+    if (path === 'oidc/providers' && route.request().method() === 'DELETE') {
+      deletes++;
+      return { status: 409, body: { error: { message: 'This provider still has linked identities.' } } };
+    }
+    if (path === 'oidc/providers') return { body: { callback_url_template: 'https://idp.example.test/callback/{id}', providers: [{ id: 'external', name: 'External provider', issuer: 'https://issuer.example.test', client_id: 'console', enabled: true, secret_configured: true, callback_url: 'https://idp.example.test/callback/external' }] } };
+    if (path === 'oidc/providers/check') return { body: { checked_at: 1700000000, checks: [] } };
+    return undefined;
+  });
+  await page.goto(`${entry}#/oidc-providers`);
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Edit sign-in provider' })).toBeVisible();
+  await expect(page.getByRole('table', { name: 'External sign-in providers' })).toHaveCount(0);
+  if (process.env.E2E_SHOTS) await page.screenshot({ path: `${process.env.E2E_SHOTS}/provider-editor.png` });
+  await page.setViewportSize({ width: 390, height: 800 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect((await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa']).analyze()).violations).toEqual([]);
+  if (process.env.E2E_SHOTS) await page.screenshot({ path: `${process.env.E2E_SHOTS}/provider-editor-mobile.png` });
+  await page.getByLabel('Display name').fill('');
+  await page.getByLabel('Display name').pressSequentially('Changed provider');
+  await expect(page.getByLabel('Display name')).toBeFocused();
+  await page.getByRole('button', { name: 'Back to sign-in providers' }).click();
+  await page.getByRole('button', { name: 'Keep editing' }).click();
+  await expect(page.getByLabel('Display name')).toHaveValue('Changed provider');
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await page.getByRole('button', { name: 'Discard changes', exact: true }).click();
+  await page.getByRole('button', { name: 'Delete', exact: true }).click();
+  const dialog = page.getByRole('alertdialog');
+  await dialog.getByRole('button', { name: 'Delete provider' }).click();
+  await expect(dialog.getByRole('alert')).toContainText('This provider still has linked identities.');
+  expect(deletes).toBe(1);
+  expect(errors).toEqual([]);
+});
+
+test('branding editor can return to its saved read view with clean or discarded changes', async ({ page }) => {
+  const theme = { palette: { background: '#ffffff', text: '#18181b', muted_text: '#626975', accent: '#4054e8', accent_text: '#ffffff', danger: '#b42318' }, font: 'geist', radius_px: 8, spacing_px: 8, product_name: 'Review identity' };
+  const errors = await prepare(page, path => {
+    if (path === 'session') return { body: { ...session, scopes: [...session.scopes, 'admin.theme:read', 'admin.theme:write'] } };
+    if (path === 'theme') return { body: { theme, schema: {} } };
+    return undefined;
+  });
+  await page.goto(`${entry}#/branding`);
+  await expect(page.getByRole('heading', { name: 'Branding', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Edit branding' }).click();
+  await page.getByRole('button', { name: 'Back to branding' }).click();
+  await expect(page.getByRole('heading', { name: 'Branding', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Edit branding' }).click();
+  await page.getByLabel('Product name').fill('Unsaved identity');
+  await page.getByRole('button', { name: 'Cancel editing' }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Keep editing' }).click();
+  await expect(page.getByLabel('Product name')).toHaveValue('Unsaved identity');
+  await page.getByRole('button', { name: 'Cancel editing' }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Discard changes' }).click();
+  await expect(page.getByRole('heading', { name: 'Branding', exact: true })).toBeVisible();
+  await expect(page.getByText('Review identity', { exact: true })).toBeVisible();
   expect(errors).toEqual([]);
 });
 
