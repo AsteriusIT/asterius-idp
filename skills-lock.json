@@ -24,6 +24,18 @@
       "sourceType": "github",
       "skillPath": "skills/improve-ui/SKILL.md",
       "computedHash": "5bd7689c5508c6bd8166f796b3d1bd32255077447595b14b60fac9847dce63f1"
+    },
+    "migrate-radix-to-base": {
+      "source": "shadcn/ui",
+      "sourceType": "github",
+      "skillPath": "skills/migrate-radix-to-base/SKILL.md",
+      "computedHash": "e1f2030ee5059be3dff0812ca0e4b995ee9fa3132176f049ebe6c90346a6755e"
+    },
+    "shadcn": {
+      "source": "shadcn/ui",
+      "sourceType": "github",
+      "skillPath": "skills/shadcn/SKILL.md",
+      "computedHash": "f615de216e085a84e31593ad0fa9062232adc40cd87b7c7ab2b8e49abf6500be"
     }
   }
 }
