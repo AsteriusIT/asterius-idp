@@ -78,7 +78,16 @@ export function Branding({ session }: Readonly<{ session: Session }>): JSX.Eleme
 
   useEffect(refresh, [refresh]);
   const dirty = load.kind === 'ready' && draft !== null && (isDirty(load.theme, draft) || logoFile !== null);
-  useUnsavedChanges(dirty);
+  const leave = useUnsavedChanges(dirty);
+  const closeEditor = (): void => leave(() => {
+    if (load.kind !== 'ready') return;
+    setDraft(draftOf(load.theme));
+    setLogoFile(null);
+    setLogoPreview(null);
+    setRefusal(null);
+    setServerErrors({});
+    setEditing(false);
+  });
 
   useEffect(() => {
     if (draft === null || preview.current === null) return;
@@ -221,7 +230,8 @@ export function Branding({ session }: Readonly<{ session: Session }>): JSX.Eleme
   const safeLinks = links.filter(([, url, field]) => url !== '' && previewErrors[field] === undefined);
 
   return (
-    <Screen title="Branding" description="Shape the sign-in experience without changing the administration console.">
+    <Screen title={editing ? 'Edit branding' : 'Branding'} description="Shape the sign-in experience without changing the administration console."
+      {...(editing ? { back: { label: 'Back to branding', onClick: closeEditor } } : {})}>
       {!canWrite && <Message tone="info">You can preview the saved branding, but your session cannot change it.</Message>}
       {dirty && <Message tone="info">You have unsaved changes.</Message>}
       {notice !== null && <Message tone="success">{notice}</Message>}
@@ -258,6 +268,7 @@ export function Branding({ session }: Readonly<{ session: Session }>): JSX.Eleme
             {([['Help URL', 'helpUrl'], ['Privacy URL', 'privacyUrl'], ['Terms URL', 'termsUrl']] as const).map(([label, field]) => <Field key={field} label={label} error={errors[field] ?? null}>{(props) => <input {...props} type="url" placeholder="Enter a secure URL" value={draft[field]} disabled={!canWrite || busy} onChange={(event) => change(field, event.target.value)} />}</Field>)}
           </Panel>
           <Actions end>
+            <Button onClick={closeEditor} disabled={busy}>Cancel editing</Button>
             <Button onClick={refresh} disabled={busy || !dirty}>Reload saved</Button>
             <Button variant="danger" onClick={() => setResetting(true)} disabled={!canWrite || busy}>Reset defaults</Button>
             <Button type="submit" variant="primary" disabled={!canWrite || busy || !dirty || Object.keys(previewErrors).length > 0}>Save branding</Button>
