@@ -76,7 +76,8 @@ node scripts/kubernetes-e2e/prepare-alternates.mjs
 cluster_created=1
 kind create cluster --name "$cluster_name" --image kindest/node:v1.35.0 --config "$run_dir/kind.yaml" --kubeconfig "$run_dir/admin-kubeconfig" --wait 120s
 cluster_created=1
-kind_gateway="$(docker network inspect kind | python3 -c 'import json,sys,ipaddress; print(next(c["Gateway"] for c in json.load(sys.stdin)[0]["IPAM"]["Config"] if ipaddress.ip_address(c["Gateway"]).version==4))')"
+# Read the actual node gateway; Docker may omit defaults from network IPAM.
+kind_gateway="$(docker inspect "$cluster_name-control-plane" --format '{{(index .NetworkSettings.Networks "kind").Gateway}}' | python3 -c 'import ipaddress,sys; print(ipaddress.IPv4Address(sys.stdin.read().strip()))')"
 docker run -d --name "$issuer_container" --network "container:$cluster_name-control-plane" alpine/socat@sha256:5ffbd6ae916cbad86a58fabe0d6d5a6fd5c2b47ddf031e82996baac9300e732f TCP-LISTEN:9447,bind=127.0.0.1,fork,reuseaddr "TCP:$kind_gateway:9447" >/dev/null
 issuer_created=1
 kubectl --kubeconfig "$run_dir/admin-kubeconfig" create namespace human-access
