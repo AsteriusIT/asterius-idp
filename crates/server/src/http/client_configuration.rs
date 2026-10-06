@@ -1682,7 +1682,7 @@ mod tests {
         ];
         for description in descriptions {
             assert_eq!(nqschar(description), description, "{description:?}");
-            assert!(!description.is_empty());
+            assert_ne!(description.len(), 0);
         }
     }
 
@@ -1919,7 +1919,7 @@ mod tests {
             after.scopes.is_empty(),
             "an omitted scope string was preserved"
         );
-        assert!(!before.post_logout_redirect_uris.is_empty());
+        assert_ne!(before.post_logout_redirect_uris.len(), 0);
         assert!(
             after.post_logout_redirect_uris.is_empty(),
             "an omitted post_logout_redirect_uris list was preserved"

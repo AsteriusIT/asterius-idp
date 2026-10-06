@@ -30,7 +30,7 @@
 //! and telling them apart turns this endpoint into an oracle for whether a
 //! stolen token has been revoked yet.
 //!
-//! The separate [`workload`] profile also accepts external Kubernetes and GitHub JWT
+//! The separate workload profile also accepts external Kubernetes and GitHub JWT
 //! subject from an explicitly enabled tenant trust. It authenticates the client
 //! independently, validates exact provider claims, and commits replay consumption
 //! with the bounded DPoP child grant. Local-issuer tokens never fall back to that
@@ -1524,7 +1524,7 @@ mod tests {
         let actors = chain_actors(&chain);
 
         // Assert.
-        assert!(actors.is_empty());
+        assert_eq!(actors.len(), 0);
     }
 
     #[test]

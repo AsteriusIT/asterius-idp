@@ -1606,7 +1606,7 @@ mod tests {
         // Assert
         assert_eq!(after.description.as_deref(), Some("staging"));
         assert_eq!(after.inactivity_timeout, Some(3600));
-        assert!(after.events_requested.is_empty());
+        assert_eq!(after.events_requested.len(), 0);
     }
 
     /// A `PUT` that removes `delivery` leaves the stream deliverable, by the

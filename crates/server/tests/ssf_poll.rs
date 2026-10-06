@@ -508,7 +508,7 @@ async fn a_poll_for_no_events_returns_none() {
 
     // Assert
     let body = body_of(response).await;
-    assert!(delivered(&body).is_empty());
+    assert_eq!(delivered(&body).len(), 0);
     assert_eq!(body["moreAvailable"], json!(true));
 }
 
@@ -569,10 +569,10 @@ async fn a_reported_set_is_recorded_and_not_delivered_again() {
 
     // Assert
     assert_eq!(response.status(), StatusCode::OK);
-    assert!(fixture.store.held(&fixture.stream).is_empty());
+    assert_eq!(fixture.store.held(&fixture.stream).len(), 0);
     assert!(fixture.trail().contains(&EventType::SSF_SET_REJECTED));
     let next = body_of(fixture.post(json!({"returnImmediately": true})).await).await;
-    assert!(delivered(&next).is_empty());
+    assert_eq!(delivered(&next).len(), 0);
 }
 
 /// §2.4: a `setErrs` entry with no `err` is not a report this transmitter can
@@ -613,7 +613,7 @@ async fn a_long_poll_with_nothing_to_deliver_returns_empty() {
     // Assert
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_of(response).await;
-    assert!(delivered(&body).is_empty());
+    assert_eq!(delivered(&body).len(), 0);
     assert_eq!(body["moreAvailable"], json!(false));
 }
 
@@ -966,7 +966,7 @@ async fn a_reference_receiver_that_refuses_a_set_still_drains_the_rest() {
 
     // Assert
     assert_eq!(receiver.seen, vec!["set-0", "set-2"]);
-    assert!(fixture.store.held(&fixture.stream).is_empty());
+    assert_eq!(fixture.store.held(&fixture.stream).len(), 0);
     assert!(fixture.trail().contains(&EventType::SSF_SET_REJECTED));
 }
 

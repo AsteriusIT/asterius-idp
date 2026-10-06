@@ -236,32 +236,35 @@ mod tests {
             .unwrap();
         repository.save(&tenant(), &narrowed).await.unwrap();
         local.invalidate();
-        assert!(
+        assert_eq!(
             local
                 .for_tenant(&tenant())
                 .await
                 .unwrap()
                 .acr_policy()
                 .levels()
-                .is_empty()
+                .len(),
+            0
         );
-        assert!(
-            !local
+        assert_ne!(
+            local
                 .for_tenant(&other)
                 .await
                 .unwrap()
                 .acr_policy()
                 .levels()
-                .is_empty()
+                .len(),
+            0
         );
-        assert!(
-            !replica
+        assert_ne!(
+            replica
                 .for_tenant(&tenant())
                 .await
                 .unwrap()
                 .acr_policy()
                 .levels()
-                .is_empty()
+                .len(),
+            0
         );
         replica
             .cached
@@ -272,14 +275,15 @@ mod tests {
             .1 = Instant::now()
             .checked_sub(CACHE_TTL)
             .expect("test clock supports the cache TTL lookback");
-        assert!(
+        assert_eq!(
             replica
                 .for_tenant(&tenant())
                 .await
                 .unwrap()
                 .acr_policy()
                 .levels()
-                .is_empty()
+                .len(),
+            0
         );
     }
 

@@ -298,7 +298,7 @@ mod tests {
         let segments: Vec<&str> = jws.as_str().split('.').collect();
         assert_eq!(segments.len(), 3);
         for segment in &segments {
-            assert!(!segment.is_empty());
+            assert_ne!(segment.len(), 0);
             assert!(!segment.contains('='), "padding in {segment}");
             assert!(
                 !segment.contains('+') && !segment.contains('/'),

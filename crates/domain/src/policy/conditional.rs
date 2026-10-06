@@ -713,12 +713,13 @@ mod tests {
             .is_err()
         );
         assert!(RuleSet::from_json(&json!({"version":1,"rules":[{"id":"bypass","effect":"permit","when":{"device_compliance":"compliant"}}]})).is_err());
-        assert!(
+        assert_eq!(
             scope(&json!({"application_sensitivity":"critical"}))
                 .evaluate(&request(BTreeMap::new()))
                 .context()
                 .acr_values()
-                .is_empty()
+                .len(),
+            0
         );
     }
     #[test]

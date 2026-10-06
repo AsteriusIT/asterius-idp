@@ -1810,7 +1810,7 @@ mod tests {
     fn a_nonce_is_nqchar_and_unpredictable_looking() {
         let issuer = NonceIssuer::generate().expect("csprng");
         let nonce = issuer.issue(AUDIENCE, now());
-        assert!(!nonce.is_empty());
+        assert_ne!(nonce.len(), 0);
         assert!(
             nonce
                 .bytes()

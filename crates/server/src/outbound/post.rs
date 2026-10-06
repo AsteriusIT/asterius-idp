@@ -858,7 +858,7 @@ mod tests {
 
         // Act / Assert
         assert_eq!(timed_out.status(), None);
-        assert!(timed_out.body().is_empty());
+        assert_eq!(timed_out.body().len(), 0);
     }
 
     /// A stored `Authorization` that HTTP cannot carry is a misconfiguration,

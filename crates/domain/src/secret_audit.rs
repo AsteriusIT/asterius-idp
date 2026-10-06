@@ -216,7 +216,7 @@ mod tests {
 
         // ...and does not fire on the comment that explains why it is banned.
         let explanation = "// never write secret.expose() == other; use ct_eq\n";
-        assert!(logical_lines(explanation).is_empty());
+        assert_eq!(logical_lines(explanation).len(), 0);
 
         // ...nor on a legitimate exposure next to an unrelated comparison.
         let innocent = "let url = config.url.expose();\nif retries == 0 {\n";

@@ -532,7 +532,7 @@ mod tests {
             "a body stated the groups a rule reads"
         );
         assert!(parsed.subject.roles().is_empty());
-        assert!(parsed.subject.grants().is_empty());
+        assert_eq!(parsed.subject.grants().len(), 0);
     }
 
     #[test]

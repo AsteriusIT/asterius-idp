@@ -75,23 +75,26 @@ async fn bindings_are_exact_and_registration_never_takes_over_email() {
             .expect("provider names"),
         vec![(UserId::new(victim), "Corp".to_owned())]
     );
-    assert!(
+    assert_eq!(
         two.provider_names_for_users(&page_ids)
             .await
             .expect("tenant fence")
-            .is_empty()
+            .len(),
+        0
     );
-    assert!(
+    assert_eq!(
         one.provider_names_for_users(&[])
             .await
             .expect("empty page")
-            .is_empty()
+            .len(),
+        0
     );
-    assert!(
+    assert_eq!(
         one.provider_names_for_users(&[page_ids[1]])
             .await
             .expect("unlinked page")
-            .is_empty()
+            .len(),
+        0
     );
     assert!(
         one.link(

@@ -582,7 +582,7 @@ mod tests {
                 error.code()
             );
             assert!([400, 401, 403].contains(&error.status()));
-            assert!(!error.description().is_empty());
+            assert_ne!(error.description().len(), 0);
         }
     }
 

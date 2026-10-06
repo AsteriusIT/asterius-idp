@@ -2468,7 +2468,7 @@ db_test! {
             beta.find(&ClientId::new("c.abc")).await.expect("find").is_none(),
             "the other tenant's client was visible"
         );
-        assert!(beta.list().await.expect("list").is_empty());
+        assert_eq!(beta.list().await.expect("list").len(), 0);
         assert_eq!(alpha.list().await.expect("list").len(), 1);
 
         // Both tenants may hold the same identifier without either seeing the
@@ -6147,9 +6147,7 @@ mod grants {
                 repo.list_for_subject(&SubjectId::new("sub-1")).await.expect("list"),
                 vec![found]
             );
-            assert!(
-                repo.list_for_subject(&SubjectId::new("sub-2")).await.expect("list").is_empty()
-            );
+            assert_eq!(repo.list_for_subject(&SubjectId::new("sub-2")).await.expect("list").len(), 0);
             assert!(
                 repo.find(&GrantId::new("00000000-0000-4000-8000-000000000000"))
                     .await
@@ -6486,7 +6484,7 @@ mod grants {
                 0,
                 "a refresh token was revoked by a revocation that failed"
             );
-            assert!(denylisted(&db.pool, "demo").await.is_empty());
+            assert_eq!(denylisted(&db.pool, "demo").await.len(), 0);
             let found = repo.find(&grant.id).await.expect("find").expect("present");
             assert_eq!(
                 found.status(now),
@@ -6578,7 +6576,7 @@ mod grants {
 
             // Reads.
             assert!(beta.find(&theirs.id).await.expect("find").is_none());
-            assert!(beta.list_for_subject(&SubjectId::new("sub-1")).await.expect("list").is_empty());
+            assert_eq!(beta.list_for_subject(&SubjectId::new("sub-1")).await.expect("list").len(), 0);
             assert!(matches!(beta.claim(&theirs.id, epoch()).await, Err(DomainError::NotFound)));
 
             // Revocation.
@@ -6592,8 +6590,8 @@ mod grants {
                 Err(DomainError::NotFound)
             ));
             assert_eq!(revoked_refresh_tokens(&db.pool, "alpha").await, 0);
-            assert!(denylisted(&db.pool, "alpha").await.is_empty());
-            assert!(denylisted(&db.pool, "beta").await.is_empty());
+            assert_eq!(denylisted(&db.pool, "alpha").await.len(), 0);
+            assert_eq!(denylisted(&db.pool, "beta").await.len(), 0);
 
             // Garbage collection.
             let unclaimed = a_grant("alpha", "billing", "sub-2");
@@ -11035,7 +11033,7 @@ db_test! {
         let elsewhere = PgRoleRepository::new(db.pool.clone(), TenantId::new("beta"));
 
         assert!(!elsewhere.holds(user, Role::TenantAdmin).await.expect("holds"));
-        assert!(elsewhere.roles_of(user).await.expect("roles").is_empty());
+        assert_eq!(elsewhere.roles_of(user).await.expect("roles").len(), 0);
     }
 }
 
@@ -14562,7 +14560,7 @@ mod outbox {
             assert_eq!(claimed[0].max_attempts, 5, "2 spent + a budget of 3");
             assert_eq!(after, None, "a requeued row is still on the dead-letter screen");
             let letters = outbox.dead_letters(&tenant, 10).await.expect("list");
-            assert!(letters.is_empty());
+            assert_eq!(letters.len(), 0);
         }
     }
 
@@ -15722,12 +15720,9 @@ mod application_roles {
                 .await
                 .expect("delete the client");
 
-            assert!(
-                repo.catalogue(&TenantId::new("demo"), &client)
+            assert_eq!(repo.catalogue(&TenantId::new("demo"), &client)
                     .await
-                    .expect("catalogue")
-                    .is_empty()
-            );
+                    .expect("catalogue").len(), 0);
         }
     }
 }

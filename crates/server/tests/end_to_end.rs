@@ -6532,7 +6532,7 @@ async fn a_ciba_ping_client_is_notified_after_the_decision_and_polls_once() {
             .await,
     );
     // Assert: nothing is queued by the request itself.
-    assert!(flow.queued_pings().await.is_empty());
+    assert_eq!(flow.queued_pings().await.len(), 0);
 
     // Act: the two decisions.
     flow.approve_ciba(CIBA_PING_CLIENT, &approved).await;

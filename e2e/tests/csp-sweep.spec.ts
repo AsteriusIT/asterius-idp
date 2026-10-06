@@ -37,10 +37,9 @@ async function expectStrictPolicy(header: string | null): Promise<void> {
 /**
  * Asserts that `form-action` names nothing but this server (`ast-jsq`).
  *
- * Only the consent screen may widen it, by exactly the origin of the
- * `redirect_uri` of the authorization in hand. Every other page keeps the
- * strict directive, and this is what fails if the widening ever leaks into a
- * page that has no redirect to deliver.
+ * First-party and error pages keep this strict directive. Authorization login,
+ * factor and consent forms may complete the flow, so they additionally name
+ * exactly the validated callback origin (`ast-616n`).
  */
 function expectNoWidening(header: string | null): void {
   expect(header ?? '', 'form-action names an origin this page does not submit to').toContain(
@@ -76,7 +75,9 @@ test('the login page is served the strict policy and violates none of it', async
 
   // Assert
   await expectStrictPolicy(response?.headers()['content-security-policy'] ?? null);
-  expectNoWidening(response?.headers()['content-security-policy'] ?? null);
+  expect(response?.headers()['content-security-policy'] ?? '').toContain(
+    `form-action 'self' ${new URL(REDIRECT_URI).origin};`,
+  );
   await expect(page.locator('input[name="password"]')).toBeVisible();
 });
 

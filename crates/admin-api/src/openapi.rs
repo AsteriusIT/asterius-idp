@@ -1719,6 +1719,6 @@ mod tests {
     #[test]
     fn path_placeholders_become_required_path_parameters() {
         assert_eq!(path_parameters("/tenants/{id}/keys"), ["id"]);
-        assert!(path_parameters("/tenants").is_empty());
+        assert_eq!(path_parameters("/tenants").len(), 0);
     }
 }

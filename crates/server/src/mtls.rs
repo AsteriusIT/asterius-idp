@@ -495,7 +495,7 @@ mod tests {
 
         // Assert
         assert_eq!(presented.leaf.as_der(), certificate_der());
-        assert!(presented.intermediates.is_empty());
+        assert_eq!(presented.intermediates.len(), 0);
     }
 
     /// An empty trusted set is the default, and it must trust nobody rather

@@ -699,12 +699,13 @@ mod spiffe_tests {
         }
         let mut document: Value = serde_json::from_str(bundle).expect("bundle");
         document["keys"][0]["use"] = json!("sig");
-        assert!(
+        assert_eq!(
             SpiffeBundle::parse(document.to_string().as_bytes(), &config.algorithms)
                 .expect("unknown-use")
                 .keys
                 .fingerprints()
-                .is_empty()
+                .len(),
+            0
         );
         document["keys"][0]["use"] = json!("jwt-svid");
         document["keys"][0]["d"] = json!("private");

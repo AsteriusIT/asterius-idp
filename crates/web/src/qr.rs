@@ -47,7 +47,7 @@ mod tests {
                 .iter()
                 .all(|&(x, y)| x >= 4 && y >= 4 && x < code.size - 4 && y < code.size - 4)
         );
-        assert!(!code.modules.is_empty());
+        assert_ne!(code.modules.len(), 0);
         assert_eq!(format!("{code:?}"), "SetupQr([REDACTED])");
     }
 

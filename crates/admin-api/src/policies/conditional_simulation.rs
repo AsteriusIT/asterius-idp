@@ -436,7 +436,7 @@ mod tests {
         other.action = "authorization_code".to_owned();
         let (decision, response) = evaluate(Some(&policy), &request, other, None, &ladder);
         assert!(decision.permit());
-        assert!(response["scopes"].as_array().expect("scopes").is_empty());
+        assert_eq!(response["scopes"].as_array().expect("scopes").len(), 0);
         let mut other = trusted;
         other.client = asterius_domain::ClientId::new("other");
         assert!(

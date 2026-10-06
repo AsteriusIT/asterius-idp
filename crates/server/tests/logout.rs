@@ -860,7 +860,7 @@ async fn a_request_with_no_hint_asks_before_anything_is_ended() {
         !cookie_was_cleared(&headers),
         "the cookie was cleared before the user answered"
     );
-    assert!(harness.audit.events().is_empty());
+    assert_eq!(harness.audit.events().len(), 0);
     assert!(
         !harness.sessions.calls().contains(&"revoke"),
         "{:?}",
@@ -1184,7 +1184,7 @@ async fn a_visitor_with_no_session_gets_the_neutral_page() {
 
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("You are signed out"), "{body}");
-    assert!(harness.audit.events().is_empty());
+    assert_eq!(harness.audit.events().len(), 0);
 }
 
 /// A malformed request never gets a redirect and never ends a session.
@@ -1428,7 +1428,7 @@ async fn a_client_with_no_backchannel_logout_uri_is_not_notified() {
     let harness = logged_out(FakeClients::default()).await;
 
     // Assert
-    assert!(harness.queued().is_empty());
+    assert_eq!(harness.queued().len(), 0);
     assert!(
         !harness
             .signer
@@ -1474,7 +1474,7 @@ async fn a_logout_leaves_refresh_tokens_alone_unless_the_tenant_asked() {
 
     // Assert
     assert!(harness.sessions.was_revoked());
-    assert!(harness.credentials.revoked().is_empty());
+    assert_eq!(harness.credentials.revoked().len(), 0);
 }
 
 /// `revoke_refresh_on_logout`: the tenant that means "log out everywhere" gets
@@ -1799,5 +1799,5 @@ async fn a_deployment_with_no_streams_still_signs_the_person_out() {
     // Assert
     assert_eq!(response.status(), StatusCode::OK);
     assert!(harness.sessions.was_revoked());
-    assert!(harness.streams.sets().is_empty());
+    assert_eq!(harness.streams.sets().len(), 0);
 }

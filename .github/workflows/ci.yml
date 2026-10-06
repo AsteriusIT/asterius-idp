@@ -90,7 +90,7 @@ jobs:
       - name: operator fixture prerequisites and focused Go checks
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y python3-cryptography postgresql-client
+          sudo apt-get install -y python3-cryptography postgresql-client ripgrep
           cd providers/terraform
           go test ./internal/operator ./internal/client -run '^Test' -count=1
           go vet ./internal/operator ./internal/client ./cmd/asterius-operator

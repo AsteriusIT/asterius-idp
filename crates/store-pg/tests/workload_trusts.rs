@@ -59,7 +59,7 @@ async fn spiffe_sequence_floor_survives_deletion_and_recreation() {
         .put(&tenant, "inventory", &config, None, Actor::System, now)
         .await
         .expect("create empty revocation snapshot");
-    assert!(first.fingerprints.is_empty());
+    assert_eq!(first.fingerprints.len(), 0);
     for bundle in [
         r#"{"keys":[],"spiffe_sequence":6}"#,
         r#"{"keys":[]}"#,

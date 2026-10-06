@@ -186,7 +186,7 @@ mod tests {
     /// reliable one — every excluded construction is named in the suite.
     #[test]
     fn every_cipher_suite_is_aead_with_forward_secrecy() {
-        assert!(!CIPHER_SUITES.is_empty());
+        assert_ne!(CIPHER_SUITES.len(), 0);
         for suite in CIPHER_SUITES {
             let name = format!("{:?}", suite.suite());
             assert!(!name.contains("CBC"), "{name} uses CBC");

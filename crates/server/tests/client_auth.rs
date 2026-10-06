@@ -799,7 +799,7 @@ async fn a_refused_assertion_records_nothing() {
 
     // Assert
     assert!(refused.is_err());
-    assert!(world.usage.recorded().is_empty());
+    assert_eq!(world.usage.recorded().len(), 0);
 }
 
 /// A bookkeeping write that fails does not refuse a client that has
