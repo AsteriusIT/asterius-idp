@@ -1,6 +1,7 @@
 import { useEffect, useState, type JSX } from 'react';
 import { ApiError, mutate, read, type Session } from './api';
 import { Actions, Button, ConfirmDialog, Field, LoadFailure, Message, Panel, Skeleton } from './ui';
+import { FormSelect } from './components/ui/select';
 type Sensitivity = 'standard' | 'sensitive' | 'critical';
 interface Settings { sensitivity: Sensitivity | null; revision: string | null }
 export function ClientConditionalAccess({ clientID, session }: Readonly<{clientID: string;session: Session}>): JSX.Element {
@@ -22,7 +23,10 @@ export function ClientConditionalAccess({ clientID, session }: Readonly<{clientI
   return <Panel title="Conditional access classification" description="This administrator-owned classification is separate from application registration. Conditional rules can require it; an unclassified application has missing evidence.">
     {current===null&&!error&&<Skeleton rows={2} label="Reading application classification." />}
     {error&&current===null&&<LoadFailure message={error} onRetry={()=>setRetry(v=>v+1)} />}
-    {current&&<><Field label="Application sensitivity">{props=><select {...props} value={draft} disabled={!mayWrite||busy||stale} onChange={event=>setDraft(event.target.value as Sensitivity|'')}><option value="">Unclassified (absent)</option><option value="standard">Standard</option><option value="sensitive">Sensitive</option><option value="critical">Critical</option></select>}</Field>
+    {current&&<><Field label="Application sensitivity">{props=><FormSelect {...props} value={draft} disabled={!mayWrite||busy||stale} onValueChange={value=>setDraft(value as Sensitivity|'')} options={[
+        { value: '', label: 'Unclassified (absent)', description: 'No trusted application classification is stored.' },
+        { value: 'standard', label: 'Standard' }, { value: 'sensitive', label: 'Sensitive' }, { value: 'critical', label: 'Critical' },
+      ]} />}</Field>
       <p className="muted">Revision: {current.revision?<code>{current.revision}</code>:'No stored classification'}. Changes are audited.</p>
       {error&&<Message tone="error">{error}</Message>}
       {stale&&<Message tone="info">Another operator changed this classification. Reload the current revision and review your change before retrying.</Message>}

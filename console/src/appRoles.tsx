@@ -388,6 +388,9 @@ export function UserAppRoles({
 }>): JSX.Element {
   const [load, setLoad] = useState<Load<HeldRoles>>({ kind: 'loading' });
   const [catalogue, setCatalogue] = useState<readonly AppRole[]>([]);
+  const [catalogueLoading, setCatalogueLoading] = useState(true);
+  const [catalogueError, setCatalogueError] = useState<string | null>(null);
+  const [catalogueRetry, setCatalogueRetry] = useState(0);
   const [clients, setClients] = useState<readonly string[]>([]);
   /** Which catalogue the form is picking from: `''` is the tenant's. */
   const [owner, setOwner] = useState('');
@@ -426,11 +429,13 @@ export function UserAppRoles({
   // rather than typed: a name that is not in the catalogue is a 409 — never a
   // silent creation — and a refusal is the wrong way to discover a spelling.
   useEffect(() => {
-    read(owner === '' ? TENANT_CATALOGUE : clientCatalogue(owner)).then(
-      (value) => setCatalogue((value as Catalogue).roles),
-      () => setCatalogue([]),
-    );
-  }, [owner]);
+    let active = true;
+    setCatalogue([]); setCatalogueLoading(true); setCatalogueError(null);
+    read(owner === '' ? TENANT_CATALOGUE : clientCatalogue(owner)).then(value => {
+      if (active) { setCatalogue((value as Catalogue).roles); setCatalogueLoading(false); }
+    }, error => { if (active) { setCatalogueLoading(false); setCatalogueError(failure(error, 'the role catalogue could not be read')); } });
+    return () => { active = false; };
+  }, [owner, catalogueRetry]);
 
   // The clients whose catalogues may be offered. A caller without
   // `admin.clients:read` gets the tenant's catalogue and no client list, which
@@ -451,6 +456,7 @@ export function UserAppRoles({
   }, [session.scopes]);
 
   const assign = (): void => {
+    if (!writable || busy || saving || !chosen || catalogueLoading || catalogueError) return;
     setSaving(true);
     setRefusal(null);
     const body: Record<string, unknown> = { name: chosen };
@@ -574,19 +580,21 @@ export function UserAppRoles({
           {refusal !== null && <Message tone="error">{refusal}</Message>}
           <form onSubmit={(event) => { event.preventDefault(); assign(); }}>
             <Field label="Catalogue">{(props) => <FormSelect {...props} name="client_id" value={owner}
-              disabled={busy || saving} onValueChange={(value) => { setOwner(value); setChosen(''); }}
-              options={[{ value: '', label: 'Tenant · every application' }, ...clients.map((id) => ({ value: id, label: id }))]} />}</Field>
+              disabled={busy || saving} onValueChange={(value) => { setOwner(value); setChosen(''); setCatalogue([]); setCatalogueLoading(true); }}
+              options={[{ value: '', label: 'Tenant · every application', description: 'Roles shared across this workspace' }, ...clients.map((id) => ({ value: id, label: id }))]} />}</Field>
             <Field label="Find a role">{(props) => <input {...props} type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search roles" />}</Field>
+            {catalogueLoading && <Skeleton rows={2} label="Reading role catalogue." />}
+            {catalogueError && <LoadFailure message={catalogueError} onRetry={() => setCatalogueRetry(value => value + 1)} />}
             <div className="role-picker" role="radiogroup" aria-label="Available roles">
               {offered.filter((role) => `${role.name} ${role.description ?? ''}`.toLowerCase().includes(search.toLowerCase())).map((role) => (
                 <label className="role-choice" key={role.name}>
-                  <input type="radio" name="role" value={role.name} checked={chosen === role.name} disabled={busy || saving} onChange={() => setChosen(role.name)} />
+                  <input type="radio" name="role" value={role.name} checked={chosen === role.name} disabled={busy || saving || catalogueLoading} onChange={() => setChosen(role.name)} />
                   <span><strong>{role.name}</strong><small>{role.description ?? 'No description provided.'}</small></span>
                 </label>
               ))}
-              {offered.length === 0 && <p className="muted">No unassigned roles in this catalogue. Create roles in tenant or application settings.</p>}
+              {!catalogueLoading && !catalogueError && offered.length === 0 && <p className="muted">No unassigned roles in this catalogue. Create roles in tenant or application settings.</p>}
             </div>
-            <Actions end><Button onClick={assignmentDraft.requestClose}>Cancel</Button><Button type="submit" variant="primary" disabled={!writable || busy || saving || chosen === ''}>Assign role</Button></Actions>
+            <Actions end><Button disabled={busy || saving} onClick={assignmentDraft.requestClose}>Cancel</Button><Button type="submit" variant="primary" disabled={!writable || busy || saving || catalogueLoading || catalogueError !== null || chosen === ''}>Assign role</Button></Actions>
           </form>
         </DialogContent>
       </Dialog>

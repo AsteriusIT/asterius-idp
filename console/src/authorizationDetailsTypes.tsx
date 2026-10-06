@@ -1,3 +1,7 @@
+import { JsonDraftEditor } from './components/json-draft-editor';
+import { DetailSheet } from './components/detail-sheet';
+import { JsonView } from './components/json-view';
+import { FieldGroup } from './components/ui/field';
 import { useUnsavedChanges } from './navigation-guard';
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
@@ -20,6 +24,7 @@ const EMPTY_SCHEMA = JSON.stringify({ type: 'object' }, null, 2);
 
 export function AuthorizationDetailsTypes({ session }: Readonly<{ session: Session }>): JSX.Element {
   const [load, setLoad] = useState<Load>({ kind: 'loading' });
+  const [inspecting, setInspecting] = useState<RegisteredType | null>(null);
   const [sample, setSample] = useState('{}');
   const [sampleResult, setSampleResult] = useState<{ valid: boolean; message?: string } | null>(null);
   const [checking, setChecking] = useState(false);
@@ -96,6 +101,7 @@ export function AuthorizationDetailsTypes({ session }: Readonly<{ session: Sessi
   };
 
   const edit = (item: RegisteredType): void => {
+    setSample('{}'); setSampleResult(null);
     setBaseline(JSON.stringify([item.type, JSON.stringify(item.schema, null, 2), item.consent_template ?? '']));
     setName(item.type); setSchema(JSON.stringify(item.schema, null, 2)); setTemplate(item.consent_template ?? '');
     setEditing(true); setError(null); setEditorOpen(true);
@@ -128,30 +134,39 @@ export function AuthorizationDetailsTypes({ session }: Readonly<{ session: Sessi
         columns={[
           { key: 'type', header: 'Type', sortBy: item => item.type, cell: item => <code>{item.type}</code> },
           { key: 'consent', header: 'Consent', cell: item => item.consent_template ?? 'Undescribed' },
-          { key: 'schema', header: 'Schema', cell: item => <code>{JSON.stringify(item.schema)}</code> },
+          { key: 'schema', header: 'Schema', cell: item => <Button small onClick={() => setInspecting(item)} aria-label={`View schema for ${item.type}`}>View schema</Button> },
           ...(mayWrite ? [{ key: 'actions', header: 'Actions', actions: true, cell: (item: RegisteredType) => <Actions><Button small disabled={busy} aria-label={`Edit ${item.type}`} onClick={() => edit(item)}><PencilIcon data-icon="inline-start" aria-hidden="true" />Edit</Button><Button small variant="danger" disabled={busy} onClick={() => setWithdrawing(item.type)}>Withdraw</Button></Actions> }] : []),
         ]}
       />}
     </Panel>}
-    {mayWrite && editorOpen && <Panel title="Schema and consent" description="The server validates the supported schema rules." className="max-w-5xl">
-      <div className="schema-editor">
-        {error !== null && <Message tone="error">{error}</Message>}
-        <Field label="Type name">{props => <input {...props} value={name} disabled={editing} onChange={event => setName(event.target.value)} placeholder="payment_initiation" />}</Field>
-        <Field label="Consent template" hint="A user-facing sentence, up to 512 characters. Leave blank to mark the type undescribed.">{props => <input {...props} value={template} maxLength={512} onChange={event => setTemplate(event.target.value)} placeholder="Initiate the described payment" />}</Field>
-        <Field label="JSON Schema" hint="Supported: type, required, properties, additionalProperties, enum, maxLength, items, maxItems, title, description.">{props => <textarea {...props} rows={12} value={schema} disabled={checking} onChange={event => { setSchema(event.target.value); setSampleResult(null); }} spellCheck={false} />}</Field>
-        <Panel title="Test a sample" description="Uses the server’s authorization schema validator. This does not save the schema, issue a token or authorize a request.">
-          <Field label="Sample JSON">{props => <textarea {...props} rows={6} value={sample} spellCheck={false} disabled={checking} onChange={event => { setSample(event.target.value); setSampleResult(null); }} />}</Field>
-          <Button disabled={checking || busy} onClick={() => void validateSample()}>{checking ? 'Checking sample…' : 'Validate sample'}</Button>
-          {sampleResult && <Message tone={sampleResult.valid ? 'success' : 'error'}>{sampleResult.valid ? 'The sample matches the schema.' : sampleResult.message ?? 'The sample does not match the schema.'}</Message>}
+    <DetailSheet open={inspecting !== null} onOpenChange={open => { if (!open) setInspecting(null); }} title={inspecting ? `Schema for ${inspecting.type}` : 'Registered schema'} description="Saved schema and consent wording. This view does not change the registration.">
+      {inspecting && <><p>{inspecting.consent_template ?? 'No consent wording is registered.'}</p><JsonView value={inspecting.schema} label="Registered JSON schema" /></>}
+    </DetailSheet>
+    {mayWrite && editorOpen && <div className="schema-editor document-workspace">
+      {error !== null && <Message tone="error">{error}</Message>}
+      <Panel title="Registration details" description="Name the request type and the wording people see when they consent.">
+        <FieldGroup className="registration-fields">
+          <Field label="Type name" hint="A stable identifier used by applications. It cannot be renamed after registration.">{props => <input {...props} value={name} disabled={editing || busy} onChange={event => setName(event.target.value)} placeholder="payment_initiation" />}</Field>
+          <Field label="Consent template" hint="A user-facing sentence, up to 512 characters. Leave blank to mark the type undescribed.">{props => <input {...props} value={template} maxLength={512} disabled={busy} onChange={event => setTemplate(event.target.value)} placeholder="Initiate the described payment" />}</Field>
+        </FieldGroup>
+      </Panel>
+      <div className="schema-workbench">
+        <Panel title="Schema definition" description="Define the shape of an authorization request. Syntax feedback does not replace the server’s schema checks.">
+          <Field label="JSON Schema" hint="Supported: type, required, properties, additionalProperties, enum, maxLength, items, maxItems, title, description.">{props => <JsonDraftEditor {...props} rows={18} value={schema} disabled={checking || busy} onValueChange={value => { setSchema(value); setSampleResult(null); }} />}</Field>
         </Panel>
-        <Panel title="Consent wording preview" description="This is the operator-provided wording; the actual request may also show its actions, data and locations.">
-          <p>{template.trim() || 'Perform an action this server has no description for'}</p><code>{name || 'Type name'}</code>
-        </Panel>
-        <Actions>
-          <Button disabled={busy} onClick={closeEditor}>Cancel</Button>
-          <Button variant="primary" disabled={busy} onClick={() => void save()}>{busy ? 'Validating…' : editing ? 'Save changes' : 'Validate and register'}</Button>
-        </Actions>
+        <div className="schema-workbench-preview">
+          <Panel title="Test a sample" description="Validate an example against this draft. This saves no schema and grants no access.">
+            <Field label="Sample JSON">{props => <JsonDraftEditor {...props} rows={6} value={sample} disabled={checking || busy} onValueChange={value => { setSample(value); setSampleResult(null); }} />}</Field>
+            <Button disabled={checking || busy} onClick={() => void validateSample()}>{checking ? 'Checking sample…' : 'Validate sample'}</Button>
+            {sampleResult && <Message tone={sampleResult.valid ? 'success' : 'error'}>{sampleResult.valid ? 'The sample matches the schema.' : sampleResult.message ?? 'The sample does not match the schema.'}</Message>}
+          </Panel>
+          <Panel title="Consent wording preview" description="Actual requests can also show their actions, data and locations.">
+            <p>{template.trim() || 'Perform an action this server has no description for'}</p><code>{name || 'Type name'}</code>
+          </Panel>
+        </div>
       </div>
-    </Panel>}
+      <Actions><Button disabled={busy || checking} onClick={closeEditor}>Cancel</Button><Button variant="primary" disabled={busy || checking} onClick={() => void save()}>{busy ? 'Validating…' : editing ? 'Save changes' : 'Validate and register'}</Button></Actions>
+    </div>}
+
   </Screen>;
 }

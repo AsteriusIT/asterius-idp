@@ -1,0 +1,85 @@
+{
+  "task": "ast-0aw2",
+  "branch": "claude/ast-0aw2",
+  "source_commit": "9985ccdf6a9c6bd52846a13fba6044eb66b5eb9f",
+  "uncommitted_worktree_changes": true,
+  "binary_sha256": "1b8eed99ff588b02e5a450bcfe8a1f8020dde224dafedf6375e6da0abb0136f7",
+  "image": "asterius-idp:local-ast-0aw2-1b8eed99ff58",
+  "image_id": "sha256:b2a1aafd92e917a926bdc76e5dc1ef90017197f9c9ea9aa1f342efaeaa801c56",
+  "previous_image": "asterius-idp:local-ast-h6mo-6c6d1e9946e0",
+  "private_backup": "/home/qrodic/.local/share/asterius/backups/ast-0aw2-20261006T172105Z-738fb8f2",
+  "isolated_restore": "pass",
+  "isolated_readiness": "pass",
+  "isolated_discovery": "pass",
+  "isolated_protected_redirects": "pass",
+  "isolated_identity_equality": true,
+  "isolated_schema_equality": true,
+  "console_assets": [
+    {
+      "file": "inter-cyrillic-ext-wght-normal-BOeWTOD4.woff2",
+      "sha256": "ca157063339ac4ad418f214f3abfed119b0798ab4d377386ce5c9e5a7a435ebd"
+    },
+    {
+      "file": "inter-cyrillic-wght-normal-DqGufNeO.woff2",
+      "sha256": "71d5ee93cc1e9f1d520a3a8b66456de18c7879d8df09d57fcd2eaff75fef0075"
+    },
+    {
+      "file": "inter-greek-ext-wght-normal-DlzME5K_.woff2",
+      "sha256": "6e9e020a25f9b56d418f2c085b1d3c09725a4da23fe693a5b463064606732190"
+    },
+    {
+      "file": "inter-greek-wght-normal-CkhJZR-_.woff2",
+      "sha256": "1be3448e292fbf05ffe176fe1e43f135013d50b1e7d324ad1a558f623d3bb6f6"
+    },
+    {
+      "file": "inter-latin-ext-wght-normal-DO1Apj_S.woff2",
+      "sha256": "34b9c504cab7a73e37b746343a449132e56cf7b5481af2cb81dc74dcff25c956"
+    },
+    {
+      "file": "inter-latin-wght-normal-Dx4kXJAl.woff2",
+      "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+    },
+    {
+      "file": "inter-vietnamese-wght-normal-CBcvBZtf.woff2",
+      "sha256": "5c66f9e07e90c6d4ac4922cc68d60de26c17b1858e677fb5e603fce3952b3ff2"
+    },
+    {
+      "file": "kubernetes-sXAxUTAP.svg",
+      "sha256": "ff5427cfeeff39e82834ab1b4fe3ed61fc08596225a17eed56adc04f7cc1f712"
+    },
+    {
+      "file": "main-CCNgNysd.js",
+      "sha256": "0c859833a50cfa0c56b6097c2043fdb6a4fee24b187f8df36335655ca6e86ecc"
+    },
+    {
+      "file": "style-BEI4OVhc.css",
+      "sha256": "5d0f84272765c8c3990e9d54c88d24d96f5b884100cad4b075ba95f3a4804ed9"
+    }
+  ],
+  "console_url": "https://desktop-cpbptqn-1.tailacbb15.ts.net/t/admin/admin/",
+  "frontend_tests": 88,
+  "controlled_chromium_tests": 48,
+  "direct_radix_wrappers_remaining": 0,
+  "https_resolution": "canonical hostname pinned to current local Tailscale IP; hostname TLS verification retained",
+  "live_identity_equality": false,
+  "live_identity_preserved_except_totp_replay_counter": true,
+  "live_identity_change": "Only totp_credentials.last_used_step advanced during live verification; enrollment/key material, users and password credentials unchanged.",
+  "live_rollout": "pass",
+  "live_https_readiness": "pass",
+  "live_discovery": "pass",
+  "live_protected_redirects": "pass",
+  "live_console_assets": "all 10 match built bundle",
+  "live_schema_equality": true,
+  "configuration_and_secrets_unchanged": true,
+  "tailscale_serve_unchanged": true,
+  "schema_migrations": 118,
+  "latest_schema_migration": 173,
+  "pod": "asterius-7c4cfbf7bc-vsz5r",
+  "runtime_image_id": "sha256:b2a1aafd92e917a926bdc76e5dc1ef90017197f9c9ea9aa1f342efaeaa801c56",
+  "checked_at_utc": "2026-10-06T17:23:24Z",
+  "limits": [
+    "Existing-account password/TOTP sign-in was not exercised.",
+    "Console interaction checks use controlled API responses; live checks verify redirects and exact assets.",
+    "Source is the uncommitted ticket worktree; no remote CI, merge or push."
+  ]
+}

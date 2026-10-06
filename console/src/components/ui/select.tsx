@@ -1,26 +1,28 @@
 import type { ComponentProps } from 'react';
-import { Select as SelectPrimitive } from 'radix-ui';
+import { Select as SelectPrimitive } from '@base-ui/react/select';
 import { CheckIcon, ChevronDownIcon, ChevronUpIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export const Select = SelectPrimitive.Root;
 export const SelectValue = SelectPrimitive.Value;
-export function SelectTrigger({ children, className, ...props }: ComponentProps<typeof SelectPrimitive.Trigger>) {
+export function SelectTrigger({ children, className, ...props }: Omit<ComponentProps<typeof SelectPrimitive.Trigger>, 'className'> & { className?: string }) {
   return <SelectPrimitive.Trigger data-slot="select-trigger" className={cn('select-trigger', className)} {...props}>
-    {children}<SelectPrimitive.Icon asChild><ChevronDownIcon aria-hidden="true" /></SelectPrimitive.Icon>
+    {children}<SelectPrimitive.Icon><ChevronDownIcon aria-hidden="true" /></SelectPrimitive.Icon>
   </SelectPrimitive.Trigger>;
 }
-export function SelectContent({ children, className, ...props }: ComponentProps<typeof SelectPrimitive.Content>) {
-  return <SelectPrimitive.Portal><SelectPrimitive.Content position="popper" sideOffset={5}
-    className={cn('select-content', className)} {...props}>
-    <SelectPrimitive.ScrollUpButton className="select-scroll"><ChevronUpIcon /></SelectPrimitive.ScrollUpButton>
-    <SelectPrimitive.Viewport>{children}</SelectPrimitive.Viewport>
-    <SelectPrimitive.ScrollDownButton className="select-scroll"><ChevronDownIcon /></SelectPrimitive.ScrollDownButton>
-  </SelectPrimitive.Content></SelectPrimitive.Portal>;
+export const SelectGroup = SelectPrimitive.Group;
+export function SelectContent({ children, className, ...props }: Omit<ComponentProps<typeof SelectPrimitive.Popup>, 'className'> & { className?: string }) {
+  return <SelectPrimitive.Portal className="console-overlay-portal"><SelectPrimitive.Positioner sideOffset={5} alignItemWithTrigger={false}>
+    <SelectPrimitive.Popup data-slot="select-content" className={cn('select-content', className)} {...props}>
+      <SelectPrimitive.ScrollUpArrow className="select-scroll"><ChevronUpIcon /></SelectPrimitive.ScrollUpArrow>
+      <SelectPrimitive.List>{children}</SelectPrimitive.List>
+      <SelectPrimitive.ScrollDownArrow className="select-scroll"><ChevronDownIcon /></SelectPrimitive.ScrollDownArrow>
+    </SelectPrimitive.Popup>
+  </SelectPrimitive.Positioner></SelectPrimitive.Portal>;
 }
-export function SelectItem({ children, className, ...props }: ComponentProps<typeof SelectPrimitive.Item>) {
+export function SelectItem({ children, className, description, ...props }: Omit<ComponentProps<typeof SelectPrimitive.Item>, 'className'> & { className?: string; description?: string }) {
   return <SelectPrimitive.Item className={cn('select-item', className)} {...props}>
-    <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>
+    <span className="select-item-copy"><SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>{description && <span className="select-item-description">{description}</span>}</span>
     <SelectPrimitive.ItemIndicator><CheckIcon aria-hidden="true" /></SelectPrimitive.ItemIndicator>
   </SelectPrimitive.Item>;
 }
@@ -29,17 +31,17 @@ export function SelectItem({ children, className, ...props }: ComponentProps<typ
 export function FormSelect({ value, onValueChange, options, name, disabled, required, ...props }: {
   value: string;
   onValueChange: (value: string) => void;
-  options: readonly { value: string; label: string }[];
+  options: readonly { value: string; label: string; description?: string }[];
   name?: string;
   disabled?: boolean;
   required?: boolean;
 } & Pick<ComponentProps<typeof SelectTrigger>, 'id' | 'aria-label' | 'aria-describedby' | 'aria-invalid'>) {
   return <>
     {name && <input type="hidden" name={name} value={value} disabled={disabled} />}
-    <Select value={`value:${value}`} onValueChange={(next) => onValueChange(next.slice(6))}
+    <Select value={value} items={options.map(option => ({ value: option.value, label: option.label }))} onValueChange={(next) => onValueChange(next ?? '')}
       {...(disabled !== undefined ? { disabled } : {})} {...(required !== undefined ? { required } : {})}>
       <SelectTrigger {...props}><SelectValue /></SelectTrigger>
-      <SelectContent>{options.map((option) => <SelectItem key={option.value} value={`value:${option.value}`}>{option.label}</SelectItem>)}</SelectContent>
+      <SelectContent><SelectGroup>{options.map((option) => <SelectItem key={option.value} value={option.value} {...(option.description ? { description: option.description } : {})}>{option.label}</SelectItem>)}</SelectGroup></SelectContent>
     </Select>
   </>;
 }

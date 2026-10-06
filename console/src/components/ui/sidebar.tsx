@@ -2,7 +2,9 @@ import * as React from "react"
 import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "@/lib/utils"
 import { PanelLeftIcon } from "lucide-react"
-import { Slot } from "radix-ui"
+import { RenderElement } from "@/lib/render-element"
+import { Button as ButtonPrimitive } from "@base-ui/react/button"
+import type { useRender } from "@base-ui/react/use-render"
 
 import { useIsMobile } from "@/hooks/use-mobile"
 import { Button } from "@/components/ui/button"
@@ -104,7 +106,7 @@ function SidebarProvider({
 
   return (
     <SidebarContext.Provider value={contextValue}>
-      <TooltipProvider delayDuration={0}>
+      <TooltipProvider delay={0}>
         <div
           data-slot="sidebar-wrapper"
           style={
@@ -358,13 +360,13 @@ function SidebarGroup({ className, ...props }: React.ComponentProps<"div">) {
 
 function SidebarGroupLabel({
   className,
-  asChild = false,
+  render,
   ...props
-}: React.ComponentProps<"div"> & { asChild?: boolean }) {
-  const Comp = asChild ? Slot.Root : "div"
+}: React.ComponentProps<"div"> & { render?: useRender.ComponentProps<"div">["render"] }) {
+
 
   return (
-    <Comp
+    <RenderElement tag="div" render={render}
       data-slot="sidebar-group-label"
       data-sidebar="group-label"
       className={cn(
@@ -379,13 +381,14 @@ function SidebarGroupLabel({
 
 function SidebarGroupAction({
   className,
-  asChild = false,
+  render,
+  nativeButton = true,
   ...props
-}: React.ComponentProps<"button"> & { asChild?: boolean }) {
-  const Comp = asChild ? Slot.Root : "button"
+}: Omit<ButtonPrimitive.Props, "className"> & { className?: string; render?: useRender.ComponentProps<"div">["render"] }) {
+
 
   return (
-    <Comp
+    <ButtonPrimitive render={render} nativeButton={nativeButton}
       data-slot="sidebar-group-action"
       data-sidebar="group-action"
       className={cn(
@@ -459,23 +462,25 @@ const sidebarMenuButtonVariants = cva(
 )
 
 function SidebarMenuButton({
-  asChild = false,
+  render,
+  nativeButton = true,
   isActive = false,
   variant = "default",
   size = "default",
   tooltip,
   className,
   ...props
-}: React.ComponentProps<"button"> & {
-  asChild?: boolean
+}: Omit<ButtonPrimitive.Props, "className"> & {
+  className?: string
+  render?: useRender.ComponentProps<"div">["render"]
   isActive?: boolean
   tooltip?: string | React.ComponentProps<typeof TooltipContent>
 } & VariantProps<typeof sidebarMenuButtonVariants>) {
-  const Comp = asChild ? Slot.Root : "button"
+
   const { isMobile, state } = useSidebar()
 
   const button = (
-    <Comp
+    <ButtonPrimitive render={render} nativeButton={nativeButton}
       data-slot="sidebar-menu-button"
       data-sidebar="menu-button"
       data-size={size}
@@ -497,7 +502,7 @@ function SidebarMenuButton({
 
   return (
     <Tooltip>
-      <TooltipTrigger asChild>{button}</TooltipTrigger>
+      <TooltipTrigger render={button} />
       <TooltipContent
         side="right"
         align="center"
@@ -510,17 +515,19 @@ function SidebarMenuButton({
 
 function SidebarMenuAction({
   className,
-  asChild = false,
+  render,
+  nativeButton = true,
   showOnHover = false,
   ...props
-}: React.ComponentProps<"button"> & {
-  asChild?: boolean
+}: Omit<ButtonPrimitive.Props, "className"> & {
+  className?: string
+  render?: useRender.ComponentProps<"div">["render"]
   showOnHover?: boolean
 }) {
-  const Comp = asChild ? Slot.Root : "button"
+
 
   return (
-    <Comp
+    <ButtonPrimitive render={render} nativeButton={nativeButton}
       data-slot="sidebar-menu-action"
       data-sidebar="menu-action"
       className={cn(
@@ -629,20 +636,20 @@ function SidebarMenuSubItem({
 }
 
 function SidebarMenuSubButton({
-  asChild = false,
+  render,
   size = "md",
   isActive = false,
   className,
   ...props
 }: React.ComponentProps<"a"> & {
-  asChild?: boolean
+  render?: useRender.ComponentProps<"div">["render"]
   size?: "sm" | "md"
   isActive?: boolean
 }) {
-  const Comp = asChild ? Slot.Root : "a"
+
 
   return (
-    <Comp
+    <RenderElement tag="a" render={render}
       data-slot="sidebar-menu-sub-button"
       data-sidebar="menu-sub-button"
       data-size={size}

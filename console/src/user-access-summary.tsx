@@ -1,24 +1,26 @@
 import { useEffect, useState } from 'react';
 import { read, type Session } from './api';
 import { hrefOf } from './routes';
-import { Panel, Timestamp } from './ui';
+import { Badge, Panel, Timestamp } from './ui';
 
 export function UserAccessSummary({ userId, grants, session }: Readonly<{ userId: string; grants: number; session: Session }>) {
   const mayAudit = session.scopes.includes('admin.audit:read');
+  const [recent, setRecent] = useState<{ id?: string | number; occurred_at: string; outcome: string; opaque?: string }[]>([]);
   const [last, setLast] = useState<string | null>(null);
   const [status, setStatus] = useState('Reading the audit trail…');
   useEffect(() => {
     let active = true;
-    setLast(null); setStatus('Reading the audit trail…');
+    setRecent([]); setLast(null); setStatus('Reading the audit trail…');
     if (mayAudit) void (async () => {
       let cursor: string | null = null;
       try {
         for (let page = 0; page < 10 && active; page++) {
           const query = new URLSearchParams({ user: userId, type: 'auth.login', limit: '100' });
           if (cursor) query.set('cursor', cursor);
-          const value = await read(`audit/events?${query}`) as { items: { occurred_at: string; outcome: string }[]; next_cursor: string | null };
+          const value = await read(`audit/events?${query}`) as { items: { id?: string | number; opaque?: string; occurred_at: string; outcome: string }[]; next_cursor: string | null };
           if (!active) return;
-          const event = value.items.find(event => event.outcome === 'success');
+          setRecent(previous => [...previous, ...value.items.filter(event => !event.opaque && event.occurred_at && event.outcome)].slice(0, 5));
+          const event = value.items.find(event => !event.opaque && event.outcome === 'success');
           if (event) { setLast(event.occurred_at); return; }
           if (!value.next_cursor) { setStatus('No successful sign-in was found in the retained audit trail.'); return; }
           cursor = value.next_cursor;
@@ -33,6 +35,7 @@ export function UserAccessSummary({ userId, grants, session }: Readonly<{ userId
       <div><dt>Connected application grants</dt><dd><a href={hrefOf('users', { id: userId, tab: 'grants' })}>{grants} grants</a></dd></div>
       <div><dt>Last recorded sign-in</dt><dd>{!mayAudit ? 'Requires audit access.' : last ? <Timestamp value={last} /> : status}</dd></div>
     </dl>
+    {mayAudit && recent.length > 0 && <section className="signin-activity"><h3>Recent sign-ins</h3><ol aria-label="Recent sign-in activity">{recent.map((event, index) => <li key={event.id ?? index}><Badge tone={event.outcome === 'success' ? 'ok' : 'neutral'}>{event.outcome}</Badge><Timestamp value={event.occurred_at} />{event.id && <a href={hrefOf('audit', { id: String(event.id) })}>Inspect event</a>}</li>)}</ol></section>}
     {session.scopes.includes('admin.app_roles:read') && <a href={hrefOf('users', { id: userId, tab: 'roles' })}>Review direct and group-inherited roles →</a>}
   </Panel>;
 }

@@ -1,5 +1,5 @@
 import { ArrowUpRightIcon, RefreshCwIcon, FingerprintIcon, ShieldCheckIcon, Building2Icon, NetworkIcon } from 'lucide-react';
-import { NAVIGATION_ICONS } from './components/app-sidebar';
+import { NAVIGATION_ICONS } from './route-icons';
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { read, type Session } from './api';

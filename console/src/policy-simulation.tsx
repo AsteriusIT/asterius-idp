@@ -1,3 +1,5 @@
+import { JsonDraftEditor } from './components/json-draft-editor';
+import { FormSelect } from './components/ui/select';
 import { ConditionalExamples } from './conditional-examples';
 import { ENFORCEMENT_ACTIONS, factExamples, type EnforcementAction, type ExampleFactName, type FactExample } from './conditional-policy-model';
 import { useEffect, useState, type JSX } from 'react';
@@ -68,20 +70,14 @@ export function PolicySimulation({ session, revision, draft }: Readonly<{
       <p className="muted">The selectors show the first 100 accounts and applications. A simulation grants no access and saves no policy.</p>
       <p className="muted">Simulation stored snapshot: {snapshot ? <code>{snapshot}</code> : 'No stored policy'}. Refreshing this snapshot does not reload the editor draft.</p>
       <form className="toolbar" onSubmit={(event) => { event.preventDefault(); void simulate(); }}>
-        <Field label="Tenant user">{(props) => <select {...props} required value={user} onChange={(event) => setUser(event.target.value)}>
-          <option value="">Choose an account</option>{references?.users.map((row) => <option key={row.user_id} value={row.user_id}>{row.username}</option>)}
-        </select>}</Field>
-        <Field label="Application">{(props) => <select {...props} required value={client} onChange={(event) => setClient(event.target.value)}>
-          <option value="">Choose an application</option>{references?.clients.map((row) => <option key={row.client_id} value={row.client_id}>{row.client_name ?? row.client_id}</option>)}
-        </select>}</Field>
-        <Field label="Registered resource">{(props) => <select {...props} required value={resource} onChange={(event) => setResource(event.target.value)}>
-          <option value="">Choose a resource</option>{references?.resources.map((row) => <option key={row.identifier} value={row.identifier}>{row.identifier}</option>)}
-        </select>}</Field>
+        <Field label="Tenant user">{(props) => <FormSelect {...props} required value={user} onValueChange={setUser} options={[{ value: '', label: 'Choose an account' }, ...(references?.users.map(row => ({ value: row.user_id, label: row.username })) ?? [])]} />}</Field>
+        <Field label="Application">{(props) => <FormSelect {...props} required value={client} onValueChange={setClient} options={[{ value: '', label: 'Choose an application' }, ...(references?.clients.map(row => ({ value: row.client_id, label: row.client_name ?? row.client_id })) ?? [])]} />}</Field>
+        <Field label="Registered resource">{(props) => <FormSelect {...props} required value={resource} onValueChange={setResource} options={[{ value: '', label: 'Choose a resource' }, ...(references?.resources.map(row => ({ value: row.identifier, label: row.identifier })) ?? [])]} />}</Field>
         <Field label="Resource category">{(props) => <input {...props} required maxLength={256} value={kind} onChange={(event) => setKind(event.target.value)} />}</Field>
         <Field label="Hypothetical operation">{(props) => <input {...props} required maxLength={256} value={action} onChange={(event) => setAction(event.target.value)} />}</Field>
-        <Field label="Enforcement boundary">{props => <select {...props} value={boundary} onChange={event => setBoundary(event.target.value as EnforcementAction)}>{ENFORCEMENT_ACTIONS.map(value => <option key={value} value={value}>{value}</option>)}</select>}</Field>
+        <Field label="Enforcement boundary">{props => <FormSelect {...props} value={boundary} onValueChange={value => setBoundary(value as EnforcementAction)} options={ENFORCEMENT_ACTIONS.map(value => ({ value, label: value }))} />}</Field>
         <ConditionalExamples enabled={useExamples} examples={examples} onEnable={setUseExamples} onChange={(name,value) => setExamples(current => { const next={...current}; if(value) next[name]=value; else delete next[name]; return next; })} />
-        <Field label="Hypothetical context properties (JSON)">{(props) => <textarea {...props} maxLength={65536} value={context} onChange={(event) => setContext(event.target.value)} />}</Field>
+        <Field label="Hypothetical context properties (JSON)">{(props) => <JsonDraftEditor {...props} rows={6} maxLength={65536} value={context} onValueChange={setContext} />}</Field>
         <label><input type="checkbox" checked={useDraft} onChange={(event) => setUseDraft(event.target.checked)} /> Use the editor draft as hypothetical policy</label>
         <Actions><Button type="submit" variant="primary" disabled={busy || references === null}>Simulate</Button><Button onClick={() => {
           void read('policies').then((value) => { setSnapshot((value as { revision: string | null }).revision); setDecision(null); setFailure(null); }, (error: unknown) => setFailure(String(error)));

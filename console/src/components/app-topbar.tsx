@@ -4,6 +4,7 @@ import {
   HeartPulseIcon,
   BookOpenIcon,
   NetworkIcon,
+  FlaskConicalIcon,
   ShieldCheckIcon,
   CopyIcon,
   ChevronDownIcon,
@@ -12,10 +13,13 @@ import {
   Settings2Icon,
   UserRoundIcon,
 } from 'lucide-react';
-import { DropdownMenu } from 'radix-ui';
+import { DropdownMenu } from '@/components/ui/dropdown-menu';
 import type { Session } from '@/api';
 import { TenantSwitcher } from '@/components/tenant-switcher';
-import { Button } from '@/components/ui/button';
+import { Button, buttonVariants } from '@/components/ui/button';
+import { cn } from '@/lib/utils';
+import { routeOf } from '@/routes';
+import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip';
 import { SidebarTrigger } from '@/components/ui/sidebar';
 import { hrefOf } from '@/routes';
 import { reaches, DESTINATIONS } from '@/navigation';
@@ -48,9 +52,16 @@ export function AppTopbar({
       </div>
 
       <div className="topbar-actions">
-        {reaches(session, DESTINATIONS.find(item => item.route === 'architecture')!) && <Button asChild variant="ghost" size="icon" title="Architecture builder" aria-label="Architecture builder"><a href={hrefOf('architecture')}><NetworkIcon aria-hidden="true" /></a></Button>}
-        <Button asChild variant="ghost" size="icon" title="Help and guides" aria-label="Help and guides"><a href={hrefOf('help')}><BookOpenIcon aria-hidden="true" /></a></Button>
-        <Button asChild variant="ghost" size="icon" title="Workspace health" aria-label="Workspace health"><a href={hrefOf('health')}><HeartPulseIcon aria-hidden="true" /></a></Button>
+        {reaches(session, DESTINATIONS.find(item => item.route === 'token-console')!) && <Tooltip>
+          <TooltipTrigger render={<a href={hrefOf('token-console')} className={cn(buttonVariants({ variant: 'ghost', size: 'icon' }), 'topbar-tool-link')}
+            aria-label="Token test console" aria-current={routeOf(window.location.hash) === 'token-console' ? 'page' : undefined}>
+            <FlaskConicalIcon aria-hidden="true" />
+          </a>} />
+          <TooltipContent side="bottom">Token test console</TooltipContent>
+        </Tooltip>}
+        {reaches(session, DESTINATIONS.find(item => item.route === 'architecture')!) && <Button render={<a href={hrefOf('architecture')} />} nativeButton={false} role="link" variant="ghost" size="icon" title="Architecture builder" aria-label="Architecture builder"><NetworkIcon data-icon="inline-start" aria-hidden="true" /></Button>}
+        <Button render={<a href={hrefOf('help')} />} nativeButton={false} role="link" variant="ghost" size="icon" title="Help and guides" aria-label="Help and guides"><BookOpenIcon data-icon="inline-start" aria-hidden="true" /></Button>
+        <Button render={<a href={hrefOf('health')} />} nativeButton={false} role="link" variant="ghost" size="icon" title="Workspace health" aria-label="Workspace health"><HeartPulseIcon data-icon="inline-start" aria-hidden="true" /></Button>
         <AccountMenu session={session} onSignOut={onSignOut} />
       </div>
     </header>
@@ -71,8 +82,7 @@ function AccountMenu({
   };
   return <><span className="sr-only" aria-live="polite">{copyNotice}</span>
     <DropdownMenu.Root modal={false}>
-      <DropdownMenu.Trigger asChild>
-        <Button variant="ghost" className="topbar-account" aria-label="Account menu">
+      <DropdownMenu.Trigger render={<Button variant="ghost" className="topbar-account" aria-label="Account menu">
           <span className="topbar-avatar" aria-hidden="true">
             {session.username.trim().slice(0, 1).toUpperCase() || <UserRoundIcon />}
           </span>
@@ -81,36 +91,31 @@ function AccountMenu({
             <span>{sessionRoleLabel(session)}</span>
           </span>
           <ChevronDownIcon className="size-4 opacity-60" aria-hidden="true" />
-        </Button>
-      </DropdownMenu.Trigger>
+        </Button>} />
       <DropdownMenu.Portal>
-        <DropdownMenu.Content className="account-menu" aria-label="Account actions" side="bottom" align="end" sideOffset={10} collisionPadding={12}>
-          <DropdownMenu.Label className="account-menu-identity">
+        <DropdownMenu.Content className="account-menu" aria-label="Account menu" side="bottom" align="end" sideOffset={10} collisionPadding={12}>
+          <DropdownMenu.Group><DropdownMenu.GroupLabel className="account-menu-identity">
             <span className="account-menu-avatar" aria-hidden="true">{session.username.trim().slice(0, 1).toUpperCase() || <UserRoundIcon />}</span>
             <span className="account-menu-person">
               <strong>{session.username}</strong>
               <span><ShieldCheckIcon aria-hidden="true" />{sessionRoleLabel(session)}</span>
             </span>
-          </DropdownMenu.Label>
+          </DropdownMenu.GroupLabel></DropdownMenu.Group>
           <DropdownMenu.Group className="account-menu-actions">
-            <DropdownMenu.Item asChild className="account-menu-item account-menu-account">
-              <a href="/t/admin/account">
+            <DropdownMenu.LinkItem className="account-menu-item account-menu-account" render={<a href="/t/admin/account">
                 <UserRoundIcon aria-hidden="true" />
                 <span><strong>My account</strong><small>Profile, security and sessions</small></span>
                 <ArrowUpRightIcon className="account-menu-trailing" aria-hidden="true" />
-              </a>
-            </DropdownMenu.Item>
-            <DropdownMenu.Item asChild className="account-menu-item">
-              <a href={hrefOf('preferences')}><Settings2Icon aria-hidden="true" /><span>Preferences</span></a>
-            </DropdownMenu.Item>
-            <DropdownMenu.Item className="account-menu-item account-menu-copy" onSelect={() => void copyIdentifier()}>
+              </a>} />
+            <DropdownMenu.LinkItem className="account-menu-item" render={<a href={hrefOf('preferences')}><Settings2Icon aria-hidden="true" /><span>Preferences</span></a>} />
+            <DropdownMenu.Item className="account-menu-item account-menu-copy" onClick={() => void copyIdentifier()}>
               <CopyIcon aria-hidden="true" />
               <span><span>Copy account identifier</span><code title={session.user}>{session.user}</code></span>
             </DropdownMenu.Item>
           </DropdownMenu.Group>
           <DropdownMenu.Separator className="account-menu-separator" />
           <DropdownMenu.Group className="account-menu-footer">
-            <DropdownMenu.Item className="account-menu-item account-menu-signout" onSelect={onSignOut}>
+            <DropdownMenu.Item className="account-menu-item account-menu-signout" onClick={onSignOut}>
               <LogOutIcon aria-hidden="true" /><span>Sign out</span>
             </DropdownMenu.Item>
           </DropdownMenu.Group>

@@ -1,7 +1,12 @@
+import { Checkbox } from './components/ui/checkbox';
+import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from './components/ui/accordion';
+import { SelectionBar } from './components/selection-bar';
+import { CharacterCountTextarea } from './components/character-count-textarea';
+import { ReviewState } from './components/review-state';
 import {useCallback,useEffect,useState,type JSX} from 'react';
 import {mutate,read,type Session} from './api';
 import {FormSelect} from './components/ui/select';
-import {Actions,Button,ConfirmDialog,Field,Message,Panel,Screen,Skeleton} from './ui';
+import {Actions,Badge,Button,ConfirmDialog,DataTable,EmptyState,Field,Message,Panel,Screen,Skeleton,Timestamp} from './ui';
 import {applicationResult,mayApply,mayDecide,sourceLabel,targetSubject,type Ownership,type Reviewer,type Review,type ReviewItem,type ReviewTarget} from './access-reviews-model';
 import {clientCatalogue,TENANT_CATALOGUE,type Catalogue} from './appRoles';
 
@@ -19,27 +24,28 @@ function ItemCard({session,item,review,closed,onChanged,names}:{session:Session;
     try{await mutate(`governance/reviews/${review}/items/${item.id}/${action}`,action==='decision'?'PUT':'POST',session,action==='decision'?{decision,reason}:{});setConfirm(false);onChanged();}
     catch(error){setError(failure(error));}finally{setBusy(false);}
   }
-  return <Panel title={`${sourceLabel(item.target)} · ${targetSubject(item.target,names)}`} description={`Snapshot observed ${new Date(item.snapshot.observed_at).toLocaleString()}`}>
+  return <Panel title={`${sourceLabel(item.target)} · ${targetSubject(item.target,names)}`} description={`Snapshot observed ${new Date(item.snapshot.observed_at).toLocaleString()} — ${item.snapshot.affected_users.length} affected ${item.snapshot.affected_users.length === 1 ? 'account' : 'accounts'}`}>
     {error&&<Message tone="error">{error}</Message>}
     {item.snapshot.protected&&<Message tone="info">This source is managed. A removal decision proposes a change to its controller.</Message>}
     {item.snapshot.affected_users.length===0&&<p>No current group members were affected at snapshot time.</p>}
-    {item.snapshot.affected_users.map(user=><section key={user.user_id} className="stack">
-      <h3>{user.username}</h3>
+    <Accordion className="review-evidence" multiple defaultValue={item.snapshot.affected_users.map(user => user.user_id)}>{item.snapshot.affected_users.map(user=><AccordionItem key={user.user_id} value={user.user_id}>
+      <AccordionTrigger aria-label={`Snapshot access for ${user.username}`}><span className="review-evidence-summary">{user.username}<span className="review-evidence-counts">{user.standing_sources.length} standing {user.standing_sources.length === 1 ? 'source' : 'sources'} · {user.temporary_sources.entries.length} temporary {user.temporary_sources.entries.length === 1 ? 'activation' : 'activations'}</span></span><Badge tone={user.account_status === 'active' ? 'ok' : 'neutral'}>{user.account_status}</Badge></AccordionTrigger>
+      <AccordionContent><div className="stack">
       {user.account_status!=='active'&&<p>Account {user.account_status}: retained assignments do not imply currently usable access.</p>}
       <p>Standing application-role sources</p>
       <ul>{user.standing_sources.map((source,index)=><li key={index}>{source.name}{source.client_id?` · ${source.client_id}`:' · tenant'} — {source.group_id?`group ${names.get(source.group_id)??source.group_id}`:'direct assignment'}</li>)}</ul>
       {user.standing_sources.length===0&&<p className="muted">No standing application roles.</p>}
       {user.temporary_sources.entries.length>0&&<><p>Independent temporary activations (lifecycle evidence; token authority requires its own checks)</p><ul>{user.temporary_sources.entries.map(source=><li key={source.activation_id}>{source.role_name} · {source.client} · {source.resource} · expires {new Date(source.expires_at).toLocaleString()}<span className="muted"> ({source.permissions.join(', ')})</span></li>)}</ul></>}
-    </section>)}
+    </div></AccordionContent></AccordionItem>)}</Accordion>
     <p className="muted">Only the selected standing source changes. Every independent direct/group source and temporary activation remains; removing membership withdraws that group’s contribution.</p>
     {item.decision!==null&&<p>Recorded decision: <strong>{item.decision}</strong> — {item.reason}</p>}
     <p role="status">{applicationResult(item.apply_status)}</p>
     {mayDecide(item,session.user,write)&&<form onSubmit={event=>{event.preventDefault();void command('decision','retain');}}>
-      <Field label="Decision reason" required>{props=><textarea {...props} value={reason} maxLength={1000} onChange={event=>setReason(event.target.value)} disabled={busy}/>}</Field>
+      <Field label="Decision reason" required>{props=><CharacterCountTextarea {...props} value={reason} maxLength={1000} onChange={event=>setReason(event.target.value)} disabled={busy}/>}</Field>
       <Actions><Button type="submit" disabled={busy||reason.trim()===''}>Record retain</Button><Button type="button" disabled={busy||reason.trim()===''} onClick={()=>void command('decision','remove')}>Record remove</Button></Actions>
     </form>}
     {mayApply(item,session.user,write)&&<Button disabled={busy} onClick={()=>setConfirm(true)}>Apply recorded decision</Button>}
-    {confirm&&<ConfirmDialog title="Apply this recorded decision?" body={item.decision==='remove'?'The server rechecks current ownership and source revisions, then removes only this source. Changed or managed access is refused.':'Access stays as it is; the server records application of the retain decision.'} confirmLabel="Apply decision" busy={busy} onCancel={()=>setConfirm(false)} onConfirm={()=>void command('apply')}/>}
+    {confirm&&<ConfirmDialog title="Apply this recorded decision?" body={<><p>{item.decision==='remove'?'The server rechecks current ownership and source revisions, then removes only this source. Changed or managed access is refused.':'Access stays as it is; the server records application of the retain decision.'}</p>{error&&<Message tone="error">{error}</Message>}</>} confirmLabel="Apply decision" busy={busy} onCancel={()=>setConfirm(false)} onConfirm={()=>void command('apply')}/>}
   </Panel>;
 }
 
@@ -116,8 +122,19 @@ export function AccessReviews({session}:{session:Session}):JSX.Element{
       </fieldset></form>
     </Panel>}
     <Panel title="Current ownership" description="Select existing ownership records for a bounded review. A review never grants access.">
-      {ownerships.length===0&&!loading&&<p>No owned standing assignments.</p>}
-      <ul>{ownerships.map(value=><li key={value.id}><label><input type="checkbox" disabled={!write||busy||!value.enabled} checked={selected.includes(value.id)} onChange={event=>setSelected(previous=>event.target.checked?[...previous,value.id]:previous.filter(id=>id!==value.id))}/> {sourceLabel(value.target)} · {targetSubject(value.target,names)} · owner {value.owner?names.get(value.owner)??value.owner:'removed'}{!value.enabled?' · disabled':''}</label>{write&&<Button disabled={busy} onClick={()=>edit(value)}>Edit ownership</Button>}</li>)}</ul>
+      {!loading && <DataTable caption="Owned standing assignments" rows={ownerships} rowKey={value => value.id}
+        columnPreferences={{ key: 'review-ownership', required: ['selection', 'source', 'subject', 'state'] }}
+        empty={<EmptyState title="No owned standing assignments." body="Assign an owner to an existing standing source before creating a review." />}
+        columns={[
+          { key: 'selection', header: 'Select', cell: value => <Checkbox aria-label={`Select ${sourceLabel(value.target)} for ${targetSubject(value.target,names)}`} disabled={!write || busy || !value.enabled} checked={selected.includes(value.id)} onCheckedChange={checked => setSelected(previous => checked ? [...new Set([...previous,value.id])] : previous.filter(id => id !== value.id))} /> },
+          { key: 'source', header: 'Standing source', sortBy: value => sourceLabel(value.target), cell: value => sourceLabel(value.target) },
+          { key: 'subject', header: 'Subject', sortBy: value => targetSubject(value.target,names), cell: value => targetSubject(value.target,names) },
+          { key: 'owner', header: 'Owner', sortBy: value => value.owner ? names.get(value.owner) ?? value.owner : '', cell: value => value.owner ? names.get(value.owner) ?? value.owner : 'Removed' },
+          { key: 'state', header: 'State', cell: value => <Badge tone={value.enabled ? 'ok' : 'neutral'}>{value.enabled ? 'Enabled' : 'Disabled'}</Badge> },
+          { key: 'actions', header: 'Actions', actions: true, cell: value => write && <Button small disabled={busy} onClick={() => edit(value)}>Edit ownership</Button> },
+        ]} />}
+      {write && <SelectionBar count={selected.length} disabled={busy} onClear={() => setSelected([])} />}
+
       {hasMore.ownership&&<Button disabled={busy} onClick={()=>void more('ownership')}>Load more ownership</Button>}
       {write&&<form onSubmit={event=>{event.preventDefault();void action(async()=>{const review=await mutate('governance/reviews','POST',session,{ownership_ids:selected,reviewer_id:reviewer,due_at:new Date(due).toISOString()}) as Review;setSelected([]);await reload();await open(review);setNotice('Review snapshot created.');});}}>
         <Field label="Assigned reviewer">{props=><FormSelect {...props} value={reviewer} onValueChange={setReviewer} options={options(reviewers.map(value=>({id:value.user_id,label:value.username})),reviewer)}/>}</Field>
@@ -126,8 +143,15 @@ export function AccessReviews({session}:{session:Session}):JSX.Element{
       </form>}
     </Panel>
     <Panel title="Review history">
-      {reviews.length===0&&!loading&&<p>No reviews have been created.</p>}
-      <ul>{reviews.map(value=><li key={value.id}><Button disabled={busy} onClick={()=>void open(value)}>Review from {new Date(value.created_at).toLocaleString()}</Button> · due {new Date(value.due_at).toLocaleString()} · {value.cancelled_at?'cancelled':value.completed_at?'completed':'open'}</li>)}</ul>
+      {!loading && <DataTable caption="Access review history" rows={reviews} rowKey={value => value.id}
+        columnPreferences={{ key: 'review-history', required: ['created', 'state'] }}
+        empty={<EmptyState title="No reviews have been created." body="Select owned standing assignments and create a review snapshot." />}
+        columns={[
+          { key: 'created', header: 'Created', sortBy: value => value.created_at, cell: value => <Timestamp value={value.created_at} /> },
+          { key: 'due', header: 'Deadline', sortBy: value => value.due_at, cell: value => <Timestamp value={value.due_at} /> },
+          { key: 'state', header: 'State', cell: value => <ReviewState review={value} /> },
+          { key: 'actions', header: 'Actions', actions: true, cell: value => <Button small disabled={busy} onClick={() => void open(value)}>Open review</Button> },
+        ]} />}
       {hasMore.reviews&&<Button disabled={busy} onClick={()=>void more('reviews')}>Load more reviews</Button>}
     </Panel>
     {active&&<><Panel title="Selected review" description={`Due ${new Date(active.due_at).toLocaleString()}`}>

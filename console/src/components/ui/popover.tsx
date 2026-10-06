@@ -1,88 +1,20 @@
-"use client"
-
-import * as React from "react"
-import { cn } from "@/lib/utils"
-import { Popover as PopoverPrimitive } from "radix-ui"
-
-function Popover({
-  ...props
-}: React.ComponentProps<typeof PopoverPrimitive.Root>) {
-  return <PopoverPrimitive.Root data-slot="popover" {...props} />
+import type { ComponentProps } from 'react';
+import { Popover as Primitive } from '@base-ui/react/popover';
+import { cn } from '@/lib/utils';
+export const Popover = Primitive.Root;
+export const PopoverTrigger = Primitive.Trigger;
+export function PopoverContent({ className, align = 'center', side = 'bottom', sideOffset = 4, alignOffset = 0, ...props }:
+  Omit<ComponentProps<typeof Primitive.Popup>, 'className'> & { className?: string } & Pick<ComponentProps<typeof Primitive.Positioner>, 'align' | 'side' | 'sideOffset' | 'alignOffset'>) {
+  return <Primitive.Portal className="console-overlay-portal"><Primitive.Positioner align={align} side={side} sideOffset={sideOffset} alignOffset={alignOffset}>
+    <Primitive.Popup data-slot="popover-content" className={cn('w-72 origin-(--transform-origin) rounded-md border bg-popover p-4 text-popover-foreground shadow-md outline-hidden transition-[opacity,transform] duration-150 data-starting-style:opacity-0 data-ending-style:opacity-0 data-starting-style:scale-95 data-ending-style:scale-95', className)} {...props} />
+  </Primitive.Positioner></Primitive.Portal>;
 }
-
-function PopoverTrigger({
-  ...props
-}: React.ComponentProps<typeof PopoverPrimitive.Trigger>) {
-  return <PopoverPrimitive.Trigger data-slot="popover-trigger" {...props} />
+export function PopoverHeader({ className, ...props }: ComponentProps<'div'>) {
+  return <div data-slot="popover-header" className={cn('flex flex-col gap-1 text-sm', className)} {...props} />;
 }
-
-function PopoverContent({
-  className,
-  align = "center",
-  sideOffset = 4,
-  ...props
-}: React.ComponentProps<typeof PopoverPrimitive.Content>) {
-  return (
-    <PopoverPrimitive.Portal>
-      <PopoverPrimitive.Content
-        data-slot="popover-content"
-        align={align}
-        sideOffset={sideOffset}
-        className={cn(
-          "z-50 w-72 origin-(--radix-popover-content-transform-origin) rounded-md border bg-popover p-4 text-popover-foreground shadow-md outline-hidden data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
-          className
-        )}
-        {...props}
-      />
-    </PopoverPrimitive.Portal>
-  )
+export function PopoverTitle({ className, ...props }: Omit<ComponentProps<typeof Primitive.Title>, 'className'> & { className?: string }) {
+  return <Primitive.Title data-slot="popover-title" className={cn('font-medium', className)} {...props} />;
 }
-
-function PopoverAnchor({
-  ...props
-}: React.ComponentProps<typeof PopoverPrimitive.Anchor>) {
-  return <PopoverPrimitive.Anchor data-slot="popover-anchor" {...props} />
-}
-
-function PopoverHeader({ className, ...props }: React.ComponentProps<"div">) {
-  return (
-    <div
-      data-slot="popover-header"
-      className={cn("flex flex-col gap-1 text-sm", className)}
-      {...props}
-    />
-  )
-}
-
-function PopoverTitle({ className, ...props }: React.ComponentProps<"h2">) {
-  return (
-    <div
-      data-slot="popover-title"
-      className={cn("font-medium", className)}
-      {...props}
-    />
-  )
-}
-
-function PopoverDescription({
-  className,
-  ...props
-}: React.ComponentProps<"p">) {
-  return (
-    <p
-      data-slot="popover-description"
-      className={cn("text-muted-foreground", className)}
-      {...props}
-    />
-  )
-}
-
-export {
-  Popover,
-  PopoverTrigger,
-  PopoverContent,
-  PopoverAnchor,
-  PopoverHeader,
-  PopoverTitle,
-  PopoverDescription,
+export function PopoverDescription({ className, ...props }: Omit<ComponentProps<typeof Primitive.Description>, 'className'> & { className?: string }) {
+  return <Primitive.Description data-slot="popover-description" className={cn('text-muted-foreground', className)} {...props} />;
 }

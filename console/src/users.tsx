@@ -1,4 +1,11 @@
-import { DirectorySearch, DirectoryStatusFilter } from './directory-controls';
+import { DetailSheet } from './components/detail-sheet';
+import { CopyValue } from './components/copy-value';
+import { SecretInput } from './components/secret-input';
+import { InlineSwitch } from './components/inline-switch';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Field as FormField, FieldContent, FieldDescription, FieldLabel, FieldGroup } from '@/components/ui/field';
+import { Input } from '@/components/ui/input';
+import { DirectorySearch, DirectoryStatusFilter, DirectoryFilterSummary } from './directory-controls';
 import { useViewState, useListScroll } from './view-memory';
 import { useRouteParameters, setRouteParameters } from './route-state';
 import { UserAccessSummary } from './user-access-summary';
@@ -54,6 +61,7 @@ import {
   Button,
   ConfirmDialog,
   DataTable,
+  type Column,
   EmptyState,
   Field,
   LoadFailure,
@@ -358,6 +366,7 @@ function DirectoryScreen({
   const listRequest = useRef(0);
   useEffect(() => () => { listRequest.current++; }, []);
   const [term, setTerm] = useViewState('users:term', '');
+  const [typed, setTyped] = useViewState('users:draft-query', term);
   const [cursor, setCursor] = useViewState<string | null>('users:cursor', null);
   const [status, setStatus] = useViewState('users:status', '');
   useListScroll(`users:${term}:${status}:${cursor}`, load.kind === 'ready');
@@ -400,21 +409,22 @@ function DirectoryScreen({
         title="Directory"
         description="Search by username or email. The list is one page at a time."
       >
-        <div className="directory-toolbar"><Search initial={term}
-          onSearch={(value) => {
+        <div className="directory-toolbar"><DirectorySearch label="Search" value={typed} placeholder="Search by username or email address" onChange={setTyped}
+          onSubmit={() => {
             // A new search starts at the first page: keeping a cursor minted for
             // the previous term would resume in the middle of a different list.
             setCursor(null);
-            setTerm(value);
+            setTerm(typed.trim());
           }}
         /><DirectoryStatusFilter value={status} options={[{ value: '', label: 'All statuses' }, { value: 'active', label: 'Active' }, { value: 'disabled', label: 'Disabled' }, { value: 'locked', label: 'Locked' }]} onChange={value => { setCursor(null); setStatus(value); }} /></div>
+        <DirectoryFilterSummary query={term} status={status} onClearQuery={() => { setTyped(''); setTerm(''); setCursor(null); }} onClearStatus={() => { setStatus(''); setCursor(null); }} onClearAll={() => { setTyped(''); setTerm(''); setStatus(''); setCursor(null); }} />
         {load.kind === 'loading' && <Skeleton rows={4} label="Reading the directory." />}
         {load.kind === 'failed' && (
           <LoadFailure message={load.message} onRetry={() => refresh(term, cursor)} />
         )}
         {load.kind === 'ready' && (
           <>
-            <UserTable rows={load.value.items} onOpen={onOpen} />
+            <UserTable rows={load.value.items} onOpen={onOpen} onClearFilters={term || status ? () => { setTerm(''); setTyped(''); setStatus(''); setCursor(null); } : undefined} />
             {(cursor !== null || load.value.next_cursor !== null) && <Actions>
               <Button variant="ghost" disabled={cursor === null} onClick={() => setCursor(null)}>
                 First page
@@ -433,24 +443,22 @@ function DirectoryScreen({
   );
 }
 
-function Search({ initial, onSearch }: Readonly<{ initial: string; onSearch: (term: string) => void }>): JSX.Element {
-  const [typed, setTyped] = useState(initial);
-  return <DirectorySearch label="Search" value={typed} placeholder="Search by username or email address" onChange={setTyped} onSubmit={() => onSearch(typed.trim())} />;
-}
-
 function UserTable({
   rows,
   onOpen,
+  onClearFilters,
 }: Readonly<{
   rows: readonly UserRow[];
+  onClearFilters?: (() => void) | undefined;
   onOpen: (id: string) => void;
 }>): JSX.Element {
   return (
     <DataTable
       caption="Accounts"
+      columnPreferences={{ key: 'accounts', required: ['username', 'status'] }}
       rows={rows}
       rowKey={(row) => row.user_id}
-      empty={<EmptyState title="No account matches." body="Change the search or status filter to see more accounts." />}
+      empty={<EmptyState title="No account matches." body="Change the search or status filter to see more accounts." action={onClearFilters && <Button onClick={onClearFilters}>Reset account filters</Button>} />}
       columns={[
         {
           key: 'username',
@@ -574,7 +582,7 @@ function NewAccount({
             a round trip earlier (`ast-f9j5` (2), `validation.ts`). */}
         <Field label="Username" hint="The name this person will use to sign in." required error={usernameComplaint(username)}>
           {(props) => (
-            <input
+            <Input
               {...props}
               name="username"
               value={username}
@@ -584,7 +592,7 @@ function NewAccount({
         </Field>
         <Field label="Email address" hint="Used for verification and recovery messages when provided." error={emailAddress(email)}>
           {(props) => (
-            <input
+            <Input
               {...props}
               name="email"
               type="email"
@@ -598,10 +606,11 @@ function NewAccount({
           hint="Leave it empty for an account that will enrol a passkey. An account with no password cannot be signed into until it has a credential."
         >
           {(props) => (
-            <input
+            <SecretInput
               {...props}
               name="password"
-              type="password"
+              secretLabel="initial password"
+              disabled={busy}
               autoComplete="new-password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
@@ -632,7 +641,8 @@ function Account({
   const tab = accountTab(parameters.get('tab'));
   const setTab = (value: string): void => setRouteParameters('users', { tab: value });
   const [load, setLoad] = useState<Load<Detail>>({ kind: 'loading' });
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setOutcome] = useState<{ message: string; tone: 'success' | 'error' } | null>(null);
+  const setNotice = (message: string | null): void => setOutcome(message === null ? null : { message, tone: 'success' });
   const [busy, setBusy] = useState(false);
   // The question in front of an irreversible act, and what to do when it is
   // answered yes. One slot rather than one flag per button: two confirmations
@@ -690,7 +700,7 @@ function Account({
         refresh();
       },
       (error: unknown) => {
-        setNotice(failure(error, 'the change was refused'));
+        setOutcome({ message: failure(error, 'the change was refused'), tone: 'error' });
         setBusy(false);
       },
     );
@@ -737,7 +747,7 @@ function Account({
       back={{ label: 'Back to users', onClick: onBack }}
       description={<>{user.email ?? 'No email address'} · {user.status === 'active' ? 'Active account' : `${user.status[0]?.toUpperCase()}${user.status.slice(1)} account`}</>}
     >
-      {notice !== null && <Message tone="success">{notice}</Message>}
+      {notice !== null && <Message tone={notice.tone}>{notice.message}</Message>}
 
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList aria-label="Account sections">
@@ -1172,9 +1182,10 @@ function ClaimsEditor({
       {refusal !== null && <Message tone="error">{refusal}</Message>}
       {!editing ? <div className="read-summary"><dl className="stats"><div><dt>Email</dt><dd>{user.email ?? 'Not set'}</dd></div><div><dt>Email verified</dt><dd>{user.email_verified ? 'Yes' : 'No'}</dd></div></dl>
         <h4>Saved claims</h4>{Object.keys(user.claims).length === 0 ? <p className="muted">No additional claims.</p> : <dl className="stats">{Object.entries(user.claims).map(([name, claim]) => <div key={name}><dt>{name}</dt><dd><code>{claimText(claim.value)}</code></dd></div>)}</dl>}</div> : <form onSubmit={save}>
+        <FieldGroup>
         <Field label="Email" error={emailAddress(email)}>
           {(props) => (
-            <input
+            <Input
               {...props}
               name="email"
               type="email"
@@ -1183,25 +1194,15 @@ function ClaimsEditor({
             />
           )}
         </Field>
-        <ul className="switches">
-          <li>
-            <label htmlFor="claim-email-verified">
-              <input
-                id="claim-email-verified"
-                name="email_verified"
-                type="checkbox"
-                checked={emailVerified}
-                onChange={(event) => setEmailVerified(event.target.checked)}
-              />{' '}
-              Email verified
-            </label>
-            <p className="muted">
-              This asserts that someone here has taken active steps to check that the address
-              belongs to this person. Applications that sign people in through this server are
-              entitled to act on it.
-            </p>
-          </li>
-        </ul>
+        <FormField orientation="horizontal" className="identity-verification" data-disabled={busy || undefined}>
+          <Checkbox id="claim-email-verified" name="email_verified" checked={emailVerified} disabled={busy} aria-describedby="claim-email-verified-hint"
+            onCheckedChange={setEmailVerified} />
+          <FieldContent>
+            <FieldLabel htmlFor="claim-email-verified">Email verified</FieldLabel>
+            <FieldDescription id="claim-email-verified-hint">This asserts that someone here has taken active steps to check that the address belongs to this person. Applications that sign people in through this server are entitled to act on it.</FieldDescription>
+          </FieldContent>
+        </FormField>
+        </FieldGroup>
         <div className="table-wrap">
         <table>
           <thead>
@@ -1226,7 +1227,7 @@ function ClaimsEditor({
                   <label className="visually-hidden" htmlFor={`claim-name-${index}`}>
                     Claim name
                   </label>
-                  <input
+                  <Input
                     id={`claim-name-${index}`}
                     value={claim.name}
                     onChange={(event) =>
@@ -1242,7 +1243,7 @@ function ClaimsEditor({
                   <label className="visually-hidden" htmlFor={`claim-value-${index}`}>
                     Claim value
                   </label>
-                  <input
+                  <Input
                     id={`claim-value-${index}`}
                     value={claim.text}
                     onChange={(event) =>
@@ -1366,47 +1367,35 @@ function SessionTable({
   busy: boolean;
   onRevoke: (sid: string) => void;
 }>): JSX.Element {
-  return (
-    <div className="table-wrap">
-    <table>
-      <thead>
-        <tr>
-          <th scope="col">Signed in</th>
-          <th scope="col">Last seen</th>
-          <th scope="col">Expires</th>
-          <th scope="col">How</th>
-          <th scope="col">State</th>
-          <th scope="col">
-            <span className="visually-hidden">Actions</span>
-          </th>
-        </tr>
-      </thead>
-      <tbody>
-        {sessions.length === 0 && <tr><td colSpan={6} className="table-empty">This user has no sessions.</td></tr>}
-        {sessions.map((row) => (
-          <tr key={row.sid}>
-            <td><Timestamp value={row.authenticated_at} /></td>
-            <td><Timestamp value={row.last_seen_at} /></td>
-            <td><Timestamp value={row.expires_at} /></td>
-            <td>{row.amr.length === 0 ? '—' : row.amr.join(', ')}</td>
-            <td>
-              <Badge tone={row.live ? 'ok' : 'neutral'}>
-                {row.live ? 'live' : (row.revoked_reason ?? 'ended')}
-              </Badge>
-            </td>
-            <td className="actions-cell">
-              {row.live && (
-                <Button small disabled={busy} onClick={() => onRevoke(row.sid)}>
-                  End session
-                </Button>
-              )}
-            </td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-    </div>
-  );
+  const [activeOnly, setActiveOnly] = useState(false);
+  const [inspecting, setInspecting] = useState<string | null>(null);
+  const selectedSession = sessions.find(row => row.sid === inspecting);
+  const active = sessions.filter(row => row.live);
+  const columns: readonly Column<SessionRow>[] = [
+    { key: 'signed-in', header: 'Signed in', sortBy: row => row.authenticated_at, cell: row => <Timestamp value={row.authenticated_at} /> },
+    { key: 'last-seen', header: 'Last seen', sortBy: row => row.last_seen_at, cell: row => <Timestamp value={row.last_seen_at} /> },
+    { key: 'expires', header: 'Expires', sortBy: row => row.expires_at, cell: row => <Timestamp value={row.expires_at} /> },
+    { key: 'method', header: 'How', cell: row => row.amr.length ? row.amr.join(', ') : '—' },
+    { key: 'state', header: 'State', cell: row => <Badge tone={row.live ? 'ok' : 'neutral'}>{row.live ? 'live' : row.revoked_reason ?? 'ended'}</Badge> },
+    { key: 'actions', header: '', actions: true, cell: row => <Actions><Button small onClick={() => setInspecting(row.sid)}>Inspect session</Button>{row.live && <Button small disabled={busy} onClick={() => onRevoke(row.sid)}>End session</Button>}</Actions> },
+  ];
+  return <>
+    <div className="session-list-controls"><InlineSwitch label="Active only" checked={activeOnly} onCheckedChange={setActiveOnly} /><span aria-live="polite">{active.length} active of {sessions.length} loaded</span></div>
+    <DetailSheet open={selectedSession !== undefined} onOpenChange={open => { if (!open) setInspecting(null); }} title="Session details" description="Recorded session metadata. Inspecting a session does not end it.">
+      {selectedSession && <><dl className="detail record-metadata">
+        <div><dt>State</dt><dd><Badge tone={selectedSession.live ? 'ok' : 'neutral'}>{selectedSession.live ? 'live' : selectedSession.revoked_reason ?? 'ended'}</Badge></dd></div>
+        <div><dt>Session ID</dt><dd><code>{selectedSession.sid}</code><CopyValue value={selectedSession.sid} label="Copy session ID" /></dd></div>
+        <div><dt>Created</dt><dd><Timestamp value={selectedSession.created_at} /></dd></div>
+        <div><dt>Authenticated</dt><dd><Timestamp value={selectedSession.authenticated_at} /></dd></div>
+        <div><dt>Last seen</dt><dd><Timestamp value={selectedSession.last_seen_at} /></dd></div>
+        <div><dt>Expires</dt><dd><Timestamp value={selectedSession.expires_at} /></dd></div>
+        <div><dt>Authentication methods</dt><dd>{selectedSession.amr.join(', ') || 'Not recorded'}</dd></div>
+        <div><dt>Assurance</dt><dd>{selectedSession.acr ?? 'Not recorded'}</dd></div>
+        {selectedSession.revoked_at !== null && <div><dt>Ended</dt><dd><Timestamp value={selectedSession.revoked_at} /></dd></div>}
+      </dl></>}
+    </DetailSheet>
+    <DataTable caption="Sign-in sessions" columns={columns} rows={activeOnly ? active : sessions} rowKey={row => row.sid} empty={activeOnly && sessions.length ? <><span>No active sessions.</span> <Button small variant="ghost" onClick={() => setActiveOnly(false)}>Show all sessions</Button></> : 'This user has no sessions.'} />
+  </>;
 }
 
 function GrantTable({

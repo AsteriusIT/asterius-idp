@@ -18,6 +18,9 @@ import {
   type AssurancePolicy,
 } from './assurance-policy-model';
 import { Button, Field } from './ui';
+import { SettingSwitch } from './form-controls';
+import { Input } from '@/components/ui/input';
+import { FieldGroup } from '@/components/ui/field';
 
 export type { AssuranceLevel, AssurancePolicy } from './assurance-policy-model';
 
@@ -94,28 +97,23 @@ export function AssuranceEditor({ policy, onChange, disabled }: Readonly<{
     <p className="muted">Build the assurance flow applications can request. Levels are evaluated from weakest to strongest; drag a card or use its arrow buttons to change the order.</p>
 
     <section className="assurance-card authenticator-policy" aria-labelledby="authenticator-policy-title">
-      <h3 id="authenticator-policy-title">Authenticator app (TOTP)</h3>
+      <h3 id="authenticator-policy-title"><span className="authenticator-visual" aria-hidden="true"><Smartphone /><ShieldCheck /></span>Authenticator app (TOTP)</h3>
       <p role="status">{policy.levels.some(level => level.amr.includes('otp'))
         ? 'Enabled in this configuration. Save changes to apply.'
         : 'Disabled in this configuration. Enrolling an authenticator alone does not enable code challenges.'}</p>
       <p>When enabled, accounts with an active authenticator must enter a code after their password on fresh sign-ins. This does not require unenrolled users to set one up, replace passkeys, or end existing sessions.</p>
       {!policy.levels.some(level => level.amr.includes('otp')) && <Button
         disabled={policy.levels.length >= 32}
-        onClick={() => onChange(enableAuthenticator(policy))}>Enable authenticator codes</Button>}
+        onClick={() => onChange(enableAuthenticator(policy))}><Smartphone data-icon="inline-start" />Enable authenticator codes</Button>}
       <p className="muted">To disable code challenges, remove Authenticator code from every assurance level below and save. Applications that require those levels may then be unable to sign in. Codes do not satisfy phishing-resistant requirements.</p>
     </section>
 
-    <label className="assurance-release-row">
-      <span className="assurance-release-icon"><ShieldCheck aria-hidden="true" /></span>
-      <span className="assurance-release-copy">
-        <strong>Include authentication methods in ID tokens</strong>
-        <span>Expose the methods used as the token's <code>amr</code> claim.</span>
-      </span>
-      <span className="capability-state" aria-hidden="true">{policy.amr_in_id_token ? 'Included' : 'Hidden'}</span>
-      <input className="capability-switch" type="checkbox" role="switch"
-        checked={policy.amr_in_id_token}
-        onChange={(event) => onChange({ ...policy, amr_in_id_token: event.target.checked })} />
-    </label>
+    <FieldGroup className="setting-list assurance-token-settings">
+      <SettingSwitch label="Include authentication methods in ID tokens"
+        description={<>Expose the methods used as the token's <code>amr</code> claim.</>}
+        icon={ShieldCheck} disabled={disabled} checked={policy.amr_in_id_token}
+        onCheckedChange={(checked) => onChange({ ...policy, amr_in_id_token: checked })} />
+    </FieldGroup>
 
     <div className="assurance-flow-heading" aria-hidden="true">
       <span>Weakest</span><span className="assurance-flow-line" /><span>Strongest</span>
@@ -183,7 +181,7 @@ export function AssuranceEditor({ policy, onChange, disabled }: Readonly<{
 
             <div className="assurance-card-body">
               <Field label="ACR value" hint="The exact ASCII identifier applications request; no spaces, maximum 255 characters.">
-                {(props) => <input {...props} aria-label={`Assurance level ${index + 1} ACR value`}
+                {(props) => <Input {...props} aria-label={`Assurance level ${index + 1} ACR value`}
                   value={level.value} maxLength={255}
                   placeholder="urn:example:acr:verified"
                   onChange={(event) => changeLevel(index, { ...level, value: event.target.value })} />}

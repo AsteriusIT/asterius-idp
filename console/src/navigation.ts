@@ -99,7 +99,7 @@ export const DESTINATIONS: readonly Destination[] = [
   { route: 'temporary-privileges', label: 'Temporary privileges', reach: 'tenant', scope: 'admin.app_roles:read', bead: 'ast-dd1y.5.2', group: 'People' },
   { route: 'groups', label: 'Groups', reach: 'tenant', scope: 'admin.groups:read', bead: 'ast-6uqw.13', group: 'People' },
   { route: 'clients', label: 'Applications', reach: 'tenant', scope: 'admin.clients:read', bead: 'ast-f7m.5', group: 'Applications' },
-  { route: 'token-console', label: 'Token test console', reach: 'tenant', scope: 'admin.test_tokens:write', bead: 'ast-sctz', group: 'Applications' },
+  { route: 'token-console', menuOnly: true, label: 'Token test console', reach: 'tenant', scope: 'admin.test_tokens:write', bead: 'ast-sctz', group: 'Applications' },
   { route: 'outbound-scim', label: 'Outbound provisioning', reach: 'tenant', scope: 'admin.outbound_scim:read', bead: 'ast-dd1y.6.3', group: 'Applications' },
   { route: 'scim', label: 'SCIM provisioning', reach: 'tenant', scope: 'admin.clients:read', bead: 'ast-s36.13.5', group: 'Applications' },
   { route: 'kubernetes', label: 'Kubernetes access', reach: 'tenant', scope: 'admin.clients:read', bead: 'ast-1r9t', group: 'Applications' },

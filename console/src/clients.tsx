@@ -1,4 +1,9 @@
-import { DirectorySearch, DirectoryStatusFilter } from './directory-controls';
+import { WorkflowSteps } from './components/workflow-steps';
+import { Field as FormField, FieldLabel, FieldGroup, FieldSet, FieldLegend } from '@/components/ui/field';
+import { SettingSwitch } from './form-controls';
+import { Textarea } from '@/components/ui/textarea';
+import { Input } from '@/components/ui/input';
+import { DirectorySearch, DirectoryStatusFilter, DirectoryFilterSummary } from './directory-controls';
 import { AuthorizationTypePicker } from './authorization-type-picker';
 import { useViewState, useListScroll } from './view-memory';
 import { CopyValue } from './components/copy-value';
@@ -547,9 +552,10 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
         {editing.kind === 'existing' && discovery !== null && discoveryUrl !== null && <ConnectionCard document={editing.document} draft={draft} discovery={discovery} discoveryUrl={discoveryUrl} session={session} busy={busy} healthBusy={healthBusy} healthError={healthError} health={health} checkHealth={checkHealth} />}
         {discoveryError !== null && <Message tone="error">{discoveryError}</Message>}
         {!canWrite && <Message tone="info">Read-only access. Registering and saving applications requires admin.clients:write.</Message>}
-        {guided && <Panel title="Guided application setup" description="Complete each section, then review before registering. No application is created until you choose Register client.">
-          <p>Step {Math.max(0, ['settings', 'callbacks', 'credentials', 'grants', 'tokens', 'review'].indexOf(tab)) + 1} of 6</p>
-          <Button onClick={() => setRouteParameters('clients', { guided: null })}>Switch to full editor</Button>
+        {guided && <Panel className="guided-setup-summary" title="Guided application setup"
+          description={`Step ${Math.max(0, ['settings', 'callbacks', 'credentials', 'grants', 'tokens', 'review'].indexOf(tab)) + 1} of 6. Review before registering; no application is created until you choose Register client.`}
+          actions={<Button onClick={() => setRouteParameters('clients', { guided: null })}>Switch to full editor</Button>}>
+          {null}
         </Panel>}
         <Tabs value={tab} onValueChange={setTab}>
           <ApplicationTabs existing={editing.kind === 'existing'} guided={guided} />
@@ -617,7 +623,8 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
           if (cursor === null && appliedQuery === query) refresh(query);
           else { setCursor(null); setAppliedQuery(query); }
         }} /><DirectoryStatusFilter value={status} options={[{ value: '', label: 'All statuses' }, { value: 'active', label: 'Active' }, { value: 'disabled', label: 'Disabled' }]} onChange={value => { setCursor(null); setStatus(value); }} /></div>
-        <Inventory load={load} onOpen={(id) => setRouteParameters('clients', { id, mode: null, tab: null })} onRetry={() => refresh(appliedQuery)} busy={busy} />
+        <DirectoryFilterSummary query={appliedQuery} status={status} onClearQuery={() => { setQuery(''); setAppliedQuery(''); setCursor(null); }} onClearStatus={() => { setStatus(''); setCursor(null); }} onClearAll={() => { setQuery(''); setAppliedQuery(''); setStatus(''); setCursor(null); }} />
+        <Inventory load={load} onOpen={(id) => setRouteParameters('clients', { id, mode: null, tab: null })} onRetry={() => refresh(appliedQuery)} busy={busy} onClearFilters={appliedQuery || status ? () => { setQuery(''); setAppliedQuery(''); setStatus(''); setCursor(null); } : undefined} />
         {(cursor !== null || nextCursor) && <Actions><Button variant="ghost" disabled={cursor === null || load.kind === 'loading'} onClick={() => setCursor(null)}>First page</Button><Button variant="ghost" disabled={!nextCursor || load.kind === 'loading'} onClick={() => setCursor(nextCursor)}>Next page</Button></Actions>}
       </section>
 
@@ -639,17 +646,25 @@ function clientEditorRoute(parameters: URLSearchParams): { tab: string; guided: 
 }
 
 function ApplicationTabs({ existing, guided }: Readonly<{ existing: boolean; guided: boolean }>): JSX.Element {
-  return <TabsList className="application-tabs" aria-label="Application sections">
-            <TabsTrigger value="settings">General</TabsTrigger>
-            <TabsTrigger value="callbacks">Callbacks</TabsTrigger>
-            <TabsTrigger value="credentials">Credentials</TabsTrigger>
-            <TabsTrigger value="grants">Access &amp; grants</TabsTrigger>
+  if (guided) return <WorkflowSteps label="Application sections" steps={[
+    { value: 'settings', title: 'General', description: 'Name and profile' },
+    { value: 'callbacks', title: 'Callbacks', description: 'Redirect destinations' },
+    { value: 'credentials', title: 'Credentials', description: 'Client authentication' },
+    { value: 'grants', title: 'Access & grants', description: 'Allowed access' },
+    { value: 'tokens', title: 'Token claims', description: 'Identity output' },
+    { value: 'review', title: 'Review', description: 'Check and register' },
+  ]} />;
+  return <TabsList className={guided ? "application-tabs guided-application-steps" : "application-tabs"} aria-label="Application sections">
+            <TabsTrigger value="settings">{guided && <span className="setup-step-number" aria-hidden="true">1</span>}General</TabsTrigger>
+            <TabsTrigger value="callbacks">{guided && <span className="setup-step-number" aria-hidden="true">2</span>}Callbacks</TabsTrigger>
+            <TabsTrigger value="credentials">{guided && <span className="setup-step-number" aria-hidden="true">3</span>}Credentials</TabsTrigger>
+            <TabsTrigger value="grants">{guided && <span className="setup-step-number" aria-hidden="true">4</span>}Access &amp; grants</TabsTrigger>
             {existing && <TabsTrigger value="resources">Resources</TabsTrigger>}
             {existing && <TabsTrigger value="kubernetes">Kubernetes</TabsTrigger>}
-            <TabsTrigger value="tokens">Token claims</TabsTrigger>
+            <TabsTrigger value="tokens">{guided && <span className="setup-step-number" aria-hidden="true">5</span>}Token claims</TabsTrigger>
             {existing && <TabsTrigger value="policy">Access policy</TabsTrigger>}
             {existing && <TabsTrigger value="configuration">Export</TabsTrigger>}
-            {guided && <TabsTrigger value="review">Review</TabsTrigger>}
+            {guided && <TabsTrigger value="review">{guided && <span className="setup-step-number" aria-hidden="true">6</span>}Review</TabsTrigger>}
 
           </TabsList>;
 }
@@ -763,11 +778,13 @@ function Inventory({
   onOpen,
   onRetry,
   busy,
+  onClearFilters,
 }: Readonly<{
   load: Load;
   onOpen: (clientId: string) => void;
   onRetry: () => void;
   busy: boolean;
+  onClearFilters?: (() => void) | undefined;
 }>): JSX.Element {
   if (load.kind === 'loading') {
     return <Skeleton rows={4} label="Reading the clients." />;
@@ -779,12 +796,14 @@ function Inventory({
   return (
     <DataTable
       caption="Registered clients"
+      columnPreferences={{ key: 'clients', required: ['name', 'client_id', 'status'] }}
       rows={load.rows}
       rowKey={(row) => row.client_id}
       empty={
         <EmptyState
           title="No client matches."
           body="Change the search or status filter to see more applications."
+          action={onClearFilters && <Button onClick={onClearFilters}>Reset application filters</Button>}
         />
       }
       columns={[
@@ -902,11 +921,12 @@ function Editor({
           if (!guided || tab === 'review') onSubmit();
         }}
       >
-        <TabsContent value="settings"><fieldset disabled={busy || !canWrite}>
-          <legend id="client-identity">Identity</legend>
+        <TabsContent value="settings"><FieldSet disabled={busy || !canWrite}>
+          <FieldLegend id="client-identity">Identity</FieldLegend>
+          <FieldGroup>
           <Field label="Client name" required>
             {(props) => (
-              <input
+              <Input
                 {...props}
                 name="client_name"
                 type="text"
@@ -915,49 +935,36 @@ function Editor({
               />
             )}
           </Field>
-          <p>
-            <label htmlFor="application-type">Application type</label>
+          <FormField>
+            <FieldLabel htmlFor="application-type">Application type</FieldLabel>
             <FormSelect
               id="application-type"
               name="application_type"
               value={draft.application_type}
               onValueChange={(value) => onChange({ ...draft, application_type: value })}
              disabled={busy || !canWrite} options={[{"value": "web", "label": "Web application"}, {"value": "native", "label": "Native application"}]} />
-          </p>
-          <p>
-            <label htmlFor="client-status">Status</label>
+          </FormField>
+          <FormField>
+            <FieldLabel htmlFor="client-status">Status</FieldLabel>
             <FormSelect
               id="client-status"
               name="status"
               value={draft.status}
               onValueChange={(value) => onChange({ ...draft, status: value })}
              disabled={busy || !canWrite} options={[{"value": "active", "label": "Active"}, {"value": "disabled", "label": "Disabled"}]} />
-          </p>
+          </FormField>
           <p className="muted">
             A disabled client fails client authentication. Its grants and its audit trail stay.
           </p>
-          <p>
-            <label>
-              <input
-                type="checkbox"
-                name="managed_groups_claim"
-                checked={draft.managed_groups_claim}
-                onChange={(event) =>
-                  onChange({ ...draft, managed_groups_claim: event.target.checked })
-                }
-              />{' '}
-              Release stable managed group IDs to this client
-            </label>
-          </p>
-          <p className="muted">
-            Off by default. New ID tokens and UserInfo responses resolve at most 100 current
-            memberships for this client and return stable, opaque group references.
-            Names and directory membership for other clients are never disclosed.
-          </p>
-        </fieldset></TabsContent>
+          <SettingSwitch label="Release stable managed group IDs to this client"
+            description="Off by default. New ID tokens and UserInfo responses resolve at most 100 current memberships for this client and return stable, opaque group references. Names and directory membership for other clients are never disclosed."
+            name="managed_groups_claim" checked={draft.managed_groups_claim} disabled={busy || !canWrite}
+            onCheckedChange={(checked) => onChange({ ...draft, managed_groups_claim: checked })} />
+        </FieldGroup></FieldSet></TabsContent>
 
-        <TabsContent value="callbacks"><fieldset disabled={busy || !canWrite}>
-          <legend id="client-callbacks">Callbacks</legend>
+        <TabsContent value="callbacks"><FieldSet disabled={busy || !canWrite}>
+          <FieldLegend id="client-callbacks">Callbacks</FieldLegend>
+          <FieldGroup>
           {/*
             The complaint is an echo of `RedirectUri::parse` and never a rule of
             this form's own (`ast-f9j5` (2), `validation.ts`): the submission is
@@ -970,7 +977,7 @@ function Editor({
             error={clientFieldError(refusal, 'redirect_uris') ?? redirectUris(draft.redirect_uris, draft.application_type)}
           >
             {(props) => (
-              <textarea
+              <Textarea
                 {...props}
                 name="redirect_uris"
                 rows={4}
@@ -984,7 +991,7 @@ function Editor({
             error={clientFieldError(refusal, 'post_logout_redirect_uris') ?? redirectUris(draft.post_logout_redirect_uris, draft.application_type)}
           >
             {(props) => (
-              <textarea
+              <Textarea
                 {...props}
                 name="post_logout_redirect_uris"
                 rows={3}
@@ -997,7 +1004,7 @@ function Editor({
           </Field>
           <Field label="Provider Commands endpoint" hint="HTTPS endpoint that accepts signed account invalidate and delete commands." error={clientFieldError(refusal, 'command_endpoint')}>
             {(props) => (
-              <input
+              <Input
                 {...props}
                 name="command_endpoint"
                 type="url"
@@ -1006,10 +1013,11 @@ function Editor({
               />
             )}
           </Field>
-        </fieldset></TabsContent>
+        </FieldGroup></FieldSet></TabsContent>
 
-        <TabsContent value="grants"><AuthorizationTypePicker session={session} selected={draft.authorization_details_types} disabled={busy || !canWrite} onChange={values => onChange({ ...draft, authorization_details_types: values })} /><fieldset disabled={busy || !canWrite}>
-          <legend id="client-grant-types">Grant types</legend>
+        <TabsContent value="grants"><AuthorizationTypePicker session={session} selected={draft.authorization_details_types} disabled={busy || !canWrite} onChange={values => onChange({ ...draft, authorization_details_types: values })} /><FieldSet disabled={busy || !canWrite}>
+          <FieldLegend id="client-grant-types">Grant types</FieldLegend>
+          <FieldGroup>
           <ul className="grant-options">
             {grantRows(draft.grant_types).map(([name, description]) => {
               const display = GRANT_PRESENTATION[name];
@@ -1023,18 +1031,18 @@ function Editor({
               </li>;
             })}
           </ul>
-          <p>
-            <label htmlFor="client-scope">Scope</label>
-            <input
+          <FormField>
+            <FieldLabel htmlFor="client-scope">Scope</FieldLabel>
+            <Input
               id="client-scope"
               name="scope"
               type="text"
               value={draft.scope}
               onChange={(event) => onChange({ ...draft, scope: event.target.value })}
             />
-          </p>
+          </FormField>
           <p className="muted">The scope names this client may ask for, separated by spaces.</p>
-        </fieldset></TabsContent>
+        </FieldGroup></FieldSet></TabsContent>
 
         <TabsContent value="credentials">
           {(issuedSecret !== null || (draft.token_endpoint_auth_method === 'client_secret_basic' && editing.kind === 'existing')) && <section className="credential-secret-panel" aria-label="Client secret">
@@ -1048,26 +1056,27 @@ function Editor({
               </Actions>
             </div>}
           </section>}
-          <fieldset disabled={busy || !canWrite}>
-          <legend id="client-keys-subjects">Keys and subjects</legend>
+          <FieldSet disabled={busy || !canWrite}>
+          <FieldLegend id="client-keys-subjects">Keys and subjects</FieldLegend>
+          <FieldGroup>
           <ClientSecurity draft={draft} discovery={discovery} refusal={refusal} busy={busy || !canWrite} onChange={onChange} />
           {draft.token_endpoint_auth_method !== 'none' && editing.kind === 'existing' && editing.document.jwks !== undefined && (
             <JsonView value={editing.document.jwks} label="Registered inline JWK Set JSON" />
           )}
           {draft.token_endpoint_auth_method === 'none' && <p className="muted">Public clients do not authenticate with a JWK Set.</p>}
-          {draft.token_endpoint_auth_method !== 'none' && <><p>
-            <label htmlFor="jwks-uri">JWK Set URL</label>
-            <input
+          {draft.token_endpoint_auth_method !== 'none' && <><FormField>
+            <FieldLabel htmlFor="jwks-uri">JWK Set URL</FieldLabel>
+            <Input
               id="jwks-uri"
               name="jwks_uri"
               type="url"
               value={draft.jwks_uri}
               onChange={(event) => onChange({ ...draft, jwks_uri: event.target.value })}
             />
-          </p>
+          </FormField>
           <Field label="Inline JWK Set" error={clientFieldError(refusal, 'jwks') ?? publicKeyError(draft)}>
             {(props) => (
-              <textarea
+              <Textarea
                 {...props}
                 name="jwks"
                 rows={6}
@@ -1080,20 +1089,20 @@ function Editor({
             One or the other, never both. A URL is re-fetched when the client rotates its keys;
             an inline set is changed here.
           </p></>}
-          <p>
-            <label htmlFor="id-token-alg">ID token signing algorithm</label>
+          <FormField>
+            <FieldLabel htmlFor="id-token-alg">ID token signing algorithm</FieldLabel>
             <FormSelect
               id="id-token-alg"
               name="id_token_signed_response_alg"
               value={draft.id_token_signed_response_alg}
               onValueChange={(value) => onChange({ ...draft, id_token_signed_response_alg: value })} disabled={busy || !canWrite} options={ALGORITHMS.map((alg) => ({ value: alg, label: alg }))} />
-          </p>
+          </FormField>
           <p className="muted">
             This tenant must hold an active key for it, or the client could never be issued an ID
             token — the server refuses the registration in that case.
           </p>
-          <p>
-            <label htmlFor="userinfo-response-alg">UserInfo response signing algorithm</label>
+          <FormField>
+            <FieldLabel htmlFor="userinfo-response-alg">UserInfo response signing algorithm</FieldLabel>
             <FormSelect
               id="userinfo-response-alg"
               name="userinfo_signed_response_alg"
@@ -1104,13 +1113,13 @@ function Editor({
               disabled={busy || !canWrite}
               options={algorithmOptions(draft.userinfo_signed_response_alg)}
             />
-          </p>
+          </FormField>
           <p className="muted">
             When configured, <code>/userinfo</code> returns a signed JWT instead of a plain JSON
             object. The client must verify its signature and audience.
           </p>
-          <p>
-            <label htmlFor="request-object-alg">Request object signing algorithm</label>
+          <FormField>
+            <FieldLabel htmlFor="request-object-alg">Request object signing algorithm</FieldLabel>
             <FormSelect
               id="request-object-alg"
               name="request_object_signing_alg"
@@ -1121,13 +1130,13 @@ function Editor({
               disabled={busy || !canWrite}
               options={algorithmOptions(draft.request_object_signing_alg)}
             />
-          </p>
+          </FormField>
           <p className="muted">
             Configuring this opts the client into signed authorization request objects. Every
             request object must use this algorithm and a registered client key.
           </p>
-          <p>
-            <label htmlFor="authorization-response-alg">JARM authorization response signing algorithm</label>
+          <FormField>
+            <FieldLabel htmlFor="authorization-response-alg">JARM authorization response signing algorithm</FieldLabel>
             <FormSelect
               id="authorization-response-alg"
               name="authorization_signed_response_alg"
@@ -1136,7 +1145,7 @@ function Editor({
               disabled={busy || !canWrite}
               options={algorithmOptions(draft.authorization_signed_response_alg)}
             />
-          </p>
+          </FormField>
           <p className="muted">Required when this client uses <code>jwt</code>, <code>query.jwt</code>, or <code>form_post.jwt</code>.</p>
           <fieldset>
             <legend>Allowed authorization response modes</legend>
@@ -1189,18 +1198,18 @@ function Editor({
             && (draft.userinfo_encrypted_response_alg !== 'RSA-OAEP-256' || draft.userinfo_encrypted_response_enc !== 'A256GCM')
             && <p className="muted">Existing UserInfo encryption pair: <code>{draft.userinfo_encrypted_response_alg}</code> / <code>{draft.userinfo_encrypted_response_enc}</code>. It will be preserved until changed.</p>}
           <p className="muted">Response encryption requires an inline JWK Set with an encryption key. UserInfo encryption also requires a UserInfo signing algorithm.</p>
-          <p>
-            <label htmlFor="subject-type">Subject type</label>
+          <FormField>
+            <FieldLabel htmlFor="subject-type">Subject type</FieldLabel>
             <FormSelect
               id="subject-type"
               name="subject_type"
               value={draft.subject_type}
               onValueChange={(value) => onChange({ ...draft, subject_type: value })}
              disabled={busy || !canWrite} options={[{"value": "public", "label": "Public"}, {"value": "pairwise", "label": "Pairwise"}]} />
-          </p>
-          <p>
-            <label htmlFor="sector-identifier-uri">Sector identifier URL</label>
-            <input
+          </FormField>
+          <FormField>
+            <FieldLabel htmlFor="sector-identifier-uri">Sector identifier URL</FieldLabel>
+            <Input
               id="sector-identifier-uri"
               name="sector_identifier_uri"
               type="url"
@@ -1209,15 +1218,16 @@ function Editor({
                 onChange({ ...draft, sector_identifier_uri: event.target.value })
               }
             />
-          </p>
+          </FormField>
           <p className="muted">
             Fetched and checked when the client is saved: every redirect URI above has to appear
             in the document it serves.
           </p>
-        </fieldset></TabsContent>
+        </FieldGroup></FieldSet></TabsContent>
 
-        <TabsContent value="tokens"><fieldset disabled={busy || !canWrite}>
-          <legend id="client-token-roles">Application roles in tokens</legend>
+        <TabsContent value="tokens"><FieldSet disabled={busy || !canWrite}>
+          <FieldLegend id="client-token-roles">Application roles in tokens</FieldLegend>
+          <FieldGroup>
           <p>
             <label>
               <input
@@ -1240,7 +1250,7 @@ function Editor({
             parameter. Either way a token names only this client in{' '}
             <code>resource_access</code>.
           </p>
-        </fieldset></TabsContent>
+        </FieldGroup></FieldSet></TabsContent>
 
         {guided && <TabsContent value="review"><Panel title="Review application">
           <dl className="detail">

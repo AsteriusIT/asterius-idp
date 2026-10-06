@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Badge } from './ui';
 import { replacePolicy, read, type Session } from './api';
 import type { PolicyDocument } from './policy';
 import { JsonValue } from './components/json-view';
@@ -37,11 +38,12 @@ export function PolicyHistory({ session, dirty, onRestored, revision: currentRev
     {!items && !error && <Skeleton rows={2} label="Reading policy history." />}
     {items?.length === 0 && <p>No published versions have been recorded yet.</p>}
     {dirty && <p className="muted">Save or discard your editor changes before restoring a version.</p>}
-    {items?.map((revision, index) => <details key={revision.id}>
-      <summary>Version {revision.id}{index === 0 ? ' · Latest publication' : ''} · {revision.policy.rule_count} rules · {revision.policy.updated_at && <Timestamp value={revision.policy.updated_at} />}</summary>
+    {items && items.length > 0 && <ol className="policy-timeline" aria-label="Published policy versions">
+    {items.map((revision, index) => <li key={revision.id} className={index === 0 ? 'latest-publication' : undefined}><details>
+      <summary><span className="policy-publication-title"><strong>Version {revision.id}</strong>{index === 0 && <Badge>Latest publication</Badge>}</span><span className="policy-publication-meta">{revision.policy.rule_count} rules{revision.policy.updated_at && <> · <Timestamp value={revision.policy.updated_at} /></>}</span></summary>
       <JsonValue value={revision.policy.document} />
       {session.scopes.includes('admin.policies:write') && <Button disabled={busy || dirty} onClick={() => { setError(null); setExpected(currentRevision); setSelected(revision); }}>Restore version {revision.id}</Button>}
-    </details>)}
+    </details></li>)}</ol>}
     {selected && <ConfirmDialog title={`Restore version ${selected.id}?`}
       body={<><p>This immediately replaces the active access policy in {session.workspace}. Access decisions and active/report-only scopes may change. A new audited version will be recorded only if the current revision still matches.</p>{error && <Message tone="error">{error}</Message>}</>}
       confirmLabel="Restore and publish" busy={busy} onCancel={() => setSelected(null)} onConfirm={() => void restore()} />}

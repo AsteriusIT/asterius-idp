@@ -75,9 +75,9 @@ function BrokerApplicationPicker({value,onChange,candidates}:{value:string;onCha
   const [open,setOpen]=useState(false);
   const selected=candidates.find(row=>row.client.client_id===value);
   return <Popover open={open} onOpenChange={setOpen}>
-    <PopoverTrigger asChild><Button variant="secondary" role="combobox" aria-labelledby="broker-application-label" aria-expanded={open} className="kubernetes-picker-trigger">
+    <PopoverTrigger render={<Button variant="secondary" role="combobox" aria-labelledby="broker-application-label" aria-expanded={open} className="kubernetes-picker-trigger">
       <span>{selected?.client.client_name||selected?.client.client_id||'Choose an application'}</span><ChevronsUpDownIcon aria-hidden="true"/>
-    </Button></PopoverTrigger>
+    </Button>} />
     <PopoverContent align="start" className="kubernetes-picker-popover"><Command>
       <CommandInput placeholder="Search loaded applications…" aria-label="Search broker applications"/>
       <CommandList><CommandEmpty>No loaded application matches. Load more applications from the cluster list.</CommandEmpty>
@@ -96,9 +96,9 @@ function ManagedGroupPicker({groups,selected,term,onTerm,onSelect,disabled,loadi
 }):JSX.Element {
   const [open,setOpen]=useState(false);
   return <Popover open={open} onOpenChange={setOpen}>
-    <PopoverTrigger asChild><Button variant="secondary" role="combobox" aria-labelledby="released-groups-label" aria-expanded={open} disabled={disabled} className="kubernetes-picker-trigger">
+    <PopoverTrigger render={<Button variant="secondary" role="combobox" aria-labelledby="released-groups-label" aria-expanded={open} disabled={disabled} className="kubernetes-picker-trigger">
       <span>{selected.length===0?'Choose managed groups':`${selected.length} selected group${selected.length===1?'':'s'}`}</span><ChevronsUpDownIcon aria-hidden="true"/>
-    </Button></PopoverTrigger>
+    </Button>} />
     <PopoverContent align="start" className="kubernetes-picker-popover"><Command shouldFilter={false}>
       <CommandInput value={term} onValueChange={onTerm} placeholder="Search managed groups…" aria-label="Search managed groups"/>
       <CommandList>

@@ -1,5 +1,7 @@
 # Asterius IdP
 
+[Console feature guide — what, why, and how](docs/console/README.md).
+
 **An open-source OpenID Connect / OAuth 2.0 identity provider, written in Rust, with the FAPI 2.0 Security Profile as its only mode — built for people *and* AI agents.**
 
 > **Status: pre-alpha.** Architecture, security baseline and the full v1 backlog are defined; implementation is starting. Nothing here is production-ready yet. See [Roadmap](#roadmap).

@@ -154,9 +154,9 @@ export function ScimProvisioning({ session }: Readonly<{ session: Session }>): J
       <Panel title="Provisioning client" description="Inspect a registered application. This checks its stored configuration; it does not issue a token or call the SCIM endpoint.">
         <div className="field"><label id="provisioning-client-label">Application</label>
           <Popover open={pickerOpen} onOpenChange={open => { setPickerOpen(open); if (open) setQuery(''); }}>
-            <PopoverTrigger asChild><Button variant="secondary" role="combobox" aria-labelledby="provisioning-client-label" aria-expanded={pickerOpen} className="kubernetes-picker-trigger">
+            <PopoverTrigger render={<Button variant="secondary" role="combobox" aria-labelledby="provisioning-client-label" aria-expanded={pickerOpen} className="kubernetes-picker-trigger">
               <span>{selectedId === '' ? 'Choose an application' : `${selectedName} (${selectedId})`}</span><ChevronsUpDownIcon aria-hidden="true" />
-            </Button></PopoverTrigger>
+            </Button>} />
             <PopoverContent align="start" className="kubernetes-picker-popover"><Command shouldFilter={false}>
               <CommandInput value={query} onValueChange={value => { setQuery(value); setInventory({ kind: 'loading' }); }} placeholder="Search by name or client ID…" aria-label="Search provisioning applications" />
               <CommandList>

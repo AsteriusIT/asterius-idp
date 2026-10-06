@@ -9,7 +9,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { FormSelect } from './components/ui/select';
 import { Actions, Badge, Button, ConfirmDialog, DataTable, Field, LoadFailure, Message, Panel, Screen, Skeleton } from './ui';
 
-// Reuse the console's Geist type, white surface, zinc text/borders, indigo action
+// Reuse the console's Inter type, white surface, zinc text/borders, indigo action
 // and restrained warning/danger tones. The permission tuple and its expiry lead
 // the detail view; changes stay in labelled dialogs beside the existing table.
 interface Entitlement {

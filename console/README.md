@@ -1,5 +1,7 @@
 # The admin console
 
+For a concise feature-by-feature **why / how** guide, see the [console user README](../docs/console/README.md).
+
 A React + TypeScript application, built by Vite and **embedded in the server
 binary**. It is not a separate deployment, not an OAuth client and not reachable
 from any origin but the IdP's own: [ADR-0009](../docs/adr/0009-the-admin-console-is-a-first-party-same-origin-app.md)
@@ -33,8 +35,9 @@ frame-ancestors 'none'; base-uri 'none'; object-src 'none'
 - **Nothing is inline.** No inline script, no inline style, no event handler
   attribute, no `eval`. `modulePreload.polyfill` is off because that polyfill
   is an inline script.
-- **Nothing is off-origin.** No CDN or analytics. Geist and Geist Mono are
-  vendored under the SIL OFL and embedded as hashed WOFF2 assets. Relative
+- **Nothing is off-origin.** No CDN or analytics. Inter is self-hosted through Fontsource under the
+  SIL OFL and embedded as hashed WOFF2 assets. Technical values use the system
+  monospace stack. Relative
   URLs in `fonts.css` preserve the tenant mount; `font-src 'self'` permits
   these fonts without disclosing an administrator to another origin.
 - **There is no dev server.** Vite's hot-reload transport is a websocket to
@@ -100,3 +103,8 @@ The browser sweep covers this application: `e2e/tests/console.spec.ts` asserts
 that the shell starts with no CSP violation, makes no off-origin request,
 handles a 401 by asking for a sign-in, serves hashed assets as `immutable` and
 passes axe. Run it with `./scripts/browser-tests.sh --project=js`.
+
+## Redesign foundation
+
+[Design system](DESIGN_SYSTEM.md) defines reference priority, owned tokens,
+Base UI migration boundaries, and component sourcing.

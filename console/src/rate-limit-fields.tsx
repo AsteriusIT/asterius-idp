@@ -1,5 +1,7 @@
 import type { JSX } from 'react';
 import { Field } from './ui';
+import { FieldGroup } from './components/ui/field';
+import { OptionalNumberInput } from './components/optional-number-input';
 import { rateError, type RateBounds, type RateDraft } from './rate-limit-model';
 
 const GROUPS: Record<string, string> = {
@@ -17,19 +19,20 @@ export function RateLimitFields({ bounds, effective, draft, refusal, onChange }:
     <legend>Rate limits</legend>
     <p>Lower the maximum requests or failed sign-ins in each deployment window. Leave a value empty to inherit.
       Windows and counters are shared by all replicas and cannot be reset by editing settings.</p>
-    {Object.entries(bounds).map(([group, scopes]) => <div key={group}>
+    {Object.entries(bounds).map(([group, scopes]) => <FieldGroup key={group} className="rate-limit-group">
       <h3>{GROUPS[group] ?? group}</h3>
       {Object.entries(scopes).map(([scope, limit]) => {
         const value = draft[group]?.[scope] ?? '';
         const field = `rate_limits.${group}.${scope}`;
-        return <Field key={scope} label={`${GROUPS[group] ?? group} ${SCOPES[scope] ?? scope}`}
+        const label = `${GROUPS[group] ?? group} ${SCOPES[scope] ?? scope}`;
+        return <Field key={scope} label={label}
           hint={`Deployment maximum: ${limit.max} per ${limit.window_seconds} seconds. Effective saved maximum: ${effective[group]?.[scope]?.max ?? limit.max}.`}
           error={refusal?.includes(`${field}:`) ? refusal : rateError(value, limit.max)}>
-          {(props) => <input {...props} name={field} type="number" min={1} max={limit.max} step={1}
+          {(props) => <OptionalNumberInput {...props} name={field} maximum={limit.max} label={label}
             placeholder={`Inherit (${limit.max})`} value={value}
-            onChange={(event) => onChange({ ...draft, [group]: { ...draft[group], [scope]: event.target.value } })} />}
+            onValueChange={value => onChange({ ...draft, [group]: { ...draft[group], [scope]: value } })} />}
         </Field>;
       })}
-    </div>)}
+    </FieldGroup>)}
   </>;
 }

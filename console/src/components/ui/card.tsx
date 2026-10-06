@@ -1,9 +1,10 @@
 import * as React from "react"
-import { Slot } from "radix-ui"
+import { RenderElement } from "@/lib/render-element"
+import type { useRender } from "@base-ui/react/use-render"
 import { cn } from "@/lib/utils"
 
 /**
- * `asChild` is this repository's addition (`ast-gore`).
+ * `render` retains this repository's semantic section composition (`ast-gore`).
  *
  * A console panel is a *section* of a screen, labelled by the heading it
  * shows: `<section aria-labelledby>` is a region an assistive technology can
@@ -13,12 +14,12 @@ import { cn } from "@/lib/utils"
  */
 function Card({
   className,
-  asChild = false,
+  render,
   ...props
-}: React.ComponentProps<"div"> & { asChild?: boolean }) {
-  const Comp = asChild ? Slot.Root : "div"
+}: React.ComponentProps<"div"> & { render?: useRender.ComponentProps<"div">["render"] }) {
+
   return (
-    <Comp
+    <RenderElement tag="div" render={render}
       data-slot="card"
       className={cn(
         "flex flex-col gap-4 rounded-xl border bg-card py-5 text-card-foreground shadow-sm",

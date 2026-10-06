@@ -145,8 +145,7 @@ export function TenantSwitcher({
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button
+      <PopoverTrigger render={<Button
           variant="outline"
           role="combobox"
           aria-expanded={open}
@@ -170,9 +169,8 @@ export function TenantSwitcher({
             className="size-4 shrink-0 opacity-60"
             aria-hidden="true"
           />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent align="start" className="tenant-menu w-(--radix-popover-trigger-width) min-w-64 p-0">
+        </Button>} />
+      <PopoverContent align="start" className="tenant-menu w-(--anchor-width) min-w-64 p-0">
         <div className="tenant-menu-heading"><strong>{currentName}</strong><span>{sessionRoleLabel(session)}</span></div>
         <Command>
           {switchable && <CommandInput placeholder="Find a tenant…" />}

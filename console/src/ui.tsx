@@ -1,3 +1,5 @@
+import { PageIllustration } from './components/page-illustration';
+import { Empty, EmptyHeader, EmptyTitle, EmptyDescription, EmptyContent } from './components/ui/empty';
 import { UnsavedNotice } from './navigation-guard';
 /**
  * The console's components (`ast-fe39`, rebuilt on shadcn/ui by `ast-gore`).
@@ -16,7 +18,7 @@ import { UnsavedNotice } from './navigation-guard';
  * dependency: the components are **copied into this repository**
  * (`src/components/ui/`), reviewed like the rest of it and changed where this
  * deployment disagrees — the sidebar's cookie is gone, Sonner is gone. What
- * remains under them is Radix, which is behaviour and not paint: the focus
+ * remains under them is Base UI, which is behaviour and not paint: the focus
  * traps, the roving tab indexes, the `aria-*` wiring and the dismiss semantics
  * that `ConfirmDialog` had to get right by hand once and that every subsequent
  * dialog would have had to get right again.
@@ -34,7 +36,7 @@ import { UnsavedNotice } from './navigation-guard';
  */
 import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import type { JSX, ReactNode } from 'react';
-import { ArrowDownIcon, ArrowUpIcon, ChevronsUpDownIcon, ListFilterIcon, SearchIcon } from 'lucide-react';
+import { ArrowDownIcon, ArrowUpIcon, ChevronsUpDownIcon, Columns3Icon, ListFilterIcon, SearchIcon } from 'lucide-react';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -49,6 +51,7 @@ import { Badge as ShadBadge } from '@/components/ui/badge';
 import { Button as ShadButton } from '@/components/ui/button';
 import { Card, CardAction, CardContent, CardHeader } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { Field as FormField, FieldLabel, FieldDescription, FieldError } from '@/components/ui/field';
 import { Skeleton as ShadSkeleton } from '@/components/ui/skeleton';
 import {
   Table,
@@ -60,6 +63,9 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { cn } from '@/lib/utils';
+import { useViewState } from './view-memory';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Popover, PopoverContent, PopoverTitle, PopoverDescription, PopoverTrigger } from '@/components/ui/popover';
 
 /* ---- layout ------------------------------------------------------------ */
 
@@ -82,6 +88,7 @@ export function PageHeader({
 }>): JSX.Element {
   return (
     <header className={identity ? "screen-head identity-heading" : "screen-head"}>
+      {!identity && <PageIllustration />}
       {identity && <span className="identity-avatar detail-avatar" aria-hidden="true">{identity.slice(0, 2).toUpperCase()}</span>}
       <div className="screen-title">
         <h2 tabIndex={-1}>{title}</h2>
@@ -143,11 +150,10 @@ export function Panel({
   const generated = useId();
   const headingId = id ?? generated;
   return (
-    <Card asChild className={className}>
-      <section aria-labelledby={headingId}>
+    <Card render={<section aria-labelledby={headingId} />} className={className}>
         <CardHeader>
           <div className="panel-title">
-            <h3 id={headingId}>{title}</h3>
+            <h3 id={headingId} tabIndex={-1}>{title}</h3>
             {description !== undefined && <p className="muted">{description}</p>}
           </div>
           {/* A row with a gap: a panel's actions are a *set* of controls, and
@@ -158,7 +164,6 @@ export function Panel({
           )}
         </CardHeader>
         <CardContent className="flex flex-col gap-3">{children}</CardContent>
-      </section>
     </Card>
   );
 }
@@ -292,8 +297,8 @@ export function Field({
     .filter((name) => name !== '')
     .join(' ');
   return (
-    <div className="field">
-      <label htmlFor={id}>{label}</label>
+    <FormField className="field" data-invalid={error ? true : undefined}>
+      <FieldLabel htmlFor={id}>{label}</FieldLabel>
       {children({
         id,
         'aria-describedby': described === '' ? undefined : described,
@@ -301,16 +306,12 @@ export function Field({
         required,
       })}
       {hint !== undefined && (
-        <p className="hint" id={hintId}>
-          {hint}
-        </p>
+        <FieldDescription className="hint" id={hintId}>{hint}</FieldDescription>
       )}
       {error ? (
-        <p className="field-error" id={errorId}>
-          {error}
-        </p>
+        <FieldError className="field-error" id={errorId}>{error}</FieldError>
       ) : null}
-    </div>
+    </FormField>
   );
 }
 
@@ -447,13 +448,10 @@ export function EmptyState({
   body?: ReactNode;
   action?: ReactNode;
 }>): JSX.Element {
-  return (
-    <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed px-6 py-10 text-center">
-      <strong className="text-sm font-semibold">{title}</strong>
-      {body !== undefined && <p className="max-w-prose text-sm text-muted-foreground">{body}</p>}
-      {action !== undefined && <div className="pt-1">{action}</div>}
-    </div>
-  );
+  return <Empty className="console-empty-state">
+    <EmptyHeader><EmptyTitle role="heading" aria-level={3}>{title}</EmptyTitle>{body !== undefined && <EmptyDescription>{body}</EmptyDescription>}</EmptyHeader>
+    {action !== undefined && <EmptyContent>{action}</EmptyContent>}
+  </Empty>;
 }
 
 /**
@@ -596,6 +594,7 @@ export function DataTable<Row>({
   rowKey,
   empty,
   search,
+  columnPreferences,
 }: Readonly<{
   caption?: string;
   columns: readonly Column<Row>[];
@@ -603,10 +602,14 @@ export function DataTable<Row>({
   rowKey: (row: Row) => string;
   empty?: ReactNode;
   search?: Search<Row>;
+  columnPreferences?: { readonly key: string; readonly required: readonly string[] };
 }>): JSX.Element {
   const [sort, setSort] = useState<{ key: string; direction: Direction } | null>(null);
   const [query, setQuery] = useState('');
   const searchId = useId();
+  const [hiddenColumns, setHiddenColumns] = useViewState<readonly string[]>(`columns:${columnPreferences?.key ?? 'unconfigured'}`, []);
+  const locked = (column: Column<Row>) => column.actions === true || columnPreferences?.required.includes(column.key) === true;
+  const visibleColumns = columnPreferences ? columns.filter(column => locked(column) || !hiddenColumns.includes(column.key)) : columns;
 
   const matched = useMemo(() => {
     if (search === undefined || query.trim() === '') {
@@ -645,6 +648,20 @@ export function DataTable<Row>({
 
   const box = (
     <div className="table-tools">
+      {columnPreferences && <>
+        <p className="table-page-note">Sorting applies to loaded results.</p>
+        <Popover><PopoverTrigger render={<ShadButton variant="outline" size="sm" />}><Columns3Icon aria-hidden="true" />Columns{hiddenColumns.length > 0 && <span className="sr-only">, customized</span>}</PopoverTrigger>
+          <PopoverContent align="end" className="column-picker"><PopoverTitle>Visible columns</PopoverTitle><PopoverDescription>Identity, status and actions stay visible.</PopoverDescription>
+            <div className="column-picker-options">{columns.map(column => <label className="column-picker-option" key={column.key}>
+              <Checkbox checked={locked(column) || !hiddenColumns.includes(column.key)} disabled={locked(column)} onCheckedChange={checked => {
+                setHiddenColumns(current => checked ? current.filter(key => key !== column.key) : [...current.filter(key => key !== column.key), column.key]);
+                if (!checked && sort?.key === column.key) setSort(null);
+              }} /><span>{column.header === '' ? 'Actions' : column.header}</span>{locked(column) && <span className="muted">Required</span>}
+            </label>)}</div>
+            <Button small disabled={hiddenColumns.length === 0} onClick={() => setHiddenColumns([])}>Reset columns</Button>
+          </PopoverContent>
+        </Popover>
+      </>}
       {search !== undefined && (
         <div className="flex min-w-52 flex-1 flex-wrap items-center gap-3">
         <div className="relative max-w-xs flex-1">
@@ -691,7 +708,7 @@ export function DataTable<Row>({
             {caption !== undefined && <TableCaption>{caption}</TableCaption>}
             <TableHeader>
               <TableRow>
-                {columns.map((column) => {
+                {visibleColumns.map((column) => {
                   const sortable = column.sortBy !== undefined;
                   const active = sort?.key === column.key ? sort.direction : undefined;
                   let heading: ReactNode = column.header;
@@ -742,7 +759,7 @@ export function DataTable<Row>({
             <TableBody>
               {sorted.map((row) => (
                 <TableRow key={rowKey(row)}>
-                  {columns.map((column) => (
+                  {visibleColumns.map((column) => (
                     <TableCell
                       key={column.key}
                       className={cn(
@@ -816,17 +833,13 @@ export function ConfirmDialog({
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>{title}</AlertDialogTitle>
-          <AlertDialogDescription asChild><div>{body}</div></AlertDialogDescription>
+          <AlertDialogDescription render={<div />}>{body}</AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel disabled={busy}>{cancelLabel}</AlertDialogCancel>
-          {/* `asChild` so the confirm is an ordinary button this screen owns:
-              the act runs on click and the dialog is unmounted by the caller
-              when the call settles, rather than closing before it has. */}
-          <AlertDialogAction asChild>
-            <ShadButton variant="destructive" disabled={busy} onClick={(event) => { event.preventDefault(); onConfirm(); }}>
-              {confirmLabel}
-            </ShadButton>
+          {/* The caller retains the confirmation until its request settles. */}
+          <AlertDialogAction variant="destructive" disabled={busy} onClick={onConfirm}>
+            {confirmLabel}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

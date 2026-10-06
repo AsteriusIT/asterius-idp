@@ -24,7 +24,8 @@
  * (`crates/admin-api/src/audit.rs`, fuzzed) and matches them below the API.
  * Nothing in this bundle decides which rows an operator sees.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { AuditFilterBar } from './components/audit-filter-bar';
 import { AgentTaskViewer } from './agent-task-viewer';
 import type { JSX } from 'react';
 import { useRouteParameters, setRouteParameters } from './route-state';
@@ -38,8 +39,6 @@ import {
   Badge,
   Button,
   EmptyState,
-  Field,
-  FilterPanel,
   LoadFailure,
   Panel,
   Screen,
@@ -180,6 +179,7 @@ export function AuditExplorer({ session }: Readonly<{ session: Session }>): JSX.
   const [applied, setApplied] = useState<Filters>(EMPTY_FILTERS);
   const [load, setLoad] = useState<Load>({ kind: 'loading' });
   const [more, setMore] = useState(false);
+  const requestGeneration = useRef(0);
   const mayExport = session.scopes.includes('admin.audit:read');
 
   const fetchPage = useCallback((filters: Filters, cursor?: string): Promise<Page> => {
@@ -188,14 +188,17 @@ export function AuditExplorer({ session }: Readonly<{ session: Session }>): JSX.
 
   const refresh = useCallback(
     (filters: Filters) => {
-      setLoad({ kind: 'loading' });
+      const generation = ++requestGeneration.current;
+      setMore(false); setLoad({ kind: 'loading' });
       fetchPage(filters).then(
-        (page) => setLoad({ kind: 'ready', rows: page.items, next: page.next_cursor }),
-        (error: unknown) =>
+        (page) => { if (generation === requestGeneration.current) setLoad({ kind: 'ready', rows: page.items, next: page.next_cursor }); },
+        (error: unknown) => {
+          if (generation !== requestGeneration.current) return;
           setLoad({
             kind: 'failed',
             message: error instanceof Error ? error.message : 'the trail could not be read',
-          }),
+          });
+        },
       );
     },
     [fetchPage],
@@ -209,17 +212,20 @@ export function AuditExplorer({ session }: Readonly<{ session: Session }>): JSX.
   }, [correlation]);
 
   const loadMore = (): void => {
-    if (load.kind !== 'ready' || load.next === null) {
+    if (more || load.kind !== 'ready' || load.next === null) {
       return;
     }
     const cursor = load.next;
+    const generation = requestGeneration.current;
     setMore(true);
     fetchPage(applied, cursor).then(
       (page) => {
+        if (generation !== requestGeneration.current) return;
         setLoad({ kind: 'ready', rows: [...load.rows, ...page.items], next: page.next_cursor });
         setMore(false);
       },
       (error: unknown) => {
+        if (generation !== requestGeneration.current) return;
         setLoad({
           kind: 'failed',
           message: error instanceof Error ? error.message : 'the next page could not be read',
@@ -229,30 +235,13 @@ export function AuditExplorer({ session }: Readonly<{ session: Session }>): JSX.
     );
   };
 
-  const field = (name: keyof Filters, label: string, placeholder: string): JSX.Element => (
-    <Field label={label}>
-      {(props) => (
-        <input
-          {...props}
-          name={name}
-          type="text"
-          value={draft[name]}
-          placeholder={placeholder}
-          maxLength={256}
-          onChange={(event) => setDraft({ ...draft, [name]: event.target.value })}
-        />
-      )}
-    </Field>
-  );
-
   return (
     <Screen
       title="Audit trail"
       description={
         <>
-          What happened in <strong>{session.workspace}</strong>, newest first. Filter by the agent
-          that acted, the person it acted for, the person concerned, an authorization, an event
-          type or a time window; each row shows the delegation chain the record carries.
+          Review recorded events in <strong>{session.workspace}</strong>, newest first. Filter by identity,
+          authorization, event type or UTC time; inspect the delegation chain each record carries.
         </>
       }
       actions={
@@ -279,41 +268,7 @@ export function AuditExplorer({ session }: Readonly<{ session: Session }>): JSX.
         const next = { ...draft, from: new Date(Date.now() - hours * 3600000).toISOString(), until: new Date().toISOString() };
         setDraft(next); setApplied(next);
       }}>{hours === 1 ? 'Last hour' : hours === 24 ? 'Last 24 hours' : 'Last 7 days'}</Button>)}</Actions>
-      <FilterPanel>
-        <form
-          className="toolbar"
-          role="search"
-          onSubmit={(event) => {
-            event.preventDefault();
-            setApplied(draft);
-          }}
-        >
-          {field('agent', 'Agent', 'client_id')}
-          {field('owner', 'Owner', 'subject the agent acts for')}
-          {field('user', 'User', 'subject')}
-          {field('grant', 'Grant ID', 'Paste a grant ID')}
-          {field('task', 'Task ID', 'Paste an immutable task ID')}
-          {field('request_id', 'Support reference', '32 lowercase hexadecimal characters')}
-          {field('session', 'Session reference', '64 lowercase hexadecimal characters')}
-          {field('type', 'Event type', 'token.exchanged, session.revoked')}
-          {field('from', 'From', '2026-01-01T00:00:00Z')}
-          {field('until', 'Until', '2026-12-31T00:00:00Z')}
-          <Actions>
-            <Button
-              variant="ghost"
-              onClick={() => {
-                setDraft(EMPTY_FILTERS);
-                setApplied(EMPTY_FILTERS);
-              }}
-            >
-              Clear
-            </Button>
-            <Button type="submit" variant="primary">
-              Apply filters
-            </Button>
-          </Actions>
-        </form>
-      </FilterPanel>
+      <AuditFilterBar draft={draft} applied={applied} onDraft={setDraft} onApply={setApplied} empty={EMPTY_FILTERS} />
 
       <AuditEventDrawer />
       <Panel title="Records">
@@ -513,12 +468,12 @@ function AuditEventDrawer() {
     return () => { active = false; };
   }, [id, retry]);
   return <Sheet open={id !== null} onOpenChange={open => { if (!open) setRouteParameters('audit', { id: null }); }}>
-    <SheetContent className="overflow-y-auto">
+    <SheetContent className="record-detail-sheet">
       <SheetHeader><SheetTitle>Event #{id}</SheetTitle><SheetDescription>Read-only event details. Times use UTC.</SheetDescription></SheetHeader>
-      <div className="p-6 space-y-4">
+      <div className="record-detail-body">
         {error && <LoadFailure message={error} onRetry={() => setRetry(retry + 1)} />}
         {!record && !error && <Skeleton rows={3} label="Reading event." />}
-        {record && <><p><strong>{record.type ?? 'Unreadable record'}</strong> · {record.outcome}</p><p>{record.occurred_at}</p><Chain links={chainOf(record)} /><DetailList row={record} />
+        {record && <><p><strong>{record.type ?? 'Unreadable record'}</strong> · {record.outcome}</p><p><Timestamp value={record.occurred_at ?? null} /></p><Chain links={chainOf(record)} /><DetailList row={record} />
           <Panel title="Authorization evidence">
             <p>{({ recorded: 'Evidence from the evaluated policy snapshot.', expired: 'The policy evidence has expired.', unavailable: 'The recorded evidence is currently unavailable.', not_recorded: 'No policy evidence was recorded for this event.', opaque: 'This event cannot be decoded by this server.' })[record.diagnostic?.status ?? 'not_recorded']}</p>
             {record.diagnostic?.reason === 'integrity_mismatch' && <p>The recorded evidence failed its integrity check and has been withheld.</p>}

@@ -1,3 +1,4 @@
+import { SecretInput } from './components/secret-input';
 import { ProviderHealth } from './provider-health';
 import { useUnsavedChanges } from './navigation-guard';
 /** Tenant-managed upstream sign-in providers. */
@@ -96,7 +97,7 @@ export function OidcProviders({ session }: Readonly<{ session: Session }>): JSX.
         <Field label="Issuer URL" required hint="Exact HTTPS issuer from the provider's discovery document.">{props => <input {...props} type="url" value={draft.issuer} placeholder="https://login.example.com" onChange={event => change({ issuer: event.target.value })} />}</Field>
         <Field label="Client ID" required hint="Register this tenant as a client at the external provider first.">{props => <input {...props} value={draft.clientId} autoComplete="off" onChange={event => change({ clientId: event.target.value })} />}</Field>
         <Field label="Username claim" hint="Optional top-level ID token claim. New accounts use it, and linked account usernames sync on every sign-in. A missing or already used name blocks sign-in. Leave blank to keep generated names.">{props => <input {...props} value={draft.usernameClaim} placeholder="preferred_username" autoComplete="off" onChange={event => change({ usernameClaim: event.target.value })} />}</Field>
-        <Field label={editing ? 'Replace client secret' : 'Client secret'} required={!editing} hint={editing ? 'Leave blank to keep the existing secret. Existing secrets are never shown.' : 'Saved encrypted; it cannot be read back.'}>{props => <input {...props} type="password" value={draft.clientSecret} autoComplete="new-password" onChange={event => change({ clientSecret: event.target.value })} />}</Field>
+        <Field label={editing ? 'Replace client secret' : 'Client secret'} required={!editing} hint={editing ? 'Leave blank to keep the existing secret. Existing secrets are never shown.' : 'Saved encrypted; it cannot be read back.'}>{props => <SecretInput {...props} secretLabel={editing ? 'replacement client secret' : 'client secret'} disabled={busy} value={draft.clientSecret} autoComplete="new-password" onChange={event => change({ clientSecret: event.target.value })} />}</Field>
         <label className="flex items-center gap-2"><input type="checkbox" checked={draft.enabled} onChange={event => change({ enabled: event.target.checked })} /> Enable this provider</label>
         <label className="flex items-center gap-2"><input type="checkbox" checked={draft.allowRegistration} onChange={event => change({ allowRegistration: event.target.checked })} /> Create a new local account on first verified sign-in</label>
         <p className="muted">When off, only explicitly linked identities can sign in. New accounts never inherit an existing account through an email address.</p>

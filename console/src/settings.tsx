@@ -1,3 +1,5 @@
+import { FieldGroup, FieldSet, FieldLegend } from '@/components/ui/field';
+import { SettingSwitch, DurationInput } from './form-controls';
 import { useUnsavedChanges } from './navigation-guard';
 /**
  * The tenant settings screen (`ast-bfn`).
@@ -240,6 +242,7 @@ export function TenantSettings({
 
   return (
     <Screen
+      className="tenant-settings-page"
       title="Tenant settings"
       description={
         <>
@@ -278,50 +281,37 @@ export function TenantSettings({
         }}
       >
         <Tabs value={tab} onValueChange={setTab}><TabsList aria-label="Tenant configuration"><TabsTrigger value="features">Capabilities</TabsTrigger><TabsTrigger value="tokens">Token lifetimes</TabsTrigger><TabsTrigger value="consent">Consent</TabsTrigger><TabsTrigger value="sessions">Sessions</TabsTrigger>{draft.acrPolicy && <TabsTrigger value="assurance">Authentication</TabsTrigger>}{settings.rate_limit_bounds !== undefined && <TabsTrigger value="rate-limits">Rate limits</TabsTrigger>}<TabsTrigger value="oidc">Protocol endpoints</TabsTrigger></TabsList>
-        <TabsContent value="features"><fieldset className="settings-section" disabled={busy}>
-          <legend>Sign-in and access capabilities</legend>
+        <TabsContent value="features"><FieldSet className="settings-section" disabled={busy}>
+          <FieldLegend>Sign-in and access capabilities</FieldLegend>
           <p className="muted">
             Choose which capabilities applications can use in this workspace. Changes take effect when you save.
           </p>
-          <div className="capability-list">
-            <label className="capability-row">
-              <span className="capability-icon"><ShieldCheck aria-hidden="true" /></span>
-              <span className="capability-copy">
-                <strong>Allow non-FAPI application exceptions</strong>
-                <span>Permit administrators to opt individual applications out of FAPI. Applications remain FAPI unless explicitly changed.</span>
-              </span>
-              <span className="capability-state" aria-hidden="true">{draft.allowNonFapiClients ? 'Enabled' : 'Disabled'}</span>
-              <input className="capability-switch" type="checkbox" role="switch"
-                name="allow_non_fapi_clients" aria-label="Allow non-FAPI application exceptions"
-                checked={draft.allowNonFapiClients}
-                onChange={(event) => setDraft({ ...draft, allowNonFapiClients: event.target.checked })} />
-            </label>
+          <FieldGroup className="setting-list">
+            <SettingSwitch icon={ShieldCheck} label="Allow non-FAPI application exceptions"
+              description="Permit administrators to opt individual applications out of FAPI. Applications remain FAPI unless explicitly changed."
+              name="allow_non_fapi_clients" checked={draft.allowNonFapiClients} disabled={busy}
+              onCheckedChange={(checked) => setDraft({ ...draft, allowNonFapiClients: checked })} />
             {featureRows(draft.disabled).map(([name, description]) => {
               const feature = FEATURE_PRESENTATION[name as keyof typeof FEATURE_PRESENTATION];
-              const Icon = feature?.icon ?? Settings2;
-              const enabled = !draft.disabled.includes(name);
-              return <label className="capability-row" key={name}>
-                <span className="capability-icon"><Icon aria-hidden="true" /></span>
-                <span className="capability-copy"><strong>{feature?.label ?? name}</strong><span>{feature?.description ?? description}</span></span>
-                <span className="capability-state" aria-hidden="true">{enabled ? 'Enabled' : 'Disabled'}</span>
-                <input className="capability-switch" type="checkbox" role="switch" name={name}
-                  aria-label={feature?.label ?? name} checked={enabled}
-                  onChange={(event) => toggle(name, event.target.checked)} />
-              </label>;
+              return <SettingSwitch key={name} icon={feature?.icon ?? Settings2}
+                label={feature?.label ?? name} description={feature?.description ?? description}
+                name={name} checked={!draft.disabled.includes(name)} disabled={busy}
+                onCheckedChange={(checked) => toggle(name, checked)} />;
             })}
-          </div>
-        </fieldset></TabsContent>
+          </FieldGroup>
+        </FieldSet></TabsContent>
 
-        <TabsContent value="tokens"><fieldset className="settings-section lifetime-settings" disabled={busy}>
-          <legend>Token lifetimes</legend>
+        <TabsContent value="tokens"><FieldSet className="settings-section lifetime-settings" disabled={busy}>
+          <FieldLegend>Token lifetimes</FieldLegend>
           <p className="muted">Control how long codes and access tokens remain valid. Shorter lifetimes reduce the window for misuse.</p>
+          <FieldGroup className="form-settings-fields">
           <Field
             label="Authorization code lifetime (seconds)"
             hint={`Time to exchange a sign-in code for tokens. Maximum ${settings.limits.max_authorization_code_lifetime_seconds} seconds.`}
             error={refused === 'code' ? 'This is the value the server refused above.' : null}
           >
             {(props) => (
-              <input
+              <DurationInput
                 {...props}
                 name="authorization_code_lifetime_seconds"
                 type="number"
@@ -338,7 +328,7 @@ export function TenantSettings({
             error={refused === 'token' ? 'This is the value the server refused above.' : null}
           >
             {(props) => (
-              <input
+              <DurationInput
                 {...props}
                 name="access_token_lifetime_seconds"
                 type="number"
@@ -349,42 +339,30 @@ export function TenantSettings({
               />
             )}
           </Field>
-        </fieldset></TabsContent>
+          </FieldGroup>
+        </FieldSet></TabsContent>
 
         <TabsContent value="sessions"><SessionPolicyFields draft={draft} onChange={setDraft} busy={busy} refusal={refusal} /></TabsContent>
-        <TabsContent value="consent"><fieldset className="settings-section" disabled={busy}>
-          <legend>Consent decisions</legend>
+        <TabsContent value="consent"><FieldSet className="settings-section" disabled={busy}>
+          <FieldLegend>Consent decisions</FieldLegend>
           <p className="muted">
             Decide whether a previous approval can take returning users directly back to an application.
           </p>
-          <div className="capability-list">
-            <label className="capability-row">
-              <span className="capability-icon"><Users aria-hidden="true" /></span>
-              <span className="capability-copy">
-                <strong>Always show consent</strong>
-                <span>Ask on every interactive authorization, even when the same access was approved before. Users can review or deny each request; silent requests return consent_required.</span>
-              </span>
-              <span className="capability-state" aria-hidden="true">{draft.alwaysAskConsent ? 'Enabled' : 'Disabled'}</span>
-              <input
-                className="capability-switch"
-                type="checkbox"
-                role="switch"
-                name="always_ask_consent"
-                aria-label="Always show consent"
-                checked={draft.alwaysAskConsent}
-                onChange={(event) => setDraft({ ...draft, alwaysAskConsent: event.target.checked })}
-              />
-            </label>
-          </div>
-        </fieldset></TabsContent>
+          <FieldGroup className="setting-list">
+            <SettingSwitch icon={Users} label="Always show consent"
+              description="Ask on every interactive authorization, even when the same access was approved before. Users can review or deny each request; silent requests return consent_required."
+              name="always_ask_consent" checked={draft.alwaysAskConsent} disabled={busy}
+              onCheckedChange={(checked) => setDraft({ ...draft, alwaysAskConsent: checked })} />
+          </FieldGroup>
+        </FieldSet></TabsContent>
         {draft.acrPolicy && <TabsContent value="assurance"><AssuranceEditor
           policy={draft.acrPolicy} disabled={busy}
           onChange={(acrPolicy) => setDraft({ ...draft, acrPolicy })} /></TabsContent>}
 
-        {settings.rate_limit_bounds !== undefined && <TabsContent value="rate-limits"><fieldset className="settings-section" disabled={busy}>
+        {settings.rate_limit_bounds !== undefined && <TabsContent value="rate-limits"><FieldSet className="settings-section" disabled={busy}>
           <RateLimitFields bounds={settings.rate_limit_bounds} effective={settings.effective_rate_limits ?? settings.rate_limit_bounds}
             draft={draft.rateLimits} refusal={refusal} onChange={(rateLimits) => setDraft({ ...draft, rateLimits })} />
-        </fieldset></TabsContent>}
+        </FieldSet></TabsContent>}
         <TabsContent value="oidc"><OidcDetails tenant={settings.tenant_id} /></TabsContent>
         </Tabs>
 

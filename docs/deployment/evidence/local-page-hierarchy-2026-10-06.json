@@ -1,0 +1,102 @@
+{
+  "task": "ast-yvwx",
+  "branch": "claude/ast-yvwx",
+  "source_commit": "9985ccdf6a9c6bd52846a13fba6044eb66b5eb9f",
+  "uncommitted_worktree_changes": true,
+  "binary_sha256": "e0220b95326936a00999f55a6936c6ca19746295f3d6b0371bf2aca7b8658674",
+  "image": "asterius-idp:local-ast-yvwx-e0220b953269",
+  "image_id": "sha256:753e8ab132f1712d3052a64db906a85567cf6c735b1cd3baa8843caa2398b262",
+  "previous_image": "asterius-idp:local-ast-858r-3c2d8f55bc03",
+  "private_backup": "/home/qrodic/.local/share/asterius/backups/ast-yvwx-20261006T200022Z-c8788a8b",
+  "isolated_restore": "pass",
+  "isolated_readiness": "pass",
+  "isolated_discovery": "pass",
+  "isolated_protected_redirects": "pass",
+  "isolated_identity_equality": true,
+  "isolated_schema_equality": true,
+  "console_assets": [
+    {
+      "file": "inter-cyrillic-ext-wght-normal-BOeWTOD4.woff2",
+      "sha256": "ca157063339ac4ad418f214f3abfed119b0798ab4d377386ce5c9e5a7a435ebd"
+    },
+    {
+      "file": "inter-cyrillic-wght-normal-DqGufNeO.woff2",
+      "sha256": "71d5ee93cc1e9f1d520a3a8b66456de18c7879d8df09d57fcd2eaff75fef0075"
+    },
+    {
+      "file": "inter-greek-ext-wght-normal-DlzME5K_.woff2",
+      "sha256": "6e9e020a25f9b56d418f2c085b1d3c09725a4da23fe693a5b463064606732190"
+    },
+    {
+      "file": "inter-greek-wght-normal-CkhJZR-_.woff2",
+      "sha256": "1be3448e292fbf05ffe176fe1e43f135013d50b1e7d324ad1a558f623d3bb6f6"
+    },
+    {
+      "file": "inter-latin-ext-wght-normal-DO1Apj_S.woff2",
+      "sha256": "34b9c504cab7a73e37b746343a449132e56cf7b5481af2cb81dc74dcff25c956"
+    },
+    {
+      "file": "inter-latin-wght-normal-Dx4kXJAl.woff2",
+      "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+    },
+    {
+      "file": "inter-vietnamese-wght-normal-CBcvBZtf.woff2",
+      "sha256": "5c66f9e07e90c6d4ac4922cc68d60de26c17b1858e677fb5e603fce3952b3ff2"
+    },
+    {
+      "file": "kubernetes-sXAxUTAP.svg",
+      "sha256": "ff5427cfeeff39e82834ab1b4fe3ed61fc08596225a17eed56adc04f7cc1f712"
+    },
+    {
+      "file": "main-CEho-y-u.js",
+      "sha256": "e29e6564c9e66de80f691eb0edcf4d7176c47f0120c940b9f2eb75d4d1a3c3a0"
+    },
+    {
+      "file": "style-DKsx6Mpe.css",
+      "sha256": "4fd947ee9089efdafb0475137aeac3c3ca5a5c406ddf95191800a33a2c776199"
+    }
+  ],
+  "console_url": "https://desktop-cpbptqn-1.tailacbb15.ts.net/t/admin/admin/",
+  "frontend_tests": 88,
+  "controlled_chromium_tests": 79,
+  "direct_radix_wrappers_remaining": 0,
+  "https_resolution": "canonical hostname pinned to current local Tailscale IP; hostname TLS verification retained",
+  "live_identity_equality": true,
+  "live_identity_preserved_except_totp_replay_counter": true,
+  "live_identity_change": "All identity rows match baseline.",
+  "live_rollout": "pass",
+  "live_https_readiness": "pass",
+  "live_discovery": "pass",
+  "live_protected_redirects": "pass",
+  "live_console_assets": "all 10 match built bundle",
+  "live_schema_equality": true,
+  "configuration_and_secrets_unchanged": true,
+  "tailscale_serve_unchanged": true,
+  "schema_migrations": 118,
+  "latest_schema_migration": 173,
+  "pod": "asterius-688748d79b-76gfc",
+  "runtime_image_id": "sha256:753e8ab132f1712d3052a64db906a85567cf6c735b1cd3baa8843caa2398b262",
+  "checked_at_utc": "2026-10-06T20:01:15Z",
+  "limits": [
+    "Existing-account password/TOTP sign-in was not exercised.",
+    "Console interaction checks use controlled API responses; live checks verify redirects and exact assets.",
+    "Source is the uncommitted ticket worktree; no remote CI, merge or push."
+  ],
+  "https_handover_503_retries": 2,
+  "hierarchy_routes_reviewed": 29,
+  "hierarchy_route_sweep": "All29 registered destinations: desktop1440/light and mobile390/dark, controlled read503/refusal states; no runtime or CSP errors.",
+  "final_layout_checks": 4,
+  "frontend_dependencies_changed": false,
+  "rust_source_changed": false,
+  "binary_rust_checkout": "asterius-idp-ast-858r, identical Rust sources to ast-yvwx",
+  "embedded_console_dist": "/home/qrodic/workspace/github/AsteriusIT/asterius-idp-ast-yvwx/console/dist",
+  "patterns": [
+    "WorkflowSteps on existing Base Tabs",
+    "applied audit chip value editor",
+    "schema and session DetailSheet; wider audit inspector",
+    "full-width registration schema/sample/consent workspace",
+    "shared JsonDraftEditor for schema/sample/policy/simulation",
+    "visible PageSections navigation"
+  ],
+  "validation": "Production tsc/Vite build88unit79controlledChromium plus4final-bundle checks. Existing password/TOTP sign-in not exercised."
+}

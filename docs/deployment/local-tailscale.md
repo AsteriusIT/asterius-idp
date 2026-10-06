@@ -21,6 +21,259 @@ after the change; logout/reboot itself was not exercised. See
 
 ## Current worktree deployment
 
+The 2026-10-06 Access reviews update runs from uncommitted `claude/ast-hl81`,
+carrying the previous redesign. Five owned patterns adopt ReUI comparison and
+selection ideas on the existing shadcn/Base foundation: ownership table with
+column controls, in-flow selected-record count/clear action, sortable review
+history with actual state badges, a 1,000-character decision-reason counter,
+and keyboard snapshot evidence accordions that start expanded. Actual affected
+accounts, standing/temporary-source counts and account state remain visible.
+Refused apply operations also show their error inside the retained confirmation.
+The existing bounded IDs, cursor paging, permissions, raw reasons, explicit
+snapshot creation and separate decision/apply requests remain authoritative.
+
+Production build/typecheck and 88 unit checks pass. All 74 controlled Chromium
+scenarios passed in the full run; four review scenarios passed again against the
+final bundle after correcting a scoped evidence-header badge layout. Coverage
+includes column choices/loaded sorting, exact selection IDs on refused creation,
+disabled ownership records, clear selection with no write, read-only permissions,
+actual review states, reason limits/raw rejected drafts, keyboard disclosure,
+independent/protected evidence, retained apply confirmation, mobile/dark/WCAG/CSP.
+Screenshots were reviewed. Registry source was inspected through the CLI; no
+runtime dependencies or existing primitive overwrites were introduced.
+
+Image `asterius-idp:local-ast-hl81-b57a71da9ab2` packages binary SHA-256
+`b57a71da9ab2401039f9ff6b5d723c2c4d6d8b2971cd0871cb4be02faada8e48`.
+Fresh private backup and isolated database restore passed before rollout. Live
+canonical HTTPS readiness, discovery, protected redirects, all ten exact asset
+hashes and identity/schema equality passed. Configuration, secrets and Tailscale
+Serve remain unchanged. See [deployment evidence](evidence/local-access-review-components-2026-10-06.json).
+Existing-account password/TOTP sign-in was not exercised. No Rust source changes,
+commits, merges, pushes or remote CI.
+
+## Previous empty/preferences/secret-input deployment
+
+The 2026-10-06 component-adoption update runs from uncommitted `claude/ast-0c4o`,
+carrying the previous redesign. Shared empty states use owned shadcn Empty
+composition with accessible titles; filtered Users/Applications offer reset
+actions. Preferences use owned Base ToggleGroup controls with keyboard selection
+and existing browser persistence. SecretInput composes InputGroup/Input/Button
+for initial user passwords and upstream OIDC secret replacement. Reveal is local,
+remasks on blur, clearing or disabling, preserves exact raw drafts, and makes no
+request. Blank replacement still omits the secret from the save command.
+
+Production build/typecheck and 88 unit checks pass. All 70 unique controlled
+Chromium scenarios pass against the final bundle: 68 passed in the full run and
+two passed in a targeted rerun after correcting an ambiguous heading selector
+and a missing fixture metadata-check response. New coverage includes empty-state
+reset with no mutation, keyboard preference persistence/required selection,
+secret reveal/remasking, raw rejected drafts, absent secret persistence and
+pending-save reveal disabling. Mobile/light/dark screenshots were reviewed.
+The design-system document records registry inspection and owned adaptations.
+No runtime dependencies were added; existing primitives were preserved.
+
+Image `asterius-idp:local-ast-0c4o-3f8c92739cde` packages binary SHA-256
+`3f8c92739cde7ce148acf3572cbcedc5560f9ae9a9ef3d521d01717da63bb668`.
+Fresh private backup and isolated database restore passed before rollout. Live
+canonical HTTPS readiness, discovery, protected redirects, all ten exact asset
+hashes and identity/schema equality passed. Configuration, secrets and Tailscale
+Serve remain unchanged. See [deployment evidence](evidence/local-empty-preferences-secrets-2026-10-06.json).
+Existing-account password/TOTP sign-in was not exercised. No Rust source changes,
+commits, merges, pushes or remote CI.
+
+## Previous directory/activity deployment
+
+The 2026-10-06 five-workflow update runs from uncommitted `claude/ast-azwq`,
+carrying the previous redesign. Users and Applications now show applied search
+and status chips with individual removal and clear-all actions. Removing status
+preserves an unfinished search draft, and filter changes reset the page cursor.
+User Access overview shows recent visible sign-in outcomes and timestamps from
+its existing bounded audit reads, with working event links and audit permission.
+Sessions use the owned sortable table, loaded/active counts and an Active only
+switch. Refused account mutations now use error alerts. JSON/YAML panels offer
+keyboard-accessible line wrapping, preserving exact copied source. CopyValue
+clears stale feedback and ignores clipboard completion after value replacement
+or unmount; duplicate pending copy actions are disabled.
+
+Production build/typecheck, 88 unit checks and all 66 controlled Chromium
+scenarios passed, followed by the final audit-link navigation/permission check.
+Screenshots were reviewed at mobile widths in both themes. Browser checks cover
+applied versus draft filters, long filter text, sorted revocation targets and
+server refusals, exact source copy in both wrapping modes, stale clipboard
+completion, audit visibility and WCAG accessibility. Theme checks wait for the
+input text color as well as its surface before measuring contrast.
+
+Image `asterius-idp:local-ast-azwq-e3c85f9f683c` packages binary SHA-256
+`e3c85f9f683cf1de0c56d7c8ce30a908f9a41bcb6f28af300b8b779acd7970f4`.
+A fresh private backup includes database dumps, configuration/secrets, deployment,
+Serve state, the tracked source patch and untracked source archive. An isolated
+restore passed before rollout. Live canonical HTTPS readiness, discovery,
+protected redirects, all ten exact asset hashes and identity/schema equality
+passed. Configuration, secrets and Tailscale Serve remain unchanged. See
+[deployment evidence](evidence/local-five-ui-improvements-2026-10-06.json).
+Existing-account password/TOTP sign-in was not exercised. No Rust source changes,
+commits, merges, pushes or remote CI.
+
+## Previous code/rate-limit deployment
+
+The 2026-10-06 code/rate-limit update runs from uncommitted `claude/ast-pf5f`,
+carrying the previous redesign. JSON/YAML documents now use a labelled source
+panel with format, line count, nonselectable line numbers, bounded keyboard
+scrolling and exact copy. Saved policy source uses the same panel. Optional
+rate limits use raw numeric drafts, explicit step controls and an Inherit action;
+steps do not change settings until Save. Input groups dim only when their input
+is disabled, including while a Save request is pending.
+
+Production build/typecheck, 88 unit checks and all 62 controlled Chromium
+scenarios passed. New checks cover Unicode/escaped source, exact JSON/YAML copy,
+YAML separators/trailing newlines, clipboard denial, keyboard scrolling, raw
+out-of-range/decimal drafts, inheritance omission in save payloads, deployment
+ceilings, pending-save disabled controls, server refusals, mobile/dark and WCAG
+accessibility. Browser fixture document/assets now specify UTF-8 like production.
+
+Image `asterius-idp:local-ast-pf5f-77ec682eacae` packages binary SHA-256
+`77ec682eacae8a6875557e27d24a9607f31e977481ff2ab7706b14e1cfc336fd`.
+The fresh private backup and isolated database restore passed before rollout.
+Live canonical HTTPS readiness, discovery, protected redirects, all ten asset
+hashes and identity/schema equality passed. Two transient HTTPS 503 responses
+during endpoint handover were retried with read-only requests.
+Configuration, secrets and Tailscale Serve remain unchanged. See
+[deployment evidence](evidence/local-code-rate-components-2026-10-06.json).
+Existing-account password/TOTP sign-in was not exercised. No Rust source changes,
+commits, merges, pushes or remote CI.
+
+## Previous role/history/columns deployment
+
+The 2026-10-06 role/history/columns update is built from the uncommitted
+`claude/ast-a8bk` worktree, carrying the previous redesign. Role options show
+actual catalogue descriptions, while scope switches invalidate old responses.
+Policy publications use an ordered timeline with the existing revision-checked
+restore confirmation. Account/application directories expose column visibility;
+identity, status and actions remain visible, and choices survive cursor pages.
+
+Production build/typecheck, 88 unit checks and 59 controlled Chromium scenarios
+passed. The new regressions cover empty workspace values, retained refused role
+assignments, stale catalogue responses, read-only publication history, column
+preferences across cursor pages, keyboard focus, mobile and dark accessibility.
+
+Image `asterius-idp:local-ast-a8bk-f0c32a43da6c` packages binary SHA-256
+`f0c32a43da6c63c22a10d57346a51bb35af305670a0594f5de46135173995409`.
+A private backup and isolated restore verified identity/schema equality,
+readiness, discovery, protected redirects and exact console assets before rollout.
+The immediate HTTPS readiness check returned 503 during endpoint handover;
+the subsequent read-only live verifier passed.
+See [deployment evidence](evidence/local-role-history-columns-2026-10-06.json).
+Live checks cover canonical HTTPS and bundle integrity; existing-account
+password/TOTP sign-in was not exercised. No Rust source changes, commits,
+merges, pushes or remote CI.
+
+## Previous workflow component deployment
+
+The 2026-10-06 workflow component update is built from the uncommitted
+`claude/ast-pr8l` worktree, carrying the previous redesign. A shared Base Combobox
+now searches/selects stable user IDs for group membership. Audit filters expose
+common fields, optional references, applied chips and explicit Apply behavior.
+Guided setup uses numbered progress within its existing tablist. No runtime
+packages or Rust source were added or changed by this iteration.
+
+Production build/typecheck, 88 frontend tests and the final full suite of 55
+controlled Chromium scenarios passed. The new scenarios cover duplicate-name
+selection, failed writes retaining a choice, stale searches, cursor pages,
+directory retry, Escape behavior, mobile/dark accessibility, applied audit/export
+queries and stale audit responses, plus setup draft preservation.
+
+Image `asterius-idp:local-ast-pr8l-e963ba3c9182` packages binary SHA-256
+`e963ba3c918224c3a8d5e6b1531d8ebca2f7303f7bedd1460c681017c212adf6`.
+A fresh private backup and isolated database restore verified readiness,
+discovery, protected redirects, all console assets and unchanged identity/schema
+before rollout. The first HTTPS protected-route check returned 503 during endpoint handover; the read-only live verifier was rerun afterward. Live verification is recorded in
+[workflow component deployment evidence](evidence/local-workflow-components-2026-10-06.json).
+Existing-account password/TOTP sign-in is outside these live checks. No commit,
+merge, push or remote CI.
+
+## Previous tenant settings width deployment
+
+The 2026-10-06 tenant settings width update runs from the uncommitted
+`claude/ast-ieh5` worktree, carrying the existing redesign from `claude/ast-lq9o`.
+Tenant settings use the full workspace width. Authentication assurance has a
+responsive ACR/method split, four method choices across wide screens, a split
+TOTP policy explanation, and the shared Base UI token-method switch. Layout
+alternatives and the responsive rules are recorded in the owned design system.
+
+Production build/typecheck and 88 frontend tests passed. All 49 existing
+controlled Chromium scenarios passed, followed by the new width regression:
+390/768/1440/1920px, both themes, accessibility, keyboard reordering and draft
+preservation. No Rust source changed; the binary was built to package assets.
+
+Image `asterius-idp:local-ast-ieh5-0b7882053a71` uses binary SHA-256
+`0b7882053a71f30c774b6909a46e177e23b875059d5fe6f00384c2e448be6af1`.
+A fresh private backup and isolated restore passed before rollout. Live readiness,
+canonical discovery, protected redirects, all console assets, identity and schema
+checks passed. Configuration, secrets and Tailscale Serve are unchanged. The
+first immediate HTTPS request returned 503 during endpoint handover; the read-only
+live verifier passed afterward. Existing-account password/TOTP sign-in was not
+exercised. No commit, merge, push or remote CI.
+
+See [the full-width settings deployment evidence](evidence/local-full-width-settings-2026-10-06.json).
+
+## Previous compact form deployment
+
+The 2026-10-06 compact form update runs from the uncommitted `claude/ast-lq9o`
+worktree, based on `9985ccdf` with the previous redesign carried forward. Owned
+shadcn Field composition now groups labels, help and errors; application and
+identity editors use shared inputs. Capability and consent switches use Base UI,
+and lifetime inputs show their unit inside the control. Guided application setup
+keeps progress and the full-editor action in one compact summary.
+
+Controls are 36px on desktop and 44px on mobile/coarse pointers, with 16px mobile
+input text. Desktop forms align labels and controls; mobile forms stack. Inter,
+the owned light/dark palette, API payloads, draft protection and permission gates
+remain in place. Production build/typecheck, 88 frontend tests and 49 distinct
+controlled Chromium scenarios passed; the three affected guided-setup scenarios
+were repeated after the final compact-summary change.
+
+Image `asterius-idp:local-ast-lq9o-08d9dd35e7dc` uses binary SHA-256
+`08d9dd35e7dc54d24e6dde0a15b8ee10040c0eef8c639926b9a7fcbc866f438b`.
+A fresh protected backup and isolated restored-database probe precede rollout.
+Live checks verify readiness, discovery, protected redirects, exact assets and
+identity/schema preservation. Configuration, secrets and Tailscale Serve remain
+unchanged. Existing-account password/TOTP sign-in was not exercised. Local HTTPS
+checks pin the canonical hostname to the current Tailscale IP with hostname and
+certificate verification retained because local DNS does not resolve it.
+No commit, merge, push or remote CI.
+
+See [the compact-form deployment evidence](evidence/local-compact-forms-2026-10-06.json)
+and [the owned form system](../../console/DESIGN_SYSTEM.md).
+
+## Previous Base UI migration deployment
+
+The 2026-10-06 console update runs from the uncommitted `claude/ast-0aw2`
+worktree, based on `9985ccdf`. All owned primitive wrappers and application
+menus use Base UI, future shadcn installs default to `base-vega`, and the console
+uses self-hosted Inter. The Untitled UI reference and repository-owned neutral
+light/dark tokens from the redesign foundation remain in place.
+
+Image `asterius-idp:local-ast-0aw2-1b8eed99ff58` uses binary SHA-256
+`1b8eed99ff588b02e5a450bcfe8a1f8020dde224dafedf6375e6da0abb0136f7`.
+Typecheck/production build, 88 frontend tests and 48 distinct controlled Chromium
+scenarios passed. Browser checks cover strict CSP, keyboard focus restoration,
+confirmations, pickers, dirty drafts, both themes and mobile navigation.
+The account-menu axe check excludes only upstream Base UI focus guards; keyboard
+behavior is directly asserted. No owned console wrapper imports Radix; cmdk
+retains transitive Radix packages.
+
+A fresh protected backup, restored-database probe and live HTTPS/asset checks
+verify the deployment. Users, password credentials, encrypted TOTP enrollment and schema records
+match the baseline; only the TOTP replay counter advanced during verification; schema remains at 118 successful migrations, latest 173.
+Configuration, secrets and Tailscale Serve are unchanged. Local DNS could not
+resolve the canonical hostname, so HTTPS checks pinned it to the current local
+Tailscale IP while retaining hostname and certificate verification. Existing-account
+password/TOTP sign-in was not exercised. No remote CI, commit, merge or push.
+See [the migration deployment evidence](evidence/local-base-ui-migration-2026-10-06.json)
+and [the design system](../../console/DESIGN_SYSTEM.md).
+
+## Previous Kubernetes console deployment
+
 The 2026-10-04 Kubernetes console update runs directly from the local
 `claude/ast-1r9t` worktree, source `b72d9e03`, and then merged into local main.
 Open **Kubernetes access** under **Applications** for the cluster directory,
@@ -282,3 +535,132 @@ Do not run `tailscale serve reset`: it would also remove the existing 8443 and
 8444 routes. Do not delete the shared kind cluster, PostgreSQL PVC, secrets or
 other applications. The disposable restore database was removed after validation;
 the private recovery backup remains outside git.
+
+### Select consistency update — 6 October 2026 (`ast-858r`)
+
+The next local-console update carries the earlier redesign and replaces every
+remaining native console select with the owned Base UI FormSelect: Application
+sensitivity, trusted-context example availability/value, and policy simulation
+identity/resource/boundary controls. Empty required values now retain their raw
+empty representation so browser validation blocks an incomplete simulation.
+Highlighted option descriptions inherit accessible menu foreground color.
+Classification confirmation, scope gates and stale revision reload remain intact.
+
+The production bundle and 88 unit checks pass. All 74 prior controlled Chromium
+scenarios pass against the final bundle; the new classification regression passes
+in its focused final run after correcting assertions for the modal alertdialog
+and awaiting the dark-theme heading state before axe runs. It covers exact
+classification/revision payload, no write before confirmation, stale-disabled
+control/reload, keyboard opening/Escape/focus return, mobile layout and light/dark
+WCAG contrast. These are controlled API checks, not a real-account sign-in.
+
+Current deployment evidence is
+`docs/deployment/evidence/local-select-consistency-2026-10-06.json`. The owned
+source and block exploration live in the `claude/ast-858r` worktree. No package
+changes, Rust source edits, commits, pushes or remote CI were performed.
+
+### Console hierarchy and editor update — 6 October 2026 (`ast-yvwx`)
+
+This local rollout carries the entire earlier redesign and adds numbered guided
+application steps, bounded value editors for applied audit filters, saved-schema
+and session-metadata sheets, a wider audit inspector, visible-section navigation
+for long pages, and a full-width authorization-details schema workspace. The JSON
+draft toolbar is shared by schema/sample, policy draft and simulation context.
+Syntax feedback and formatting never replace server validation or explicit Save.
+
+All 29 destination hierarchies are documented in `console/DESIGN_SYSTEM.md`.
+The console production build and 88 unit checks pass. All 79 controlled Chromium
+scenarios pass, including the all-destination desktop/light and mobile/dark
+unavailable-read sweep. Four new layout/interaction scenarios were repeated against
+the final bundle after screenshot review added the selectable session ID beside
+its Copy action. Loaded-record tests verify exact payloads, raw draft retention on
+refusal, explicit filter application, scope behavior, keyboard/focus return,
+section navigation, mobile sheet width and accessibility. The full route sweep
+checks hierarchy/refusal layouts; it does not exercise every successful backend
+workflow or real-account password/TOTP sign-in.
+
+Deployment evidence:
+`docs/deployment/evidence/local-page-hierarchy-2026-10-06.json`.
+Source remains uncommitted in the `claude/ast-yvwx` worktree. No packages or Rust
+sources changed. The binary embeds this worktree's final console bundle, built
+from the identical Rust checkout used by the preceding rollout to reuse the shared
+owned build cache. No remote CI, commit, merge or push occurred.
+
+
+### Tenant settings alignment and TOTP illustration — 6 October 2026 (`ast-vum8`)
+
+Tenant settings now shares the centered 1480px page container used by the other
+console screens. Configuration panels and fieldsets retain full parent width.
+The Authentication tab adds a small decorative phone-and-shield illustration and
+an icon on the existing authenticator activation action. Activation still edits
+the assurance draft; Save changes remains required to apply it.
+
+The production build, 88 unit checks, and four focused Chromium scenarios pass.
+These cover activation save/reload, keyboard controls, reflow, draft retention,
+and four viewport widths in light/dark themes with accessibility checks.
+Deployment evidence is recorded in
+`docs/deployment/evidence/local-settings-width-totp-2026-10-06.json`.
+The rollout carries the preceding redesign. No dependency or Rust source changes
+were made. Source remains uncommitted in the `claude/ast-vum8` worktree; no remote
+CI, merge or push occurred. Real-account password/TOTP sign-in was not exercised.
+
+
+### Neutral dark theme and corrected card insets — 6 October 2026 (`ast-94so`)
+
+The console dark theme now uses neutral grayscale tokens for navigation,
+workspace, cards, controls, overlays, selection and focus. Semantic status colors
+remain muted green, amber and red. Identity avatar surfaces and account-menu
+shadows follow the shared palette. Light mode retains its existing accent.
+
+A shared tab rule previously removed the padding and border of every card while
+leaving the opaque background intact. Removing that rule restores the card
+composition's 20px vertical padding and 24px horizontal insets (16px on narrow
+screens), including Users → account → Profile → Access overview. Intentional
+flat sections stay transparent, and application editor roots now do the same.
+
+The production build and 88 unit checks pass. All 79 controlled Chromium scenarios pass across the full run (78 passed)
+and a focused rerun after correcting the mobile inset expectation from 18px to
+the existing 16px. These scenarios cover loaded records, draft retention, permission/refusal behavior,
+keyboard operation, theme contrast/accessibility and responsive components.
+All 29 routes are swept in light desktop and dark desktop/mobile refusal states.
+The access-overview regression verifies actual card insets and surface color
+in both themes at desktop/mobile widths. This is controlled frontend validation;
+real-account password/TOTP sign-in was not exercised.
+
+Evidence: `docs/deployment/evidence/local-neutral-dark-theme-2026-10-06.json`.
+Source remains uncommitted in `claude/ast-94so`. No dependencies or Rust sources
+changed, and no remote CI, commit, merge or push occurred. The unchanged Rust
+checkout embeds this worktree's final console bundle using the owned build cache.
+
+
+### Token tool, header illustrations and feature README — 6 October 2026 (`ast-d38s`)
+
+The extra On this page navigation has been removed. Token test console is now a
+scope-aware flask link in the top bar, with a keyboard/pointer tooltip, rather
+than a sidebar destination. Its route and issuance authority are unchanged.
+The redesigned tool uses a compact issuance panel and encoded/decoded cards at
+the standard page width, searchable active-record pickers, local JSON/YAML
+inspection, copy/clear, malformed-JWT feedback and explicit unverified wording.
+It continues to issue only 60-second marked test ID tokens on an explicit action.
+
+Page headers add small decorative illustrations from the shared route symbols;
+account detail headers retain their identity avatars. The illustrations shrink
+on mobile, follow both themes, and add no asset fetch, package or animation.
+The concise feature guide is `docs/console/README.md`, linked from root and
+console READMEs, covering all 29 destinations, account/settings tabs and optional
+protocol capabilities with why/how instructions.
+
+The production build, 88 unit checks and all 79 controlled Chromium scenarios
+pass. A four-scenario final-bundle check covers the token workspace, loaded
+account overview, schema workbench and all-destination sweep. Its token scenario
+was repeated after adding an explicit computed-color wait before axe analysis
+of direct theme-class changes; the final contrast checks pass in both themes.
+A previously incomplete opaque audit-row fixture was corrected to match the API
+envelope. All 29 routes were checked at light desktop, dark desktop and dark
+mobile widths. These are frontend checks with controlled API responses;
+real-account password/TOTP sign-in was not exercised.
+
+Evidence: `docs/deployment/evidence/local-token-tools-guide-2026-10-06.json`.
+Source remains uncommitted in `claude/ast-d38s`. No dependency or Rust source
+changes, remote CI, commits, merges or pushes occurred. The unchanged Rust
+checkout embeds this worktree's final console bundle using the owned build cache.

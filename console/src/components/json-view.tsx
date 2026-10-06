@@ -1,8 +1,6 @@
 import type { JSX } from 'react';
-import { CopyIcon } from 'lucide-react';
 import { tokenizeJson } from '../json-tokenizer';
-import { Button } from '../ui';
-import { toast } from './ui/toast';
+import { CodePanel } from './code-panel';
 
 function serialise(value: unknown, pretty: boolean): string {
   const rendered = JSON.stringify(value, null, pretty ? 2 : undefined);
@@ -38,33 +36,10 @@ export function JsonValue({ value }: Readonly<{ value: unknown }>): JSX.Element 
  */
 export function JsonView({ value, label }: Readonly<{ value: unknown; label: string }>): JSX.Element {
   const source = serialise(value, true);
-  const lines = source.split('\n').length;
+  return <JsonSourceView source={source} label={label} />;
+}
 
-  const copy = async (): Promise<void> => {
-    try {
-      await navigator.clipboard.writeText(source);
-      toast.success('JSON copied');
-    } catch {
-      toast.error('Could not copy the JSON');
-    }
-  };
-
-  return (
-    <div className="json-view">
-      <div className="json-toolbar">
-        <span className="muted">
-          {lines} {lines === 1 ? 'line' : 'lines'}
-        </span>
-        <Button small onClick={() => void copy()} aria-label={`Copy ${label}`}>
-          <CopyIcon aria-hidden="true" />
-          Copy
-        </Button>
-      </div>
-      <pre className="json-code" tabIndex={0} role="region" aria-label={label}>
-        <code>
-          <Highlighted source={source} />
-        </code>
-      </pre>
-    </div>
-  );
+/** A pre-serialized policy revision retains its original source representation. */
+export function JsonSourceView({ source, label }: Readonly<{ source: string; label: string }>): JSX.Element {
+  return <CodePanel source={source} label={label} language="JSON" renderLine={line => <Highlighted source={line} />} />;
 }

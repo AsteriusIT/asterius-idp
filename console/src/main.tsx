@@ -5,15 +5,10 @@
  * `index.html`: there is no `index.html` in this build at all, because a
  * static one cannot carry the per-response CSP nonce (ADR-0009).
  *
- * # The nonce, and the one library that needs it (`ast-gore`)
+ * # The nonce and Base UI
  *
- * `style-src 'nonce-…'` refuses any `<style>` element that does not carry this
- * response's nonce. Almost nothing in this bundle creates one — React writes
- * inline styles through the CSSOM (`node.style.setProperty`), which `style-src`
- * does not govern, so Radix's positioned layers need nothing from us — but
- * `react-remove-scroll`, which is how Radix stops the page scrolling behind a
- * modal, injects one stylesheet the first time a dialog opens. It reads its
- * nonce from `get-nonce`, so this is where it is given one.
+ * Base UI's CSPProvider receives the entry document's nonce for runtime style
+ * elements. Fonts and application CSS remain bundled same-origin assets.
  *
  * The nonce is taken from the entry script's **IDL** property rather than from
  * an attribute. A browser blanks the `nonce` *content attribute* after parsing
@@ -24,8 +19,8 @@
  * could scrape.
  */
 import { StrictMode } from 'react';
+import { CSPProvider } from '@base-ui/react/csp-provider';
 import { createRoot } from 'react-dom/client';
-import { setNonce } from 'get-nonce';
 import { App } from './App';
 import { NavigationGuard } from './navigation-guard';
 import { startTheme } from './theme';
@@ -44,11 +39,8 @@ const ENTRY_SCRIPT_ID = 'console-entry';
 
 const entry = document.getElementById(ENTRY_SCRIPT_ID);
 const nonce = entry instanceof HTMLScriptElement ? (entry.nonce ?? '') : '';
-if (nonce !== '') {
-  setNonce(nonce);
-}
 
-// Radix moves focus on hover. Track input modality so those moves do not
+// Menus can move focus on hover. Track input modality so those moves do not
 // borrow a keyboard outline from the previously focused menu container.
 const setInputMode = (mode: 'pointer' | 'keyboard') => {
   if (document.documentElement.dataset.consoleInputMode !== mode) {
@@ -70,7 +62,7 @@ const mount = document.getElementById('console');
 if (mount) {
   createRoot(mount).render(
     <StrictMode>
-      <NavigationGuard><App /></NavigationGuard>
+      <CSPProvider nonce={nonce}><NavigationGuard><App /></NavigationGuard></CSPProvider>
     </StrictMode>,
   );
 }

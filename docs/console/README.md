@@ -1,495 +1,121 @@
-# The console's design
+# Asterius console: what, why, and how
 
-The console uses the existing Geist typography, restrained borders, neutral
-surfaces and shadcn/Radix components. Tenant-facing pages keep the tenant palette;
-console theme and density are browser-local preferences. The current shell has a
-labelled collapsible sidebar, workspace topbar and scoped navigation groups.
-Tenant settings/branding live in the workspace menu; preferences in the account
-menu.
+Open `/t/<tenant>/admin/` and sign in. Choose the tenant in the top bar; links and
+actions follow your permissions. Sidebar entries manage records. Top-bar tools
+include the token test console (flask), architecture builder (network), help
+(book), and workspace health (pulse). Preferences are in the account menu;
+Tenant settings and Branding are in the tenant menu.
 
-The shared baseline is in `tokens.css`. `styles.css` and the final
-`enterprise.css` layer refine the console; the final cascade is authoritative.
-See [the current interaction, spacing and screen/state specification](experience-review.md)
-for ast-1k13, its recommendation dispositions and validation limits.
+## Screens
 
-The `before/`, `after/` and `reference-redesign/` screenshots are historical.
-Focused current captures are in `experience-review/`; deterministic fixture
-captures do not certify live backend journeys. `e2e/tests/console-shots.spec.ts`
-remains the broad deployment screenshot harness.
+| Feature | Why use it? | How to use it |
+| --- | --- | --- |
+| Overview | See the workspace and reach common tasks. | Review the available summaries, then open a directory or shortcut. |
+| Users | Manage accounts, credentials and access. | Search or add a user; open the account and choose a tab below. |
+| Groups | Grant access to a set of people. | Create/open a group, select members, then assign roles; managed memberships may restrict editing. |
+| Roles | Describe tenant or application permissions. | Choose the role scope, define a role, then assign it to a user or group. |
+| Temporary privileges | Approve time-limited elevated access. | Configure an entitlement and eligibility; review a request, activate or revoke it. Existing offline tokens retain their capped expiry. |
+| Access reviews | Reassess existing standing access. | Assign ownership, select records, create a review, record retain/remove with a reason, then explicitly apply the decision. |
+| Governance findings | Investigate recorded access-governance problems. | Refresh findings, inspect the evidence and affected source, then use the relevant management screen. |
+| Applications | Connect an OIDC/OAuth client. | Add an application through guided setup; review callbacks, credentials, grants and claims before registration. Copy saved connection values for its owner. |
+| Token test console | Inspect the ID token an integration would receive. | Open the flask in the top bar; choose an active application/user and issue a test token, or paste a JWT. Inspect/copy header and claims, then Clear. |
+| Outbound provisioning | Synchronize selected identities to another Asterius workspace. | Configure a paused destination, select users/groups, run its authenticated preview, then enable it; inspect delivery and explicit deprovisioning controls. |
+| SCIM provisioning | Let an external directory manage identities here. | Copy the SCIM endpoint, manage the provisioning client/token, and configure that connection in the external directory. |
+| Kubernetes access | Prepare cluster authentication and group RBAC. | Select a registered application, set the cluster profile and groups, then copy the generated authentication configuration and RBAC YAML. |
+| Resource servers | Register API audiences and scopes. | Add an exact resource identifier and scopes; configure token lifetime/introspection access where available. |
+| Architecture builder | Model related apps, APIs, groups and roles together. | Open the network icon; use a preset or blank canvas, edit objects and connections, save a draft, inspect the provisioning preview, then explicitly apply it. |
+| Sign-in providers | Delegate sign-in to an upstream OIDC provider. | Add the provider and client settings, check discovery metadata, configure mappings, then save. |
+| Authorization details | Define structured authorization requests. | Register a type, edit its JSON Schema and consent wording, test a sample, then save. Format JSON checks syntax; the server validates the schema. |
+| Access policy | Control authorization and evaluate proposed changes. | Read the saved policy; edit a draft, validate/simulate, then publish explicitly. Inspect history before restoring a revision. |
+| Signing keys | Manage keys used to sign tokens. | Inspect active/pending keys; stage/rotate using the available action and follow the displayed activation/retirement controls. |
+| Federation keys | Manage federation signing material and trust roots. | Inspect keys and pinned trust anchors; rotate using the available action. Trust roots are operator-configured. |
+| SAML IdP key | Sign SAML responses and define trusted service providers. | Import/stage a key, activate its successor, and retire the former certificate after SP rollover; register exact SP entity IDs and ACS URLs. |
+| Shared signals | Exchange security events with peers. | Manage outgoing streams and receiver state; set up/check/poll configured upstream transmitters and inspect delivery failures/dead letters. |
+| Mail delivery | Diagnose invitations and message delivery. | Refresh delivery state, inspect recent invitations, and resend when permitted. Resending invalidates earlier invitation links. |
+| Audit trail | Investigate recorded administrative and security activity. | Apply filters, edit/remove applied chips, inspect an event's details, or export the selected trail. |
+| Tenants | Manage workspaces across the deployment. | With deployment permission, create/open a tenant, inspect its settings, or confirm suspension. |
+| Tenant settings | Configure sign-in and token behavior. | Open the tenant menu, select a settings tab, edit, then Save changes. See the tabs below. |
+| Branding | Customize end-user sign-in pages. | Open the tenant menu, edit the saved theme, inspect its preview, and save; console preferences are separate. |
+| Preferences | Adjust this browser's console appearance. | Open the account menu; choose light/dark and table density. |
+| Workspace health | Inspect workspace readiness and available diagnostics. | Open the pulse icon and review the displayed checks; refresh when offered. |
+| Help & guides | Find task walkthroughs and integration guidance. | Open the book icon; choose/search a guide or open developer documentation. |
 
-## The tokens
+## Your own account
 
-`console/src/tokens.css` is the baseline palette, and it is a **checked copy** of
-the `:root` rule of `crates/web/templates/style.css`.
+Open the account menu → My account to manage your profile, password, passkeys,
+authenticator enrollment and sessions. Enrolling TOTP on an account and enabling
+its challenges in Tenant settings are separate actions. Sign out ends the console
+session; browser appearance/density preferences remain local.
 
-A copy, because the two consumers cannot read the same bytes: `style.css` is
-`include!`d into the one nonce-carrying `<style>` element of every
-server-rendered page, while the console's CSS is bundled by Vite into a
-content-hashed file the entry document links with the response's nonce. One is
-a Rust `include_str!` at `cargo build` time, the other an import resolved by a
-bundler that is not running then.
+## User account tabs
 
-Checked, because `asterius_web::theme`'s
-`the_console_declares_the_same_design_tokens` parses the first `:root` rule of
-both files and fails on any drift. A duplicate nobody compares is a fork; a
-duplicate a test compares is a cache.
-
-| Layer | Tokens |
+| Tab | Why / how |
 | --- | --- |
-| Shared with the pages | `--fg` `--bg` `--muted` `--line` `--accent-fg` `--danger` `--card` `--radius` `--ctl` `--tap` `--space` `--shadow` `--font` |
-| Spacing | `--space-1` … `--space-6`, all multiples of the shared 8px step |
-| Radii | `--radius-lg`, `--radius-pill` |
-| Type | `--text-xs` … `--text-2xl`, `--font-mono` |
-| Surfaces | `--surface`, `--surface-sunken`, `--rail`, `--overlay` |
-| State | `--success` `--warning` `--info` and their `--tint-*`. `--info` is a blue of its own since `ast-k7az.1`, not `var(--accent)`, and it is also the focus ring. |
-| Elevation | `--shadow-sm`, `--shadow-lg` |
-| Motion | `--motion-fast` `--motion` `--ease` |
-| Layout | `--rail-width`, `--content-max` |
+| Profile | Inspect account state and recorded sign-in activity; edit profile fields or confirm disabling the account. |
+| Identity data | Review stored claims; edit and save the identity data when permitted. |
+| Sign-in methods | Manage password/passkey/authenticator state and inspect sign-in/email diagnosis; use the available credential actions. |
+| Sessions | Inspect sign-in sessions and their recorded assurance; confirm End session to revoke a selected session. Inspect alone changes nothing. |
+| Connected apps | Review the user's application grants and use the available grant-management actions. |
+| Access roles | Inspect direct and group-inherited assignments; add/remove explicit assignments where permitted. |
+| Groups | Review memberships and add/remove an explicit membership where permitted. |
 
-Two deliberate differences from `style.css`:
+## Tenant settings tabs
 
-* **Neutral chrome.** The console's `--accent` and `--backdrop` use neutral
-  greys; the pages retain their tenant-controlled palette. All other shared
-  tokens, including the Geist font stack, match value for value. The test
-  names and checks the two colour exceptions.
-* **A dark scheme, behind a class.** `style.css` has none on purpose
-  (`ast-vn7`): a tenant's palette is appended to it, and a
-  `prefers-color-scheme` block would substitute colours that tenant's contrast
-  check never saw. The console is not themed by a tenant — it is this
-  deployment's own tool — so it carries one, in the console layer only. Since
-  `ast-gore` it is a `.dark` **class** rather than a media query: the scheme is
-  a choice this administrator made, not a setting their operating system made
-  for them. See [The theme](#the-theme).
-
-## The constraints
-
-* **Nothing inline.** The policy is `script-src 'nonce-…' 'strict-dynamic'` and
-  `style-src 'nonce-…'` (ADR-0009). One stylesheet, linked by the entry document
-  with the response's nonce, and no `style=` attribute anywhere in the bundle.
-* **No `@import`; URLs only for embedded fonts.** `main.tsx` imports
-  `tokens.css`, so Vite concatenates it into that one file; an `@import` that survived bundling would
-  be a stylesheet fetched by a stylesheet, carrying no nonce. `url()` is
-  admitted only in a font-face source naming a WOFF2 asset embedded beside the stylesheet; other CSS requests remain forbidden.
-* **No *runtime* dependency this repository has not read.** `ast-fe39` wrote
-  the components by hand and gave the reason: "a UI library is a dependency
-  tree inside the most privileged page this deployment serves". `ast-gore`
-  keeps the reason and changes the answer, because shadcn/ui is not a
-  dependency — the components are **copied into `console/src/components/ui/`**,
-  reviewed like the rest of the tree and edited where this deployment
-  disagrees. Two such edits so far: the sidebar's `sidebar_state` **cookie** is
-  gone (it would have been written at `path=/` on the origin that serves the
-  token endpoint, without the `__Host-` prefix every other cookie here carries);
-  the fixed desktop rail needs no persistence at all. Sonner is not installed, for the
-  reason [Under the policy](#under-the-policy) gives.
-
-  What is underneath is Radix, and Radix is **behaviour, not paint**: focus
-  traps, roving tab indexes, `aria-*` wiring, dismiss semantics. That is the
-  half `ConfirmDialog` had to get right by hand, and the half every dialog
-  after it would have had to get right again.
-
-### Visible copy names the task, not the standard
-
-Standards citations belong in source comments and architecture records, where
-they help maintainers preserve the protocol. They do not appear in headings,
-labels, help text or errors shown to an operator. The embedded-bundle test
-`the_embedded_bundle_cites_no_specification_at_the_reader` scans the production
-JavaScript for the citation forms removed by `ast-k7az.4`; changing a visible
-sentence back to a protocol reference therefore fails before release.
-
-## Tailwind, and where the colours come from
-
-`console/src/tailwind.css` is the only place shadcn's vocabulary meets this
-deployment's palette, and every entry in its `@theme inline` block is a
-`var(--token)` rather than a value:
-
-| shadcn says | it reads |
+| Tab | Why / how |
 | --- | --- |
-| `background` / `foreground` | `--bg` / `--fg` |
-| `card`, `popover` | `--card`, `--surface` |
-| `primary` / `primary-foreground` | `--accent` / `--accent-fg` |
-| `muted` / `muted-foreground` | `--surface-sunken` / `--muted` |
-| `destructive`, `success`, `warning`, `info` | `--danger`, `--success`, `--warning`, `--info` |
-| `border`, `input`, `ring` | `--line`, `--line`, `--info` |
-| `sidebar*` | `--rail`, `--fg`, `--accent`, `--tint-accent`, `--line`; its ring is `--info` |
-| `radius-sm/md`, `radius-lg/xl` | `--ctl`, `--radius` / `--radius-lg` |
+| Capabilities | Enable/disable available protocol features using their switches, then save. Server bounds still apply. |
+| Token lifetimes | Set authorization-code/access-token lifetimes within the displayed limits, then save. |
+| Consent | Choose whether to always show consent on interactive authorization, then save. |
+| Sessions | Configure session policies and durations, then save. |
+| Authentication | Define/reorder assurance levels and required methods; configure the `amr` claim, then save. Enable authenticator codes adds a password + TOTP level to the draft. Enrolled accounts face code challenges on fresh sign-ins only after saving. |
+| Rate limits | Where supported, configure explicit limits or leave values inherited; save to apply. |
+| Protocol endpoints | Copy discovery/issuer and endpoint URLs for integrations. |
 
-shadcn's own `globals.css` ships *values* for those names — a neutral palette
-that is not this product's — and `npx shadcn add sidebar` appended a set of
-them; they were deleted. `@theme inline` is what makes the mapping a reference
-rather than a copy, so a palette change in `style.css` still moves the console,
-and `the_console_declares_the_same_design_tokens` still fails if the two drift.
+## Optional protocol capabilities
 
-`--muted` is the one name that collides: it is quiet *text* in `tokens.css` and
-a quiet *surface* in shadcn. The mapping is where they are told apart; neither
-file redefines the other's.
+Enable available capabilities in Tenant settings → Capabilities, then configure
+the participating application and use the protocol guide in Help. Enabling a
+feature alone does not complete an integration.
 
-The purge is Tailwind v4's own content detection over `console/src`, and
-`cssCodeSplit: false` keeps the output one file — which is what lets the entry
-document link one stylesheet with one nonce.
-
-`styles.css` — the screen-level classes the routes still use (`.stack`,
-`.muted`, `.detail`, `.table-wrap`, the form rules) — is wrapped in
-`@layer components`. Cascade layers, and the rule that an *unlayered*
-declaration beats every layered one: a `button { … }` outside any layer would
-have won against `bg-primary` on a shadcn `Button`, and the console would have
-had two button designs fighting with the loser being the one that was chosen.
-
-## The components
-
-The app-level six are in `console/src/ui.tsx`, built on the copies in
-`console/src/components/ui/`. None of them talks to the network; a component
-takes what to draw and gives back what was pressed, which is what made both
-migrations a change of markup rather than a change of behaviour.
-
-| Component | What it is |
+| Capability | Why / how |
 | --- | --- |
-| `PageHeader` / `Screen` | One screen: `<h2>`, one short purpose sentence, and the actions that apply to all of it. The shell owns the `<h1>`; `Screen` composes the shared header with the body. |
-| `Panel` | One section, as a card, labelled by its own `<h3>` through `aria-labelledby`. |
-| `FilterPanel` | A native disclosure for a larger filter set. It starts open, stays keyboard-operable and gives a narrow screen its space back when collapsed. |
-| `CenteredCard` | The pages' centred card, for the three views that are one sentence: loading, signed out, could not start. |
-| `Button` | `primary` (once per view), `secondary` (the default), `danger`, `ghost`; `small` for a table row. |
-| `Actions` | A row of controls, the decisive one last. |
-| `Field` | Label, control, help, and the server's refusal at the field — wired with `aria-describedby` and `aria-invalid`. |
-| `Message` | `success` and `info` are `role="status"`, `error` is `role="alert"`. Mark, tint and rule, never colour alone. |
-| `Badge` | A state as a word first: `ok`, `warn`, `bad`, `info`, neutral. |
-| `DataTable` | shadcn `Table`. Columns, one client-side sort with `aria-sort`, an optional client-side filter with a “3 of 20 shown” count, an empty state and right-aligned actions. Its persisted comfortable/compact density is selected once on Settings. Every list in the console is one since `ast-f9j5`. |
-| `EmptyState` | Nothing to show, and what to do about it. |
-| `Skeleton` | The shape of what is arriving. `aria-live`, and deliberately *not* `role="status"`. |
-| `LoadFailure` | A read that did not answer, and the way to ask again. |
-| `ConfirmDialog` | The question before something irreversible, on Radix `AlertDialog`. |
-| `toast` / `Toaster` | The announcement of an act that succeeded, in `components/ui/toast.tsx`. First-party; see [Under the policy](#under-the-policy). |
-| `JsonView` / `JsonValue` | First-party JSON highlighting from `json-tokenizer.ts`, with no runtime dependency or inline style. A document owns its horizontal scroll, long strings may wrap, and the block form offers copy plus a line count. |
+| Certificate-bound access (mTLS) | Bind application authentication/tokens to a certificate; configure the client and certificate-aware connection. |
+| Consent management | Let applications manage standing grants; configure the client and use grant-management operations. |
+| Decoupled authentication (CIBA) | Request approval on a separate device; configure the CIBA client and follow its backchannel flow. |
+| Device sign-in | Sign in on a device through another browser; configure the client and follow the device-code flow. |
+| Token exchange | Delegate between services; configure permitted actors/resources and request an exchange for the target audience. |
+| Security event sharing (SSF) | Propagate relevant security events; configure a stream/peer in Shared signals. |
+| Authorization decisions (AuthZEN) | Ask whether an action is allowed; define policy/resources and integrate the decision endpoint. |
+| Proof replay protection (DPoP nonce) | Require a fresh server challenge for proofs; configure the client to handle nonce challenges and retry with a new proof. |
 
-### Two rules that are easy to undo by accident
+## Policy and integration tools
 
-**`Skeleton` has no `role="status"`.** The role is what the browser sweep
-searches for to tell a saved change from a refused one; a loading placeholder
-that answered that question would be a second status beside the one the screen
-meant. It keeps `aria-live`, which is the part doing the work.
+- **Conditional policy:** review a staged policy, choose report-only/enforcement
+  settings, and activate explicitly. Staging and inspection do not publish it.
+- **What-if simulation:** select real tenant records, provide hypothetical
+  context where needed, and inspect the decision. Hypothetical evidence is not a
+  real sign-in or live authorization event; inspections are audited.
+- **JSON/YAML viewers:** inspect source and copy the exact document. JSON editor
+  formatting is explicit and does not save or replace server validation.
+- **Filters and tables:** apply search/filters, inspect applied chips, choose
+  columns where offered, and follow cursor pages. Unapplied drafts stay separate
+  from the currently displayed results.
+- **Secrets:** use reveal/copy where offered and acknowledge one-time credentials
+  before leaving. Copy failures leave a manual selection path.
 
-**`ConfirmDialog` replaced `window.confirm`, and is now Radix's.** It is
-`role="alertdialog"` since `ast-gore` — the correct role for a modal that
-interrupts to ask a question, and the one change a browser test can see — with
-`aria-modal="true"`, labelled by its heading and described by its sentence;
-focus moves to the *cancelling* control when it opens, so a stray Return does
-nothing; Tab and Shift+Tab cycle inside it; Escape and a click on the scrim
-cancel; and the focus returns to whatever opened it. Four acts use it: disabling
-an account, forcing a password reset, withdrawing a grant, removing a policy.
-A fifth since `ast-l5bl`: suspending or restoring a tenant, where the dialog's
-sentence is doing the most work it does anywhere — it is the one act on this
-console that stops a whole tenant answering, for every client and every user it
-has.
+## Important distinctions
 
-Dialogs are reserved for these short confirmations. Creating an account or a
-tenant and registering or editing an application are multi-field tasks, so
-each opens a dedicated page state with a clear back action instead of sharing
-the list or being placed in a modal.
+Changes take effect through the page's Save, Publish, Apply, or confirmation
+action. A preview, inspector or local decoder does not apply changes. Unsaved
+edits can prompt you before leaving; a refused save retains the draft.
 
-## The shell
+Test tokens expire after 60 seconds and contain `asterius_test: true`; they do
+not assert that the user signed in. Pasted JWTs are decoded locally without
+signature verification. The tool issues ID tokens, not access tokens or a live
+login session. It requires `admin.test_tokens:write`; application/user lookup
+still follows the server's permissions.
 
-The shell deliberately separates navigation from context. A fixed icon-only
-rail answers “where next?”; the sticky topbar carries the active tenant, the
-current page, a direct Settings action and the signed-in user. Labels remain
-available as accessible names and tooltips, while the mobile drawer shows them
-visibly.
+Assigned roles and grants do not alone guarantee an allow decision. Read-only
+and deployment-wide authority differ, and the server authorizes every request.
 
-The rail is shadcn's `Sidebar`, and it:
-
-* **groups** the ten destinations under five headings — Overview; Directory;
-  Trust; Observability; Deployment (`navigation.ts`, `Group`). A heading with
-  nothing under it is not drawn, so a caller who reaches neither Tenants nor
-  Tenant settings sees no "Deployment";
-* is **always an icon rail on desktop**, with no resize cursor or inert edge
-  affordance; every label survives as the link's accessible name and tooltip;
-* **becomes a drawer** (`Sheet`) below the mobile breakpoint;
-* leaves tenant and account context to the topbar, where it remains visible
-  without widening navigation.
-
-`visibleTo` still decides what appears, and is still a courtesy rather than a
-control: the server re-checks every route (`crates/admin-api/src/rbac.rs`).
-Routing stays on the fragment, so the document URL — and therefore every
-relative asset and API URL — never moves.
-
-A fragment may carry parameters since `ast-l5bl`: `#/settings?tenant=acme` is
-the tenant settings screen pointed at a tenant that is not the session's own.
-It exists for one link — the Tenants screen's hand-off to the settings of the
-row an operator is reading — and it is trusted for nothing: the parameter
-becomes the `{tenant_id}` of a path the server re-authorises, so a fragment
-naming a tenant this caller may not read is a 403 drawn as a failed load. The
-same screen hides the tenant's application-role catalogue when it is pointed
-elsewhere, because that catalogue's route names no tenant and would be showing
-the *session's* roles under another tenant's heading.
-
-### The theme
-
-Light is the default and the browser is not asked (`ast-gore` (2)). Until this
-bead the palette hung off `prefers-color-scheme`, so an administrator whose
-operating system was dark got a dark console they had never chosen and could
-not turn off. Now `.dark` on `<html>` is the whole switch, `console/src/theme.ts`
-is what puts it there, and `localStorage` is what remembers it. The control is
-on the dedicated Settings page beside the global table-density preference,
-rather than inside the account menu or repeated on data screens. There is
-deliberately no third "system" value: that value is how the console got dark in
-the first place.
-
-### The tenant selector
-
-A combobox in the topbar (`Popover` over `Command`), opened from
-anywhere with `Ctrl`/`⌘`+`K`: the tenant this session is in, and the tenants it
-may reach.
-
-* A **deployment administrator** holds `admin.tenants:read` at deployment
-  reach, so the list is `GET /tenants` — the call the Tenants screen already
-  makes, read when the menu opens and not before.
-* A **tenant administrator** holds that scope over their own tenant only. The
-  call is *not made*: it would be a 403 drawn as a broken menu. The control
-  names the one tenant they administer and says so.
-
-Choosing a tenant **navigates to that tenant's own console**:
-`{issuer}/admin/#/overview`, built by `tenantConsoleUrl` from the issuer the
-API reports and from nothing this page knows about itself — a tenant reached
-through a custom host has no `/t/{id}` prefix to copy.
-
-It is a navigation rather than a change of state, and that is the decision
-worth writing down. A session belongs to exactly one tenant (ADR-0010,
-`ast-1cj`), the console is mounted beneath the tenant it serves, and every
-admin API call it makes is relative to *its own* document URL. A selector that
-swapped a tenant id into this page's state would leave those calls pointing at
-the first tenant's API with the first tenant's session — a 403 per screen at
-best, and at worst a cross-tenant read from a session never authorised for it.
-Sending the browser to the other console makes the tenant a property of the
-document again. For path-based tenants on the reserved tenant's origin, the
-browser sends the same `__Host-asterius_session` cookie and the entry guard
-resolves it only against that configured reserved tenant; it serves the shell
-only when the account holds deployment-scoped authority (`ast-w4g3`). The API
-behind the shell applies the same rule (`ast-8gm`). An ordinary tenant session
-is never a cross-tenant credential.
-
-`GET /session` keeps the two tenant identities separate: `tenant` is the home
-of the account and session, while `workspace` is the tenant that served the
-current console and whose relative admin API is being used. Navigation and
-tenant-scoped screen copy use `workspace`; account identity and sign-out still
-belong to `tenant`. This distinction matters after a deployment administrator
-switches away from the reserved tenant—their credential still lives there,
-but the selected workspace does not.
-
-A custom-host tenant is deliberately different: its origin receives no
-`__Host-` cookie set by the reserved tenant's origin. It therefore meets the
-ordinary local sign-in page (`ast-wr4`). No session token is put in the URL or
-transferred between origins to make that navigation silent.
-
-**The landing screen is Overview**, deliberately, and not the screen the
-operator was on. What this administrator may reach in the other tenant is
-decided by the roles they hold *there*. Overview keeps that workspace identity
-and the permission-filtered navigation, then reads each activity or health
-figure through a separate tenant-scoped endpoint. The definitions are fixed:
-
-* **Active users** are accounts whose current status is `active`.
-* **Active sessions** are unrevoked browser sessions inside both their absolute
-  and idle expiry at the collection instant.
-* **Applications** are the tenant's currently registered clients.
-* **Authentication failures** are `auth.failed` audit events in the preceding
-  24 hours.
-* **Active signing keys** are signature-purpose keys currently in `active`.
-* **Delivery failures** are outbox attempts ending in `retry` or `abandoned`
-  in the preceding 24 hours.
-
-The endpoint for each figure declares the same read scope as its detailed
-screen. The console requests only endpoints named by `GET /session`'s effective
-scopes, while the server independently enforces each route. Every database read
-is a scalar aggregate with a tenant predicate; no list is loaded to count it.
-Cards carry their own loading, empty and failure state, so one unavailable
-aggregate leaves the others usable, and every successful card names its exact
-collection timestamp.
-
-## Under the policy
-
-`ast-gore` put a component framework inside the most privileged page this
-deployment serves, and the question the bead asked first was what that costs
-under ADR-0009's policy. The answer, measured: **nothing**. `script-src` and
-`style-src` are unchanged, no route has a policy of its own, and
-`the_console_widened_style_src_for_nobody` (`crates/web/src/csp.rs`) fails if
-one grows.
-
-What was measured, and what it turned on:
-
-* **Radix's positioned layers are fine.** Popper, Dialog and the sidebar write
-  positions and widths as inline styles — but React applies them through the
-  **CSSOM** (`node.style.setProperty`), and `style-src` governs `<style>`
-  elements and `style=` *attributes*, not CSSOM mutation. The sweep confirms
-  it: `console.spec.ts` watches for violations on every screen and reports
-  none.
-* **One dependency does inject a `<style>` element**: `react-remove-scroll`,
-  which is how Radix stops the page scrolling behind a modal. It reads a nonce
-  from `get-nonce`, so `main.tsx` gives it one, taken from the entry script's
-  `element.nonce`. The **IDL property and not the attribute**: a browser blanks
-  the attribute after parsing precisely so that an injection able to read the
-  DOM cannot read the nonce out of it (CSP Level 3 §5.2), and reading it this
-  way keeps that protection — nothing is added to the document to scrape.
-  `crates/admin-api/templates/console.html` carries the `id` that finds it, and
-  a unit test fails if it is removed.
-* **Sonner was refused.** shadcn's toast of choice ships its stylesheet inside
-  its JavaScript and inserts it at import time with a `<style>` element it
-  offers no way to nonce. Under this policy that is one violation per load and
-  an unstyled toast — broken *and* noisy. The alternative was
-  `style-src 'self' 'unsafe-inline'` scoped to the console's route, which is a
-  bad trade for a notification strip, so the strip is written instead:
-  `console/src/components/ui/toast.tsx`, the same `toast.success(…)` call shape,
-  drawn with the console's own classes. Adopting Sonner later is a decision
-  about widening `style-src`, and should be taken as one.
-
-The two older rules still hold and are now checked against the built bytes by
-`the_embedded_bundle_carries_nothing_the_style_policy_would_refuse`: no
-`@import` survives into the stylesheet (Tailwind's own two are resolved at
-build time), only embedded WOFF2 font-face URLs, and no `style=` written into
-markup by a chunk.
-
-
-## The finishing, and one class of defect it removed (`ast-f9j5`)
-
-`ast-gore` left four things unfinished and the owner, looking at the result,
-said there was "too much error in the UI". Both had **one cause worth writing
-down**: `styles.css` styles *elements* — `button { … }`, `input[type=…] { … }`
-— and shadcn components paint themselves with Tailwind utilities. Where a
-shadcn component carried no paint of its own, the element rule painted it.
-
-That is what produced, on one screen or another:
-
-* a **white 16px gutter down the right edge of the sidebar**, which was
-  `SidebarRail` — a deliberately transparent hit target — drawn as a 30px white
-  card with a border, sitting over the rail's edge and clipping the tenant
-  selector's chevron;
-* **column headers whose sort control was a box inside the header**;
-* a **border inside a border** on the tenant selector's search box, and every
-  filter box 44px tall — a `min-height` in a layer no `h-9` utility can beat;
-* an **invisible text field** on the Tenants screen: `<input name="tenant_id">`
-  carries no `type`, so it matched none of the `input[type=…]` selectors, and
-  Tailwind's preflight had already removed its border.
-
-The repair is in two lines of policy rather than in patches per component:
-
-1. **The element-level `button` rules are gone.** The console's controls are
-   shadcn `Button`s; the one consumer left is the audit screen's export link,
-   which asks for `.button` by name.
-2. **The form-control rules end in `:not([data-slot])`**, which is what every
-   shadcn component carries and no screen's own markup does. The list now says
-   which input *kinds* are excluded — check boxes, radios, colour wells, file
-   pickers — rather than which are included, so an input with no `type` is a
-   text field like any other.
-
-Two smaller things went with them: the screen title is `--text-xl`, the size
-the server-rendered pages give theirs (28px above a breadcrumb read as a
-different product), and a table's `<caption>` is drawn above the table rather
-than below it, where it read as a stray word after the last row.
-
-### A column cut off at the edge of a card
-
-The last defect of the same family, and the one that survived the first
-repair: a table is laid out automatically, so a cell whose content is one long
-identifier — an issuer, an address made of a UUID, a delegation chain — asks
-for a width nothing bounds, and the columns after it go off the edge of the
-card. The Tenants screen lost half its "Suspend" column that way and the Users
-screen everything past "Verified".
-
-`Truncate` (`ui.tsx`) is the answer and it is used at every such value: the
-text is elided with an ellipsis at a width given in characters, the whole of it
-stays in the `title` and in the DOM, and the `max-width` on the inner block is
-what tells the column how wide it may be. The wrapping rules around it are
-deliberate and were arrived at by measurement:
-
-* `overflow-wrap: anywhere` on `code` and on a detail's `dd` **takes part in
-  intrinsic sizing**, which is what lets a column of identifiers shrink instead
-  of widening the table. It is kept.
-* A `Truncate` inside such a cell gives that same column a *floor* as well —
-  `white-space: nowrap` capped by `max-width` — which is what stopped the audit
-  trail printing `auth.login` as "auth.l / ogin" and its session ids as a
-  column of six-character fragments.
-* The audit table's wrapper is `tabIndex={0}` with a name, because a box that
-  scrolls has to be reachable by keyboard (WCAG 2.2 §2.1.1) and axe checks it.
-
-No table on the console overflows its card at 1280px today; the scroll is the
-fallback, not the layout.
-
-### The four the bead asked for
-
-1. **A filter and a count on every list.** Signing keys, Shared signals
-   (streams *and* dead letters), the Policy rule preview and both application
-   role tables are `DataTable`s now, so they have the sort, the filter, the
-   "3 of 20 shown" count and the "no row matches that filter" sentence that the
-   Users, Clients and Tenants tables already had. The count is the half that
-   matters: "nothing here" and "nothing here *matching*" are otherwise the same
-   picture.
-2. **A complaint at the field while it is being typed**, in
-   `console/src/validation.ts`. Every function there is an **echo** of a rule
-   written in Rust — `RoleName::parse`, `TenantId::parse`, `Issuer::parse`,
-   `accept_username`, `accept_email`, `RedirectUri::parse` — and the module
-   names the counterpart of each. Nothing there blocks a submission, disables a
-   control or is consulted when a refusal arrives: the server is still the
-   validator, and what it says is still what `Field` shows. An empty field is
-   never wrong, because a form that turns red before anything is typed teaches
-   an operator to ignore it.
-3. **Toasts on the acts of Clients, Shared signals and Policy**, which were
-   inline `Message`s alone. The division is the one `ast-gore` set: the toast
-   *announces* and the `Message` *records*. A refusal is never only a toast —
-   the sentence naming the field and the clause stays where the act happened —
-   and the Policy screen's toasts carry a title and no copy of that sentence,
-   because two elements saying the same words are two things to read.
-
-`e2e/tests/console.spec.ts` has one test per point: the key table filtering and
-counting, a field complaining while the control that submits stays enabled, and
-a registration that raises a toast *and* keeps the record.
-
-## Taking the pictures again
-
-```sh
-E2E_SHOTS=docs/console/after ./scripts/browser-tests.sh \
-  --project=js tests/console-shots.spec.ts
-
-E2E_SHOTS=docs/console/after/dark E2E_SHOTS_THEME=dark \
-  ./scripts/browser-tests.sh --project=js tests/console-shots.spec.ts
-```
-
-`E2E_SHOTS` is a directory relative to the repository root; without it the spec
-skips, because it asserts nothing and every console criterion is asserted by
-`e2e/tests/console.spec.ts`.
-
-The final assembled sweep opens all ten destinations at 1440px and 400px in
-both the light and dark themes. At every stop it checks that the document did
-not widen the viewport and runs the WCAG A/AA axe rules. That matrix is kept in
-the ordinary console spec so a later change cannot update the pictures while
-silently weakening the executable guard.
-
-## Navigation and account menu (`ast-k7az.5`)
-
-The icon rail groups screens by the operator's task: Overview, Directory (Users,
-Applications), Trust (Signing keys, Access policy), Observability (Shared
-signals, Audit trail), and Deployment (Tenants, Tenant settings, Settings). A neutral
-monogram identifies the console because its session API exposes no deployment
-brand. The active screen has a grey fill and a two-pixel marker. Fragment routes,
-scopes, reach and API calls are unchanged.
-
-The topbar tenant selector shows its identifier and the roles reported by the session.
-The right side has one account menu with an avatar, truncated identifier and role;
-the full identifier remains available in its tooltip and through Copy account
-identifier. Radix supplies menu keyboard navigation, Escape dismissal and focus
-return. Sign-out uses the existing flow.
-
-The page label in the topbar gives local context without duplicating navigation.
-Ctrl/Command+K opens the tenant selector. On mobile,
-choosing a screen closes the drawer so the content is immediately visible.
-
-## Bundled fonts (`ast-k7az.2`)
-
-The console uses Geist Variable for interface text and Geist Mono Variable for
-code, identifiers, keyboard hints and JSON. Both are vendored under SIL OFL 1.1
-in `crates/web/assets/fonts/`; the console reuses the pages' Geist bytes.
-`fonts.css` imports them through Vite, which emits hashed WOFF2 files beside the
-CSS. The existing embedded asset route serves them as `font/woff2`. Relative
-URLs preserve both path-mounted and host-mounted tenant deployments.
-
-The stylesheet still requires its response nonce. Font requests are governed
-by `font-src 'self'`, so no CSP directive changes and no data URLs are needed.
-The bundle audit allows a CSS URL only in an `@font-face` source, pointing to
-an embedded WOFF2 with the correct MIME type and signature. `font-display: swap` keeps text available while fonts load; the existing system stacks remain
-as fallbacks. The browser test loads both faces and checks the tenant-prefixed
-URLs, response types and absence of CSP violations.
+For build and implementation details, see [console developer README](../../console/README.md).

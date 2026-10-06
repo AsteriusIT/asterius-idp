@@ -1,3 +1,4 @@
+import { JsonDraftEditor } from './components/json-draft-editor';
 import { ConditionalPolicy } from './conditional-policy';
 import { hasConditionalScopes } from './conditional-policy-model';
 import { PolicySimulation } from './policy-simulation';
@@ -39,7 +40,7 @@ import { useUnsavedChanges } from './navigation-guard';
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { ApiError, mutate, probe, read, replacePolicy, type Session } from './api';
-import { JsonValue } from './components/json-view';
+import { JsonSourceView, JsonValue } from './components/json-view';
 import { toast } from './components/ui/toast';
 import {
   Actions,
@@ -431,12 +432,12 @@ export function Policy({ session }: Readonly<{ session: Session }>): JSX.Element
 
       {!editing && <ConditionalPolicy draft={draft} revision={load.policy.revision} mayWrite={mayWrite} busy={busy}
         onStage={text => { setDraft(text); setEditing(true); setRefusal(null); }} />}
-      {editing && <Panel title="Draft document" className="max-w-5xl" description="The server validates the policy when you save. A conflict keeps this draft for review.">
+      {editing && <Panel title="Draft document" className="document-workspace" description="The server validates the policy when you save. A conflict keeps this draft for review.">
         <Field
           label="The rule document, as the evaluator reads it"
           error={jsonDocument(draft, 'The document')}
         >
-          {props => <textarea {...props} name="document" rows={20} spellCheck={false} value={draft} readOnly={!mayWrite} onChange={event => setDraft(event.target.value)} />}
+          {props => <JsonDraftEditor {...props} name="document" rows={20} value={draft} readOnly={!mayWrite} onValueChange={setDraft} />}
         </Field>
         <Actions>
           <Button disabled={busy} onClick={closeEditor}>Cancel editing</Button>
@@ -493,7 +494,7 @@ export function Policy({ session }: Readonly<{ session: Session }>): JSX.Element
       </Panel>
 
       {!editing && <Panel title="Saved document" actions={mayWrite ? <Actions><Button onClick={() => setEditing(true)}>Edit policy</Button><Button variant="danger" onClick={() => setRemoving(true)}>Remove policy</Button></Actions> : undefined}>
-        <pre className="json-code" aria-label="Saved policy document">{baseline}</pre>
+        <JsonSourceView source={baseline} label="Saved policy document" />
       </Panel>}
 
       {!editing && <PolicyHistory revision={load.policy.revision} session={session} dirty={busy || draft !== baseline} onRestored={refresh} />}

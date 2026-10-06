@@ -1,6 +1,6 @@
 {
   "$schema": "https://ui.shadcn.com/schema.json",
-  "style": "new-york",
+  "style": "base-vega",
   "rsc": false,
   "tsx": true,
   "tailwind": {
@@ -17,5 +17,10 @@
     "ui": "@/components/ui",
     "lib": "@/lib",
     "hooks": "@/hooks"
+  },
+  "registries": {
+    "@shadcn-base": "https://ui.shadcn.com/r/styles/base-vega/{name}.json",
+    "@shadcn-space": "https://shadcnspace.com/r/{name}.json",
+    "@reui": "https://reui.io/r/base-vega/{name}.json"
   }
 }

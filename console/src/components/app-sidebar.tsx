@@ -1,32 +1,5 @@
 import type { JSX } from 'react';
-import {
-  AppWindowIcon,
-  ClipboardCheckIcon,
-  FileSearchIcon,
-  HeartPulseIcon,
-  SendIcon,
-  ShieldPlusIcon,
-  Building2Icon,
-  KeyRoundIcon,
-  LayoutDashboardIcon,
-  RadioIcon,
-  ServerIcon,
-  ScaleIcon,
-  ShieldCheckIcon,
-  ScrollTextIcon,
-  ShapesIcon,
-  PaletteIcon,
-  UsersRoundIcon,
-  Settings2Icon,
-  SlidersHorizontalIcon,
-  UsersIcon,
-  BookOpenIcon,
-  MailIcon,
-  NetworkIcon,
-  RefreshCwIcon,
-  WaypointsIcon,
-} from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
+import { NAVIGATION_ICONS } from '@/route-icons';
 import type { Session } from '@/api';
 import {
   Sidebar,
@@ -46,37 +19,7 @@ import { sectionsFor } from '@/navigation';
 import { hrefOf } from '@/routes';
 import kubernetesIcon from '@/assets/kubernetes.svg';
 
-/** Icons are shared with the overview cards so one route keeps one symbol. */
-export const NAVIGATION_ICONS: Readonly<Record<string, LucideIcon>> = {
-  overview: LayoutDashboardIcon,
-  users: UsersIcon,
-  groups: UsersRoundIcon,
-  roles: ShieldCheckIcon,
-  'temporary-privileges': ShieldPlusIcon,
-  'access-reviews': ClipboardCheckIcon,
-  'governance-findings': FileSearchIcon,
-  clients: AppWindowIcon,
-  resources: ServerIcon,
-  architecture: NetworkIcon,
-  'authorization-details': ShapesIcon,
-  keys: KeyRoundIcon,
-  'token-console': KeyRoundIcon,
-  policy: ScaleIcon,
-  ssf: RadioIcon,
-  audit: ScrollTextIcon,
-  tenants: Building2Icon,
-  settings: SlidersHorizontalIcon,
-  branding: PaletteIcon,
-  preferences: Settings2Icon,
-  scim: RefreshCwIcon,
-  'outbound-scim': SendIcon,
-  health: HeartPulseIcon,
-  federation: NetworkIcon,
-  'oidc-providers': WaypointsIcon,
-  saml: WaypointsIcon,
-  mail: MailIcon,
-  help: BookOpenIcon,
-};
+
 
 /** Labelled desktop navigation, with the existing mobile sheet and collapse control. */
 export function AppSidebar({
@@ -106,20 +49,21 @@ export function AppSidebar({
                       return (
                         <SidebarMenuItem key={destination.route}>
                           <SidebarMenuButton
-                            asChild
+                            nativeButton={false}
+                            role="link"
                             isActive={active}
                             tooltip={destination.label}
                             className="console-nav-link h-11"
-                          >
-                            <a
+
+                            render={<a
                               href={hrefOf(destination.route)}
                               onClick={() => setOpenMobile(false)}
                               aria-current={active ? 'page' : undefined}
                             >
                               {destination.route === 'kubernetes' ? <img src={kubernetesIcon} className="size-[18px]" alt="" /> : Icon !== undefined && <Icon className="size-[18px]" aria-hidden="true" />}
                               <span>{destination.label}</span>
-                            </a>
-                          </SidebarMenuButton>
+                            </a>}
+                          />
                         </SidebarMenuItem>
                       );
                     })}
