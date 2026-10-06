@@ -4091,7 +4091,10 @@ impl Flow {
 /// One whole flow, returning the grant it produced and the refresh token it
 /// earned.
 async fn first_authorization(flow: &mut Flow, key: &ProofKey) -> (asterius_domain::Grant, String) {
-    let request_uri = flow.push(key).await;
+    let request_uri = flow
+        .push_with(key, &[("resource", RESOURCE)])
+        .await
+        .request_uri();
     let interaction = flow.authorize(&request_uri).await;
     flow.sign_in(&interaction).await;
     let back = flow
@@ -4878,8 +4881,11 @@ async fn a_missing_or_misaudienced_token_is_invalid_token() {
         return;
     };
     flow.also_a_grant_manager().await;
-    flow.register_resource_server(RESOURCE, Some(&["grant_management_query"]))
-        .await;
+    flow.register_resource_server(
+        RESOURCE,
+        Some(&["openid", "offline_access", "grant_management_query"]),
+    )
+    .await;
     let key = ProofKey::generate();
     let (grant, _refresh) = first_authorization(&mut flow, &key).await;
 
@@ -6923,8 +6929,11 @@ where
 /// two browser session checks/touches, and one session-policy read during
 /// token redemption. ACR resolution uses the already-warm settings cache.
 /// Claims Provider aggregation adds one bounded source lookup during ID-token
-/// issuance. The measured total is 87, with no per-collection growth allowance.
-const CODE_FLOW_QUERY_BUDGET: usize = 87;
+/// issuance. Integration of exact-session lineage, verified assurance,
+/// current conditional policy, temporary entitlement fences, and recursive
+/// grant/task authority checks brings the measured total to 158. The captured
+/// statements are fixed checks/transactions, with no collection growth allowance.
+const CODE_FLOW_QUERY_BUDGET: usize = 158;
 
 /// **One code flow costs a bounded number of SQL statements** (`ast-p2l.8`).
 ///

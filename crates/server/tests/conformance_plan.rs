@@ -99,6 +99,8 @@ fn mounted_paths() -> Vec<String> {
     paths.extend(DISCOVERY_PATHS.iter().map(|path| (*path).to_owned()));
     paths.push(client_configuration::path());
     paths.push(INTERACTION_PATH.to_owned());
+    paths.push("/account/devices".to_owned());
+    paths.push("/account/entitlements/{action}".to_owned());
     paths.push("/interaction/{id}/upstream/{provider_id}".to_owned());
     paths.push("/oidc/upstream/callback/{provider_id}".to_owned());
     paths.push(passkeys::PAGE_PATH.to_owned());

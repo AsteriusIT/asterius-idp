@@ -257,22 +257,10 @@ mod tests {
     /// is not running then — so the values are duplicated and this test is
     /// what keeps the duplicate a cache rather than a fork.
     ///
-    /// Both surfaces serve Geist from their own origin and share its stack.
-    /// The console imports the vendored font through Vite; the pages use the
-    /// hashed URL in `base.html`.
-    ///
-    /// [`DIVERGENT_COLOUR_TOKENS`] are the others, since `ast-k7az.1`: the
-    /// console is greyscale and the pages are not. The reason is not taste.
-    /// `--accent` and `--backdrop` are *tenant* tokens here — `--accent` is
-    /// one of the six `asterius_domain::Theme` contrast-checks and a tenant's
-    /// own rule overwrites it on every server-rendered page — while the
-    /// console is this deployment's own tool, themed by nobody, so an accent
-    /// it spends on links, primary buttons and the rail's current item is free
-    /// to be ink rather than a hue. Sharing them would also mean repainting
-    /// every tenant's sign-in page to restyle an admin screen. The divergence
-    /// is asserted rather than tolerated: these two tokens *must* differ, so a
-    /// future edit that quietly re-copies the indigo fails here instead of
-    /// shipping.
+    /// Both surfaces serve fonts from their own origin. The operator console
+    /// now uses Inter and its own compact neutral tokens. The explicitly
+    /// listed [`DIVERGENT_CONSOLE_TOKENS`] document that contract; the shared
+    /// accessibility and semantic tokens still have to agree.
     #[test]
     fn the_console_declares_the_same_design_tokens() {
         const STYLESHEET: &str = include_str!("../templates/style.css");
@@ -285,11 +273,11 @@ mod tests {
             let theirs = console.get(property).copied().unwrap_or_else(|| {
                 panic!("{property} is a page token the console declares nowhere")
             });
-            if DIVERGENT_COLOUR_TOKENS.contains(property) {
+            if DIVERGENT_CONSOLE_TOKENS.contains(property) {
                 assert_ne!(
                     &theirs, value,
                     "{property} is admitted as a console/pages divergence but no longer \
-                     differs; drop it from DIVERGENT_COLOUR_TOKENS or restore the \
+                     differs; drop it from DIVERGENT_CONSOLE_TOKENS or restore the \
                      greyscale value"
                 );
                 continue;
@@ -300,7 +288,7 @@ mod tests {
             );
         }
 
-        for property in DIVERGENT_COLOUR_TOKENS {
+        for property in DIVERGENT_CONSOLE_TOKENS {
             assert!(
                 pages.contains_key(property) && console.contains_key(property),
                 "{property} is admitted as a divergence but one side declares it nowhere"
@@ -308,14 +296,20 @@ mod tests {
         }
     }
 
-    /// The tokens the console draws in its own greyscale (`ast-k7az.1`).
-    ///
-    /// Both are colour, and both are colour the console has no tenant to
-    /// answer to about; every other token in the shared `:root` — the ink, the
-    /// background, `--danger`, the radii, the shadow — is still copied value
-    /// for value and still checked by
-    /// [`the_console_declares_the_same_design_tokens`].
-    const DIVERGENT_COLOUR_TOKENS: [&str; 2] = ["--accent", "--backdrop"];
+    /// The repository-owned operator console uses Inter, its own neutral ink
+    /// and borders, and the compact Base UI corner radii. Tenant-facing pages
+    /// keep their existing typography and shape. Every other shared token is
+    /// still checked for equality, and each listed divergence must differ.
+    const DIVERGENT_CONSOLE_TOKENS: [&str; 8] = [
+        "--fg",
+        "--muted",
+        "--line",
+        "--accent",
+        "--radius",
+        "--font",
+        "--backdrop",
+        "--ctl",
+    ];
 
     /// A stylesheet with its `/* … */` spans removed.
     ///

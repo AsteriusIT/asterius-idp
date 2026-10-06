@@ -527,6 +527,10 @@ mod tests {
     /// happens to slip past a regular expression.
     const ALLOWED_BUNDLE_URLS: &[(&str, &str)] = &[
         (
+            "https://base-ui.com/production-error",
+            "Base UI includes this documentation URL as text in production errors; it is never fetched",
+        ),
+        (
             "http://www.w3.org/",
             "XML namespace identifiers, passed to createElementNS and compared \
              as strings; a namespace URI is never dereferenced",

@@ -76,12 +76,13 @@ function AccountMenu({
   onSignOut: () => void;
 }>): JSX.Element {
   const [copyNotice, setCopyNotice] = useState('');
+  const [open, setOpen] = useState(false);
   const copyIdentifier = async () => {
     try { await navigator.clipboard.writeText(session.user); setCopyNotice('Account identifier copied.'); }
     catch { setCopyNotice(`Copy unavailable. Account identifier: ${session.user}`); }
   };
   return <><span className="sr-only" aria-live="polite">{copyNotice}</span>
-    <DropdownMenu.Root modal={false}>
+    <DropdownMenu.Root modal={false} open={open} onOpenChange={setOpen}>
       <DropdownMenu.Trigger render={<Button variant="ghost" className="topbar-account" aria-label="Account menu">
           <span className="topbar-avatar" aria-hidden="true">
             {session.username.trim().slice(0, 1).toUpperCase() || <UserRoundIcon />}
@@ -102,12 +103,12 @@ function AccountMenu({
             </span>
           </DropdownMenu.GroupLabel></DropdownMenu.Group>
           <DropdownMenu.Group className="account-menu-actions">
-            <DropdownMenu.LinkItem className="account-menu-item account-menu-account" render={<a href="/t/admin/account">
+            <DropdownMenu.LinkItem onClick={() => setOpen(false)} className="account-menu-item account-menu-account" render={<a href="/t/admin/account">
                 <UserRoundIcon aria-hidden="true" />
                 <span><strong>My account</strong><small>Profile, security and sessions</small></span>
                 <ArrowUpRightIcon className="account-menu-trailing" aria-hidden="true" />
               </a>} />
-            <DropdownMenu.LinkItem className="account-menu-item" render={<a href={hrefOf('preferences')}><Settings2Icon aria-hidden="true" /><span>Preferences</span></a>} />
+            <DropdownMenu.LinkItem onClick={() => setOpen(false)} className="account-menu-item" render={<a href={hrefOf('preferences')}><Settings2Icon aria-hidden="true" /><span>Preferences</span></a>} />
             <DropdownMenu.Item className="account-menu-item account-menu-copy" onClick={() => void copyIdentifier()}>
               <CopyIcon aria-hidden="true" />
               <span><span>Copy account identifier</span><code title={session.user}>{session.user}</code></span>

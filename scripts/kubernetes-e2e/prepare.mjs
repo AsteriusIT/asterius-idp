@@ -63,7 +63,7 @@ if (response.status !== 201)
   );
 const registered = await response.json(),
   clientId = registered.client_id;
-if (!/^c\.[a-zA-Z0-9_-]+$/.test(clientId)) throw Error("unexpected_client_id");
+if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(clientId)) throw Error("unexpected_client_id");
 sql(`UPDATE clients SET compliance_profile='oidc',managed_groups_claim=true WHERE tenant_id='e2e-webauthn' AND client_id='${clientId}';
 INSERT INTO managed_groups(tenant_id,group_id,name,display_name,created_at,updated_at) VALUES('e2e-webauthn','10000000-0000-4000-8000-000000000001','kube-readers','Kubernetes readers',now(),now());
 INSERT INTO group_memberships(tenant_id,group_id,user_id,created_at) VALUES('e2e-webauthn','10000000-0000-4000-8000-000000000001','3f1d5c2a-0000-4000-8000-000000000001',now());

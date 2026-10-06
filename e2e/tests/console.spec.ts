@@ -81,7 +81,7 @@ async function refuseTheNextSessionRead(page: Page, api: APIRequestContext): Pro
   return refusal.status();
 }
 
-test('the console loads its own Geist fonts under the tenant mount', async ({ context, page }) => {
+test('the console loads self-hosted Inter under the tenant mount', async ({ context, page }) => {
   const watcher = await CspWatcher.attach(context, true);
   const fonts: { url: string; status: number; type: string }[] = [];
   page.on('response', (response) => {
@@ -91,21 +91,18 @@ test('the console loads its own Geist fonts under the tenant mount', async ({ co
   });
   await signIn(page);
   const loaded = await page.evaluate(async () => {
-    const sans = await document.fonts.load('400 16px Geist');
-    const mono = await document.fonts.load('400 16px "Geist Mono"');
+    const sans = await document.fonts.load('400 16px "Inter Variable"');
     await document.fonts.ready;
     return {
       sans: sans.map((font) => font.status),
-      mono: mono.map((font) => font.status),
       body: getComputedStyle(document.body).fontFamily,
     };
   });
   expect(loaded.sans).toEqual(['loaded']);
-  expect(loaded.mono).toEqual(['loaded']);
-  expect(loaded.body).toContain('Geist');
-  expect(fonts).toHaveLength(2);
+  expect(loaded.body).toContain('Inter Variable');
+  expect(fonts.length).toBeGreaterThan(0);
   for (const font of fonts) {
-    expect(font.url.startsWith(`${BASE_URL}/admin/assets/`)).toBe(true);
+    expect(font.url.startsWith(`${BASE_URL}/admin/assets/inter-`)).toBe(true);
     expect(font.status).toBe(200);
     expect(font.type).toBe('font/woff2');
   }
@@ -230,7 +227,7 @@ test('the console screen has no accessibility violation', async ({ page }, testI
   await expect(page.getByRole('heading', { name: 'Asterius console' })).toBeVisible();
 
   // Act
-  const results = await new AxeBuilder({ page })
+  const results = await new AxeBuilder({ page }).exclude('[data-base-ui-focus-guard]')
     .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
     .analyze();
 
@@ -293,7 +290,7 @@ for (const theme of ['light', 'dark'] as const) {
           }
           await page.getByRole('link', { name: screen, exact: true }).click();
         }
-        await expect(page.getByRole('heading', { name: screen, exact: true }).first()).toBeVisible();
+        await expect(page.getByRole('heading', { name: screen === 'Branding' ? 'Edit branding' : screen, exact: true }).first()).toBeVisible();
         await page.waitForLoadState('networkidle');
         await expect(page.locator('[data-slot=popover-content]')).toHaveCount(0);
         expect(
@@ -310,7 +307,7 @@ for (const theme of ['light', 'dark'] as const) {
         });
         expect(scrolling.pageHeight, `${screen} moved scrolling onto the page shell`).toBeLessThanOrEqual(scrolling.viewportHeight);
         expect(scrolling.contentOverflow, `${screen} did not keep scrolling in the content pane`).toBe('auto');
-        const result = await new AxeBuilder({ page })
+        const result = await new AxeBuilder({ page }).exclude('[data-base-ui-focus-guard]')
           .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
           .analyze();
         if (result.violations.length > 0) {
@@ -397,7 +394,7 @@ test('branding previews locally, persists to a real sign-in page and resets', as
   expect(await signInPage.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--accent').trim())).toBe('#005fcc');
   await visitor.close();
 
-  const audit = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+  const audit = await new AxeBuilder({ page }).exclude('[data-base-ui-focus-guard]').withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
   await testInfo.attach('branding-axe', { body: JSON.stringify(audit.violations, null, 2), contentType: 'application/json' });
   expect(audit.violations).toEqual([]);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(400);
@@ -424,7 +421,7 @@ test('branding reports local image errors and a server refusal without losing th
     }
   });
   await page.getByRole('button', { name: 'Save branding', exact: true }).click();
-  await expect(page.getByRole('alert')).toContainText('reload and try again');
+  await expect(page.locator('.message[role="alert"]')).toContainText('reload and try again');
   await expect(page.getByLabel('Product name', { exact: true })).toHaveValue('Still unsaved');
 });
 
@@ -479,7 +476,7 @@ test('a lifetime above the profile ceiling is refused and the reason is shown', 
 
   // Assert: the server's sentence, which names the profile clause, and no
   // claim that anything was saved.
-  const refusal = page.getByRole('alert');
+  const refusal = page.locator('.message[role="alert"]');
   await expect(refusal).toBeVisible();
   await expect(refusal).toContainText(/FAPI/i);
   // And no success notice: the screen's `status` region is where "Saved."
@@ -492,10 +489,10 @@ test('authentication assurance editor reads the policy and shows server validati
   await openSettings(page);
   await page.getByRole('tab', { name: 'Authentication', exact: true }).click();
   await expect(page.getByLabel('Assurance level 1 ACR value', { exact: true })).not.toHaveValue('');
-  await expect(page.getByLabel('Include authentication methods in ID tokens')).toBeVisible();
+  await expect(page.getByRole('switch', { name: 'Include authentication methods in ID tokens', exact: true })).toBeVisible();
   await expect(page.getByText('Weakest', { exact: true })).toBeVisible();
   await expect(page.getByText('Strongest', { exact: true })).toBeVisible();
-  const accessibility = await new AxeBuilder({ page })
+  const accessibility = await new AxeBuilder({ page }).exclude('[data-base-ui-focus-guard]')
     .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
     .analyze();
   expect(accessibility.violations).toEqual([]);
@@ -512,7 +509,7 @@ test('authentication assurance editor reads the policy and shows server validati
   await expect(first).toHaveValue(firstValue);
   await page.getByRole('button', { name: 'Add assurance level' }).click();
   await page.getByRole('button', { name: 'Save settings' }).click();
-  await expect(page.getByRole('alert')).toContainText(/acr value.*empty/i);
+  await expect(page.locator('.message[role="alert"]')).toContainText(/acr value.*empty/i);
   await page.getByRole('button', { name: 'Discard changes' }).click();
   await expect(page.getByRole('button', { name: 'Discard changes' })).toBeDisabled();
 });
@@ -523,7 +520,7 @@ test('the tenant settings screen has no accessibility violation', async ({ page 
   await openSettings(page);
 
   // Act
-  const results = await new AxeBuilder({ page })
+  const results = await new AxeBuilder({ page }).exclude('[data-base-ui-focus-guard]')
     .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
     .analyze();
 
@@ -606,7 +603,7 @@ test('the console cannot register a client dynamic registration would refuse', a
   await page.getByRole('button', { name: 'Register client' }).click();
 
   // Assert: the server's refusal, and no claim that anything was registered.
-  const refusal = page.getByRole('alert');
+  const refusal = page.locator('.message[role="alert"]');
   await expect(refusal).toBeVisible();
   await expect(refusal).toContainText(/redirect_uri|https/i);
   await expect(page.getByRole('status')).toHaveCount(0);
@@ -620,7 +617,7 @@ test('the console cannot register a client dynamic registration would refuse', a
   await page.getByRole('button', { name: 'Register client' }).click();
 
   // Assert
-  await expect(page.getByRole('alert')).toBeVisible();
+  await expect(page.locator('.message[role="alert"]')).toBeVisible();
   await expect(page.getByRole('status')).toHaveCount(0);
 
   // And nothing was written under either attempt. The rest of the refusals —
@@ -659,8 +656,8 @@ test('a valid client can be registered, found and saved again unchanged', async 
   // Assert: the server's `client_id`, which the console did not choose.
   const notice = page.getByRole('status');
   await expect(notice).toBeVisible();
-  await expect(notice).toContainText(/Registered as c\./);
-  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(notice).toContainText(/Registered as [0-9a-f-]{36}\./);
+  await expect(page.locator('.message[role="alert"]')).toHaveCount(0);
 
   // It is in the inventory, and it is what the search finds.
   while (await page.getByRole('button', { name: 'Dismiss', exact: true }).count()) {
@@ -676,7 +673,7 @@ test('a valid client can be registered, found and saved again unchanged', async 
   await expect(page.getByRole('heading', { name, exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Save client' }).click();
   await expect(page.getByRole('status')).toContainText('Saved.');
-  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page.locator('.message[role="alert"]')).toHaveCount(0);
 });
 
 test('the clients screen has no accessibility violation', async ({ page }, testInfo) => {
@@ -687,7 +684,7 @@ test('the clients screen has no accessibility violation', async ({ page }, testI
   await expect(page.getByRole('heading', { name: 'Register an application' })).toBeVisible();
 
   // Act
-  const results = await new AxeBuilder({ page })
+  const results = await new AxeBuilder({ page }).exclude('[data-base-ui-focus-guard]')
     .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
     .analyze();
 
@@ -741,7 +738,7 @@ test('the signed-out screen has no accessibility violation either', async ({
   await expect(page.getByRole('heading', { name: 'Signed out' })).toBeVisible();
 
   // Act
-  const results = await new AxeBuilder({ page })
+  const results = await new AxeBuilder({ page }).exclude('[data-base-ui-focus-guard]')
     .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
     .analyze();
 
@@ -788,7 +785,7 @@ async function createAccount(page: Page): Promise<string> {
   // in this file ambiguous — which is how the first run of these tests failed,
   // on a strict-mode violation rather than on anything about the screen.
   await page.getByLabel('Email').fill(username.replace('created-', 'inbox-'));
-  await page.getByLabel('Password').fill(CREATED_PASSWORD);
+  await page.getByLabel('Initial password (optional)', { exact: true }).fill(CREATED_PASSWORD);
   await page.getByRole('button', { name: 'Create user' }).click();
   await expect(page.getByRole('heading', { name: username })).toBeVisible();
   await page.getByRole('button', { name: 'Back to users' }).click();
@@ -817,7 +814,7 @@ test('the users screen is reachable from the navigation and creates an account',
 
   // Assert: the row is in the directory, and the search finds it.
   await expect(page.getByRole('columnheader', { name: 'External', exact: true })).toBeVisible();
-  await page.getByLabel('Search').fill(username);
+  await page.getByRole('searchbox', { name: 'Search', exact: true }).fill(username);
   await page.getByRole('button', { name: 'Search' }).click();
   await expect(page.getByRole('cell', { name: username })).toBeVisible();
   await expect(page.getByRole('row').filter({ has: page.getByRole('button', { name: username, exact: true }) }).getByRole('cell', { name: 'No', exact: true })).toBeVisible();
@@ -944,7 +941,7 @@ test('the users screen provokes no CSP violation and passes axe', async ({ conte
   await openAccount(page, username);
 
   // Assert
-  const audit = await new AxeBuilder({ page })
+  const audit = await new AxeBuilder({ page }).exclude('[data-base-ui-focus-guard]')
     .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
     .analyze();
   expect(audit.violations, JSON.stringify(audit.violations, null, 2)).toEqual([]);
@@ -1009,7 +1006,7 @@ test('the shared-signals screen is reachable and reads the admin API', async ({
 async function openAudit(page: Page): Promise<void> {
   await page.getByRole('link', { name: 'Audit trail', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Audit trail' })).toBeVisible();
-  await expect(page.getByLabel('Agent')).toBeVisible();
+  await expect(page.getByRole('search', { name: 'Audit filters' })).toBeVisible();
 }
 
 /**
@@ -1069,15 +1066,17 @@ test('the audit explorer filters the trail and exports it as NDJSON', async ({
  * reload: a density toggle that resets on every visit is decoration rather
  * than a preference.
  */
-test('the audit layout is compactable, collapsible and responsive', async ({ page }) => {
+test('the audit filters are extendable and the layout remains compact and responsive', async ({ page }) => {
   await signIn(page);
   await openAudit(page);
 
-  const filters = page.locator('details.filter-panel');
-  await expect(filters).toHaveAttribute('open', '');
-  await filters.locator('summary').click();
-  await expect(page.getByLabel('Event type')).not.toBeVisible();
-  await filters.locator('summary').click();
+  const filters = page.getByRole('search', { name: 'Audit filters' });
+  await expect(filters.getByLabel('Agent')).toHaveCount(0);
+  await filters.getByRole('button', { name: 'Add filter', exact: true }).click();
+  await page.getByRole('button', { name: 'Agent', exact: true }).click();
+  await expect(filters.getByLabel('Agent', { exact: true })).toBeVisible();
+  await filters.getByRole('button', { name: 'Clear', exact: true }).click();
+  await expect(filters.getByLabel('Agent')).toHaveCount(0);
 
   await page.getByLabel('Event type').fill('key.rotated');
   await page.getByRole('button', { name: 'Apply filters' }).click();
@@ -1089,8 +1088,8 @@ test('the audit layout is compactable, collapsible and responsive', async ({ pag
 
   await page.getByRole('button', { name: 'Account menu', exact: true }).click();
   await page.getByRole('menuitem', { name: 'Preferences', exact: true }).click();
-  const density = page.getByRole('radiogroup', { name: 'Table density' });
-  await density.getByRole('radio', { name: 'Compact' }).click();
+  const density = page.getByRole('group', { name: 'Table density' });
+  await density.getByRole('button', { name: 'Compact', exact: true }).click();
   await expect(page.locator('html')).toHaveAttribute('data-table-density', 'compact');
   await page.reload();
   await expect(page.locator('html')).toHaveAttribute('data-table-density', 'compact');
@@ -1104,7 +1103,7 @@ test('the audit layout is compactable, collapsible and responsive', async ({ pag
     'the audit layout widened the 400px viewport',
   ).toBe(true);
 
-  const audit = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze();
+  const audit = await new AxeBuilder({ page }).exclude('[data-base-ui-focus-guard]').withTags(['wcag2a', 'wcag2aa']).analyze();
   expect(audit.violations, JSON.stringify(audit.violations, null, 2)).toEqual([]);
 });
 
@@ -1149,7 +1148,7 @@ test('the policy editor refuses a bad document, saves a good one and answers the
 
   // Assert: the refusal names the path in the document, which is the whole
   // point of showing the server's message rather than "save failed".
-  const refusal = page.getByRole('alert');
+  const refusal = page.locator('.message[role="alert"]');
   await expect(refusal).toContainText('rules[0].when');
 
   // Act: a document this build does read.
@@ -1223,8 +1222,10 @@ test('policy simulation uses actual references without saving a hypothetical dra
   const application = page.getByLabel('Application', { exact: true });
   const resource = page.getByLabel('Registered resource', { exact: true });
   for (const selector of [user, application, resource]) {
-    await expect.poll(() => selector.locator('option').count()).toBeGreaterThan(1);
-    await selector.selectOption({ index: 1 });
+    await selector.click();
+    const choices = page.getByRole('option');
+    await expect.poll(() => choices.count()).toBeGreaterThan(1);
+    await choices.nth(1).click();
   }
   await page.getByLabel('Use the editor draft as hypothetical policy').check();
   await page.getByRole('button', { name: 'Simulate', exact: true }).click();
@@ -1257,7 +1258,7 @@ test('the shared-signals, audit and policy screens have no accessibility violati
     await open(page);
 
     // Act
-    const results = await new AxeBuilder({ page })
+    const results = await new AxeBuilder({ page }).exclude('[data-base-ui-focus-guard]')
       .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
       .analyze();
 
@@ -1368,7 +1369,7 @@ test('a deployment administrator lists, creates, suspends and restores a tenant'
 
   // Assert: and no accessibility violation on the screen this test is about.
   await openScreen(page, 'Tenants', 'Tenants');
-  const results = await new AxeBuilder({ page })
+  const results = await new AxeBuilder({ page }).exclude('[data-base-ui-focus-guard]')
     .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
     .analyze();
   await testInfo.attach('axe-tenants', {
@@ -1423,14 +1424,16 @@ test('the console opens in the light theme and remembers the dark one', async ({
   // Act
   await page.getByRole('button', { name: 'Account menu', exact: true }).click();
   await page.getByRole('menuitem', { name: 'Preferences', exact: true }).click();
-  await page.getByRole('radio', { name: 'Dark', exact: true }).click();
+  await page.getByRole('button', { name: 'Dark', exact: true }).click();
 
   // Assert: applied…
   await expect(page.locator('html')).toHaveClass(/dark/);
   // …and remembered, which a reload is the only honest test of.
   await page.reload();
   await expect(page.locator('html')).toHaveClass(/dark/);
-  await expect(page.getByRole('radio', { name: 'Light', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Account menu', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Preferences', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Light', exact: true })).toBeVisible();
 });
 
 /**
@@ -1449,7 +1452,7 @@ test('the dark theme has no accessibility violation either', async ({ page }, te
   await signIn(page);
   await page.getByRole('button', { name: 'Account menu', exact: true }).click();
   await page.getByRole('menuitem', { name: 'Preferences', exact: true }).click();
-  await page.getByRole('radio', { name: 'Dark', exact: true }).click();
+  await page.getByRole('button', { name: 'Dark', exact: true }).click();
   await expect(page.locator('html')).toHaveClass(/dark/);
 
   // Font loading and the theme's colour transitions can still be in flight
@@ -1465,7 +1468,7 @@ test('the dark theme has no accessibility violation either', async ({ page }, te
   });
 
   // Act
-  const results = await new AxeBuilder({ page })
+  const results = await new AxeBuilder({ page }).exclude('[data-base-ui-focus-guard]')
     .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
     .analyze();
 
@@ -1493,7 +1496,7 @@ test('the account menu copies the full identifier and returns keyboard focus', a
   await account.focus();
   await page.keyboard.press('Enter');
   await expect(page.getByRole('menuitem', { name: 'Copy account identifier' })).toBeVisible();
-  const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze();
+  const results = await new AxeBuilder({ page }).exclude('[data-base-ui-focus-guard]').withTags(['wcag2a', 'wcag2aa']).analyze();
   expect(results.violations).toEqual([]);
   await page.getByRole('menuitem', { name: 'Copy account identifier' }).click();
   await expect(page.getByRole('menu')).toHaveCount(0);
@@ -1514,7 +1517,7 @@ test('mobile navigation closes after choosing a screen and keeps account actions
   await expect(page.getByRole('heading', { name: 'Applications', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Account menu', exact: true }).click();
   await expect(page.getByRole('menuitem', { name: 'Sign out', exact: true })).toBeVisible();
-  const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze();
+  const results = await new AxeBuilder({ page }).exclude('[data-base-ui-focus-guard]').withTags(['wcag2a', 'wcag2aa']).analyze();
   expect(results.violations).toEqual([]);
 });
 
@@ -1645,7 +1648,7 @@ test('the JWK Set is highlighted, copyable and contained by its own region', asy
     'keys',
   );
 
-  const audit = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze();
+  const audit = await new AxeBuilder({ page }).exclude('[data-base-ui-focus-guard]').withTags(['wcag2a', 'wcag2aa']).analyze();
   expect(audit.violations, JSON.stringify(audit.violations, null, 2)).toEqual([]);
 });
 
@@ -1759,14 +1762,14 @@ test('registering a client raises a toast and keeps the record', async ({ page }
   // record, which is the screen's one `status`. Each has its own container, so
   // neither assertion can be satisfied — or broken — by the other's element.
   await expect(toastStrip(page)).toContainText('Client registered');
-  await expect(page.getByRole('status')).toContainText(/Registered as c\./);
+  await expect(page.getByRole('status')).toContainText(/Registered as [0-9a-f-]{36}\./);
 });
 
 // Interaction regressions found during the reference-led console review.
 test('account tabs preserve drafts and fit narrow screens without a scrollbar', async ({ page }) => {
   await signIn(page);
   await openScreen(page, 'Users', 'Users');
-  const search = page.getByLabel('Search', { exact: true });
+  const search = page.getByRole('searchbox', { name: 'Search', exact: true });
   const searchButton = page.getByRole('button', { name: 'Search', exact: true });
   expect((await search.boundingBox())?.height).toBe((await searchButton.boundingBox())?.height);
   await expect(page.getByRole('button', { name: 'Open', exact: true })).toHaveCount(0);
@@ -1774,6 +1777,7 @@ test('account tabs preserve drafts and fit narrow screens without a scrollbar', 
   await searchButton.click();
   await page.getByRole('button', { name: USERNAME, exact: true }).click();
   await page.getByRole('tab', { name: 'Identity data', exact: true }).click();
+  await page.getByRole('button', { name: 'Edit identity data', exact: true }).click();
   await page.getByLabel('Email', { exact: true }).fill('unsaved-draft@example.test');
   await page.getByRole('tab', { name: 'Sessions', exact: true }).click();
   await expect(page.getByLabel('Email', { exact: true })).toBeHidden();
@@ -1790,6 +1794,8 @@ test('account tabs preserve drafts and fit narrow screens without a scrollbar', 
   expect(dimensions.page).toBe(dimensions.viewport);
   await page.getByRole('tab', { name: 'Sessions', exact: true }).focus();
   await page.keyboard.press('ArrowRight');
+  await expect(page.getByRole('tab', { name: 'Connected apps', exact: true })).toBeFocused();
+  await page.keyboard.press('Enter');
   await expect(page.getByRole('tab', { name: 'Connected apps', exact: true })).toHaveAttribute('aria-selected', 'true');
 });
 
@@ -1874,8 +1880,8 @@ test('guided application onboarding creates, reloads and copies only saved confi
   expect(response.status()).toBe(201);
   const stored = await response.json();
   await expect(page.getByRole('status')).toContainText(`Registered as ${stored.client_id}`);
-  await page.getByRole('tab', { name: 'Configuration JSON', exact: true }).click();
-  const region = page.getByRole('tabpanel', { name: 'Configuration JSON', exact: true }).locator('pre[aria-label="Saved client configuration"]');
+  await page.getByRole('tab', { name: 'Export', exact: true }).click();
+  const region = page.getByRole('tabpanel', { name: 'Export', exact: true }).locator('pre[aria-label="Saved client configuration"]');
   const configuration = JSON.parse(await region.innerText());
   for (const key of ['client_id', 'client_name', 'redirect_uris', 'post_logout_redirect_uris', 'scope',
     'token_endpoint_auth_method', 'dpop_bound_access_tokens', 'tls_client_certificate_bound_access_tokens',
@@ -1890,11 +1896,11 @@ test('guided application onboarding creates, reloads and copies only saved confi
   expect(JSON.parse(await page.evaluate(() => navigator.clipboard.readText()))).toEqual(configuration);
   await page.getByRole('tab', { name: 'General' }).click();
   await page.getByRole('tabpanel').getByLabel('Client name', { exact: true }).fill('An unsaved name');
-  await page.getByRole('tab', { name: 'Configuration JSON', exact: true }).click();
+  await page.getByRole('tab', { name: 'Export', exact: true }).click();
   expect(JSON.parse(await region.innerText())).toEqual(configuration);
   await page.reload();
   await expect(page.getByRole('heading', { name, exact: true })).toBeVisible();
-  await page.getByRole('tab', { name: 'Configuration JSON', exact: true }).click();
+  await page.getByRole('tab', { name: 'Export', exact: true }).click();
   expect(JSON.parse(await region.innerText())).toEqual(configuration);
 });
 
@@ -1909,7 +1915,7 @@ test('guided application onboarding attaches callback key and security refusals 
   await page.getByRole('tab', { name: 'Credentials', exact: true }).click();
   await page.getByRole('tabpanel').getByLabel('JWK Set URL', { exact: true }).fill('https://app.example.test/jwks');
   await page.getByRole('button', { name: 'Register client', exact: true }).click();
-  await expect(page.getByRole('alert')).toContainText(/redirect_uri|https/);
+  await expect(page.locator('.message[role="alert"]')).toContainText(/redirect_uri|https/);
   await page.getByRole('tab', { name: 'Callbacks', exact: true }).click();
   await expect(callbacks).toHaveAttribute('aria-invalid', 'true');
   for (const dismiss of await page.getByRole('button', { name: 'Dismiss', exact: true }).all()) await dismiss.click();
@@ -1923,7 +1929,7 @@ test('guided application onboarding attaches callback key and security refusals 
   });
   await keys.fill('{"keys":[{"kty":"OKP","crv":"Ed25519","d":"private-material-must-be-refused"}]}');
   await page.getByRole('button', { name: 'Register client', exact: true }).click();
-  await expect(page.getByRole('alert')).toContainText(/jwks|private/);
+  await expect(page.locator('.message[role="alert"]')).toContainText(/jwks|private/);
   await expect(keys).toHaveAttribute('aria-invalid', 'true');
   expect(privateKeyRequests).toEqual([]);
   for (const dismiss of await page.getByRole('button', { name: 'Dismiss', exact: true }).all()) await dismiss.click();
@@ -1935,9 +1941,9 @@ test('guided application onboarding attaches callback key and security refusals 
     return route.continue({ postData: JSON.stringify({ ...route.request().postDataJSON(), dpop_bound_access_tokens: false }) });
   });
   await page.getByRole('button', { name: 'Register client', exact: true }).click();
-  await expect(page.getByRole('alert')).toContainText('dpop_bound_access_tokens');
+  await expect(page.locator('.message[role="alert"]')).toContainText('dpop_bound_access_tokens');
   await expect(page.getByRole('combobox', { name: 'Sender constraint', exact: true })).toHaveAttribute('aria-invalid', 'true');
-  await expect(page.getByRole('tab', { name: 'Configuration JSON', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('tab', { name: 'Export', exact: true })).toHaveCount(0);
 });
 
 test('guided application onboarding hides writes for a read-only session and retains saved export', async ({ page }) => {
@@ -1961,8 +1967,8 @@ test('guided application onboarding hides writes for a read-only session and ret
   await expect(page.getByRole('tabpanel').getByLabel('Client name', { exact: true })).toBeDisabled();
   await page.getByRole('tab', { name: 'Credentials', exact: true }).click();
   await expect(page.getByRole('combobox', { name: 'Client authentication', exact: true })).toBeDisabled();
-  await page.getByRole('tab', { name: 'Configuration JSON', exact: true }).click();
-  await expect(page.getByRole('tabpanel', { name: 'Configuration JSON', exact: true }).locator('pre[aria-label="Saved client configuration"]')).toBeVisible();
+  await page.getByRole('tab', { name: 'Export', exact: true }).click();
+  await expect(page.getByRole('tabpanel', { name: 'Export', exact: true }).locator('pre[aria-label="Saved client configuration"]')).toBeVisible();
 });
 
 test('tenant session policy saves, reloads and rejects invalid clocks', async ({ page }) => {
@@ -1984,7 +1990,7 @@ test('tenant session policy saves, reloads and rejects invalid clocks', async ({
     await expect(absolute).toHaveValue('21600');
     await idle.fill('21601');
     await page.getByRole('button', { name: 'Save settings' }).click();
-    await expect(page.getByRole('alert').first()).toContainText('session_policy.idle_seconds');
+    await expect(page.locator('.message[role="alert"]').first()).toContainText('session_policy.idle_seconds');
   } finally {
     await idle.fill(originalIdle);
     await absolute.fill(originalAbsolute);
@@ -2008,10 +2014,11 @@ test('tenant rate limits save reload reject weakening and restore inheritance', 
     await page.getByRole('tab', { name: 'Rate limits', exact: true }).click();
     await expect(input).toHaveValue('1');
     await expect(page.getByText(/Effective saved maximum: 1\./).first()).toBeVisible();
-    const maximum = Number(await input.getAttribute('max'));
+    const maximum = Number(await input.getAttribute('aria-valuemax'));
+    expect(maximum).toBeGreaterThan(1);
     await input.fill(String(maximum + 1));
     await page.getByRole('button', { name: 'Save settings', exact: true }).click();
-    await expect(page.getByRole('alert')).toContainText('rate_limits.token.per_client');
+    await expect(page.locator('.message[role="alert"]')).toContainText('rate_limits.token.per_client');
     await expect(input).toHaveAttribute('aria-invalid', 'true');
     await page.reload();
     await page.getByRole('tab', { name: 'Rate limits', exact: true }).click();

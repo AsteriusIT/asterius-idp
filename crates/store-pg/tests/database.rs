@@ -353,6 +353,41 @@ const NOT_A_STORED_SECRET: &[(&str, &str, &str)] = &[
         "salt_nonce",
         "the AEAD nonce for salt_ciphertext; public by construction",
     ),
+    (
+        "kubernetes_online_tokens",
+        "token_digest",
+        "SHA-256 token digest; the bearer value is never stored",
+    ),
+    (
+        "outbound_scim_connectors",
+        "credential_generation",
+        "UUID catalogue generation fence, not key material",
+    ),
+    (
+        "outbound_scim_connectors",
+        "credential_ref",
+        "opaque operator catalogue reference, not the credential",
+    ),
+    (
+        "outbound_scim_lifecycle_requests",
+        "credential_generation",
+        "UUID catalogue generation fence",
+    ),
+    (
+        "outbound_scim_previews",
+        "credential_generation",
+        "UUID catalogue generation fence",
+    ),
+    (
+        "workload_grant_bindings",
+        "assertion_digest",
+        "one-way assertion digest",
+    ),
+    (
+        "workload_grant_bindings",
+        "assertion_expires_at",
+        "assertion expiry deadline, not its contents",
+    ),
 ];
 
 /// Substrings that mark a column as credential-bearing.
@@ -8885,9 +8920,10 @@ mod retention {
             ("fresh", now() + Duration::hours(1)),
         ] {
             let additions = format!(
-                "{}\n{}",
+                "{}\n{}\n{}",
                 include_str!("fixtures/retention-additions.sql"),
-                include_str!("fixtures/temporary-retention.sql")
+                include_str!("fixtures/temporary-retention.sql"),
+                include_str!("fixtures/authority-retention.sql")
             );
             for statement in additions.split(';').filter(|sql| !sql.trim().is_empty()) {
                 sqlx::query(statement)

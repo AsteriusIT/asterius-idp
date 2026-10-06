@@ -53,7 +53,7 @@ for (const [id, tenant, issuer] of [
   if (response.status !== 201)
     throw Error("alternate_registration_failed_" + response.status);
   const { client_id: clientId } = await response.json();
-  if (!/^c\.[a-zA-Z0-9_-]+$/.test(clientId))
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(clientId))
     throw Error("unexpected_client_id");
   execFileSync(
     "psql",
