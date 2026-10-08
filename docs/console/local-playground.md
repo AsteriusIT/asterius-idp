@@ -84,6 +84,10 @@ Each Service exposes port 80. The gateway is a ClusterIP Service, not a public N
 
 Browser cookies are scoped to a host, not a port. The playground therefore uses distinct app cookie names and paths, and its gateway forwards only each app's own session/login cookies. IdP administrator cookies and the existing financial-demo cookies are not passed to these BFFs.
 
+After a rollout, run `python3 deploy/playground/verify-live.py`. It checks the deployed cookie names, completed app rollouts, actual login handoff cookies and the protocol page's `same-origin` referrer policy. It requires no user credentials and prints no cookie values. The browser form regression is `node scripts/testing/playground-form-origin-browser.mjs`; strict Origin and CSRF checks remain enabled.
+
+After an application restart, start sign-in again from its home page: pending login state is held in memory, so an old callback cannot finish. An IdP interaction page also requires its browser cookie; a copied interaction URL alone cannot resume sign-in. Report a fresh displayed support reference if a new journey fails, without sharing callback URLs or cookies.
+
 The IdP's internal origin is `http://asterius.asterius.svc.cluster.local:9443/t/demo`. Client requests retain the canonical public issuer and expected protocol audience while using the internal connection path. Do not enable permissive TLS verification, rewrite the token issuer or use the internal service URL as the issuer in a registration.
 
 ### Registration and Secret references
