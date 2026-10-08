@@ -1,0 +1,28 @@
+/** Seed only an explicitly owned disposable fixture; private outputs never go to logs. */
+import {generateKeyPairSync,randomUUID} from 'node:crypto';
+import {mkdtempSync,writeFileSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {spawnSync} from 'node:child_process';
+import {privateFile} from './adapter.mjs';
+process.umask(0o077);
+const source=JSON.parse(privateFile(process.argv[2]??''));
+if(!/^ast_product_[a-f0-9]{32}$/.test(source.database)||source.issuer!=='https://localhost:18444/t/e2e')throw new Error('Owned protocol fixture required');
+const container=process.env.ASTERIUS_ACCEPTANCE_DB_CONTAINER;
+if(!container||!/^[a-zA-Z0-9_.-]+$/.test(container))throw new Error('Explicit owned database container required');
+const root=mkdtempSync(join(tmpdir(),'asterius-protocol-automation.'));
+const {privateKey,publicKey}=generateKeyPairSync('ec',{namedCurve:'prime256v1'});
+const keyId='fixture-automation-1',keyFile=join(root,'automation.pem');
+writeFileSync(keyFile,privateKey.export({format:'pem',type:'pkcs8'}),{mode:0o600});
+const jwk={...publicKey.export({format:'jwk'}),kid:keyId,alg:'ES256',use:'sig'};
+const scopes=['admin.scim:read','admin.scim:write','admin.ssf:read','admin.ssf:write','admin.oidc_providers:read','admin.oidc_providers:write','admin.flows:read','admin.flows:write'];
+const ids=[randomUUID(),randomUUID()],audience=source.issuer+'/admin/api/v1';
+const quote=value=>"'"+value.replaceAll("'","''")+"'";
+let sql=`BEGIN; INSERT INTO resource_servers(tenant_id,identifier,scopes) VALUES('e2e',${quote(audience)},NULL) ON CONFLICT DO NOTHING;\n`;
+for(const id of ids)sql+=`INSERT INTO clients(tenant_id,client_id,client_name,token_endpoint_auth_method,grant_types,response_types,scopes,resources,jwks,dpop_bound_access_tokens) VALUES('e2e',${quote(id)},'Owned protocol automation','private_key_jwt',ARRAY['client_credentials'],'{}',ARRAY[${scopes.map(quote).join(',')}],ARRAY[${quote(audience)}],${quote(JSON.stringify({keys:[jwk]}))}::jsonb,true);\n`;
+sql+='COMMIT;';
+const result=spawnSync('docker',['exec','-i',container,'psql','-U','asterius','-d',source.database,'-v','ON_ERROR_STOP=1','-At'],{input:sql,encoding:'utf8'});
+if(result.status!==0)throw new Error('Owned automation bootstrap refused');
+const configs=ids.map((clientId,index)=>{const file=join(root,index?'foreign.json':'automation.json');writeFileSync(file,JSON.stringify({issuer:source.issuer,clientId,keyId,keyFile,scopes,caFile:source.ca_file,database:source.database}),{mode:0o600});return file;});
+writeFileSync(join(root,'bootstrap.sql'),sql,{mode:0o600});
+console.log(JSON.stringify({config:configs[0],foreignConfig:configs[1],ownedDirectory:root}));

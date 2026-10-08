@@ -113,3 +113,27 @@ Actual validateCredentials and full disposable user/group lifecycle, retry,
 revocation and security controls remain required before interoperability closure.
 Cloud application/job creation must be separately authorized after reviewing
 its exact disposable payload and mappings.
+
+Controlled actual-backend handoff
+--------------------------------
+
+`bootstrap.mjs <private-protocol-manifest>` creates two UUID automation clients
+in the explicitly owned `ast_product_<random>` database only. Set
+`ASTERIUS_ACCEPTANCE_DB_CONTAINER`; the helper publishes paths to 0600 private
+P-256 key/config and reviewable SQL files. Both clients use private_key_jwt,
+DPoP, the exact tenant admin API audience and explicit SCIM/SSF/provider/flow
+read/write scopes. Keep the generated directory private and remove only that
+owned directory after all callers finish. `DpopClient.admin` reuses its proof and
+nonce handling for bounded paths below the same issuer's admin API. Tokens and
+assertions are never emitted.
+
+With the fixture running, set `NODE_EXTRA_CA_CERTS` to its generated CA and run
+`node live-control.mjs <automation.json> <foreign.json>`. This exercises the
+adapter against actual Asterius using owned user/group resources, lost-response
+reconciliation, one-CAS racing/stale writes, foreign namespaces, security locks,
+seeded session revocation and route credential-file revocation. Private database
+control only inserts one disposable session and sets one owned user's security
+lock. Output contains case names/statuses and explicit evidence limits, never
+raw tokens, credentials or source identities. A successful controlled run does
+not establish native Entra cloud provisioning interoperability. Native cloud
+job approval and lifecycle evidence remain a separate requirement.
