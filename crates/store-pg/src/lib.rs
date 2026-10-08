@@ -10,6 +10,7 @@
 mod access_reviews;
 mod governance_reports;
 mod managed_devices;
+mod migration_compatibility;
 pub use governance_reports::PgGovernanceReports;
 pub use managed_devices::PgManagedDevices;
 mod admin_seed;

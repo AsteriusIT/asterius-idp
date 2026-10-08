@@ -94,3 +94,38 @@ restoring the whole matched database/configuration unit while quiesced and accou
 for subsequent writes. Never mix legacy-ID and UUID-ID replicas or selectively
 restore approval rows. This runbook prepares a cutover; operator approval of the
 specific database, restored evidence and deployment window is still required.
+
+## Databases that already applied the published 0173
+
+A deployed local database applied the original `43191d6` migration before the
+terminal preparation was corrected. Its immutable recorded SHA384 is
+`5a096a745c0a269c053f708ff30486e12d157900e081578bd58306eccd370e114d6f692b679cc29b51a5bf48d527b095`.
+`Store::migrate` recognizes only that exact successfully applied checksum and
+validates the exact embedded historical payload for version173. The payload
+is independently pinned; it is never applied to a new/pre173 database. An
+unrecognized173 checksum is refused. All other migrations retain ordinary
+strict SQLx version/checksum validation. No migration-ledger entry is rewritten.
+History selection and migration validation/application share SQLx's advisory
+lock on one dedicated connection; cancellation closes that connection.
+
+Forward migration0177 gives the historical path the same nullable lookup-history
+columns and immutability guards as corrected0173. It requires every existing
+client ID already to be UUID-shaped or an admitted HTTPS identifier. It creates
+no IDs, revokes no authority, changes no existing lookup references, and does
+not backfill or invent pre-cutover values. Corrected0173's captured values and
+triggers remain intact. A conflicting guard definition fails closed.
+
+Before deploying this compatibility path, take a private custom-format backup
+of the entire existing database plus recoverable configuration/KEK references.
+Restore it into an owned disposable database with the same PostgreSQL major
+version. Run the exact candidate migrator there first; compare the original
+ledger checksums, identity/resource counts and live authority, confirm177's
+columns are NULL on the historical path, and prove the guards reject history
+mutation. A second startup must be idempotent. Only after this rehearsal should
+the existing Recreate deployment use the candidate image. Keep the old image
+and pre-upgrade database backup together for rollback; never roll an old binary
+against the newer schema by assumption.
+
+This already-UUID compatibility upgrade is not permission to perform a terminal
+cutover on a populated pre173 database. That remains the separately approved,
+restored-backup/reapproval procedure above.
