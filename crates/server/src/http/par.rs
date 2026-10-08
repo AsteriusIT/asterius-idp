@@ -527,6 +527,20 @@ async fn store_request(
     dpop_jkt: Option<String>,
     now: OffsetDateTime,
 ) -> Result<MintedRequestUri, Box<Response>> {
+    let mut parameters = serialise(
+        request,
+        client,
+        hinted_subject.as_deref(),
+        dpop_jkt.as_deref(),
+    );
+    if context
+        .ipsie_identity_only_clients
+        .is_some_and(|clients| clients.contains(client.id.as_str()))
+    {
+        parameters["claims"] = ipsie_acr_claims(request).map_err(|message| {
+            Box::new(error(StatusCode::BAD_REQUEST, "invalid_request", message))
+        })?;
+    }
     // The reference. Minted after validation, so a rejected push leaves
     // nothing behind to expire.
     let minted = MintedRequestUri::generate();
@@ -535,12 +549,7 @@ async fn store_request(
         tenant: context.tenant.id.clone(),
         request_uri_digest: minted.digest().to_owned(),
         client: client.id.clone(),
-        parameters: serialise(
-            request,
-            client,
-            hinted_subject.as_deref(),
-            dpop_jkt.as_deref(),
-        ),
+        parameters,
         pushed_at: now,
         expires_at,
     };
@@ -635,7 +644,11 @@ fn refuse_a_nonidentity_ipsie_request(
         && request.scopes.contains("openid")
         && request.resources.iter().all(|resource| resource == issuer)
         && request.authorization_details.is_empty()
-        && request.grant_management.is_none();
+        && request.grant_management.is_none()
+        && matches!(
+            request.response_mode,
+            authorize::ResponseMode::Query | authorize::ResponseMode::FormPost
+        );
     (!identity_only).then(|| {
         error(
             StatusCode::BAD_REQUEST,
@@ -643,6 +656,37 @@ fn refuse_a_nonidentity_ipsie_request(
             "this client may request only OP identity claims",
         )
     })
+}
+
+/// Persist selected-profile ACR preferences as requirements for every later
+/// authorization, authentication and consent reader of this canonical request.
+fn ipsie_acr_claims(
+    request: &authorize::AuthorizationRequest,
+) -> Result<serde_json::Value, &'static str> {
+    let mut claims = request.claims.to_json();
+    if request.acr_values.is_empty() {
+        return Ok(claims);
+    }
+    let essential = request.claims.acr().filter(|claim| claim.is_essential());
+    let required: Vec<&str> = request
+        .acr_values
+        .iter()
+        .filter(|value| {
+            essential.is_none_or(|claim| {
+                claim.accepted_values().is_empty()
+                    || claim
+                        .accepted_values()
+                        .iter()
+                        .any(|accepted| accepted.as_str() == Some(value.as_str()))
+            })
+        })
+        .map(String::as_str)
+        .collect();
+    if required.is_empty() {
+        return Err("requested ACR values conflict with the essential ACR claim");
+    }
+    claims["id_token"]["acr"] = serde_json::json!({"essential":true,"values":required});
+    Ok(claims)
 }
 
 /// Enforces the IPSIE SL1 draft's HTTPS callback rule for selected clients.

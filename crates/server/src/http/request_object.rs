@@ -214,27 +214,54 @@ mod tests {
             "response_type":"code","scope":"openid","redirect_uri":"https://client.example/callback"});
         let signed = |typ: Option<&str>, claims: &serde_json::Value| {
             let mut header = json!({"alg":"ES256","kid":"jar-key"});
-            if let Some(typ) = typ { header["typ"] = typ.into(); }
-            let input = format!("{}.{}", B64.encode(serde_json::to_vec(&header).expect("header")),
-                B64.encode(serde_json::to_vec(claims).expect("claims")));
-            format!("{input}.{}", B64.encode(key.sign(input.as_bytes()).expect("signature")))
+            if let Some(typ) = typ {
+                header["typ"] = typ.into();
+            }
+            let input = format!(
+                "{}.{}",
+                B64.encode(serde_json::to_vec(&header).expect("header")),
+                B64.encode(serde_json::to_vec(claims).expect("claims"))
+            );
+            format!(
+                "{input}.{}",
+                B64.encode(key.sign(input.as_bytes()).expect("signature"))
+            )
         };
-        let fapi = Policy::new(request_object_typ(true),vec![SigningAlgorithm::Es256]).issued_by(client);
-        let strict = Policy::new(request_object_typ(false),vec![SigningAlgorithm::Es256]).issued_by(client);
-        for typ in [None,Some("JWT"),Some(REQUEST_OBJECT_TYP)] {
-            let token = signed(typ,&claims);
-            let verified = verify(&token,&fapi,&resolver,now).expect("valid FAPI JAR");
-            assert!(asterius_oidc::request_object::fapi_parameters(&verified.claims,client,issuer,now).is_ok());
-            assert_eq!(verify(&token,&strict,&resolver,now).is_ok(),typ == Some(REQUEST_OBJECT_TYP));
+        let fapi =
+            Policy::new(request_object_typ(true), vec![SigningAlgorithm::Es256]).issued_by(client);
+        let strict =
+            Policy::new(request_object_typ(false), vec![SigningAlgorithm::Es256]).issued_by(client);
+        for typ in [None, Some("JWT"), Some(REQUEST_OBJECT_TYP)] {
+            let token = signed(typ, &claims);
+            let verified = verify(&token, &fapi, &resolver, now).expect("valid FAPI JAR");
+            assert!(
+                asterius_oidc::request_object::fapi_parameters(
+                    &verified.claims,
+                    client,
+                    issuer,
+                    now
+                )
+                .is_ok()
+            );
+            assert_eq!(
+                verify(&token, &strict, &resolver, now).is_ok(),
+                typ == Some(REQUEST_OBJECT_TYP)
+            );
         }
-        for typ in ["at+jwt","dpop+jwt","secevent+jwt","logout+jwt"] {
-            assert!(verify(&signed(Some(typ),&claims),&fapi,&resolver,now).is_err());
+        for typ in ["at+jwt", "dpop+jwt", "secevent+jwt", "logout+jwt"] {
+            assert!(verify(&signed(Some(typ), &claims), &fapi, &resolver, now).is_err());
         }
-        let mut foreign = claims.clone(); foreign["iss"] = "another-client".into();
-        assert!(verify(&signed(None,&foreign),&fapi,&resolver,now).is_err());
-        let mut wrong_audience = claims; wrong_audience["aud"] = "https://another-as.example".into();
-        let verified = verify(&signed(None,&wrong_audience),&fapi,&resolver,now).expect("valid signature");
-        assert!(asterius_oidc::request_object::fapi_parameters(&verified.claims,client,issuer,now).is_err());
+        let mut foreign = claims.clone();
+        foreign["iss"] = "another-client".into();
+        assert!(verify(&signed(None, &foreign), &fapi, &resolver, now).is_err());
+        let mut wrong_audience = claims;
+        wrong_audience["aud"] = "https://another-as.example".into();
+        let verified =
+            verify(&signed(None, &wrong_audience), &fapi, &resolver, now).expect("valid signature");
+        assert!(
+            asterius_oidc::request_object::fapi_parameters(&verified.claims, client, issuer, now)
+                .is_err()
+        );
     }
 
     /// A client is told which half of its request was wrong, and never which
