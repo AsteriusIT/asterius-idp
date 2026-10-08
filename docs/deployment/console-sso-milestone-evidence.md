@@ -120,8 +120,8 @@ that mutable project status must not replace the captured local candidate.
 
 ## Local milestone disposition and production release boundary
 
-The implementation and bounded local validation are complete under the user's
-explicit local exceptions, subject to the root agent's final ticket review.
+The implementation and bounded local validation passed the final ticket review
+under the user's explicit local exceptions.
 The administration runbook covers
 [groups, policy changes, branding and SSO](../runbooks/console-sso-administration.md),
 and [the runnable two-application demo](../sso-demo.md) remains documented.
