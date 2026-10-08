@@ -12,6 +12,7 @@ import secrets
 import subprocess
 import sys
 import time
+import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -46,6 +47,7 @@ def main():
     p.add_argument('--database-container', required=True)
     p.add_argument('--peer-issuer', required=True)
     p.add_argument('--bearer-file', required=True)
+    p.add_argument('--ack-loss-directory', required=True, help='Owned relay config directory; private one-shot ACK fault only')
     args = p.parse_args()
     os.umask(0o077)
     manifest, config = [json.loads(Path(x).read_text()) for x in (args.manifest, args.automation)]
@@ -59,6 +61,12 @@ def main():
     bearer = bearer_path.read_text().strip()
     admin = Admin(config['issuer'], config['clientId'], config['keyFile'], config['keyId'], config['caFile'])
     records = []
+    ack_directory = Path(args.ack_loss_directory)
+    if not ack_directory.is_dir() or ack_directory.stat().st_mode & 0o077:
+        raise RuntimeError('Private owned ACK fixture directory required')
+    ack_flag = ack_directory / 'ssf-drop-next-ack.flag'
+    if ack_flag.exists():
+        raise RuntimeError('Existing ACK arm file must be reconciled first')
     peer = args.peer_issuer
     quote = lambda value: "'" + value.replace("'", "''") + "'"
 
@@ -124,6 +132,27 @@ def main():
         operation('guarded network stream setup', '/ssf/upstream/setup')
         established = True
         operation('authenticated exact-stream readback', '/ssf/upstream/verify')
+        tenant_config = tomllib.loads(Path(manifest['config_path']).read_text())
+        configured = next(t for t in tenant_config['tenant'] if t['id'] == 'e2e')
+        mounted_copy = Path(next(x for x in configured['ssf_upstream_peer'] if x['issuer'] == peer)['bearer_token_file'])
+        if mounted_copy.parent != Path(manifest['config_path']).parent or mounted_copy.name != 'ssf-peer-bearer.txt' or mounted_copy == bearer_path:
+            raise RuntimeError('Only the explicitly owned mounted SSF credential copy may be changed')
+        original_copy = mounted_copy.read_bytes()
+        assert original_copy.strip().decode() == bearer
+        def replace_copy(value):
+            fd, temporary = tempfile.mkstemp(prefix='ssf-credential-probe-', dir=mounted_copy.parent)
+            with os.fdopen(fd, 'wb') as output:
+                output.write(value)
+            os.replace(temporary, mounted_copy)
+        streams_before = {x['stream_id'] for x in native('GET', metadata['configuration_endpoint'])[1]}
+        try:
+            replace_copy(secrets.token_urlsafe(48).encode())
+            operation('authoritative mounted bearer reread refuses rotated wrong credential', '/ssf/upstream/verify', 503)
+        finally:
+            replace_copy(original_copy)
+        operation('restored operator bearer recovers authenticated stream verification', '/ssf/upstream/verify')
+        assert {x['stream_id'] for x in native('GET', metadata['configuration_endpoint'])[1]} == streams_before
+
         stream_id = sql("select stream_id from ssf_receiver_upstream_streams where tenant_id='e2e' and peer_client_id=" + quote(peer))
         recovery.write_text(json.dumps({'database': config['database'], 'peer': peer, 'user': user, 'session': session, 'stream': stream_id}))
         code, listed = native('GET', metadata['configuration_endpoint'])
@@ -139,17 +168,25 @@ def main():
         assert code == 200 and len(envelope['sets']) == 1
         jti, compact = next(iter(envelope['sets'].items()))
         code = push(compact)
-        assert code == 202, 'Native first push status=' + str(code)
+        assert code == 400, 'Poll-only peer push refusal status=' + str(code)
+        assert sql("select count(*) from sessions where tenant_id='e2e' and session_id=" + quote(session) + ' and revoked_at is null') == '1'
+        records.append({'case': 'valid native SET push refused for poll-only metadata profile', 'status': code})
+        ack_flag.write_text(json.dumps({'authorization_sha256': hashlib.sha256(('Bearer ' + bearer).encode()).hexdigest()}))
+        ack_flag.chmod(0o600)
+        operation('owned injected ACK loss after local session revocation commit', '/ssf/upstream/poll', 503)
+        fault = json.loads((ack_directory / 'ssf-ack-loss-status.json').read_text())
+        assert fault == {'injected': True, 'status': 503, 'forwarded': False} and not ack_flag.exists()
         assert sql("select count(*) from sessions where tenant_id='e2e' and session_id=" + quote(session) + ' and revoked_at is not null') == '1'
-        records.append({'case': 'first native signed push revokes mapped owned session', 'status': code})
-        operation('same signed SET replay polled and ACKed', '/ssf/upstream/poll')
+        retained = native('POST', owned['delivery']['endpoint_url'], {'maxEvents': 1, 'returnImmediately': True})
+        assert retained[0] == 200 and list(retained[1]['sets']) == [jti]
+        operation('same independently signed SET redelivered through poll and ACKed', '/ssf/upstream/poll')
         assert sql("select count(*) from sessions where tenant_id='e2e' and session_id=" + quote(session) + ' and revoked_at is not null') == '1'
         assert native('POST', owned['delivery']['endpoint_url'], {'maxEvents': 1, 'returnImmediately': True})[1]['sets'] == {}
         count_sql = "select count(*) from ssf_receiver_events where tenant_id='e2e' and peer_client_id=" + quote(peer) + ' and jti=' + quote(jti)
         assert sql(count_sql) == '1'
         code = push(compact)
-        assert code == 202 and sql(count_sql) == '1', 'Native replay push status=' + str(code)
-        records.append({'case': 'same native SET redelivery is replay-safe across push/poll', 'status': code})
+        assert code == 400 and sql(count_sql) == '1', 'Native replay push refusal status=' + str(code)
+        records.append({'case': 'duplicate native SET push retains poll-only refusal and one inbox row', 'status': code})
         header, payload, signature = compact.split('.')
         claims = json.loads(base64.urlsafe_b64decode(payload + '=' * (-len(payload) % 4)))
         claims['iss'] = peer + '/unregistered'
@@ -171,6 +208,8 @@ def main():
             'runtimeBinarySha256': manifest['binary_sha256'], 'checks': records, 'formalCAEPConformance': False,
             'limits': ['Local revocation session explicitly seeded in owned fixture, not a browser ceremony.', 'Issuer mutation control also has invalid signature; proves refusal, not isolated signed malicious-issuer test.']}, indent=2))
     finally:
+        if ack_flag.exists():
+            ack_flag.unlink()
         if established:
             operation('cleanup owned upstream stream', '/ssf/upstream/delete')
         if other:
