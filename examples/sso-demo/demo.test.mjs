@@ -100,8 +100,86 @@ test('HTTP callback binds configured app cookie, state and issuer before handlin
   }
   const flow = await start();
   const accepted = await callback(flow, `other_app=ignored; ${flow.cookie}`);
-  assert.equal(accepted.status, 303);
-  assert.equal(accepted.headers.get('location'), 'https://apps.example/demo-a');
+  assert.equal(accepted.status, 401);
+  assert.match(await accepted.text(), /identity provider refused/);
   assert.match(accepted.headers.get('set-cookie'), /^asterius_playground_demo_a=;/);
   assert.equal((await callback(flow, flow.cookie)).status, 500, 'consumed flow cannot be replayed');
+});
+
+test('HTTP SSO action journeys return canonical home and show actual outcomes once', async (t) => {
+  let sequence = 0, refreshRefused = false, userInfoRefused = false, refreshSubject = 'owned-subject', refreshType = 'DPoP';
+  const issuer = discovery.issuer, external = 'https://apps.example/demo-b';
+  const dpop = { privateKey: 'owned-private-fixture', publicKey: 'owned-public-fixture' };
+  t.mock.method(OidcClient.prototype, 'initialise', async function () { this.discovery = discovery; this.clientId = 'owned'; });
+  t.mock.method(OidcClient.prototype, 'begin', async () => ({ state: `journey-${++sequence}`, nonce: 'owned-nonce', dpop, authorize: `${issuer}/authorize` }));
+  t.mock.method(OidcClient.prototype, 'redeem', async () => ({ id_token: 'private-fixture-token', access_token: 'owned-access', refresh_token: 'owned-refresh' }));
+  t.mock.method(OidcClient.prototype, 'verifyIdToken', async (token, nonce) => {
+    if (token === 'refreshed-id-token') {
+      assert.equal(nonce, undefined, 'refresh ID token has no new nonce');
+      return { sub: refreshSubject };
+    }
+    return { sub: 'owned-subject', nonce: 'owned-nonce', acr: 'urn:asterius:acr:passkey' };
+  });
+  t.mock.method(OidcClient.prototype, 'refresh', async (session) => {
+    assert.equal(session.dpop, dpop, 'refresh retains the original sender key');
+    if (refreshRefused) throw new Error('private OAuth error must not be exposed');
+    return { access_token: 'refreshed-access', refresh_token: 'rotated-refresh', token_type: refreshType, id_token: 'refreshed-id-token' };
+  });
+  t.mock.method(OidcClient.prototype, 'userInfo', async (session) => {
+    assert.equal(session.dpop, dpop);
+    if (userInfoRefused) throw new Error('private UserInfo error must not be exposed');
+    return { sub: 'owned-subject' };
+  });
+  const server = await startDemo({ PORT: '0', BIND: '127.0.0.1', ISSUER: issuer, EXTERNAL_URL: external, COOKIE_NAME: 'owned_demo_b' });
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const base = `http://127.0.0.1:${server.address().port}/demo-b`;
+  const request = (path, cookie) => fetch(base + path, { redirect: 'manual', headers: cookie ? { cookie } : {} });
+  const finish = async (path, sessionCookie, error) => {
+    const started = await request(path, sessionCookie);
+    assert.equal(started.status, 303);
+    const loginCookie = started.headers.get('set-cookie').split(';')[0];
+    const parameters = new URLSearchParams({ state: `journey-${sequence}`, iss: issuer, ...(error ? { error } : { code: 'owned-code' }) });
+    return request(`/callback?${parameters}`, [sessionCookie, loginCookie].filter(Boolean).join('; '));
+  };
+  for (const path of ['/refresh', '/check-session', '/reauth', '/step-up', '/logout']) {
+    const refused = await request(path);
+    assert.equal(refused.status, 401);
+    assert.match(await refused.text(), /requires an application session/);
+  }
+  assert.equal((await request('/unknown-action')).status, 404);
+  const signedIn = await finish('/login');
+  assert.equal(signedIn.headers.get('location'), external + '/');
+  const cookie = signedIn.headers.get('set-cookie').split(';')[0];
+  assert.match(await (await request('/', cookie)).text(), /Sign-in completed/);
+  assert.doesNotMatch(await (await request('/', cookie)).text(), /Sign-in completed/);
+  const refreshed = await request('/refresh', cookie);
+  assert.equal(refreshed.headers.get('location'), external + '/');
+  assert.match(await (await request('/', cookie)).text(), /Tokens refreshed successfully/);
+  refreshSubject = 'other-subject';
+  assert.equal((await request('/refresh', cookie)).status, 502, 'refresh cannot change authenticated subject');
+  refreshSubject = 'owned-subject';
+  refreshType = 'Bearer';
+  assert.equal((await request('/refresh', cookie)).status, 502, 'refresh cannot silently drop sender binding');
+  refreshType = 'DPoP';
+  for (const [path, outcome] of [['/check-session', 'confirmed your session'], ['/reauth', 'Reauthentication completed'], ['/step-up', 'Passkey step-up completed']]) {
+    const completed = await finish(path, cookie);
+    assert.equal(completed.headers.get('location'), external + '/');
+    assert.match(await (await request('/', cookie)).text(), new RegExp(outcome));
+  }
+  refreshRefused = true;
+  const failedRefresh = await request('/refresh', cookie);
+  assert.equal(failedRefresh.status, 502);
+  const failureBody = await failedRefresh.text();
+  assert.match(failureBody, /No successful refresh was confirmed/);
+  assert.doesNotMatch(failureBody, /private OAuth error/);
+  const refused = await finish('/check-session', cookie, 'login_required');
+  assert.equal(refused.status, 401);
+  assert.match(await refused.text(), /did not confirm an active session/);
+  assert.equal((await request('/refresh', cookie)).status, 401);
+  const again = await finish('/login');
+  userInfoRefused = true;
+  const unavailable = await request('/', again.headers.get('set-cookie').split(';')[0]);
+  assert.equal(unavailable.status, 401);
+  assert.match(await unavailable.text(), /UserInfo could not confirm/);
+  assert.match(unavailable.headers.get('set-cookie'), /Max-Age=0/);
 });
