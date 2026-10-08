@@ -90,6 +90,9 @@ test('HTTP callback binds configured app cookie, state and issuer before handlin
   const callback = (flow, cookie, responseIssuer = issuer) => fetch(`${base}/callback?${new URLSearchParams({
     state: flow.state, error: 'login_required', ...(responseIssuer ? { iss: responseIssuer } : {}),
   })}`, { redirect: 'manual', headers: cookie ? { cookie } : {} });
+  const missingCode = await start();
+  assert.equal((await fetch(`${base}/callback?${new URLSearchParams({ state: missingCode.state, iss: issuer })}`,
+    { redirect: 'manual', headers: { cookie: missingCode.cookie } })).status, 500, 'a successful callback requires a code');
   for (const cookie of [undefined, 'asterius_playground_demo_b_login=owned-state-1']) {
     const flow = await start();
     assert.equal((await callback(flow, cookie)).status, 500);
