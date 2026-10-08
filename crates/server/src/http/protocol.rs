@@ -4893,13 +4893,10 @@ async fn direct_authorization_pairs(
                 .get(tenant.id.as_str())
                 .is_some_and(|clients| clients.contains(value))
     }) {
-        return Err(Box::new(
-            (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "invalid_request"})),
-            )
-                .into_response(),
-        ));
+        // Mandatory PAR still applies. Let the ordinary authorization path
+        // reject the missing reference with its safe local browser error page,
+        // before a request or interaction can be created.
+        return Ok(None);
     }
     if !settings.allows_non_fapi_clients() {
         return Ok(None);
