@@ -186,6 +186,11 @@ async fn exercise_flow_provider_contract(
         .expect("lease");
     let mut requested = template.clone();
     requested.id = "flow-provider".into();
+    // Tenant issuer uniqueness is part of the actual provider contract.
+    requested.issuer = "https://flow-login.example".into();
+    requested.authorization_endpoint = "https://flow-login.example/authorize".into();
+    requested.token_endpoint = "https://flow-login.example/token".into();
+    requested.jwks_uri = "https://flow-login.example/keys".into();
     flows
         .reserve(
             &tenant,

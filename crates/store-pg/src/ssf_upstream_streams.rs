@@ -259,10 +259,13 @@ impl PgSsfUpstreamStreams {
                     status_endpoint, audience, events_requested,
                     delivery_method, started_at
                from ssf_receiver_upstream_setup_intents
-              where tenant_id = $1 and peer_client_id = $2 for update",
+              where tenant_id = $1 and peer_client_id = $2 and started_at = $3 for update",
         )
         .bind(self.tenant.as_str())
         .bind(&intent.peer_client_id)
+        // Compare using SQLx/PostgreSQL timestamp precision. An original
+        // now_utc intent can contain nanoseconds that timestamptz cannot store.
+        .bind(intent.started_at)
         .fetch_optional(&mut *tx)
         .await
         .map_err(to_domain_error)?;
@@ -275,7 +278,6 @@ impl PgSsfUpstreamStreams {
                 && row.5 == intent.audience
                 && row.6 == intent.events_requested
                 && row.7 == intent.delivery_method
-                && row.8 == intent.started_at
         });
         if !same
             || stream.peer_client_id != intent.peer_client_id
