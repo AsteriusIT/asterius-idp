@@ -13,21 +13,21 @@ They require access to the private tailnet and an Asterius account. Sign in with
 
 The local deployment runbook records [routing and access](../deployment/local-tailscale.md). Confirm the current rollout's readiness and image evidence before testing; that runbook also contains historical deployments. This guide does not pin an image or assume optional features were enabled by the rollout.
 
-The deployment owner confirmed the local cluster context `kind-asterius-local`, namespace `asterius`, and configured tenant `demo` at `https://desktop-cpbptqn-1.tailacbb15.ts.net/t/demo`. The `admin` tenant is bootstrapped separately. The approved rollout will enable the seven deployment capabilities listed below; this configuration change is **planned, pending rollout verification**. No OIDC, SSF, SAML, LDAP, federation, IPSIE or Message Signing peers/selections are configured. Treat those integrations as setup-dependent; inspect current tenant settings and discovery before assuming availability. The existing Kubernetes online broker is separate from a verified human `kubectl` login.
+The deployment owner confirmed the local cluster context `kind-asterius-local`, namespace `asterius`, and configured tenant `demo` at `https://desktop-cpbptqn-1.tailacbb15.ts.net/t/demo`. The `admin` tenant is bootstrapped separately. The verified local rollout uses image `asterius-idp:local-ast-kkye-20261008`. Its `/readyz` response reports ready, database and migrations applied, with exactly the seven deployment capabilities listed below enabled. See [the current deployment evidence](../deployment/evidence/local-feature-tour-2026-10-08.json). No OIDC, SSF, SAML, LDAP, federation, IPSIE or Message Signing peers/selections are configured. Treat those integrations as setup-dependent; inspect current tenant settings and discovery before assuming availability. The existing Kubernetes online broker is separate from a verified human `kubectl` login.
 
-### Approved local protocol configuration
+### Verified local protocol configuration
 
 | Deployment capability | Rollout status | What remains necessary |
 | --- | --- | --- |
-| `ciba` | Planned: enable | A registered CIBA client and supported separate-device approval flow. |
-| `device_flow` | Planned: enable | A client permitting device authorization and a second browser. |
-| `grant_management` | Planned: enable | Appropriate resource/scopes and a standing grant owned by the caller. |
-| `token_exchange` | Planned: enable | Explicit actor, resource and delegation policy. |
-| `ssf` | Planned: enable | A configured transmitter/receiver, trust and subject mapping. |
-| `request_object` | Planned: enable | A client that signs valid request objects inside PAR. |
-| `dpop_nonce` | Planned: enable | Clients must handle the server's nonce challenge and retry with a fresh DPoP proof. Reusing the challenged proof is insufficient. |
+| `ciba` | Verified: globally enabled | A registered CIBA client and supported separate-device approval flow. |
+| `device_flow` | Verified: globally enabled | A client permitting device authorization and a second browser. |
+| `grant_management` | Verified: globally enabled | Appropriate resource/scopes and a standing grant owned by the caller. |
+| `token_exchange` | Verified: globally enabled | Explicit actor, resource and delegation policy. |
+| `ssf` | Verified: globally enabled | A configured transmitter/receiver, trust and subject mapping. |
+| `request_object` | Verified: globally enabled | A client that signs valid request objects inside PAR. |
+| `dpop_nonce` | Verified: globally enabled | Clients must handle the server's nonce challenge and retry with a fresh DPoP proof. Reusing the challenged proof is insufficient. |
 
-mTLS, AuthZEN and self-registration remain disabled in the current deployment configuration. Their scenarios require a later configuration change. Tenant capability settings stay within the deployment's server ceiling; saving a tenant switch cannot enable a globally disabled protocol. The rollout verifier must replace the planned statuses with the observed configuration/discovery outcomes before these seven rows are treated as active.
+mTLS, AuthZEN and self-registration remain disabled in the current deployment configuration. Their scenarios require a later configuration change. Tenant capability settings stay within the deployment's server ceiling; saving a tenant switch cannot enable a globally disabled protocol. Global enablement makes the protocols available within that ceiling; each tenant still needs the applicable capability, and clients, policy, resources and external peers must be configured before their scenarios can succeed. Readiness confirms the deployment state, not every integration's end-to-end behavior.
 
 Local readiness reports `mail_transport: journal`. Invitation, verification and recovery messages are retrieved by an authorized operator from the local mail journal, rather than delivered through SMTP to an inbox. Their links and one-time values are private credentials: inspect only the disposable user's messages and do not publish journal content.
 
