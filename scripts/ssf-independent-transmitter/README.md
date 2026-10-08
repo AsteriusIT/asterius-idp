@@ -91,3 +91,25 @@ private recovery manifest if remote stream outcome cannot be reconciled.
 Invoke with explicit `--manifest`, `--automation`, `--database-container`,
 `--peer-issuer`, `--bearer-file`, and the private `--ack-loss-directory` that
 contains the approved relay configuration. Never run against an unowned database.
+
+Native push evidence (2026-10-08)
+
+`main.go -delivery push -push-endpoint <exact public HTTPS receiver>` starts
+SSFgo's native delivery worker with its default guarded HTTPS client and an
+exact endpoint allowlist. Default poll behavior remains available. The
+loopback-only authenticated `/delivery-receipts` control exposes bounded
+outcome/attempt counters, never SETs, subjects, keys or bearer credentials.
+
+`push_lifecycle.py` exercises the explicitly owned product fixture and second
+transmitter on loopback19485/19486. It registers its dedicated peer/user/session,
+maps the subject through the real DPoP admin API, creates a native push stream,
+asks the private native control to emit a CAEP event, and observes native
+delivery plus actual revocation and one inbox row. Finally it deletes only its
+stream and fixture identities. Its paths identify this owned disposable
+fixture; do not run it against another database or production.
+
+Sanitized result: `docs/integrations/evidence/ssfgo-native-push-2026-10-08.json`.
+The independent library signs and sends the event itself; Python does not
+construct or deliver the signed event. The fixture uses the existing verified
+public TLS relay, a public host map, and the canonical tenant receiver audience.
+No SSFgo HTTPS or public-address guard is disabled.

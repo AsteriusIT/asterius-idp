@@ -69,3 +69,11 @@ untrusted issuer refusal and unaffected delivery on a second stream after deleti
 The peer advertises polling only and push is refused accordingly. This supports a
 bounded SSF1 Final integration claim; it does not certify CAEP Draft01 or establish
 native push interoperability. The September decision and its RS256 refusal stand.
+
+A second owned native SSFgo transmitter subsequently advertised RFC8935 push
+and delivered its own ES256 event using its native worker/default guarded
+HTTPS client. The real receiver revoked the mapped session with exactly one
+inbox row; owned stream and fixture identities were removed. Sanitized evidence
+is [`ssfgo-native-push-2026-10-08.json`](../integrations/evidence/ssfgo-native-push-2026-10-08.json).
+This resolves the separate native push evidence gap for the chosen SSF1 Final
+profile without changing the RS256 or Draft01 boundary.

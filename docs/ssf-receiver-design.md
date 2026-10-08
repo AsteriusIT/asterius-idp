@@ -372,5 +372,17 @@ issuer management control verifies its unavailable route.
 
 SSF1 Final interoperability for this bounded peer profile is supported by actual
 evidence. CAEP Interoperability Profile Draft01, RS256, the complete CAEP event
-vocabulary and automatic credential acquisition remain unsupported. Further native
-push evidence, if collected, must use a peer that really advertises push support.
+vocabulary and automatic credential acquisition remain unsupported. The separate native push evidence below uses a second peer that really
+advertises push support.
+
+The subsequent owned native-push rehearsal on the same date closed the
+independent push evidence gap. A second SSFgo transmitter advertised only
+RFC8935 push and used its own native signing/delivery worker, default guarded
+HTTPS client, public endpoint allowlist and public-address resolution. Its
+first delivery succeeded through the verified public TLS relay; Asterius
+revoked the explicitly mapped session and retained exactly one inbox row.
+The native stream and all dedicated fixture identities were removed. See
+[`ssfgo-native-push-2026-10-08.json`](integrations/evidence/ssfgo-native-push-2026-10-08.json)
+and `scripts/ssf-independent-transmitter/push_lifecycle.py`. This supplements
+the independent poll/replay evidence; it does not claim formal Draft01
+conformance or a browser-established session.
