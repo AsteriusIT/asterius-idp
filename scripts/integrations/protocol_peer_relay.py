@@ -41,6 +41,8 @@ class Proxy(http.server.BaseHTTPRequestHandler):
             forwarded_path=self.path
             if path.startswith('/keycloak/realms/asterius-protocol/') or path.startswith('/keycloak/resources/'):
                 connection=http.client.HTTPConnection('127.0.0.1',9488,timeout=20)
+            elif path=='/provider-command-peer/command':
+                connection=http.client.HTTPConnection('127.0.0.1',14900,timeout=20)
             elif path.startswith('/controlled-peer/'):
                 connection=http.client.HTTPConnection('127.0.0.1',9489,timeout=20)
             elif path.startswith('/ssf-push-peer/') or path=='/.well-known/ssf-configuration/ssf-push-peer':

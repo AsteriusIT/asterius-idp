@@ -1,0 +1,142 @@
+{
+  "status": "pass",
+  "date": "2026-10-08",
+  "implementation": "independent controlled RP, native Node crypto",
+  "specification": "OpenID Provider Commands draft02,25September2025",
+  "runtime_revision": "97ac7245561064d2f58fbc8c48581f62ee72c451",
+  "asterius_binary_sha256": "3e0ac927d6f756cbd67f43345d5e918024c5bb865b1b780c5d91210f1cf2cda0",
+  "cases": [
+    {
+      "case": "guarded registration refused unsafe command transport",
+      "result": "pass",
+      "observed_status": 400
+    },
+    {
+      "case": "guarded command RP registration",
+      "result": "pass"
+    },
+    {
+      "case": "guarded command RP audience assignment",
+      "result": "pass"
+    },
+    {
+      "case": "guarded owned account creation",
+      "result": "pass"
+    },
+    {
+      "case": "actual independent command RP code exchange",
+      "result": "pass"
+    },
+    {
+      "case": "independent RP verified real OIDC identity",
+      "result": "pass"
+    },
+    {
+      "case": "actual issued subject retained for lifecycle commands",
+      "result": "pass"
+    },
+    {
+      "case": "owned SCIM ETag acquired",
+      "result": "pass"
+    },
+    {
+      "case": "actual SCIM account status transition",
+      "result": "pass"
+    },
+    {
+      "case": "producer rejects signed command response missing no-store",
+      "result": "pass",
+      "producer_outcome": "abandoned",
+      "observed_status": 204
+    },
+    {
+      "case": "owned SCIM ETag acquired",
+      "result": "pass"
+    },
+    {
+      "case": "actual SCIM account status transition",
+      "result": "pass"
+    },
+    {
+      "case": "owned SCIM ETag acquired",
+      "result": "pass"
+    },
+    {
+      "case": "actual SCIM account status transition",
+      "result": "pass"
+    },
+    {
+      "case": "actual signed invalidate reached public independent consumer",
+      "result": "pass",
+      "observed_status": 200,
+      "producer_outcome": "delivered"
+    },
+    {
+      "case": "independent consumer normal refusal",
+      "result": "pass",
+      "observed_status": 400,
+      "observed_error": "invalid_request",
+      "mutation": false
+    },
+    {
+      "case": "independent consumer wrong_issuer refusal",
+      "result": "pass",
+      "observed_status": 401,
+      "observed_error": "unrecognized_provider",
+      "mutation": false
+    },
+    {
+      "case": "independent consumer wrong_audience refusal",
+      "result": "pass",
+      "observed_status": 400,
+      "observed_error": "invalid_request",
+      "mutation": false
+    },
+    {
+      "case": "independent consumer expired refusal",
+      "result": "pass",
+      "observed_status": 400,
+      "observed_error": "invalid_request",
+      "mutation": false
+    },
+    {
+      "case": "independent consumer unsupported refusal",
+      "result": "pass",
+      "observed_status": 400,
+      "observed_error": "unsupported_command",
+      "mutation": false
+    },
+    {
+      "case": "independent consumer forged refusal",
+      "result": "pass",
+      "observed_status": 400,
+      "observed_error": "invalid_request",
+      "mutation": false
+    },
+    {
+      "case": "actual owned SCIM delete",
+      "result": "pass"
+    },
+    {
+      "case": "actual signed delete reached public independent consumer",
+      "result": "pass",
+      "observed_status": 200,
+      "producer_outcome": "delivered"
+    },
+    {
+      "case": "deleted owned user unavailable through SCIM",
+      "result": "pass",
+      "observed_status": 404
+    },
+    {
+      "case": "owned command RP fixture client removed",
+      "result": "pass"
+    }
+  ],
+  "formal_conformance": false,
+  "limits": [
+    "Actual invalidate/delete are signed by Asterius and delivered over guarded public HTTPS.",
+    "Refusal probes reuse real signed tokens against pinned consumer configuration, controlled clock, unsupported policy or altered signature; they do not claim Asterius emitted wrong claims.",
+    "Only supported synchronous invalidate/delete; tenant/metadata/migrate/other draft commands and formal certification are not claimed."
+  ]
+}
