@@ -22,6 +22,16 @@
 
 \set ON_ERROR_STOP on
 
+-- Issuance uses each client's registered resource allow-list, with no tenant
+-- fallback. Both plan profiles call UserInfo with the issued access token.
+insert into resource_servers (tenant_id, identifier, scopes, description)
+select tenant_id, issuer || '/userinfo',
+       array['openid', 'profile', 'email', 'offline_access'],
+       'OIDF conformance UserInfo audience'
+from tenants where tenant_id = :'tenant'
+on conflict (tenant_id, identifier) do update
+set scopes = excluded.scopes, description = excluded.description;
+
 -- --------------------------------------------------------------------------
 -- Client 1 and client 2.
 --
@@ -44,7 +54,7 @@
 -- --------------------------------------------------------------------------
 insert into clients (
     tenant_id, client_id, client_name, token_endpoint_auth_method,
-    redirect_uris, grant_types, response_types, scopes,
+    redirect_uris, grant_types, response_types, scopes, resources,
     jwks, dpop_bound_access_tokens
 )
 values (
@@ -56,6 +66,7 @@ values (
     array['authorization_code', 'refresh_token'],
     array['code'],
     array['openid', 'profile', 'email', 'offline_access'],
+    array[(select issuer || '/userinfo' from tenants where tenant_id = :'tenant')],
     :'jwks1'::jsonb,
     true
 ), (
@@ -67,6 +78,7 @@ values (
     array['authorization_code', 'refresh_token'],
     array['code'],
     array['openid', 'profile', 'email', 'offline_access'],
+    array[(select issuer || '/userinfo' from tenants where tenant_id = :'tenant')],
     :'jwks2'::jsonb,
     true
 )
@@ -74,6 +86,7 @@ on conflict (tenant_id, client_id) do update
 set redirect_uris = excluded.redirect_uris,
     grant_types   = excluded.grant_types,
     scopes        = excluded.scopes,
+    resources     = excluded.resources,
     jwks          = excluded.jwks,
     status        = 'active';
 

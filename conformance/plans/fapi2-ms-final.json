@@ -74,7 +74,8 @@
             [
               "click",
               "xpath",
-              "//form//button[@type='submit']"
+              "//form[.//input[@name='username'] and .//input[@name='password']]//button[@type='submit']",
+              "optional"
             ]
           ]
         },
@@ -158,7 +159,8 @@
                 [
                   "click",
                   "xpath",
-                  "//form//button[@type='submit']"
+                  "//form[.//input[@name='username'] and .//input[@name='password']]//button[@type='submit']",
+                  "optional"
                 ]
               ]
             },
@@ -258,7 +260,8 @@
                 [
                   "click",
                   "xpath",
-                  "//form//button[@type='submit']"
+                  "//form[.//input[@name='username'] and .//input[@name='password']]//button[@type='submit']",
+                  "optional"
                 ]
               ]
             },
@@ -353,7 +356,8 @@
                 [
                   "click",
                   "xpath",
-                  "//form//button[@type='submit']"
+                  "//form[.//input[@name='username'] and .//input[@name='password']]//button[@type='submit']",
+                  "optional"
                 ]
               ]
             },
@@ -429,20 +433,19 @@
                 [
                   "click",
                   "xpath",
-                  "//form//button[@type='submit']"
+                  "//form[.//input[@name='username'] and .//input[@name='password']]//button[@type='submit']",
+                  "optional"
                 ]
               ]
             },
             {
               "task": "Deny",
-              "optional": true,
               "match": "https://asterius:9443/t/conformance/interaction/*",
               "commands": [
                 [
                   "click",
                   "xpath",
-                  "//button[@name='decision' and @value='deny']",
-                  "optional"
+                  "//button[@name='decision' and @value='deny']"
                 ]
               ]
             },

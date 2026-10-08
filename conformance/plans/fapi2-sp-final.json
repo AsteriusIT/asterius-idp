@@ -55,7 +55,7 @@
           "commands": [
             ["text", "name", "username", "conformance@example.test", "optional"],
             ["text", "name", "password", "correct horse battery staple", "optional"],
-            ["click", "xpath", "//form//button[@type='submit']"]
+            ["click", "xpath", "//form[.//input[@name='username'] and .//input[@name='password']]//button[@type='submit']", "optional"]
           ]
         },
         {
@@ -107,7 +107,7 @@
               "commands": [
                 ["text", "name", "username", "conformance@example.test", "optional"],
                 ["text", "name", "password", "correct horse battery staple", "optional"],
-                ["click", "xpath", "//form//button[@type='submit']"]
+                ["click", "xpath", "//form[.//input[@name='username'] and .//input[@name='password']]//button[@type='submit']", "optional"]
               ]
             },
             {
@@ -168,7 +168,7 @@
               "commands": [
                 ["text", "name", "username", "conformance@example.test", "optional"],
                 ["text", "name", "password", "correct horse battery staple", "optional"],
-                ["click", "xpath", "//form//button[@type='submit']"]
+                ["click", "xpath", "//form[.//input[@name='username'] and .//input[@name='password']]//button[@type='submit']", "optional"]
               ]
             },
             {
@@ -226,7 +226,7 @@
               "commands": [
                 ["text", "name", "username", "conformance@example.test", "optional"],
                 ["text", "name", "password", "correct horse battery staple", "optional"],
-                ["click", "xpath", "//form//button[@type='submit']"]
+                ["click", "xpath", "//form[.//input[@name='username'] and .//input[@name='password']]//button[@type='submit']", "optional"]
               ]
             },
             {
@@ -270,15 +270,14 @@
               "commands": [
                 ["text", "name", "username", "conformance@example.test", "optional"],
                 ["text", "name", "password", "correct horse battery staple", "optional"],
-                ["click", "xpath", "//form//button[@type='submit']"]
+                ["click", "xpath", "//form[.//input[@name='username'] and .//input[@name='password']]//button[@type='submit']", "optional"]
               ]
             },
             {
               "task": "Deny",
-              "optional": true,
               "match": "https://asterius:9443/t/conformance/interaction/*",
               "commands": [
-                ["click", "xpath", "//button[@name='decision' and @value='deny']", "optional"]
+                ["click", "xpath", "//button[@name='decision' and @value='deny']"]
               ]
             },
             {

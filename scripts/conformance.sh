@@ -29,6 +29,9 @@
 #
 # Environment (all optional):
 #   --message-signing           run the independent signed JAR/JARM plan
+#   CONFORMANCE_ASTERIUS_IMAGE  optional prebuilt image, labelled with this clean
+#                               checkout's exact org.opencontainers.image.revision.
+#                               Skips building; records its immutable image ID.
 #   CONFORMANCE_PLAN            plan name with variants. Default: the FAPI2
 #                               Security Profile Final plan, private_key_jwt +
 #                               DPoP, OpenID Connect, static clients.
@@ -146,6 +149,21 @@ compose() {
     docker compose -f "$COMPOSE_FILE" "$@"
 }
 
+# Check a supplied artifact before installing cleanup: refusal must not tear
+# down somebody else's existing conformance stack.
+if [ -n "${CONFORMANCE_ASTERIUS_IMAGE:-}" ]; then
+  command -v docker >/dev/null 2>&1 || die "docker is required" 69
+  source_status=$(git status --porcelain --untracked-files=all -- . ':!/.beads')
+  [ -z "$source_status" ] || die "prebuilt image requires a clean source checkout" 69
+  expected_revision=$(git rev-parse HEAD)
+  image_revision=$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$CONFORMANCE_ASTERIUS_IMAGE") \
+    || die "prebuilt Asterius image is unavailable" 69
+  [ "$image_revision" = "$expected_revision" ] \
+    || die "prebuilt Asterius image revision differs from the source checkout" 69
+  artifact_id=$(docker image inspect --format '{{.Id}}' "$CONFORMANCE_ASTERIUS_IMAGE")
+  printf 'prebuilt Asterius revision %s, immutable image %s\n' "$expected_revision" "$artifact_id"
+fi
+
 cleanup() {
   status=$?
   if [ "$keep" -eq 1 ]; then
@@ -250,7 +268,9 @@ printf 'built a truststore the suite will trust Asterius with\n'
 
 # --- 3. the stack -----------------------------------------------------------
 step "stack"
-compose up --build --detach --wait db mongodb server nginx asterius \
+build_mode=--build
+[ -z "${CONFORMANCE_ASTERIUS_IMAGE:-}" ] || build_mode=--no-build
+compose up "$build_mode" --detach --wait db mongodb server nginx asterius \
   || die "the conformance stack did not come up"
 
 # --- 4. Asterius is ready ---------------------------------------------------
