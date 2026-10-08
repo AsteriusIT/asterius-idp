@@ -74,6 +74,11 @@ def fixture(port,callback,client_id,hostname='127.0.0.1',bind='127.0.0.1', *,
                     config=config.replace(key,value)
                 config=config.replace(f'bind = "127.0.0.1:{port}"',f'bind = "{bind}:{port}"')
                 config=config.replace('https://127.0.0.1:',f'https://{hostname}:')
+                features=os.environ.get('ASTERIUS_FIXTURE_FEATURES','').split()
+                if len(features)!=len(set(features)) or any(feature not in ('ssf','dpop_nonce','request_object','advanced_claims') for feature in features):
+                    raise RuntimeError('unsupported disposable protocol feature')
+                if features:
+                    config=config.replace('device_flow = true','device_flow = true\n'+ '\n'.join(feature+' = true' for feature in features),1)
                 if config_extra:
                     # Insert inside the first (e2e) tenant, before the template's
                     # next tenant; nested SSF peer tables must belong to e2e.

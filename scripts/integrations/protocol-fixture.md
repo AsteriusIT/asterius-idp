@@ -37,3 +37,8 @@ DB name, host binary hash and image revision; never print or commit it. It is
 removed on clean shutdown. Each independent harness must use the CA and retain
 PKCE/state/nonce and normal independent token verification. Readiness and fixture
 provisioning alone are not interoperability evidence.
+
+`ASTERIUS_FIXTURE_FEATURES` optionally selects space-separated `ssf`,
+`dpop_nonce`, `request_object` or `advanced_claims` flags for this disposable
+configuration. The default remains the original browser fixture configuration;
+SSF protocol runs must explicitly enable `ssf`.
