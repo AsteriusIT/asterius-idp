@@ -1767,8 +1767,8 @@ async fn a_request_uri_in_a_pushed_request_is_refused() {
     }
 }
 
-/// RFC 9101 §4 forbids nesting request/request_uri in a verified signed
-/// object. The outer form's corresponding error remains invalid_request.
+/// RFC 9101 §4 forbids nesting `request`/`request_uri` in a verified signed
+/// object. The outer form's corresponding error remains `invalid_request`.
 #[tokio::test]
 async fn signed_request_objects_refuse_nested_request_parameters() {
     let mut client = jar_client();

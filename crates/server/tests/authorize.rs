@@ -535,10 +535,12 @@ async fn an_authorization_request_without_par_is_refused() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert!(!response.headers().contains_key(header::LOCATION));
     assert!(store.begun.lock().expect("lock").is_empty());
-    assert!(response.headers()[header::CONTENT_TYPE]
-        .to_str()
-        .expect("content type")
-        .starts_with("text/html"));
+    assert!(
+        response.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .expect("content type")
+            .starts_with("text/html")
+    );
     let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
         .await
         .expect("body");
