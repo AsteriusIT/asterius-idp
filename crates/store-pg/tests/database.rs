@@ -7873,6 +7873,35 @@ mod client_configuration {
     }
 
     db_test! {
+        /// Encryption keys must coexist with Basic credentials without becoming
+        /// authentication keys, and replacements must remove both opt-ins.
+        async fn basic_client_encryption_keys_round_trip_without_changing_authentication(db) {
+            seed_tenant(&db.pool, "demo").await;
+            let repo = repo(&db.pool, "demo");
+            let mut document = encrypted_registration();
+            document["token_endpoint_auth_method"] = json!("client_secret_basic");
+            document["require_pushed_authorization_requests"] = json!(false);
+            let mut registered = oidc_secret_client("demo", "basic-encrypted");
+            registered.registration = ClientRegistration::from_json_with_profile(
+                &serde_json::to_vec(&document).expect("JSON"),
+                Capabilities::default(), ClientComplianceProfile::Oidc,
+            ).expect("Basic encrypted registration");
+            repo.upsert(&registered).await.expect("persist encryption-only keys");
+            let found = repo.find(&registered.id).await.expect("find").expect("client");
+            assert_eq!(found.registration.token_endpoint_auth_method, asterius_domain::TokenEndpointAuthMethod::ClientSecretBasic);
+            assert!(found.registration.encrypt_id_token && found.registration.encrypt_userinfo);
+            assert!(matches!(found.registration.jwks, asterius_domain::JwksSource::Inline(_)));
+            assert!(sqlx::query("update clients set encrypt_id_token = false, encrypt_userinfo = false where tenant_id = 'demo' and client_id = 'basic-encrypted'").execute(&db.pool).await.is_err(), "keys without encryption opt-in must remain rejected");
+            assert!(sqlx::query("update clients set jwks_uri = 'https://keys.example/enc' where tenant_id = 'demo' and client_id = 'basic-encrypted'").execute(&db.pool).await.is_err(), "remote encryption keys must remain rejected");
+            let plain = oidc_secret_client("demo", "basic-encrypted");
+            let replaced = repo.replace(&plain).await.expect("replace with plain Basic registration");
+            assert!(!replaced.registration.encrypt_id_token && !replaced.registration.encrypt_userinfo);
+            assert!(matches!(replaced.registration.jwks, asterius_domain::JwksSource::None));
+            assert_eq!(replaced.registration.token_endpoint_auth_method, asterius_domain::TokenEndpointAuthMethod::ClientSecretBasic);
+        }
+    }
+
+    db_test! {
         /// Registration, lookup, listing, and replacement must agree with the
         /// committed encryption columns; an update cannot leave stale flags.
         async fn encryption_registration_round_trips_through_client_sql(db) {
