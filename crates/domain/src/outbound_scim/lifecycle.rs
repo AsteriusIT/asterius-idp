@@ -30,8 +30,11 @@ pub struct LifecycleCommand {
     pub expected_revision: Uuid,
     pub expected_generation: Uuid,
     pub kind: LifecycleKind,
+    // Required even when null: omitting the saved target context must refuse
+    // approval, as proved by absent_target_approval_requires_explicit_null_context.
     #[serde(deserialize_with = "Option::deserialize")]
     pub target: Option<Uuid>,
+    // The version context is likewise explicitly present or explicitly null.
     #[serde(deserialize_with = "Option::deserialize")]
     pub etag: Option<String>,
     pub confirmed: bool,
