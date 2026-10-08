@@ -32,6 +32,14 @@ def main():
     ], text=True)
     deployments = {d['metadata']['name']: d for d in json.loads(raw)['items']}
     opener = urllib.request.build_opener(NoRedirect())
+    for path in ('/demo-a', '/demo-b', '/financial', '/financial-api', '/protocols'):
+        try:
+            response = opener.open(ORIGIN + path, timeout=15)
+        except urllib.error.HTTPError as error:
+            response = error
+        with response:
+            if response.code != 308 or response.headers.get('Location') != path + '/':
+                raise RuntimeError(f'{path}: gateway redirect exposes the internal authority')
     with opener.open(ORIGIN + '/protocols/', timeout=15) as response:
         if response.headers.get_all('Referrer-Policy') != ['same-origin']:
             raise RuntimeError('Protocol page referrer policy suppresses native form origins')
