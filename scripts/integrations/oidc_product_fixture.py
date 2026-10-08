@@ -38,6 +38,8 @@ def sql(database,body):
 def fixture(port,callback,client_id,hostname='127.0.0.1',bind='127.0.0.1', *,
             config_extra='', automation_scopes=(), readonly_paths=()):
     os.umask(0o077)
+    # The fixture starts twice; preserve mount inputs across both starts.
+    readonly_paths = tuple(readonly_paths)
     database='ast_product_'+uuid.uuid4().hex
     binary=Path(os.environ['ASTERIUS_BIN']).resolve()
     created=False;process=None
