@@ -54,6 +54,11 @@ def nonempty_cookies(header):
     return {name: value.value for name, value in parsed.items() if value.value}
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=Path(__file__).with_name("nginx.conf"))
@@ -93,6 +98,19 @@ def main():
                 if attempt == 49:
                     raise RuntimeError("Owned gateway/backend HTTP readiness failed") from None
                 time.sleep(0.1)
+        opener = urllib.request.build_opener(NoRedirect())
+        for path in ('/demo-a', '/demo-b', '/financial', '/financial-api', '/protocols', '/playground/setup'):
+            request = urllib.request.Request(base + path, headers={
+                'Host': 'playground.example:8446', 'X-Forwarded-Proto': 'https',
+            })
+            try:
+                response = opener.open(request, timeout=3)
+            except urllib.error.HTTPError as error:
+                response = error
+            with response:
+                if response.code != 308 or response.headers.get('Location') != path + '/':
+                    raise AssertionError(f'Gateway exposed internal redirect authority for {path}')
+            controls.append('relative-redirect:' + path)
         app_cookies = {
             "asterius_playground_demo_a": "dummy-demo-a-session",
             "asterius_playground_demo_a_login": "dummy-demo-a-login",
