@@ -1,0 +1,757 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: asterius-playground
+  labels:
+    app.kubernetes.io/part-of: asterius-playground
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: playground-budget
+  namespace: asterius-playground
+spec:
+  hard:
+    requests.cpu: '1'
+    requests.memory: 1Gi
+    limits.cpu: '4'
+    limits.memory: 2Gi
+    pods: '12'
+    services: '8'
+    secrets: '10'
+    configmaps: '10'
+    persistentvolumeclaims: '0'
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: playground-defaults
+  namespace: asterius-playground
+spec:
+  limits:
+  - type: Container
+    defaultRequest:
+      cpu: 50m
+      memory: 64Mi
+    default:
+      cpu: 500m
+      memory: 256Mi
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: playground-app
+  namespace: asterius-playground
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: playground-reader
+  namespace: asterius-playground
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: playground-reader
+  namespace: asterius-playground
+rules:
+- apiGroups:
+  - ''
+  resources:
+  - pods
+  - services
+  - configmaps
+  verbs:
+  - get
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: playground-reader
+  namespace: asterius-playground
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: playground-reader
+subjects:
+- kind: ServiceAccount
+  name: playground-reader
+  namespace: asterius-playground
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: practice-resource
+  namespace: asterius-playground
+data:
+  purpose: Read this owned sandbox resource; playground-reader may inspect it but
+    cannot change it or read Secrets.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: playground-connection
+  namespace: asterius-playground
+data:
+  ISSUER: https://desktop-cpbptqn-1.tailacbb15.ts.net/t/demo
+  OIDC_INTERNAL_ISSUER: http://asterius.asterius.svc.cluster.local:9443/t/demo
+  PLAYGROUND_ORIGIN: https://desktop-cpbptqn-1.tailacbb15.ts.net:8446
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-a
+  namespace: asterius-playground
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: demo-a
+  template:
+    metadata:
+      labels:
+        app: demo-a
+        app.kubernetes.io/part-of: asterius-playground
+    spec:
+      serviceAccountName: playground-app
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: demo-a
+        image: asterius-playground-sso:20261008
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: 8080
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        readinessProbe:
+          httpGet:
+            path: /demo-a/healthz
+            port: http
+          initialDelaySeconds: 3
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /demo-a/healthz
+            port: http
+          initialDelaySeconds: 15
+          periodSeconds: 15
+        env:
+        - name: ISSUER
+          valueFrom:
+            configMapKeyRef:
+              name: playground-connection
+              key: ISSUER
+        - name: OIDC_INTERNAL_ISSUER
+          valueFrom:
+            configMapKeyRef:
+              name: playground-connection
+              key: OIDC_INTERNAL_ISSUER
+        - name: PORT
+          value: '8080'
+        - name: CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: demo-a-oidc
+              key: CLIENT_ID
+        - name: CLIENT_PRIVATE_KEY_JWK_FILE
+          value: /run/oidc/CLIENT_PRIVATE_KEY_JWK
+        - name: CLIENT_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: demo-a-oidc
+              key: CLIENT_KEY_ID
+        - name: EXTERNAL_URL
+          value: https://desktop-cpbptqn-1.tailacbb15.ts.net:8446/demo-a
+        - name: APP_NAME
+          value: Asterius Demo A
+        - name: COOKIE_NAME
+          value: asterius_playground_demo_a
+        volumeMounts:
+        - name: oidc
+          mountPath: /run/oidc
+          readOnly: true
+      volumes:
+      - name: oidc
+        secret:
+          secretName: demo-a-oidc
+          defaultMode: 288
+          items:
+          - key: CLIENT_PRIVATE_KEY_JWK
+            path: CLIENT_PRIVATE_KEY_JWK
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-a
+  namespace: asterius-playground
+spec:
+  selector:
+    app: demo-a
+  ports:
+  - name: http
+    port: 80
+    targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-b
+  namespace: asterius-playground
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: demo-b
+  template:
+    metadata:
+      labels:
+        app: demo-b
+        app.kubernetes.io/part-of: asterius-playground
+    spec:
+      serviceAccountName: playground-app
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: demo-b
+        image: asterius-playground-sso:20261008
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: 8080
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        readinessProbe:
+          httpGet:
+            path: /demo-b/healthz
+            port: http
+          initialDelaySeconds: 3
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /demo-b/healthz
+            port: http
+          initialDelaySeconds: 15
+          periodSeconds: 15
+        env:
+        - name: ISSUER
+          valueFrom:
+            configMapKeyRef:
+              name: playground-connection
+              key: ISSUER
+        - name: OIDC_INTERNAL_ISSUER
+          valueFrom:
+            configMapKeyRef:
+              name: playground-connection
+              key: OIDC_INTERNAL_ISSUER
+        - name: PORT
+          value: '8080'
+        - name: CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: demo-b-oidc
+              key: CLIENT_ID
+        - name: CLIENT_PRIVATE_KEY_JWK_FILE
+          value: /run/oidc/CLIENT_PRIVATE_KEY_JWK
+        - name: CLIENT_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: demo-b-oidc
+              key: CLIENT_KEY_ID
+        - name: EXTERNAL_URL
+          value: https://desktop-cpbptqn-1.tailacbb15.ts.net:8446/demo-b
+        - name: APP_NAME
+          value: Asterius Demo B
+        - name: COOKIE_NAME
+          value: asterius_playground_demo_b
+        volumeMounts:
+        - name: oidc
+          mountPath: /run/oidc
+          readOnly: true
+      volumes:
+      - name: oidc
+        secret:
+          secretName: demo-b-oidc
+          defaultMode: 288
+          items:
+          - key: CLIENT_PRIVATE_KEY_JWK
+            path: CLIENT_PRIVATE_KEY_JWK
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-b
+  namespace: asterius-playground
+spec:
+  selector:
+    app: demo-b
+  ports:
+  - name: http
+    port: 80
+    targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: financial-api
+  namespace: asterius-playground
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: financial-api
+  template:
+    metadata:
+      labels:
+        app: financial-api
+        app.kubernetes.io/part-of: asterius-playground
+    spec:
+      serviceAccountName: playground-app
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: financial-api
+        image: asterius-playground-api:20261008
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: 4000
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 3
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 15
+          periodSeconds: 15
+        env:
+        - name: ISSUER
+          valueFrom:
+            configMapKeyRef:
+              name: playground-connection
+              key: ISSUER
+        - name: OIDC_INTERNAL_ISSUER
+          valueFrom:
+            configMapKeyRef:
+              name: playground-connection
+              key: OIDC_INTERNAL_ISSUER
+        - name: PORT
+          value: '4000'
+        - name: CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: financial-api-oidc
+              key: CLIENT_ID
+        - name: CLIENT_PRIVATE_KEY_JWK_FILE
+          value: /run/oidc/CLIENT_PRIVATE_KEY_JWK
+        - name: CLIENT_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: financial-api-oidc
+              key: CLIENT_KEY_ID
+        - name: API_URL
+          value: https://desktop-cpbptqn-1.tailacbb15.ts.net:8446/financial-api
+        - name: WEBAPP_URL
+          value: https://desktop-cpbptqn-1.tailacbb15.ts.net:8446/financial/
+        - name: RESOURCE
+          value: https://desktop-cpbptqn-1.tailacbb15.ts.net:8446/financial-api
+        - name: SCOPES
+          value: openid accounts:read accounts:write
+        volumeMounts:
+        - name: oidc
+          mountPath: /run/oidc
+          readOnly: true
+      volumes:
+      - name: oidc
+        secret:
+          secretName: financial-api-oidc
+          defaultMode: 288
+          items:
+          - key: CLIENT_PRIVATE_KEY_JWK
+            path: CLIENT_PRIVATE_KEY_JWK
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: financial-api
+  namespace: asterius-playground
+spec:
+  selector:
+    app: financial-api
+  ports:
+  - name: http
+    port: 80
+    targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: financial-web
+  namespace: asterius-playground
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: financial-web
+  template:
+    metadata:
+      labels:
+        app: financial-web
+        app.kubernetes.io/part-of: asterius-playground
+    spec:
+      serviceAccountName: playground-app
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: financial-web
+        image: asterius-playground-web:20261008
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: 8080
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        readinessProbe:
+          httpGet:
+            path: /financial/
+            port: http
+          initialDelaySeconds: 3
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /financial/
+            port: http
+          initialDelaySeconds: 15
+          periodSeconds: 15
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        command:
+        - nginx
+        args:
+        - -g
+        - daemon off;
+      volumes:
+      - name: tmp
+        emptyDir:
+          sizeLimit: 32Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: financial-web
+  namespace: asterius-playground
+spec:
+  selector:
+    app: financial-web
+  ports:
+  - name: http
+    port: 80
+    targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: protocol-lab
+  namespace: asterius-playground
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: protocol-lab
+  template:
+    metadata:
+      labels:
+        app: protocol-lab
+        app.kubernetes.io/part-of: asterius-playground
+    spec:
+      serviceAccountName: playground-app
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: protocol-lab
+        image: asterius-playground-protocols:20261008
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: 8080
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 3
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 15
+          periodSeconds: 15
+        env:
+        - name: ISSUER
+          valueFrom:
+            configMapKeyRef:
+              name: playground-connection
+              key: ISSUER
+        - name: OIDC_INTERNAL_ISSUER
+          valueFrom:
+            configMapKeyRef:
+              name: playground-connection
+              key: OIDC_INTERNAL_ISSUER
+        - name: PORT
+          value: '8080'
+        - name: CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: protocol-lab-oidc
+              key: CLIENT_ID
+        - name: CLIENT_PRIVATE_KEY_JWK_FILE
+          value: /run/oidc/CLIENT_PRIVATE_KEY_JWK
+        - name: CLIENT_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: protocol-lab-oidc
+              key: CLIENT_KEY_ID
+        - name: EXTERNAL_URL
+          value: https://desktop-cpbptqn-1.tailacbb15.ts.net:8446/protocols
+        - name: RESOURCE
+          value: https://desktop-cpbptqn-1.tailacbb15.ts.net:8446/financial-api
+        volumeMounts:
+        - name: oidc
+          mountPath: /run/oidc
+          readOnly: true
+      volumes:
+      - name: oidc
+        secret:
+          secretName: protocol-lab-oidc
+          defaultMode: 288
+          items:
+          - key: CLIENT_PRIVATE_KEY_JWK
+            path: CLIENT_PRIVATE_KEY_JWK
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: protocol-lab
+  namespace: asterius-playground
+spec:
+  selector:
+    app: protocol-lab
+  ports:
+  - name: http
+    port: 80
+    targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: asterius-playground
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+        app.kubernetes.io/part-of: asterius-playground
+    spec:
+      serviceAccountName: playground-app
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: gateway
+        image: asterius-playground-gateway:20261008
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: 8080
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          initialDelaySeconds: 3
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          initialDelaySeconds: 15
+          periodSeconds: 15
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: gateway-config
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+          readOnly: true
+        - name: portal
+          mountPath: /usr/share/nginx/html
+          readOnly: true
+        command:
+        - nginx
+        args:
+        - -g
+        - daemon off;
+      volumes:
+      - name: tmp
+        emptyDir:
+          sizeLimit: 32Mi
+      - name: gateway-config
+        configMap:
+          name: playground-gateway
+      - name: portal
+        configMap:
+          name: playground-portal
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: asterius-playground
+spec:
+  selector:
+    app: gateway
+  ports:
+  - name: http
+    port: 80
+    targetPort: http
