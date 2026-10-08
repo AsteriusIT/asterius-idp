@@ -25,8 +25,20 @@
     "live_idp_used": false
   },
   "limitations": [
-    "Post-fix live rollout and browser acceptance belong to root verification.",
-    "Controlled fixture verifies native browser policy behavior and exact Origin/CSRF admission; it does not obtain an OAuth device grant."
+    "The real device authorization request was accepted; its user approval/token issuance was not exercised.",
+    "Clearing the owned lab session forgets its in-process flow; unapproved server-side device requests expire normally.",
+    "Controlled fixture additionally verifies strict Origin/CSRF refusals without live IdP credentials."
   ],
-  "secrets_recorded": false
+  "secrets_recorded": false,
+  "live_after_fix": {
+    "recorded_at": "2026-10-08T21:20:22.267077+00:00",
+    "browser": "headless Chrome",
+    "public_protocol_page_status": 200,
+    "observed_post_origin": "https://desktop-cpbptqn-1.tailacbb15.ts.net:8446",
+    "origin_refused": false,
+    "observed_result": "Device authorization accepted",
+    "owned_lab_state_cleared": true,
+    "human_login_or_approval": false,
+    "tokens_or_device_codes_recorded": false
+  }
 }
