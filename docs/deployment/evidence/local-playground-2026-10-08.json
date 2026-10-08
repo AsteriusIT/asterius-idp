@@ -1,0 +1,115 @@
+{
+  "date": "2026-10-08",
+  "source_revision": "08257718ac9932b11fb7ff5192916e274d4db8ba",
+  "context": "kind-asterius-local",
+  "namespace": "asterius-playground",
+  "origin": "https://desktop-cpbptqn-1.tailacbb15.ts.net:8446",
+  "setup_url": "https://desktop-cpbptqn-1.tailacbb15.ts.net/playground/setup/",
+  "workloads": [
+    {
+      "app": "demo-a",
+      "pod": "demo-a-6846b8984-hn4m6",
+      "image": "asterius-playground-sso:20261008",
+      "image_id": "sha256:f63395f5a93256ff5b5dc2de2485f42c6c1138738b47986698d87299ced1afc2",
+      "ready": true
+    },
+    {
+      "app": "demo-b",
+      "pod": "demo-b-7686f94cbb-kj6l6",
+      "image": "asterius-playground-sso:20261008",
+      "image_id": "sha256:f63395f5a93256ff5b5dc2de2485f42c6c1138738b47986698d87299ced1afc2",
+      "ready": true
+    },
+    {
+      "app": "financial-api",
+      "pod": "financial-api-7b69dbcccf-f27kg",
+      "image": "asterius-playground-api:20261008",
+      "image_id": "sha256:24a7ffb7f08fa199f02a60a568c539eadf17d331797e6c4b9736377dbef09667",
+      "ready": true
+    },
+    {
+      "app": "financial-web",
+      "pod": "financial-web-5c8b8d56db-t57lb",
+      "image": "asterius-playground-web:20261008",
+      "image_id": "sha256:bb762cb0d2e554298dba81577e0a1827a0355f39f436bb97835a35a8ce66298a",
+      "ready": true
+    },
+    {
+      "app": "gateway",
+      "pod": "gateway-fb8649f8c-dzpkp",
+      "image": "asterius-playground-gateway:20261008",
+      "image_id": "sha256:912dfc5660f9181a7f6bdadc9848bd5c6c8f21cd295dd3c8a768a65f7f46d16d",
+      "ready": true
+    },
+    {
+      "app": "protocol-lab",
+      "pod": "protocol-lab-555c47588b-xmh2q",
+      "image": "asterius-playground-protocols:20261008",
+      "image_id": "sha256:0a15d86ab779c0b8476bcf6c9f61859d6d2f46bb0830fead96e701ee66482c4b",
+      "ready": true
+    }
+  ],
+  "client_ids": {
+    "demo-a": "c2d23fe7-c849-460c-a466-76f74515c6ed",
+    "demo-b": "5a552d56-f854-457c-bda8-072f5e1596e1",
+    "financial-api": "fa6ad81d-aed3-45c0-8296-dbfe5696f84c",
+    "protocol-lab": "ca197a3d-0206-4d9b-b632-9032dcfd62f6"
+  },
+  "registered_audiences": [
+    "https://desktop-cpbptqn-1.tailacbb15.ts.net:8446/financial-api",
+    "https://desktop-cpbptqn-1.tailacbb15.ts.net/t/demo/userinfo"
+  ],
+  "registration": "Four exact public JWKS/grant/callback/resource matches independently verified; user applied supported admin setup; no SQL writes",
+  "disposable_user": "User confirmed setup; one new tour-* ordinary demo account verified, zero administrative roles",
+  "http_checks": {
+    "/": "200",
+    "/demo-a/": "200",
+    "/demo-b/": "200",
+    "/financial/": "200",
+    "/financial-api/health": "200",
+    "/protocols/": "200",
+    "/protocols/health": "200",
+    "/demo-a/login": "PAR accepted; canonical authorization handoff; unique cookie",
+    "/demo-b/login": "PAR accepted; canonical authorization handoff; unique cookie",
+    "/financial-api/auth/start": "PAR accepted; canonical authorization handoff; unique cookie",
+    "/financial-api/api/accounts": "401",
+    "/financial-api/resource/accounts": "401",
+    "financial_bundle": "Matches built transfer form/refusal handling",
+    "asterius_idp": "Healthy; original deployment image unchanged"
+  },
+  "protocol_checks": {
+    "/demo-a/login": "Real authenticated PAR accepted; canonical authorization redirect",
+    "/demo-b/login": "Real authenticated PAR accepted; canonical authorization redirect",
+    "/financial-api/auth/start": "Real authenticated PAR accepted; canonical authorization redirect",
+    "/financial-api/api/accounts": "401 unauthorized",
+    "/financial-api/resource/accounts": "401 unauthorized",
+    "financial CSRF": "403 missing Origin",
+    "device": "Real confidential device request accepted; one-time codes kept private; pending user approval",
+    "ciba": "Real confidential CIBA request for owned disposable user accepted; no token claimed issued; unapproved request expires after 300 seconds; local test session cleared"
+  },
+  "namespace_rbac": {
+    "read_owned_configmap": "allow",
+    "update_configmap": "deny",
+    "read_secrets": "deny",
+    "read_asterius_namespace": "deny"
+  },
+  "existing_services": "Serve443/8443/8444/8445 preserved; private8446 added; existing namespaces and IdP unchanged",
+  "bridge": "Enabled user systemd asterius-playground-bridge.service; only loopback127.0.0.1:18086 -> namespace gateway",
+  "credential_boundary": "Private key files0600 outsideGit; KubernetesSecret files0440; per-app cookie names/paths and gateway whitelists; no IdP administrator cookies forwarded to BFFs",
+  "validation": {
+    "setup_node_tests": 13,
+    "sso_node_tests": 5,
+    "financial_node_tests": 5,
+    "protocol_node_tests": 2,
+    "controlled_transfer_browser_checks": 4,
+    "gateway_cookie_integration_checks": 10,
+    "unsafe_gateway_negative_control": "failed as expected; fixtures cleaned"
+  },
+  "limits": [
+    "Human app sign-in/consent, CIBA approval and sample transfer are user exercises, not claimed completed here",
+    "Live device authorization accepted; pending user approval is not token issuance",
+    "Kubernetes checks are namespace ServiceAccount RBAC, not human OIDC login",
+    "External peers/wallets and disabled mTLS/AuthZEN/signup require their stated setup",
+    "No cloud Entra writes, remote CI/push or full Rust suite; no Rust source changed"
+  ]
+}

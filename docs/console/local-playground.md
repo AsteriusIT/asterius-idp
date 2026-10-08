@@ -55,7 +55,7 @@ Expected answers are **yes**, a successful fixture read, then **no**, **no**, **
 
 ## Deployment evidence
 
-[Recorded local verification](../deployment/evidence/local-playground-2026-10-08.json) records readiness, image identities, registration ownership, live PAR/device requests, protected-resource refusals and namespace permission checks. Human sign-in, approval and sample-transfer completion are user exercises; healthy deployment alone does not claim they passed.
+[Recorded local verification](../deployment/evidence/local-playground-2026-10-08.json) records readiness, image identities, registration ownership, live PAR/device/CIBA requests, protected-resource refusals and namespace permission checks. The user completed the supported registration setup and created a disposable account. Human application sign-in, approval and sample-transfer completion are user exercises; healthy deployment alone does not claim they passed.
 
 ## Deployment contract
 
