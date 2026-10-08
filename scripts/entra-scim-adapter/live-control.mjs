@@ -19,6 +19,7 @@ const instrument={base:upstream.base,id:upstream.id,async request(method,path,bo
  return result;
 }};
 const adapter=new Adapter(join(root,'state.sqlite'),instrument,base);
+const foreignAdapter=new Adapter(join(root,'foreign.sqlite'),foreign,base);
 const patch=(path,value)=>({schemas:['urn:ietf:params:scim:api:messages:2.0:PatchOp'],Operations:[{op:'replace',path,value}]});
 async function call(label,method,path,status,body,etag){let result;try{result=await adapter.handle(method,new URL(path,'https://localhost'),body,etag);}catch(error){if(!(error instanceof Failure))throw error;result={status:error.status};}assert.equal(result.status,status,label);records.push({case:label,status});return result;}
 function sql(statement){const r=spawnSync('docker',['exec','-i',process.env.ASTERIUS_ACCEPTANCE_DB_CONTAINER,'psql','-U','asterius','-d',config.database,'-v','ON_ERROR_STOP=1','-At'],{input:statement,encoding:'utf8'});if(r.status!==0)throw new Error('Owned fixture state control refused');return r.stdout.trim();}
@@ -34,13 +35,14 @@ try{
  const renamed=await call('omitted If-Match uses actual GET and one CAS','PATCH','/Users/'+id,200,patch('userName','renamed-'+tag));
  await call('explicit stale ETag preserved','PATCH','/Users/'+id,412,patch('active',false),held.headers.etag);
  await call('reordered old event with stale ETag refused','PATCH','/Users/'+id,412,patch('userName',userDoc.userName),held.headers.etag);
- const outside=await foreign.request('GET','/Users/'+id);assert.equal(outside.status,404);records.push({case:'actual foreign namespace read',status:outside.status});
+ for(const method of ['GET','PUT','PATCH','DELETE']){await assert.rejects(()=>foreignAdapter.handle(method,new URL('/Users/'+id,'https://localhost'),method==='PATCH'?patch('active',false):userDoc),error=>error instanceof Failure&&error.status===404);records.push({case:'foreign adapter namespace '+method,status:404});}
  const sid=randomUUID();sql(`INSERT INTO sessions(tenant_id,session_id,public_sid,user_id,authenticated_at,expires_at,idle_expires_at) VALUES('e2e','${sid}','${sid}','${id}',now(),now()+interval '1 hour',now()+interval '1 hour');`);
  await call('disable revokes owned seeded session','PATCH','/Users/'+id,200,patch('active',false));assert.equal(sql(`SELECT count(*) FROM sessions WHERE tenant_id='e2e' AND session_id='${sid}' AND revoked_at IS NOT NULL;`),'1');
  await call('reactivate provisioning-disabled user','PATCH','/Users/'+id,200,patch('active',true));
  fault='race';await call('actual intervening write returns one-CAS 412','PATCH','/Users/'+id,412,patch('active',false));
  const groupDoc={schemas:['urn:ietf:params:scim:schemas:core:2.0:Group'],displayName:'group-'+tag,externalId:'group-source-'+tag,members:[{value:id}]};
  const group=(await call('create actual group membership','POST','/Groups',201,groupDoc)).body;
+ const foreignGroup=await foreign.request('GET','/Groups/'+group.id);assert.equal(foreignGroup.status,404);records.push({case:'actual backend foreign group namespace',status:404});
  await call('remove actual group membership without If-Match','PATCH','/Groups/'+group.id,200,{schemas:['urn:ietf:params:scim:api:messages:2.0:PatchOp'],Operations:[{op:'remove',path:`members[value eq "${id}"]`}]});
  await call('delete actual group','DELETE','/Groups/'+group.id,204);
  await call('repeat group delete remains idempotent','DELETE','/Groups/'+group.id,204);
@@ -66,5 +68,5 @@ try{
  console.log(JSON.stringify({profile:'Controlled Entra adapter to actual Asterius; not native Entra cloud evidence',cases:records,limits:['Revocation uses an explicitly seeded disposable session, not a browser authentication ceremony.','Omitted-ETag reordered source events have no source sequence; native retry ambiguity requires operator reconciliation.','Lost-response faults are injected only after a verified actual successful backend response.']},null,2));
 }finally{
  if(credentialServer&&credentialServer.exitCode===null){credentialServer.kill('SIGTERM');await new Promise(resolve=>credentialServer.once('exit',resolve));}
- adapter.db.close();rmSync(root,{recursive:true,force:true});
+ foreignAdapter.db.close();adapter.db.close();rmSync(root,{recursive:true,force:true});
 }
