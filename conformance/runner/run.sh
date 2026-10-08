@@ -12,11 +12,16 @@
 # we brought this suite in to stop having opinions about.
 set -eu
 
-if [ "$#" -ne 1 ]; then
-  echo "usage: run.sh '<plan-name>[variant=value]...'" >&2
+if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+  echo "usage: run.sh '<plan-name>[variant=value]...' [/plans/fapi2-sp-final.json|/plans/fapi2-ms-final.json]" >&2
   exit 64
 fi
 plan="$1"
+config="${2:-/plans/fapi2-sp-final.json}"
+case "$config" in
+  /plans/fapi2-sp-final.json|/plans/fapi2-ms-final.json) ;;
+  *) echo "runner: unsupported plan configuration" >&2; exit 64 ;;
+esac
 
 # Pinned, for the reason everything else here is pinned: the suite's own
 # scripts/requirements.txt names no versions, and a runner that installs
@@ -33,4 +38,4 @@ mkdir -p /results/export
 exec python3 /suite/scripts/run-test-plan.py \
   --export-dir /results/export \
   --verbose \
-  "$plan" /plans/fapi2-sp-final.json
+  "$plan" "$config"
