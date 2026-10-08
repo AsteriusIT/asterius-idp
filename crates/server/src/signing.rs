@@ -23,9 +23,13 @@
 //! stays in the JWKS for the tenant's grace period — which is measured in
 //! hours or days and must already exceed the lifetime of the longest-lived
 //! token it signed. A minute of signing under a key that is still published
-//! and still verifiable costs nothing. A minute of signing under a *retired*
-//! key would be an outage, and the TTL is three orders of magnitude short of
-//! reaching one.
+//! and still verifiable preserves rotation overlap. Emergency withdrawal can
+//! occur at any age: a prepared signing authority holds an exact tenant/kid
+//! row SHARE lock until the outer publication transactions finish. Retirement
+//! and purge UPDATE that row, so withdrawal that commits first prevents signing
+//! and withdrawal that loses waits for the existing publication to finish.
+//! Verifiers that already cached a JWKS may still accept earlier credentials
+//! until their own cache/token expiry; this fence only governs new publication.
 //!
 //! Invalidating on rotation instead would be exact within one process and
 //! useless across replicas, which is the deployment this has to work in.
@@ -44,7 +48,7 @@ use asterius_domain::keys::{CompactJws, Signer, SigningAlgorithm};
 use asterius_domain::ports::Clock;
 use asterius_domain::{DomainError, Kid, TenantId};
 use asterius_jose::{SigningKey, jws};
-use asterius_store_pg::TenantKeyStore;
+use asterius_store_pg::{SigningAuthorityFence, TenantKeyStore};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -198,6 +202,10 @@ impl CachedSigner {
 /// Immutable in-memory key lease, bound to its tenant and selected algorithm.
 /// The enclosing policy/task decorators retain their own full signing port.
 struct PreparedKey {
+    // Retained through every outer policy/task commit, until the prepared
+    // decorator chain is dropped. A second row-lock acquisition while an
+    // emergency writer waits would risk a lock-upgrade deadlock.
+    _authority: Option<SigningAuthorityFence>,
     tenant: TenantId,
     key: Arc<(Kid, SigningKey)>,
     clock: Arc<dyn Clock>,
@@ -267,7 +275,17 @@ impl Signer for CachedSigner {
                     })
             })
             .ok_or(DomainError::NoSigningKey { algorithm })?;
+        let authority = self
+            .keys
+            .signing_authority(tenant, &key.0, key.1.algorithm())
+            .await?;
+        // The acquisition may have waited behind withdrawal or normal rotation;
+        // the frozen cache deadline never gets a fresh TTL for that wait.
+        if self.clock.now() >= expires_at {
+            return Err(DomainError::NoSigningKey { algorithm });
+        }
         Ok(Some(Box::new(PreparedKey {
+            _authority: Some(authority),
             tenant: tenant.clone(),
             key,
             clock: Arc::clone(&self.clock),
@@ -282,21 +300,11 @@ impl Signer for CachedSigner {
         typ: &'static str,
         claims: &Value,
     ) -> Result<CompactJws, DomainError> {
-        // A constraint the claims carry means exactly that algorithm, and no
-        // second attempt under another: OIDC Core §3.1.3.6 makes `at_hash`
-        // depend on the `alg` in the header, so a claims set built for ES256
-        // and signed with EdDSA carries a value the client computes
-        // differently and is entitled to reject. `ast-a05.12` is that bug,
-        // found and fixed; this is the shape that keeps it fixed.
-        let key = if let Some(required) = algorithm {
-            self.resolve(tenant, required).await?
-        } else {
-            self.resolve_any(tenant).await?
-        }
-        .ok_or(DomainError::NoSigningKey { algorithm })?;
-
-        let (kid, signing) = key.as_ref();
-        jws::sign(signing, kid, typ, claims).map_err(|e| DomainError::invalid("jws", e.to_string()))
+        let prepared = self
+            .prepare(tenant, algorithm)
+            .await?
+            .ok_or(DomainError::NoSigningKey { algorithm })?;
+        prepared.sign(tenant, algorithm, typ, claims).await
     }
 }
 
@@ -318,6 +326,7 @@ mod task_preparation_tests {
         let clock = Arc::new(ControlledClock(AtomicI64::new(100)));
         let tenant = TenantId::new("one");
         let prepared = PreparedKey {
+            _authority: None,
             tenant: tenant.clone(),
             key: Arc::new((
                 Kid::new("prepared"),

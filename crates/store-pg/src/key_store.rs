@@ -15,6 +15,7 @@
 //! check that currently makes a cross-tenant call impossible, and that check is
 //! worth more than an allocation.
 
+use crate::error::to_domain_error;
 use crate::keys::PgKeyRepository;
 use asterius_domain::audit::{Actor, AuditSink};
 use asterius_domain::keys::{
@@ -45,7 +46,44 @@ impl std::fmt::Debug for TenantKeyStore {
     }
 }
 
+/// Exact published-key authority retained through the enclosing publication commit.
+/// Dropping the read-only transaction releases its row lock, including on failure.
+#[derive(Debug)]
+pub struct SigningAuthorityFence {
+    _transaction: sqlx::Transaction<'static, sqlx::Postgres>,
+}
+
 impl TenantKeyStore {
+    /// Retain the selected key's publication authority without loading private material.
+    /// UPDATE retirement/purge waits for this exact row SHARE lock. Routine rotation
+    /// may finish first: a selected retiring key remains valid during JWKS overlap.
+    pub async fn signing_authority(
+        &self,
+        tenant: &TenantId,
+        kid: &Kid,
+        algorithm: SigningAlgorithm,
+    ) -> Result<SigningAuthorityFence, DomainError> {
+        let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
+        let state: Option<String> = sqlx::query_scalar(
+            "select state from signing_keys where tenant_id=$1 and kid=$2
+             and alg=$3 and purpose='sig' for share",
+        )
+        .bind(tenant.as_str())
+        .bind(kid.as_str())
+        .bind(algorithm.as_str())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(to_domain_error)?;
+        if !matches!(state.as_deref(), Some("active" | "retiring")) {
+            return Err(DomainError::NoSigningKey {
+                algorithm: Some(algorithm),
+            });
+        }
+        Ok(SigningAuthorityFence {
+            _transaction: transaction,
+        })
+    }
+
     /// Wraps a pool, a key-encryption key and an audit sink.
     #[must_use]
     pub const fn new(pool: PgPool, kek: Arc<dyn Kek>, audit: Arc<dyn AuditSink>) -> Self {
