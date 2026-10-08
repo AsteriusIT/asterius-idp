@@ -39,11 +39,10 @@ use time::{Duration, OffsetDateTime};
 
 /// The media type of a request object (RFC 9101 §10.8).
 ///
-/// Required here rather than recommended: the whole feature is opt-in, so an
-/// operator who switches it on gets the explicitly-typed profile FAPI 2.0
-/// Message Signing will require, and there is no laxer mode to select. RFC
-/// 8725 §3.11 is the general argument — a JWT minted for one purpose must not
-/// be presentable as another, and only `typ` says which purpose that was.
+/// Ordinary opted-in JAR requires this type. FAPI Message Signing final
+/// §5.3.2(5) recommends it; the server separately admits absent or legacy JWT
+/// typing for that explicitly selected profile while binding the signature,
+/// client, audience and profile claims. Other JWT media types remain refused.
 pub const REQUEST_OBJECT_TYP: &str = "oauth-authz-req+jwt";
 
 /// The longest a request object may still be valid for.
