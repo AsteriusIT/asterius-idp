@@ -13,8 +13,10 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	ssf "github.com/idfoundry/ssfgo"
@@ -29,7 +31,18 @@ func run() error {
 	bind := flag.String("bind", "127.0.0.1:9485", "loopback listener behind approved HTTPS proxy")
 	control := flag.String("control", "127.0.0.1:9486", "loopback-only test event control listener")
 	bearer := flag.String("bearer-file", "", "private management bearer file")
+	delivery := flag.String("delivery", "poll", "poll or push; native SSFgo delivery worker")
+	endpoint := flag.String("push-endpoint", "", "exact allowed public HTTPS push receiver")
 	flag.Parse()
+	if *delivery != "poll" && *delivery != "push" {
+		return fmt.Errorf("invalid delivery mode")
+	}
+	if *delivery == "push" {
+		u, err := url.Parse(*endpoint)
+		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+			return fmt.Errorf("exact HTTPS push endpoint required")
+		}
+	}
 	if *issuer == "" || *audience == "" {
 		return fmt.Errorf("issuer and audience required")
 	}
@@ -58,13 +71,33 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("signing key unavailable")
 	}
+	var receiptMu sync.Mutex
+	receipts := []map[string]any{}
+	methods := []ssf.DeliveryMethod{ssf.DeliveryPoll}
+	if *delivery == "push" {
+		methods = []ssf.DeliveryMethod{ssf.DeliveryPush}
+	}
 	tx, err := transmitter.New(transmitter.Config{
 		Issuer: *issuer, Assurance: ssf.AssuranceDevelopment,
 		SigningKeys:     []transmitter.SigningKey{{Signer: key, Algorithm: ssf.ES256, KeyID: "owned-disposable-ssfgo-key"}},
 		EventsSupported: []ssf.EventType{caep.SessionRevokedEventType, caep.CredentialChangeEventType},
-		DeliveryMethods: []ssf.DeliveryMethod{ssf.DeliveryPoll}, DefaultSubjects: ssf.DefaultSubjectsAll,
+		DeliveryMethods: methods, DefaultSubjects: ssf.DefaultSubjectsAll,
 		Store: memstore.NewStreamStore(), Limits: transmitter.RecommendedLimits(), PermitEvent: transmitter.PermitAll,
 		MultipleStreamsPerReceiver: true,
+		PushRetry:                  transmitter.RecommendedPushRetry(),
+		AllowPushEndpoint: func(_ transmitter.Receiver, u *url.URL) error {
+			if u.String() != *endpoint {
+				return fmt.Errorf("unapproved fixture endpoint")
+			}
+			return nil
+		},
+		Hooks: transmitter.Hooks{Push: func(_ context.Context, info transmitter.PushInfo) {
+			receiptMu.Lock()
+			defer receiptMu.Unlock()
+			if len(receipts) < 100 {
+				receipts = append(receipts, map[string]any{"outcome": info.Outcome.String(), "attempt": info.Attempt})
+			}
+		}},
 		Authorize: func(_ context.Context, presented string) (transmitter.Receiver, error) {
 			if subtle.ConstantTimeCompare([]byte(presented), []byte(token)) != 1 {
 				return transmitter.Receiver{}, transmitter.ErrInvalidToken
@@ -97,7 +130,20 @@ func run() error {
 		}
 		w.WriteHeader(204)
 	})
-	failures := make(chan error, 2)
+	controls.HandleFunc("GET /delivery-receipts", func(w http.ResponseWriter, r *http.Request) {
+		if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+token)) != 1 {
+			w.WriteHeader(401)
+			return
+		}
+		receiptMu.Lock()
+		defer receiptMu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(receipts)
+	})
+	failures := make(chan error, 3)
+	if *delivery == "push" {
+		go func() { failures <- tx.Run(context.Background()) }()
+	}
 	for _, server := range []*http.Server{
 		{Addr: *bind, Handler: tx.Handler(), ReadHeaderTimeout: 5 * time.Second},
 		{Addr: *control, Handler: controls, ReadHeaderTimeout: 5 * time.Second},

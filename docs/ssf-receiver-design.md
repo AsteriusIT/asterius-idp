@@ -4,8 +4,11 @@ Status: bounded push receiver and explicit operator-triggered upstream poll
 stream setup in `ast-s36.26`. This is not a claim of full SSF or CAEP
 Interoperability Profile conformance. The implementation accepts configured
 OAuth client peers, three lifecycle event types, and operator-provisioned
-per-peer subject mappings. Upstream subject enrollment, automatic polling,
-and interoperability evidence remain outstanding.
+per-peer subject mappings. The independently verified integration is SSF1 Final
+with ES256 polling, explicitly allowed ALL subjects and operator-managed bearer
+credentials. Automatic polling, automatic OAuth refresh, outbound enrollment for
+NONE-subject peers and formal CAEP Draft01 certification remain outside that
+profile. See the dated acceptance update below.
 
 ## Specification baseline
 
@@ -144,9 +147,9 @@ a peer's registered signing key authorizes outbound management. Explicit
 subject enrollment and the complete CAEP event vocabulary remain incomplete.
 Local lifecycle,
 audit, and resulting outbound notifications now commit atomically. The CAEP
-Interoperability Profile's RS256 requirement remains unresolved against
-ADR-0003; this receiver accepts only EdDSA and ES256 and makes no profile
-conformance claim.
+Interoperability Profile's RS256 boundary is resolved by ADR-0019: this
+receiver accepts only EdDSA and ES256, retains ADR-0003, and makes no CAEP
+Draft01 conformance claim.
 
 ## Proposed processing boundary
 
@@ -337,3 +340,49 @@ claiming CAEP Interoperability Profile conformance.
   file is re-read per operator request, but access-token acquisition and
   automatic refresh are outside this explicit operator-managed peer profile.
   No cross-implementation verification or delivery evidence has been recorded.
+
+
+## Acceptance update, 8 October 2026
+
+The preceding dated audit records the September state. Current receiver-managed
+poll setup, authenticated exact-stream readback, correlated asynchronous signed
+verification, processing/ACK, and guarded exact-stream deletion are implemented.
+Readback and deletion select the recorded stream from a multi-stream transmitter
+list; a second stream is preserved. ALL subjects require explicit tenant opt-in;
+local subject mapping remains explicit per trusted peer. NONE peers require
+operator-managed enrollment; no generic outbound enrollment or OAuth refresh is
+claimed.
+
+[Independent SSFgo acceptance](integrations/evidence/ssfgo-asterius-lifecycle-2026-10-08.json)
+records fifteen real HTTP controls against the exact binary/source hashes. A pinned
+unmodified SSFgo library signs ES256 SETs; guarded public HTTPS metadata/JWKS setup,
+stream verification, mapped seeded-session revocation, operator bearer reread
+refusal/recovery, and one-shot lost-ACK replay with one inbox row passed. Deleting
+the receiver's stream preserved delivery on the second native stream. All owned
+streams and fixture rows were removed and the runtime credential copy restored.
+
+The poll-only peer's valid SET is refused at the push endpoint as its metadata
+requires. This records correct route/profile refusal, not native push acceptance.
+The first handoff exposed an Arc<Tenant> extractor mismatch at the push route;
+the corrected assembled-router regression rejects malformed SETs with 400 and
+wrong media with 415 instead of 500. Session revocation uses an explicitly seeded
+owned session; it is not evidence of a browser authentication ceremony. The JWT
+issuer-mutation control also has an invalid signature; the separate unconfigured
+issuer management control verifies its unavailable route.
+
+SSF1 Final interoperability for this bounded peer profile is supported by actual
+evidence. CAEP Interoperability Profile Draft01, RS256, the complete CAEP event
+vocabulary and automatic credential acquisition remain unsupported. The separate native push evidence below uses a second peer that really
+advertises push support.
+
+The subsequent owned native-push rehearsal on the same date closed the
+independent push evidence gap. A second SSFgo transmitter advertised only
+RFC8935 push and used its own native signing/delivery worker, default guarded
+HTTPS client, public endpoint allowlist and public-address resolution. Its
+first delivery succeeded through the verified public TLS relay; Asterius
+revoked the explicitly mapped session and retained exactly one inbox row.
+The native stream and all dedicated fixture identities were removed. See
+[`ssfgo-native-push-2026-10-08.json`](integrations/evidence/ssfgo-native-push-2026-10-08.json)
+and `scripts/ssf-independent-transmitter/push_lifecycle.py`. This supplements
+the independent poll/replay evidence; it does not claim formal Draft01
+conformance or a browser-established session.
