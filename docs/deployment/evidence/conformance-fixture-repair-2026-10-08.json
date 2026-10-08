@@ -1,0 +1,35 @@
+{
+  "date": "2026-10-08",
+  "ticket": "ast-6uqw.15",
+  "historical_run": {
+    "url": "https://github.com/AsteriusIT/asterius-idp/actions/runs/37766479238",
+    "revision": "5dc5f4eded111e74d7ee114932918a22ca33e945",
+    "passed": 1,
+    "failed": 10,
+    "exit_code": 74,
+    "token_flows_invalid_target": 9,
+    "rejection_module_failure": "optional Login credential fields skipped on consent page; generic submit clicked Allow before optional Deny task"
+  },
+  "changes": [
+    "Register tenant UserInfo audience with explicit scope policy; assign to both disposable clients",
+    "Restrict optional Login submits to forms with username and password fields in both profiles",
+    "Require rejection override Deny task and click in both profiles"
+  ],
+  "validation": {
+    "database": "root-owned ephemeral PostgreSQL, uniquely owned security_conformance_fixture_20261008 schema",
+    "migrations_through": 173,
+    "security_profile_sql_fixture_runs": 2,
+    "message_signing_sql_fixture_runs": 2,
+    "message_signing_algorithm_fixture": "applied ES256 JAR/JARM and jwt response mode",
+    "both_clients_resource": "https://asterius:9443/t/conformance/userinfo",
+    "plan_json_and_login_denial_invariants": "passed",
+    "git_diff_check": "passed"
+  },
+  "limits": [
+    "No new full OIDF conformance run executed",
+    "Historical red verdict remains historical evidence, not a verdict on the repaired target",
+    "Exact target CI/Sonar and conformance certification not claimed",
+    "No waiver or server enforcement changes",
+    "No live database mutation"
+  ]
+}

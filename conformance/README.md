@@ -376,3 +376,27 @@ IPSIE, SSF, or CAEP conformance. The command needs the same Docker/build disk
 space as the existing harness; no Message Signing execution evidence has yet
 been recorded. Use the approved external profile/environment before changing
 any product support claim.
+
+
+## 2026-10-08 fixture reconciliation
+
+[Conformance run 37766479238](https://github.com/AsteriusIT/asterius-idp/actions/runs/37766479238)
+ran against `5dc5f4eded111e74d7ee114932918a22ca33e945` and reported one passed
+module and ten failed modules (exit 74). Nine interrupted nominal token flows
+received `invalid_target`: the disposable clients had no registered resource
+allow-list after runtime issuance removed the tenant-wide fallback. The fixture
+now registers the tenant's UserInfo audience and assigns it to both clients,
+for both Security Profile and Message Signing plans.
+
+The rejection module also failed after a remembered login: optional username and
+password commands skipped on a consent page, then the generic Login submit
+clicked Allow. Login submits now select only a form with both credential fields;
+the rejection override requires its Deny action. This keeps fixture automation
+from approving a request while it is supposed to test rejection.
+
+The SQL fixture was applied twice successfully for each profile on an isolated,
+ephemeral migrated PostgreSQL schema. Both JSON plans retain the same profile
+variants and waivers. This validates fixture compatibility and idempotency; a
+new suite run against the exact target revision is still required before claiming
+conformance or closing the release gate. Recorded evidence is in
+`docs/deployment/evidence/conformance-fixture-repair-2026-10-08.json`.
