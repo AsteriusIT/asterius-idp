@@ -21,7 +21,9 @@ export class OAuthRequests {
       body.set('client_assertion', assertion);
       const response = await this.fetchImpl(url, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', DPoP: proof }, body });
       const nonce = response.headers.get('dpop-nonce');
-      const json = await response.json();
+      // RFC 7009 revocation succeeds with an empty HTTP 200 response.
+      const text = await response.text();
+      const json = text ? JSON.parse(text) : {};
       if (nonce && nonce.length <= 512) {
         this.nonces.set(target.origin, nonce);
         if ((response.status === 400 || response.status === 401) && json.error === 'use_dpop_nonce' && attempt === 0) continue;

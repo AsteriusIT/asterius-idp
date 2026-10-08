@@ -36,6 +36,13 @@ test('resource verifier checks token hash, key, target and replay using actual s
   await assert.rejects(verifyResourceProof({ ...options, proof: await proof({ jti: 'other', htm: 'POST' }) }), /wrong proof/);
 });
 
+test('financial logout accepts the RFC 7009 empty success response', async () => {
+  const key = await generateKeyPair('ES256');
+  const client = new OAuthRequests({ issuer: 'https://idp.example/t/demo', clientId: 'owned-client', clientKid: 'key', clientKey: key.privateKey, dpopPrivate: key.privateKey, dpopPublic: key.publicKey,
+    fetchImpl: async () => new Response(null, { status: 200 }) });
+  assert.deepEqual(await client.request('https://idp.example/t/demo/revoke', new URLSearchParams({ token: 'fixture' })), {});
+});
+
 test('browser write controls reject cross-site, missing-origin and non-JSON writes', () => {
   const origin = 'https://apps.example';
   assert(sameOriginWrite({ headers: { origin, 'content-type': 'application/json' } }, origin));
