@@ -105,9 +105,9 @@ A stale process lock after a crash similarly requires confirming the old process
 is gone before removing only this adapter's `.lock` file. One process per state
 file; requests serialize. Deployment needs restart supervision and backups.
 
-Eight focused local tests cover signed token/DPoP nonce+ath/audience, stale ETag,
+Nine focused local tests cover signed token/DPoP nonce+ath/audience, stale ETag,
 locked/foreign mutations, durable lost-create recovery, reordered ambiguous
-writes, projection, revoked credentials, persistence and deletion retries.
+writes, projection, revoked credentials, persistence, deletion retries and real loopback credential/route refusals.
 No native Entra job or live Asterius handoff has been run for this adapter.
 Actual validateCredentials and full disposable user/group lifecycle, retry,
 revocation and security controls remain required before interoperability closure.

@@ -83,3 +83,21 @@ test('persisted map survives reopen and owned delete retries remain idempotent',
  assert.equal((await req('POST','/Users',user)).status,200);assert.equal(remote.mutations,1);
  assert.equal((await req('DELETE','/Users/'+ID)).status,204);assert.equal((await req('DELETE','/Users/'+ID)).status,204);assert.equal(remote.mutations,2);
 });
+test('real listener confines Bearer to exact route, rejects missing/revoked credentials, redacts logs',async t=>{
+ const {spawn}=await import('node:child_process');const {generateKeyPairSync}=await import('node:crypto');const {createServer}=await import('node:net');const {fileURLToPath}=await import('node:url');
+ const dir=mkdtempSync(join(tmpdir(),'entra-http-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));
+ const probe=createServer();await new Promise(resolve=>probe.listen(0,'127.0.0.1',resolve));const port=probe.address().port;await new Promise(resolve=>probe.close(resolve));
+ const keyFile=join(dir,'key.pem'),credentialFile=join(dir,'credentials.json'),configFile=join(dir,'config.json'),token='b'.repeat(43),publicBase='https://adapter.test/integration/scim/v2';
+ writeFileSync(keyFile,generateKeyPairSync('ec',{namedCurve:'prime256v1'}).privateKey.export({format:'pem',type:'pkcs8'}),{mode:0o600});
+ const cred={audience:publicBase,tokens:[{value:token,createdAt:new Date(Date.now()-1000).toISOString(),expiresAt:new Date(Date.now()+60000).toISOString()}]};writeFileSync(credentialFile,JSON.stringify(cred),{mode:0o600});
+ writeFileSync(configFile,JSON.stringify({issuer:'https://id.test/t/tenant',clientId:'client',keyId:'key',keyFile,publicBase,credentialFile,database:join(dir,'state.db'),port}),{mode:0o600});
+ const child=spawn(process.execPath,[fileURLToPath(new URL('./server.mjs',import.meta.url)),configFile],{stdio:['ignore','pipe','pipe']});let logs='';
+ t.after(async()=>{child.kill('SIGTERM');await new Promise(resolve=>child.once('exit',resolve));});
+ await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('listener startup timeout')),5000);child.stdout.on('data',data=>{logs+=data;if(logs.includes('adapter ready')){clearTimeout(timer);resolve();}});child.once('exit',()=>{clearTimeout(timer);reject(new Error('listener exited'));});});
+ const base=`http://127.0.0.1:${port}`;
+ assert.equal((await fetch(base+'/integration/scim/v2/Users')).status,401);
+ assert.equal((await fetch(base+'/other/Users',{headers:{authorization:'Bearer '+token}})).status,404);
+ cred.tokens[0].revoked=true;writeFileSync(credentialFile,JSON.stringify(cred));
+ assert.equal((await fetch(base+'/integration/scim/v2/Users',{headers:{authorization:'Bearer '+token}})).status,401);
+ assert.equal(logs.includes(token),false);
+});
