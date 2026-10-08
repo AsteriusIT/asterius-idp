@@ -102,10 +102,10 @@ owned deletion. After a lost PATCH/PUT response, a changed upstream ETag makes
 retries ambiguous: they refuse 409 for explicit reconciliation. Do not delete
 journal entries to force a retry without examining current source/target state.
 A stale process lock after a crash similarly requires confirming the old process
-is gone before removing only this adapter's `.lock` file. One process per state
-file; requests serialize. Deployment needs restart supervision and backups.
+is gone before removing only this adapter's `.lock` file. State is pinned to the issuer/client/adapter audience and refuses retargeting.
+One process per state file; requests serialize with a bounded pending queue. Deployment needs restart supervision and backups.
 
-Nine focused local tests cover signed token/DPoP nonce+ath/audience, stale ETag,
+Ten focused local tests cover signed token/DPoP nonce+ath/audience, stale ETag,
 locked/foreign mutations, durable lost-create recovery, reordered ambiguous
 writes, projection, revoked credentials, persistence, deletion retries and real loopback credential/route refusals.
 No native Entra job or live Asterius handoff has been run for this adapter.

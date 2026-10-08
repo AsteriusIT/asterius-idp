@@ -5,6 +5,7 @@ export const LIST='urn:ietf:params:scim:api:messages:2.0:ListResponse';
 const PATCH='urn:ietf:params:scim:api:messages:2.0:PatchOp';
 export class Failure extends Error { constructor(status,message){super(message);this.status=status;} }
 const fail=(message,status=400)=>{throw new Failure(status,message);};
+const canonical=value=>JSON.stringify(value,(_key,item)=>item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.keys(item).sort().map(k=>[k,item[k]])):item);
 const hash=value=>createHash('sha256').update(value).digest('base64url');
 const equal=(a,b)=>{const x=Buffer.from(a),y=Buffer.from(b);return x.length===y.length&&timingSafeEqual(x,y);};
 export function privateFile(path){const st=statSync(path);if(!st.isFile()||(st.mode&0o077)||st.size>65536)fail('Private file permissions required',500);return readFileSync(path,'utf8');}
@@ -24,7 +25,7 @@ function jwt(key,header,claims){const input=[header,claims].map(x=>Buffer.from(J
 export class DpopClient {
  constructor(config){
   this.issuer=config.issuer.replace(/\/$/,'');this.base=`${this.issuer}/admin/api/v1/scim/v2`;
-  if(new URL(this.issuer).protocol!=='https:')fail('HTTPS issuer required',500);
+  const issuerUrl=new URL(this.issuer);if(issuerUrl.protocol!=='https:'||issuerUrl.search||issuerUrl.hash||issuerUrl.username||issuerUrl.password)fail('Exact HTTPS issuer required',500);
   this.id=config.clientId;this.kid=config.keyId;this.key=createPrivateKey(privateFile(config.keyFile));
   if(this.key.asymmetricKeyDetails?.namedCurve!=='prime256v1')fail('P-256 client key required',500);
   this.proofKey=generateKeyPairSync('ec',{namedCurve:'prime256v1'}).privateKey;this.jwk=createPublicKey(this.proofKey).export({format:'jwk'});
@@ -80,7 +81,8 @@ export function patch(kind,body){
 export class Adapter {
  constructor(dbPath,upstream,publicBase){
   this.db=new DatabaseSync(dbPath);chmodSync(dbPath,0o600);this.upstream=upstream;this.base=publicBase;
-  this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS mapping(kind TEXT, external TEXT, id TEXT, PRIMARY KEY(kind,external), UNIQUE(kind,id)); CREATE TABLE IF NOT EXISTS intent(key TEXT PRIMARY KEY, kind TEXT, external TEXT, body TEXT, name TEXT); CREATE TABLE IF NOT EXISTS receipt(key TEXT PRIMARY KEY, etag TEXT, body TEXT); CREATE TABLE IF NOT EXISTS writes(path TEXT PRIMARY KEY, fingerprint TEXT, etag TEXT); CREATE TABLE IF NOT EXISTS source(kind TEXT, external TEXT, fingerprint TEXT, PRIMARY KEY(kind,external)); CREATE TABLE IF NOT EXISTS deleted(path TEXT PRIMARY KEY);');
+  this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS mapping(kind TEXT, external TEXT, id TEXT, PRIMARY KEY(kind,external), UNIQUE(kind,id)); CREATE TABLE IF NOT EXISTS intent(key TEXT PRIMARY KEY, kind TEXT, external TEXT, body TEXT, name TEXT); CREATE TABLE IF NOT EXISTS receipt(key TEXT PRIMARY KEY, etag TEXT, body TEXT); CREATE TABLE IF NOT EXISTS writes(path TEXT PRIMARY KEY, fingerprint TEXT, etag TEXT); CREATE TABLE IF NOT EXISTS source(kind TEXT, external TEXT, fingerprint TEXT, PRIMARY KEY(kind,external)); CREATE TABLE IF NOT EXISTS deleted(path TEXT PRIMARY KEY); CREATE TABLE IF NOT EXISTS binding(fingerprint TEXT PRIMARY KEY);');
+  const binding=hash(`${upstream.base}\n${upstream.id??''}\n${publicBase}`),old=this.db.prepare('SELECT fingerprint FROM binding').get();if(old&&old.fingerprint!==binding){this.db.close();fail('State belongs to another integration',500);}if(!old)this.db.prepare('INSERT INTO binding VALUES(?)').run(binding);
  }
  mapped(kind,id){return this.db.prepare('SELECT * FROM mapping WHERE kind=? AND id=?').get(kind,id);}
  remember(kind,body,id,key,text){this.db.exec('BEGIN IMMEDIATE');try{this.db.prepare('INSERT INTO mapping VALUES(?,?,?)').run(kind,body.externalId,id);this.db.prepare('INSERT INTO source VALUES(?,?,?)').run(kind,body.externalId,hash(text));this.db.prepare('DELETE FROM intent WHERE key=?').run(key);this.db.exec('COMMIT');}catch(error){this.db.exec('ROLLBACK');throw error;}}
@@ -113,7 +115,7 @@ export class Adapter {
   if(id&&!this.mapped(kind,id))fail('Resource not owned',404);
   if(method==='GET')return project(await this.upstream.request('GET',path));
   if(method==='POST'){
-   body=document(kind,body);const key=hash(`${kind}\n${body.externalId}`),text=JSON.stringify(body),name=body[kind==='Users'?'userName':'displayName'];
+   body=document(kind,body);const key=hash(`${kind}\n${body.externalId}`),text=canonical(body),name=body[kind==='Users'?'userName':'displayName'];
    const mapped=this.db.prepare('SELECT id FROM mapping WHERE kind=? AND external=?').get(kind,body.externalId);
    if(mapped){const source=this.db.prepare('SELECT fingerprint FROM source WHERE kind=? AND external=?').get(kind,body.externalId);if(source?.fingerprint!==hash(text))fail('Existing source identity differs',409);return project(await this.upstream.request('GET',`/${kind}/${mapped.id}`));}
    const pending=this.db.prepare('SELECT * FROM intent WHERE key=?').get(key);
@@ -128,7 +130,7 @@ export class Adapter {
   const etag=held.headers.etag;if(!etag)fail('Upstream ETag missing',502);
   if(ifMatch!==undefined&&ifMatch!==etag)fail('SCIM resource version changed',412);
   if(method==='PUT')body=document(kind,body,held.body);if(method==='PATCH')body=patch(kind,body);
-  const key=hash(`${method}\n${path}\n${JSON.stringify(body)}`),receipt=this.db.prepare('SELECT * FROM receipt WHERE key=?').get(key);
+  const key=hash(`${method}\n${path}\n${canonical(body)}`),receipt=this.db.prepare('SELECT * FROM receipt WHERE key=?').get(key);
   if(receipt?.etag===etag)return project({status:200,headers:{etag},body:JSON.parse(receipt.body)});
   const pending=this.db.prepare('SELECT * FROM writes WHERE path=?').get(path);
   if(pending&&(pending.etag!==etag||pending.fingerprint!==(method==='DELETE'?'DELETE':key)))fail('Ambiguous previous write; reconcile explicitly',409);

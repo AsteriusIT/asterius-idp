@@ -101,3 +101,8 @@ test('real listener confines Bearer to exact route, rejects missing/revoked cred
  assert.equal((await fetch(base+'/integration/scim/v2/Users',{headers:{authorization:'Bearer '+token}})).status,401);
  assert.equal(logs.includes(token),false);
 });
+test('durable state refuses reuse by another tenant or adapter audience',async t=>{
+ const {adapter,remote,dir}=fixture(t);
+ assert.throws(()=>new Adapter(join(dir,'state.db'),{...remote,base:'https://foreign.test/t/tenant/scim/v2'},adapter.base),e=>e.status===500);
+ assert.throws(()=>new Adapter(join(dir,'state.db'),remote,'https://foreign-adapter.test/scim/v2'),e=>e.status===500);
+});
