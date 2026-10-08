@@ -28,6 +28,7 @@
 #     is waived today.
 #
 # Environment (all optional):
+#   --message-signing           run the independent signed JAR/JARM plan
 #   CONFORMANCE_PLAN            plan name with variants. Default: the FAPI2
 #                               Security Profile Final plan, private_key_jwt +
 #                               DPoP, OpenID Connect, static clients.
@@ -37,8 +38,8 @@
 #   CONFORMANCE_SUITE_DIR       where the suite is checked out.
 #                               Default conformance/.suite
 #
-# Reports are always written to conformance/.run/results, which is where the
-# compose file mounts the runner's /results.
+# Reports use conformance/.run/results for Security Profile and
+# conformance/.run/message-signing-results for the optional Message Signing run.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -100,11 +101,13 @@ RESULTS_DIR="$RUN_DIR/results"
 COMPOSE_FILE="$root/conformance/docker-compose.yml"
 
 keep=0
+message_signing=0
 for arg in "$@"; do
   case "$arg" in
     --keep) keep=1 ;;
+    --message-signing) message_signing=1 ;;
     --help|-h)
-      sed -n '2,41p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)
@@ -114,10 +117,27 @@ for arg in "$@"; do
   esac
 done
 
+plan_config="$root/conformance/plans/fapi2-sp-final.json"
+asterius_config="$root/conformance/asterius.toml"
+waivers="$root/conformance/waivers.json"
+if [ "$message_signing" -eq 1 ]; then
+  [ -z "${CONFORMANCE_PLAN:-}" ] || {
+    echo "conformance: --message-signing selects its exact plan; unset CONFORMANCE_PLAN" >&2
+    exit 64
+  }
+  PLAN="fapi2-message-signing-final-test-plan[openid=openid_connect][client_auth_type=private_key_jwt][sender_constrain=dpop][fapi_profile=plain_fapi][authorization_request_type=simple][fapi_request_method=signed_non_repudiation][fapi_response_mode=jarm]"
+  plan_config="$root/conformance/plans/fapi2-ms-final.json"
+  asterius_config="$root/conformance/asterius-message-signing.toml"
+  waivers="$root/conformance/message-signing-waivers.json"
+  RESULTS_DIR="$RUN_DIR/message-signing-results"
+fi
+
 step() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 die()  { printf '\nconformance: %s\n' "$*" >&2; exit "${2:-1}"; }
 
 compose() {
+  CONFORMANCE_RESULTS_DIR="$RESULTS_DIR" \
+  CONFORMANCE_ASTERIUS_CONFIG="$asterius_config" \
   CONFORMANCE_SUITE_VERSION="$SUITE_VERSION" \
   CONFORMANCE_RUNNER_USER="$(id -u):$(id -g)" \
   CONFORMANCE_SUITE_DIR="$SUITE_DIR" \
@@ -148,7 +168,7 @@ printf 'docker, git, openssl and curl are present\n'
 
 # The waiver list is read at the end, after an hour of runtime. Its shape is
 # checked now, when a missing `ticket` costs a second rather than a night.
-python3 "$root/scripts/conformance-verdict.py" \
+python3 "$root/scripts/conformance-verdict.py" --waivers "$waivers" \
   || die "conformance/waivers.json is not usable; the run would have no verdict" 70
 # Recorded in the report, because a verdict is about a tree. `unknown` rather
 # than a failure: a tarball with no .git is still allowed to run the suite.
@@ -271,13 +291,16 @@ public_jwks() {
   python3 "$root/conformance/fixtures/public-jwks.py" "$plan_config" "$1" \
     || die "could not read ${1}'s JWKS out of ${plan_config}" 70
 }
-plan_config="$root/conformance/plans/fapi2-sp-final.json"
 seed -v "tenant=${TENANT}" -v "redirect_uri=${REDIRECT_URI}" \
      -v "redirect_uri_with_query=${REDIRECT_URI_WITH_QUERY}" \
      -v "jwks1=$(public_jwks client)" \
      -v "jwks2=$(public_jwks client2)" \
      -f - < "$root/conformance/fixtures/clients.sql" \
   || die "could not seed the conformance clients"
+if [ "$message_signing" -eq 1 ]; then
+  seed -v "tenant=${TENANT}" -f - < "$root/conformance/fixtures/message-signing.sql" \
+    || die "could not register Message Signing client algorithms"
+fi
 printf 'seeded 2 clients with the suite JWKS and redirect_uri %s\n' "$REDIRECT_URI"
 
 # --- 6. the suite is ready --------------------------------------------------
@@ -307,7 +330,7 @@ printf '%s\n' "$PLAN"
 # run's own plan would be filtered out as old.
 started="$(date -u +%Y-%m-%dT%H:%M:%S)"
 rc=0
-compose run --rm --quiet-pull runner /runner/run.sh "$PLAN" || rc=$?
+compose run --rm --quiet-pull runner /runner/run.sh "$PLAN" "/plans/$(basename "$plan_config")" || rc=$?
 printf '\nrun-test-plan exit code: %d\n' "$rc"
 
 # --- 8. the report ----------------------------------------------------------
@@ -340,7 +363,7 @@ if [ "$rc" -ne 0 ]; then
   printf 'run-test-plan exited %d; the verdict below is the authority.\n\n' "$rc"
 fi
 verdict=0
-python3 "$root/scripts/conformance-verdict.py" "$RESULTS_DIR/verdict.json" || verdict=$?
+python3 "$root/scripts/conformance-verdict.py" "$RESULTS_DIR/verdict.json" --waivers "$waivers" || verdict=$?
 if [ "$verdict" -ne 0 ]; then
   die "the conformance run is not releasable. The reports are in ${RESULTS_DIR}" "$verdict"
 fi

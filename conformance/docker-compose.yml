@@ -55,7 +55,7 @@ services:
       # human can open the tenant. The suite never uses this port.
       - "127.0.0.1:${CONFORMANCE_ASTERIUS_PORT:-9543}:9443"
     volumes:
-      - ./asterius.toml:/etc/asterius/asterius.toml:ro
+      - ${CONFORMANCE_ASTERIUS_CONFIG:-./asterius.toml}:/etc/asterius/asterius.toml:ro
       - ./.run/tls:/etc/asterius/tls:ro
     # The hardening of deploy/compose/docker-compose.yml, unchanged. The suite
     # must exercise the container an operator would run, not a relaxed one.
@@ -159,7 +159,7 @@ services:
       - ${CONFORMANCE_SUITE_DIR:?set CONFORMANCE_SUITE_DIR; scripts/conformance.sh checks the suite out}:/suite:ro
       - ./plans:/plans:ro
       - ./runner:/runner:ro
-      - ./.run/results:/results
+      - ${CONFORMANCE_RESULTS_DIR:-./.run/results}:/results
     working_dir: /suite/scripts
     depends_on:
       - nginx
