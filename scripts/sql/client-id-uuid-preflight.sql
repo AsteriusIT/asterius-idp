@@ -55,25 +55,16 @@ where child.parent_authority_revision is not null
   and exists (select 1 from legacy c where c.tenant_id=child.tenant_id and c.client_id in (child.client_id,parent.client_id))
 order by category;
 
--- Fail closed after printing the inventory: ordinary migration 0173 cannot
--- rewrite these approval identities without violating their history guards.
+-- Explicit approval is required for every populated legacy-ID cutover. Immutable
+-- histories remain original; migration 0173 only revokes/detaches live authority.
+select current_setting('asterius.client_uuid_terminal_cutover', true) as terminal_approval;
 do $$ begin
     if exists (
         select 1 from clients c
         where c.client_id !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
           and c.client_id not like 'https://%'
-          and (
-            exists (select 1 from agent_tasks t where t.tenant_id=c.tenant_id and t.initiating_client_id=c.client_id)
-            or exists (select 1 from temporary_entitlements t where t.tenant_id=c.tenant_id and t.client_id=c.client_id)
-            or exists (select 1 from temporary_entitlement_requests t where t.tenant_id=c.tenant_id and t.client_id=c.client_id)
-            or exists (select 1 from temporary_kubernetes_bindings t where t.tenant_id=c.tenant_id and c.client_id in (t.controller_client_id,t.cluster_client_id))
-            or exists (select 1 from grants child join grants parent
-                         on parent.tenant_id=child.tenant_id and parent.grant_id=child.parent_grant_id
-                       where child.tenant_id=c.tenant_id and child.parent_authority_revision is not null
-                         and c.client_id in (child.client_id,parent.client_id))
-          )
-    ) then
-        raise exception 'UUID cutover requires an approved history-preserving terminal/reapproval plan; do not bypass immutable triggers or edit SQLx checksums';
+    ) and current_setting('asterius.client_uuid_terminal_cutover', true) is distinct from 'approved' then
+        raise exception 'UUID cutover requires an approved history-preserving terminal/reapproval plan and restored-backup rehearsal; do not bypass immutable triggers or edit SQLx checksums';
     end if;
 end $$;
 rollback;

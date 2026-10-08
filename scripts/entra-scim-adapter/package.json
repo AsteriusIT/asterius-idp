@@ -1,0 +1,1 @@
+{"name":"asterius-entra-scim-adapter","private":true,"type":"module","scripts":{"test":"node --test adapter.test.mjs","start":"node server.mjs"},"engines":{"node":">=24"}}

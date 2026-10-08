@@ -6981,7 +6981,10 @@ async fn a_complete_code_flow_stays_within_its_query_budget() {
         !statements.is_empty(),
         "no statement was observed: is sqlx statement logging switched off?"
     );
-    eprintln!("code flow SQL statements: {} (budget {CODE_FLOW_QUERY_BUDGET})", statements.len());
+    eprintln!(
+        "code flow SQL statements: {} (budget {CODE_FLOW_QUERY_BUDGET})",
+        statements.len()
+    );
     assert!(
         statements.len() <= CODE_FLOW_QUERY_BUDGET,
         "the code flow ran {} SQL statements, budget is {}:\n  {}",

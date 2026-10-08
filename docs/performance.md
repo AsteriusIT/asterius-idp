@@ -133,8 +133,19 @@ more script beside these.
 `crates/server/tests/end_to_end.rs` drives one push, one arrival at
 `/authorize`, one passkey sign-in, one consent and one redemption through the
 assembled router with a `tracing` layer that records every statement `sqlx`
-executes, and asserts the count against a ceiling. The current measured
-ceiling is **158**. The integrated authority path adds 71 statements for exact-session lineage, verified assurance, current conditional policy, temporary entitlement fences, and recursive grant/task authority checks. The CI statement trace contains fixed reads and transaction boundaries, not queries per collection element. Claims Provider aggregation adds one bounded source lookup during ID-token issuance. The original baseline was 71: the test was written red
+executes, and asserts the count against a ceiling. The ceiling remains **158**;
+the 8 October 2026 targeted PostgreSQL run measured **156** at source
+`983447d3`. This includes the emergency signing-key publication fence.
+Grant authority locking now retains the current row returned by `FOR SHARE`,
+instead of rereading each locked ancestor and then querying the revision again.
+Root-to-leaf locks, exact identity and generation checks, principal locks and
+the fresh database-clock expiry check remain in place. The net complete-flow
+count is two statements below the earlier integrated measurement of 158;
+this fixture does not establish latency or throughput under load.
+The integrated authority path includes exact-session lineage, verified
+assurance, current conditional policy, temporary entitlement fences, and
+recursive grant/task authority checks. Claims Provider aggregation adds one
+bounded source lookup during ID-token issuance. The original baseline was 71: the test was written red
 (budget 0) to print the log, and the log was reviewed for per-row lookups.
 `ast-6uqw.4` and `ast-6uqw.5` deliberately add these 15 statements:
 
@@ -154,8 +165,8 @@ reads bypass the cache so another replica observes changed limits on its
 next check. ACR resolution (`ast-6uqw.3`) uses the settings cache already
 loaded by the flow and adds no statements to this measurement.
 
-The measured count exactly matches the revised ceiling; there is no extra
-allowance for queries per scope, role or resource. A change that adds a
+The current fixture has two statements of headroom; the ceiling has not been
+raised for this optimization. A change that adds a
 statement on purpose must update this accounting and the test together.
 
 What the log does show, for a later ticket, is redundancy rather than
@@ -242,8 +253,8 @@ max_connections  ≈ 2 × busy connections, and at least the number of CPU threa
 ```
 
 The original load measurements used 12–17 statements per token response.
-The current complete code flow costs 158 statements (the budget test's
-ceiling); tenant limiter and session policy each add one read at token
+The current complete code-flow fixture measured 156 statements against its
+158-statement ceiling; tenant limiter and session policy each add one read at token
 redemption. JWKS and discovery use 1–2 statements.
 
 **3. What the load will be.** FAPI 2.0 SP §6.1 makes this a function of the

@@ -67,6 +67,7 @@ pub struct ProviderSummary {
     pub secret_configured: bool,
     pub callback_url: String,
     pub created_at: OffsetDateTime,
+    pub revision: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -194,6 +195,23 @@ pub fn validate_https_url(raw: &str) -> Result<(), DomainError> {
 
 #[async_trait::async_trait]
 pub trait ProviderAdministration: Send + Sync {
+    /// Validates discovery without storing credentials or changing registration.
+    async fn preview(&self, _input: &ProviderInput) -> Result<serde_json::Value, DomainError> {
+        Err(DomainError::NotFound)
+    }
+    /// Conditional registration and durable flow receipt commit together.
+    async fn put_flow(
+        &self,
+        _tenant: &TenantId,
+        _tenant_issuer: &str,
+        _input: ProviderInput,
+        _step: &crate::flows::ApplyStep,
+        _expected: Option<&serde_json::Value>,
+        _desired: &serde_json::Value,
+    ) -> Result<(), DomainError> {
+        Err(DomainError::NotFound)
+    }
+
     async fn check(&self, _tenant: &TenantId, _id: &str) -> Result<serde_json::Value, DomainError> {
         Err(DomainError::NotFound)
     }

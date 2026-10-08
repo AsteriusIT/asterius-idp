@@ -21,6 +21,29 @@ pub struct OidcProvider {
     pub enabled: bool,
     pub allow_registration: bool,
     pub created_at: OffsetDateTime,
+    pub revision: String,
+}
+
+impl OidcProvider {
+    #[must_use]
+    pub fn snapshot(&self) -> serde_json::Value {
+        let mut value = self.specification();
+        value["revision"] = serde_json::json!(self.revision);
+        value
+    }
+    #[must_use]
+    pub fn specification(&self) -> serde_json::Value {
+        serde_json::json!({"id": self.id, "name": self.name, "issuer": self.issuer,
+            "authorization_endpoint": self.authorization_endpoint, "token_endpoint": self.token_endpoint,
+            "jwks_uri": self.jwks_uri, "client_id": self.client_id, "username_claim": self.username_claim,
+            "enabled": self.enabled, "allow_registration": self.allow_registration})
+    }
+}
+/// The exact reserved flow receipt and previewed public registration.
+#[derive(Debug)]
+pub struct OidcFlowWrite<'a> {
+    pub step: crate::architecture_flows::FlowApplyStep<'a>,
+    pub expected: Option<&'a serde_json::Value>,
 }
 
 /// Secret material is internal only; its `Debug` output is deliberately empty.
@@ -54,7 +77,7 @@ impl PgOidcProviders {
     pub async fn list(&self) -> Result<Vec<OidcProvider>, DomainError> {
         let rows = sqlx::query(
             "select provider_id, display_name, issuer, authorization_endpoint,
-                       token_endpoint, jwks_uri, client_id, username_claim, enabled, allow_registration, created_at
+                       token_endpoint, jwks_uri, client_id, username_claim, enabled, allow_registration, created_at, updated_at::text as resource_revision
                   from oidc_identity_providers where tenant_id = $1 order by provider_id",
         )
         .bind(self.tenant.as_str())
@@ -67,7 +90,7 @@ impl PgOidcProviders {
     pub async fn find(&self, id: &str) -> Result<Option<OidcProviderCredential>, DomainError> {
         let row = sqlx::query(
             "select provider_id, display_name, issuer, authorization_endpoint,
-                       token_endpoint, jwks_uri, client_id, username_claim, enabled, allow_registration, created_at,
+                       token_endpoint, jwks_uri, client_id, username_claim, enabled, allow_registration, created_at, updated_at::text as resource_revision,
                        client_secret_ciphertext, client_secret_nonce, kek_id
                   from oidc_identity_providers where tenant_id = $1 and provider_id = $2",
         )
@@ -110,12 +133,58 @@ impl PgOidcProviders {
         provider: &OidcProvider,
         secret: Option<&[u8]>,
     ) -> Result<(), DomainError> {
+        self.put_inner(provider, secret, None).await
+    }
+
+    pub async fn put_flow(
+        &self,
+        provider: &OidcProvider,
+        secret: Option<&[u8]>,
+        write: &OidcFlowWrite<'_>,
+    ) -> Result<(), DomainError> {
+        self.put_inner(provider, secret, Some(write)).await
+    }
+
+    // Credential reuse, optimistic metadata checks and provenance share the provider lock.
+    #[allow(clippy::too_many_lines)]
+    async fn put_inner(
+        &self,
+        provider: &OidcProvider,
+        secret: Option<&[u8]>,
+        flow: Option<&OidcFlowWrite<'_>>,
+    ) -> Result<(), DomainError> {
         let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
         sqlx::query("select pg_advisory_xact_lock(hashtext($1), hashtext('oidc-provider'))")
             .bind(self.tenant.as_str())
             .execute(&mut *tx)
             .await
             .map_err(to_domain_error)?;
+        if let Some(write) = flow {
+            let active: Option<bool> = sqlx::query_scalar(
+                "select apply_token=$4 and revision=$3 and apply_deadline>clock_timestamp() from architecture_flows where tenant_id=$1 and flow_id=$2 for update")
+                .bind(self.tenant.as_str()).bind(write.step.flow).bind(write.step.revision).bind(write.step.token)
+                .fetch_optional(&mut *tx).await.map_err(to_domain_error)?;
+            let reserved: bool = sqlx::query_scalar("select exists(select 1 from flow_resource_links where tenant_id=$1 and flow_id=$2 and node_id=$3 and resource_kind='identity_provider' and resource_id=$4 and relation='managed')")
+                .bind(self.tenant.as_str()).bind(write.step.flow).bind(write.step.node).bind(&provider.id)
+                .fetch_one(&mut *tx).await.map_err(to_domain_error)?;
+            if active != Some(true) || !reserved {
+                return Err(DomainError::Conflict(
+                    "exact active provider flow reservation required".into(),
+                ));
+            }
+            let row = sqlx::query("select provider_id,display_name,issuer,authorization_endpoint,token_endpoint,jwks_uri,client_id,username_claim,enabled,allow_registration,created_at,updated_at::text as resource_revision from oidc_identity_providers where tenant_id=$1 and provider_id=$2 for update")
+                .bind(self.tenant.as_str()).bind(&provider.id).fetch_optional(&mut *tx).await.map_err(to_domain_error)?;
+            let current = row
+                .as_ref()
+                .map(provider_from_row)
+                .transpose()?
+                .map(|provider| provider.snapshot());
+            if current.as_ref() != write.expected {
+                return Err(DomainError::Conflict(
+                    "provider changed after preview; no registration was overwritten".into(),
+                ));
+            }
+        }
         let previous: Option<StoredEnvelope> = sqlx::query_as(
             "select client_secret_ciphertext, client_secret_nonce, kek_id, issuer, client_id
                from oidc_identity_providers where tenant_id = $1 and provider_id = $2 for update",
@@ -190,7 +259,7 @@ impl PgOidcProviders {
                  client_secret_nonce = excluded.client_secret_nonce, kek_id = excluded.kek_id,
                  enabled = excluded.enabled,
                  allow_registration = excluded.allow_registration,
-                 username_claim = excluded.username_claim, updated_at = now()",
+                 username_claim = excluded.username_claim, updated_at = clock_timestamp()",
         )
         .bind(self.tenant.as_str())
         .bind(&provider.id)
@@ -209,6 +278,16 @@ impl PgOidcProviders {
         .execute(&mut *tx)
         .await
         .map_err(to_domain_error)?;
+        if let Some(write) = flow {
+            let changed = sqlx::query("update flow_resource_links set state='applied',last_applied_revision=$4,updated_at=clock_timestamp(),resource_revision=(select updated_at::text from oidc_identity_providers where tenant_id=$1 and provider_id=$6) where tenant_id=$1 and flow_id=$2 and node_id=$3 and exists(select 1 from architecture_flows where tenant_id=$1 and flow_id=$2 and apply_token=$5 and apply_deadline>clock_timestamp())")
+                .bind(self.tenant.as_str()).bind(write.step.flow).bind(write.step.node).bind(write.step.revision).bind(write.step.token).bind(&provider.id)
+                .execute(&mut *tx).await.map_err(to_domain_error)?.rows_affected();
+            if changed != 1 {
+                return Err(DomainError::Conflict(
+                    "provider apply lease expired; registration rolled back".into(),
+                ));
+            }
+        }
         tx.commit().await.map_err(to_domain_error)
     }
 
@@ -240,6 +319,7 @@ fn provider_from_row(row: &sqlx::postgres::PgRow) -> Result<OidcProvider, Domain
         enabled: row.try_get("enabled").map_err(to_domain_error)?,
         allow_registration: row.try_get("allow_registration").map_err(to_domain_error)?,
         created_at: row.try_get("created_at").map_err(to_domain_error)?,
+        revision: row.try_get("resource_revision").map_err(to_domain_error)?,
     })
 }
 

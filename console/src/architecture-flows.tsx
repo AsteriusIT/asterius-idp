@@ -1,3 +1,6 @@
+import { useUnsavedChanges } from './navigation-guard';
+import { IntegrationInspector } from './architecture-integrations';
+import { SecretInput } from './components/secret-input';
 import { FormSelect } from './components/ui/select';
 import { memo, useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
@@ -10,7 +13,7 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { mutate, read, type Session } from './api';
-import { bffPreset, connectionLabel, contextOnlyNode, contextOnlyConnection, validConnection, type ArchitectureNode, type Flow, type Graph, type Kind, type Mode, type Plan, type ResourceLink } from './architecture-model';
+import { bffPreset, integrationCredentials, missingIntegrationCredentials, connectionLabel, contextOnlyNode, contextOnlyConnection, validConnection, type ArchitectureNode, type Flow, type Graph, type Kind, type Mode, type Plan, type ResourceLink } from './architecture-model';
 import { hrefOf, paramsOf } from './routes';
 import { toast } from './components/ui/toast';
 import { Button, ConfirmDialog, Field, LoadFailure, Panel, Screen, Skeleton } from './ui';
@@ -20,15 +23,15 @@ const TYPES: Readonly<Record<Kind, string>> = {
   stream: 'Security event stream', identity_provider: 'External identity provider', user: 'User', gateway: 'API gateway',
 };
 const ICONS = { application: AppWindow, api: Database, group: Users, user: UserRound, role: ShieldCheck, stream: Radio, identity_provider: LogIn, gateway: Network };
-interface CanvasData extends Record<string, unknown> { label: string; kind: Kind; identifier: string; mode: Mode }
+interface CanvasData extends Record<string, unknown> { label: string; kind: Kind; identifier: string; mode: Mode; settings: Record<string, unknown> }
 const ArchitectureCard = memo(function ArchitectureCard({ data }: { data: CanvasData }): JSX.Element {
   const Icon = ICONS[data.kind];
   const leaf = ['role', 'user', 'stream'].includes(data.kind);
-  return <div className={`architecture-card ${data.kind === 'role' ? 'architecture-role-leaf' : ''} ${contextOnlyNode(data.kind) ? 'architecture-context-only' : ''}`}>
+  return <div className={`architecture-card ${data.kind === 'role' ? 'architecture-role-leaf' : ''} ${contextOnlyNode(data.kind, data.settings) ? 'architecture-context-only' : ''}`}>
     {data.kind !== 'identity_provider' && <Handle type="target" position={Position.Left} />}
     <span className="architecture-card-kind"><Icon size={18} aria-hidden="true" />{TYPES[data.kind]}</span>
     <strong>{data.label}</strong>
-    {data.kind !== 'role' && <span className="muted">{contextOnlyNode(data.kind) ? 'Context only' : data.kind === 'application' && data.mode === 'managed' ? 'Application' : data.identifier || 'Select to configure'}</span>}
+    {data.kind !== 'role' && <span className="muted">{contextOnlyNode(data.kind, data.settings) ? 'Context only' : data.kind === 'application' && data.mode === 'managed' ? 'Application' : data.identifier || 'Select to configure'}</span>}
     {!leaf && <Handle type="source" position={Position.Right} />}
   </div>;
 });
@@ -50,7 +53,7 @@ function FlowCanvas({ graph, writable, selected, selectedEdge, onEdgeSelect, onS
   useEffect(() => setNodes(previous => graph.nodes.map(node => {
     const old = previous.find(item => item.id === node.id);
     return { ...old, id: node.id, type: 'architecture', position: { x: node.x, y: node.y },
-      data: { label: node.label, kind: node.kind, identifier: node.identifier, mode: node.mode } };
+      data: { label: node.label, kind: node.kind, identifier: node.identifier, mode: node.mode, settings: node.settings } };
   })), [graph.nodes]);
   useEffect(() => setEdges(graph.edges.map(edge => {
     const from = graph.nodes.find(node => node.id === edge.source)?.kind;
@@ -117,7 +120,6 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
   const [connectionSource, setConnectionSource] = useState('');
   const [connectionTarget, setConnectionTarget] = useState('');
   const [pendingRemoval, setPendingRemoval] = useState<string | null>(null);
-  const [pendingNavigation, setPendingNavigation] = useState<string | null>(null);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [busy, setBusy] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -125,6 +127,10 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
   const [keyDrafts, setKeyDrafts] = useState<Record<string, string>>({});
   const hasInvalidKeys = graph.nodes.some(node => invalidKeys[node.id]);
   const [plan, setPlan] = useState<Plan | null>(null);
+  const [credentials, setCredentials] = useState<Record<string, string>>({});
+  const [applyError, setApplyError] = useState<string | null>(null);
+  const hasCredentials = Object.values(credentials).some(Boolean);
+  const leave = useUnsavedChanges(dirty || hasCredentials);
   const [links, setLinks] = useState<ResourceLink[]>([]);
   const [linkRefresh, setLinkRefresh] = useState(0);
   const [planning, setPlanning] = useState(false);
@@ -138,7 +144,7 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
     Promise.resolve().then(() => read(flowPath(target))).then(value => {
       if (!active) return;
       const item = value as Flow;
-      setFlow(item); setName(item.name); setGraph(item.graph); setDirty(false); setPlan(null);
+      setFlow(item); setName(item.name); setGraph(item.graph); setDirty(false); setPlan(null); setCredentials({}); setApplyError(null);
       const node = initialNode;
       setSelected(node && item.graph.nodes.some(entry => entry.id === node) ? node : null);
     }, error => setLoadError(error instanceof Error ? error.message : 'Architecture could not be opened'));
@@ -154,9 +160,11 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
     return () => { active = false; };
   }, [flow?.id, flow?.applied_revision, linkRefresh, session.workspace]);
   const open = (item: Flow): void => {
+    setCredentials({});
     setFlow(item); setName(item.name); setGraph(item.graph); setSelected(null); setSelectedEdge(null); setDirty(false); setPlan(null); setLinkRefresh(value => value + 1);
   };
   const create = (): void => {
+    setCredentials({}); setApplyError(null);
     setFlow(null); setName('Untitled architecture'); setGraph(EMPTY); setSelected(null); setDirty(false); setPlan(null); setLinks([]);
   };
   const template = (): void => {
@@ -173,7 +181,7 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
       { id: crypto.randomUUID(), source: group!, target: role! },
     ] });
   };
-  const change = useCallback((next: Graph): void => { setGraph(next); setDirty(true); setPlan(null); }, []);
+  const change = useCallback((next: Graph): void => { setCredentials({}); setGraph(next); setDirty(true); setPlan(null); }, []);
   const save = (): void => {
     if (!canWrite || hasInvalidKeys || !name.trim() || (!dirty && flow)) return;
     setBusy(true);
@@ -187,15 +195,17 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
   };
   const preview = (): void => {
     if (!flow) return;
-    setPlanning(true); setPlan(null);
+    setPlanning(true); setPlan(null); setApplyError(null);
     mutate(flowPath(flow.id) + '/plan', 'POST', session, { revision: flow.revision }).then(value => {
       setPlan(value as Plan);
     }, error => toast.error('Preview could not be built', error instanceof Error ? error.message : 'Try again')).finally(() => setPlanning(false));
   };
   const apply = (): void => {
-    if (!flow || !plan?.applicable) return;
-    setApplying(true);
-    mutate(flowPath(flow.id) + '/apply', 'POST', session, { revision: plan.revision, digest: plan.digest }).then(() => {
+    if (!flow || !plan?.applicable || missingIntegrationCredentials(plan, credentials)) return;
+    setApplying(true); setApplyError(null);
+    const applyCredentials = integrationCredentials(plan, credentials);
+    setCredentials({});
+    mutate(flowPath(flow.id) + '/apply', 'POST', session, { revision: plan.revision, digest: plan.digest, credentials: applyCredentials }).then(() => {
       setLinkRefresh(value => value + 1);
       toast.success('Architecture applied', 'Created resources are now linked to this flow.');
       read(flowPath(flow.id)).then(value => open(value as Flow), () => refresh());
@@ -203,7 +213,8 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
     }, error => {
       setLinkRefresh(value => value + 1);
       setPlan(null);
-      toast.error('Apply stopped', error instanceof Error ? error.message : 'Preview the flow again to inspect partial progress.');
+      const message = error instanceof Error ? error.message : 'Preview the flow again to inspect partial progress.';
+      setApplyError(message); toast.error('Apply stopped', message);
       read(flowPath(flow.id)).then(value => open(value as Flow), () => refresh());
     }).finally(() => setApplying(false));
   };
@@ -212,7 +223,7 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
     const id = crypto.randomUUID();
     const index = graph.nodes.length;
     const settings = initialSettings(kind);
-    change({ ...graph, nodes: [...graph.nodes, { id, kind, label: TYPES[kind], identifier: '', mode: kind === 'stream' || kind === 'identity_provider' || kind === 'user' || kind === 'gateway' ? 'reference' : 'managed', x: 60 + (index % 4) * 230, y: 80 + Math.floor(index / 4) * 150, settings }] });
+    change({ ...graph, nodes: [...graph.nodes, { id, kind, label: TYPES[kind], identifier: '', mode: kind === 'user' || kind === 'gateway' ? 'reference' : 'managed', x: 60 + (index % 4) * 230, y: 80 + Math.floor(index / 4) * 150, settings }] });
     setSelected(id);
   };
   const addBff = (): void => {
@@ -232,11 +243,11 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
   const removalNode = graph.nodes.find(node => node.id === pendingRemoval);
 
   useEffect(() => {
-    if (!dirty) return;
+    if (!dirty && !hasCredentials) return;
     const prevent = (event: BeforeUnloadEvent): void => { event.preventDefault(); };
     window.addEventListener('beforeunload', prevent);
     return () => window.removeEventListener('beforeunload', prevent);
-  }, [dirty]);
+  }, [dirty, hasCredentials]);
   useEffect(() => {
     const deleteSelection = (event: KeyboardEvent): void => {
       if (!selected && !selectedEdge) return;
@@ -266,8 +277,7 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
     return () => window.removeEventListener('keydown', handleKey);
   });
   const navigate = (href: string): void => {
-    if (dirty) setPendingNavigation(href);
-    else window.location.hash = href;
+    leave(() => { setCredentials({}); window.location.hash = href; });
   };
   if (loadError) return <Screen title="Architecture"><LoadFailure message={loadError} onRetry={() => window.location.reload()} /><a href={hrefOf('architecture')}>Back to architectures</a></Screen>;
   if (flowId && !flow) return <Skeleton rows={5} label="Loading architecture" />;
@@ -307,7 +317,7 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
           onKeyValidity={valid => setInvalidKeys(current => ({ ...current, [selectedNode.id]: !valid }))}
           updateSelected={updateSelected} onRemove={() => setPendingRemoval(selectedNode.id)} />}
         </div>}
-      {tab === 'review' && flow && <ReviewPanel flow={flow} dirty={dirty} planning={planning} applying={applying} canWrite={canWrite} plan={plan} preview={preview} apply={apply} />}
+      {tab === 'review' && flow && <ReviewPanel flow={flow} dirty={dirty} planning={planning} applying={applying} canWrite={canWrite} plan={plan} preview={preview} apply={apply} credentials={credentials} onCredential={(id, secret) => setCredentials(current => ({ ...current, [id]: secret }))} applyError={applyError} />}
       {tab === 'resources' && flow && <Panel title="Linked resources" description="Created resources keep this flow as their origin. Removing an object from the diagram never deletes its live resource.">
         {links.length === 0 ? <p className="muted">No resources linked yet. Apply a plan to create or attach them.</p> :
           <ul className="architecture-object-list">{links.map(link => <li key={link.node_id}>
@@ -323,10 +333,6 @@ function ArchitectureWorkspace({ session, flowId, editing, templateRequested, in
         {!flow && (tab === 'review' || tab === 'resources') && <p className="architecture-pane-content">Save this architecture first to review changes and track its resources.</p>}
       </aside>
     </div>
-    {pendingNavigation !== null && <ConfirmDialog title="Discard unsaved architecture changes?"
-      body="Leaving this architecture will discard changes that have not been saved as a draft."
-      confirmLabel="Discard and leave" onCancel={() => setPendingNavigation(null)}
-      onConfirm={() => { const href = pendingNavigation; setPendingNavigation(null); window.location.hash = href; }} />}
     {removalNode !== undefined && <ConfirmDialog
       title={links.some(link => link.node_id === removalNode.id) ? `Remove ${removalNode.label} from the diagram?` : `Delete ${removalNode.label} from the draft?`}
       body={links.some(link => link.node_id === removalNode.id)
@@ -373,6 +379,8 @@ function resourceHref(link: ResourceLink): string {
   if (link.resource_kind === 'application') return hrefOf('clients');
   if (link.resource_kind === 'api') return hrefOf('resources');
   if (link.resource_kind === 'group') return hrefOf('groups');
+  if (link.resource_kind === 'identity_provider') return hrefOf('oidc-providers');
+  if (link.resource_kind === 'stream') return hrefOf('ssf');
   if (link.resource_kind === 'role') {
     try {
       const [client] = JSON.parse(link.resource_id) as [string, string];
@@ -382,7 +390,7 @@ function resourceHref(link: ResourceLink): string {
   return hrefOf('architecture');
 }
 
-const IDENTIFIER_LABELS: Record<Kind, string> = { user: 'Username', gateway: 'Gateway address (optional)', api: 'API audience URL', role: 'Role name', group: 'Group machine name', application: 'Identifier', identity_provider: 'Identifier', stream: 'Identifier' };
+const IDENTIFIER_LABELS: Record<Kind, string> = { user: 'Username', gateway: 'Gateway address (optional)', api: 'API audience URL', role: 'Role name', group: 'Group machine name', application: 'Identifier', identity_provider: 'Provider ID', stream: 'Upstream transmitter issuer' };
 function NodeInspector({ selectedNode, canWrite, links, keyDraft, onKeyDraft, onKeyValidity, updateSelected, onRemove }: Readonly<{
   selectedNode: ArchitectureNode; canWrite: boolean; links: ResourceLink[]; keyDraft: string | undefined;
   onKeyDraft: (text: string) => void; onKeyValidity: (valid: boolean) => void;
@@ -390,10 +398,10 @@ function NodeInspector({ selectedNode, canWrite, links, keyDraft, onKeyDraft, on
 }>): JSX.Element {
   return <div className="architecture-inspector">
           <Field label="Display name">{props => <input {...props} value={selectedNode.label} disabled={!canWrite} onChange={event => updateSelected({ label: event.target.value })} />}</Field>
-          {(selectedNode.kind !== 'application' || selectedNode.mode === 'reference') &&
+          {(selectedNode.kind !== 'application' || selectedNode.mode === 'reference') && !(selectedNode.kind === 'stream' && selectedNode.settings.integration === true) &&
             <Field label={IDENTIFIER_LABELS[selectedNode.kind]}>{props => <input {...props} value={selectedNode.identifier} disabled={!canWrite} onChange={event => updateSelected({ identifier: event.target.value })} />}</Field>}
-          <Field label="Ownership">{props => <FormSelect {...props} value={selectedNode.mode} disabled={!canWrite || contextOnlyNode(selectedNode.kind)} onValueChange={value => updateSelected({ mode: value as Mode })} options={[{ value: 'managed', label: 'Create with flow' }, { value: 'reference', label: contextOnlyNode(selectedNode.kind) ? 'Diagram context only' : 'Existing reference' }]} />}</Field>
-          {(contextOnlyNode(selectedNode.kind)) &&
+          <Field label="Ownership">{props => <FormSelect {...props} value={selectedNode.mode} disabled={!canWrite || ['gateway', 'user'].includes(selectedNode.kind)} onValueChange={value => updateSelected({ mode: value as Mode })} options={[{ value: 'managed', label: 'Create with flow' }, { value: 'reference', label: contextOnlyNode(selectedNode.kind, selectedNode.settings) ? 'Diagram context only' : 'Existing reference' }]} />}</Field>
+          {(contextOnlyNode(selectedNode.kind, selectedNode.settings)) &&
             <p className="muted">Shown for architecture context. Apply does not configure or verify this integration.</p>}
           {selectedNode.kind === 'application' && selectedNode.mode === 'managed' && <>
             <LinesField key={`${selectedNode.id}:redirects`} label="Sign-in callback URLs" values={asStrings(selectedNode.settings.redirect_uris)} disabled={!canWrite} onChange={values => updateSelected({ settings: { ...selectedNode.settings, redirect_uris: values } })} />
@@ -411,7 +419,8 @@ function NodeInspector({ selectedNode, canWrite, links, keyDraft, onKeyDraft, on
           {selectedNode.kind === 'group' && <p className="muted">Use a lowercase machine name such as <code>engineering</code> as the stable identifier.</p>}
           {selectedNode.kind === 'api' && <p className="muted">Use the exact HTTPS audience URL. API-to-API and API-to-gateway links describe calls only; they do not grant access or configure token exchange.</p>}
           {selectedNode.kind === 'application' && selectedNode.mode === 'reference' && <p className="muted">Enter the existing application client ID as its identifier.</p>}
-          {selectedNode.kind === 'identity_provider' && <p>Connect this provider to a group or user. This describes where identities come from; it does not configure sign-in.</p>}
+          {['identity_provider', 'stream'].includes(selectedNode.kind) && <IntegrationInspector node={selectedNode} disabled={!canWrite} onChange={updateSelected} />}
+          {selectedNode.kind === 'identity_provider' && <p>Group and user connections describe where identities come from. They do not bind accounts or add group memberships.</p>}
           {selectedNode.kind === 'gateway' && <p>A gateway describes routing in your architecture. Connect applications or APIs to it, then connect it to downstream APIs. Apply does not deploy routes, credentials or access policies.</p>}
           {selectedNode.kind === 'application' && selectedNode.mode === 'managed' && <p className="muted">Creates a confidential FAPI client with private_key_jwt, PAR and DPoP. For a BFF, keep tokens and signing keys on the server and implement a browser session cookie in your application.</p>}
           {selectedNode.kind === 'role' && <p>A role is a leaf: one application defines it, and groups may grant it.</p>}
@@ -448,19 +457,23 @@ function initialSettings(kind: Kind): Record<string, unknown> {
     case 'application': return { redirect_uris: [], jwks_uri: '' };
     case 'api': return { scopes: [], default_token_lifetime_seconds: 300 };
     case 'role': return { description: '' };
+    case 'identity_provider': return { integration: true, issuer: '', client_id: '', enabled: false, allow_registration: false };
+    case 'stream': return { integration: true };
     default: return {};
   }
 }
 
-function ReviewPanel({ flow, dirty, planning, applying, canWrite, plan, preview, apply }: Readonly<{
+function ReviewPanel({ flow, dirty, planning, applying, canWrite, plan, preview, apply, credentials, onCredential, applyError }: Readonly<{
   flow: Flow; dirty: boolean; planning: boolean; applying: boolean; canWrite: boolean;
   plan: Plan | null; preview: () => void; apply: () => void;
+  credentials: Record<string, string>; onCredential: (id: string, secret: string) => void; applyError: string | null;
 }>): JSX.Element {
   return <Panel title="Preview and apply" description="Preview checks every object, connection and required permission. Applying uses this exact saved revision.">
         <div className="architecture-toolbar">
           <Button disabled={dirty || planning || applying} onClick={preview}>{planning ? 'Checking…' : 'Preview changes'}</Button>
-          {canWrite && plan?.applicable && <Button variant="primary" disabled={dirty || applying} onClick={apply}>{applying ? 'Applying…' : 'Apply this plan'}</Button>}
+          {canWrite && plan?.applicable && <Button variant="primary" disabled={dirty || applying || missingIntegrationCredentials(plan, credentials)} onClick={apply}>{applying ? 'Applying…' : 'Apply this plan'}</Button>}
         </div>
+        {applyError && <p role="alert">Apply stopped: {applyError}. Enter credentials again only after reviewing a fresh plan.</p>}
         {dirty && <p className="muted">Save the diagram before previewing it.</p>}
         {flow.applied_revision != null && <p className="muted">Last fully applied revision: {flow.applied_revision}.</p>}
         {flow.last_apply_error && <p role="alert">Last apply stopped: {flow.last_apply_error}. Preview again to inspect progress.</p>}
@@ -468,6 +481,7 @@ function ReviewPanel({ flow, dirty, planning, applying, canWrite, plan, preview,
           <p role="status">{plan.applicable ? 'Ready to apply.' : 'Resolve the conflicts below before applying.'} {plan.steps.length} planned items.</p>
           <ul className="architecture-plan-list">{plan.steps.map(step => <li key={step.id}>
             <strong>{step.label}</strong><span>{step.action}</span><span className="muted">{step.explanation || step.scope}</span>
+            {canWrite && step.kind === 'identity_provider' && ['create', 'retry', 'update'].includes(step.action) && <Field label={`${step.label}: ${step.live?.requires_credential ? 'Client secret required' : 'Replace client secret (optional)'}`} hint="Sent only when applying; never saved in the diagram or returned by the server. Values are cleared after every apply attempt." required={step.live?.requires_credential === true}>{props => <SecretInput {...props} value={credentials[step.id] ?? ''} maxLength={4096} autoComplete="new-password" disabled={applying} onChange={event => onCredential(step.id, event.target.value)} />}</Field>}
           </li>)}</ul>
         </>}
       </Panel>;

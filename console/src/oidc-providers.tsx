@@ -1,3 +1,4 @@
+import { FlowOrigin } from './flow-origin';
 import { SecretInput } from './components/secret-input';
 import { ProviderHealth } from './provider-health';
 import { useUnsavedChanges } from './navigation-guard';
@@ -122,7 +123,7 @@ export function OidcProviders({ session }: Readonly<{ session: Session }>): JSX.
         empty={<EmptyState title="No sign-in providers" body="Add a provider to let people sign in with an external account." action={canWrite ? <Button onClick={openCreate}>Add provider</Button> : undefined} />}
         columns={[
           { key: 'health', header: 'Metadata health', cell: provider => <ProviderHealth id={provider.id} session={session} /> },
-          { key: 'provider', header: 'Provider', sortBy: provider => provider.name, cell: provider => <><strong>{provider.name}</strong><br /><small>{provider.id}</small></> },
+          { key: 'provider', header: 'Provider', sortBy: provider => provider.name, cell: provider => <><strong>{provider.name}</strong><br /><small>{provider.id}</small><FlowOrigin session={session} kind="identity_provider" resource={provider.id} /></> },
           { key: 'issuer', header: 'Issuer', cell: provider => <><code>{provider.issuer}</code><br /><small>Client: {provider.client_id}</small><br /><small>Username claim: {provider.username_claim ?? 'Generated name'}</small></> },
           { key: 'status', header: 'Status', sortBy: provider => provider.enabled ? 1 : 0, cell: provider => <><Badge tone={provider.enabled ? 'ok' : 'neutral'}>{provider.enabled ? 'Enabled' : 'Disabled'}</Badge><br /><small>{provider.secret_configured ? 'Secret configured' : 'Secret needed'}</small><br /><small>{provider.allow_registration ? 'First login creates an account' : 'Existing linked accounts only'}</small></> },
           { key: 'callback', header: 'Callback URL', cell: provider => <code className="break-all">{provider.callback_url}</code> },

@@ -261,3 +261,180 @@ async fn delete_intent_blocks_verification_and_requires_exact_stream_for_removal
     );
     assert!(repository.find(PEER).await.expect("read stream").is_none());
 }
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL; focused flow-owned upstream setup integration"]
+// Setup ownership, uncertain retry and exact established receipt are one lifecycle.
+#[allow(clippy::too_many_lines)]
+async fn flow_setup_owns_uncertain_intent_and_never_adopts_a_replacement_stream() {
+    use asterius_store_pg::{FlowApplyStep, FlowLinkIntent, PgArchitectureFlows};
+    let (pool, repository) = setup().await.expect("DATABASE_URL");
+    assert!(
+        repository
+            .begin_delete(PEER, STREAM, at(1))
+            .await
+            .expect("delete intent")
+    );
+    assert!(
+        repository
+            .finish_delete(PEER, STREAM)
+            .await
+            .expect("remove fixture stream")
+    );
+    let tenant = TenantId::new("demo");
+    let flows = PgArchitectureFlows::new(pool);
+    let flow = uuid::Uuid::new_v4();
+    let node = "stream-node";
+    let now = OffsetDateTime::now_utc();
+    // Keep the lease current and force sub-microsecond precision so completion
+    // checks the original intent through PostgreSQL timestamp encoding.
+    let now = now
+        .replace_nanosecond(now.nanosecond() / 1_000 * 1_000 + 1)
+        .expect("bounded nanosecond value");
+    flows
+        .create(
+            &tenant,
+            flow,
+            "Security flow",
+            serde_json::json!({"schema_version":1,"nodes":[],"edges":[]}),
+            now,
+        )
+        .await
+        .expect("flow");
+    let token = flows
+        .begin_apply(&tenant, flow, 1, now)
+        .await
+        .expect("lease");
+    flows
+        .reserve(
+            &tenant,
+            flow,
+            token,
+            1,
+            &FlowLinkIntent {
+                node,
+                kind: "stream",
+                resource: PEER,
+                relation: "managed",
+            },
+            now,
+        )
+        .await
+        .expect("reservation");
+    let step = FlowApplyStep {
+        flow,
+        token,
+        revision: 1,
+        node,
+        now,
+    };
+    let intent = UpstreamSetupIntent {
+        peer_client_id: PEER.into(),
+        issuer: PEER.into(),
+        jwks_uri: format!("{PEER}/jwks"),
+        configuration_endpoint: format!("{PEER}/ssf/streams"),
+        status_endpoint: format!("{PEER}/ssf/streams/status"),
+        audience: "https://as.example/t/demo/ssf/receiver".into(),
+        events_requested: vec![SESSION_REVOKED.into()],
+        delivery_method: DELIVERY_POLL.into(),
+        started_at: now,
+    };
+    assert!(
+        repository.begin_setup(&intent).await.is_err(),
+        "standalone setup cannot adopt a pending flow reservation"
+    );
+    assert!(
+        repository
+            .begin_setup_for_flow(&intent, &step)
+            .await
+            .expect("owned intent")
+    );
+    assert_eq!(
+        repository.flow_origin(PEER).await.expect("pending origin"),
+        Some((flow, node.into()))
+    );
+    assert!(
+        !repository
+            .begin_setup_for_flow(&intent, &step)
+            .await
+            .expect("same-origin retry"),
+        "retry reconciles; it never permits another POST"
+    );
+    let stream = UpstreamStream {
+        peer_client_id: PEER.into(),
+        issuer: PEER.into(),
+        jwks_uri: intent.jwks_uri.clone(),
+        configuration_endpoint: intent.configuration_endpoint.clone(),
+        status_endpoint: intent.status_endpoint.clone(),
+        stream_id: "flow-stream".into(),
+        delivery_method: DELIVERY_POLL.into(),
+        poll_endpoint: Some(format!("{PEER}/ssf/poll")),
+        audience: intent.audience.clone(),
+        events_requested: intent.events_requested.clone(),
+        created_at: now,
+        updated_at: now,
+        last_polled_at: None,
+        deletion_started_at: None,
+        last_verified_at: None,
+        last_challenge_verified_at: None,
+    };
+    assert!(
+        repository
+            .finish_setup(&intent, &stream)
+            .await
+            .expect("commit owned stream")
+    );
+    assert_eq!(
+        repository
+            .flow_origin(PEER)
+            .await
+            .expect("established origin"),
+        Some((flow, node.into()))
+    );
+    flows
+        .complete_stream(&tenant, &step, PEER)
+        .await
+        .expect("atomic exact receipt");
+    let links = flows.links(&tenant, flow).await.expect("receipts");
+    assert_eq!(links[0]["resource_revision"], "flow-stream");
+    assert_eq!(links[0]["state"], "applied");
+    assert!(
+        repository
+            .begin_delete(PEER, "flow-stream", now)
+            .await
+            .expect("delete owned")
+    );
+    assert!(
+        repository
+            .finish_delete(PEER, "flow-stream")
+            .await
+            .expect("remove owned")
+    );
+    assert!(
+        repository
+            .begin_setup(&intent)
+            .await
+            .expect("independent replacement setup")
+    );
+    let replacement = UpstreamStream {
+        stream_id: "outside-stream".into(),
+        ..stream
+    };
+    assert!(
+        repository
+            .finish_setup(&intent, &replacement)
+            .await
+            .expect("replacement")
+    );
+    assert!(
+        repository
+            .flow_origin(PEER)
+            .await
+            .expect("origin")
+            .is_none()
+    );
+    assert!(
+        flows.complete_stream(&tenant, &step, PEER).await.is_err(),
+        "the old flow cannot adopt another caller's replacement stream"
+    );
+}

@@ -891,6 +891,88 @@ struct OidcDiscovery {
 }
 
 impl DeploymentOidcProviders {
+    async fn prepare_provider(
+        &self,
+        input: &asterius_admin_api::oidc_providers::ProviderInput,
+    ) -> Result<asterius_store_pg::OidcProvider, DomainError> {
+        use asterius_admin_api::oidc_providers::{discovery_url, validate_https_url};
+        crate::outbound::ssrf::check_url(&input.issuer).map_err(|_| {
+            DomainError::invalid("oidc_provider", "issuer is not a public HTTPS URL")
+        })?;
+        let url = discovery_url(&input.issuer);
+        let bytes =
+            self.outbound.fetch_json(&url).await.map_err(|_| {
+                DomainError::invalid("oidc_provider", "discovery could not be fetched")
+            })?;
+        let document: OidcDiscovery = serde_json::from_slice(&bytes)
+            .map_err(|_| DomainError::invalid("oidc_provider", "invalid discovery document"))?;
+        if document.issuer != input.issuer
+            || !document
+                .response_types_supported
+                .iter()
+                .any(|value| value == "code")
+        {
+            return Err(DomainError::invalid(
+                "oidc_provider",
+                "discovery issuer or response type mismatch",
+            ));
+        }
+        if document
+            .token_endpoint_auth_methods_supported
+            .as_ref()
+            .is_some_and(|methods| !methods.iter().any(|method| method == "client_secret_basic"))
+        {
+            return Err(DomainError::invalid(
+                "oidc_provider",
+                "discovery does not support client_secret_basic",
+            ));
+        }
+        if !document
+            .id_token_signing_alg_values_supported
+            .iter()
+            .any(|algorithm| matches!(algorithm.as_str(), "RS256" | "ES256" | "PS256"))
+        {
+            return Err(DomainError::invalid(
+                "oidc_provider",
+                "discovery has no supported ID token signing algorithm (RS256, ES256 or PS256)",
+            ));
+        }
+        if url::Url::parse(&document.authorization_endpoint).is_ok_and(|url| url.query().is_some())
+        {
+            return Err(DomainError::invalid(
+                "oidc_provider",
+                "authorization endpoint must not contain a query",
+            ));
+        }
+        for endpoint in [
+            &document.authorization_endpoint,
+            &document.token_endpoint,
+            &document.jwks_uri,
+        ] {
+            validate_https_url(endpoint)?;
+            crate::outbound::ssrf::check_url(endpoint).map_err(|_| {
+                DomainError::invalid(
+                    "oidc_provider",
+                    "discovery endpoint is not a public HTTPS URL",
+                )
+            })?;
+        }
+        Ok(asterius_store_pg::OidcProvider {
+            id: input.id.clone(),
+            name: input.name.clone(),
+            issuer: input.issuer.clone(),
+            authorization_endpoint: document.authorization_endpoint,
+            token_endpoint: document.token_endpoint,
+            jwks_uri: document.jwks_uri,
+            client_id: input.client_id.clone(),
+            username_claim: input.username_claim.clone(),
+            enabled: input.enabled,
+            allow_registration: input.allow_registration,
+            created_at: time::OffsetDateTime::now_utc(),
+            revision: String::new(),
+        })
+    }
+
     fn summary(
         provider: asterius_store_pg::OidcProvider,
         tenant_issuer: &str,
@@ -911,12 +993,55 @@ impl DeploymentOidcProviders {
             secret_configured: true,
             callback_url,
             created_at: provider.created_at,
+            revision: provider.revision,
         }
     }
 }
 
 #[async_trait::async_trait]
 impl asterius_admin_api::oidc_providers::ProviderAdministration for DeploymentOidcProviders {
+    async fn preview(
+        &self,
+        input: &asterius_admin_api::oidc_providers::ProviderInput,
+    ) -> Result<serde_json::Value, DomainError> {
+        Ok(self.prepare_provider(input).await?.specification())
+    }
+    async fn put_flow(
+        &self,
+        tenant: &TenantId,
+        _tenant_issuer: &str,
+        input: asterius_admin_api::oidc_providers::ProviderInput,
+        step: &asterius_admin_api::flows::ApplyStep,
+        expected: Option<&serde_json::Value>,
+        desired: &serde_json::Value,
+    ) -> Result<(), DomainError> {
+        let provider = self.prepare_provider(&input).await?;
+        if provider.specification() != *desired {
+            return Err(DomainError::Conflict(
+                "OIDC discovery changed after preview".into(),
+            ));
+        }
+        let write = asterius_store_pg::OidcFlowWrite {
+            step: asterius_store_pg::FlowApplyStep {
+                flow: step.flow,
+                token: step.token,
+                revision: step.revision,
+                node: &step.node,
+                now: step.now,
+            },
+            expected,
+        };
+        self.store
+            .scope(tenant.clone())
+            .oidc_providers(Arc::clone(&self.kek))
+            .put_flow(
+                &provider,
+                input.client_secret.as_ref().map(|secret| secret.as_bytes()),
+                &write,
+            )
+            .await
+    }
+
     async fn check(&self, tenant: &TenantId, id: &str) -> Result<serde_json::Value, DomainError> {
         let provider = self
             .store
@@ -1030,85 +1155,11 @@ impl asterius_admin_api::oidc_providers::ProviderAdministration for DeploymentOi
         tenant_issuer: &str,
         input: asterius_admin_api::oidc_providers::ProviderInput,
     ) -> Result<asterius_admin_api::oidc_providers::ProviderSummary, DomainError> {
-        use asterius_admin_api::oidc_providers::{discovery_url, validate_https_url};
-        crate::outbound::ssrf::check_url(&input.issuer).map_err(|_| {
-            DomainError::invalid("oidc_provider", "issuer is not a public HTTPS URL")
-        })?;
-        let url = discovery_url(&input.issuer);
-        let bytes =
-            self.outbound.fetch_json(&url).await.map_err(|_| {
-                DomainError::invalid("oidc_provider", "discovery could not be fetched")
-            })?;
-        let document: OidcDiscovery = serde_json::from_slice(&bytes)
-            .map_err(|_| DomainError::invalid("oidc_provider", "invalid discovery document"))?;
-        if document.issuer != input.issuer
-            || !document
-                .response_types_supported
-                .iter()
-                .any(|value| value == "code")
-        {
-            return Err(DomainError::invalid(
-                "oidc_provider",
-                "discovery issuer or response type mismatch",
-            ));
-        }
-        if document
-            .token_endpoint_auth_methods_supported
-            .as_ref()
-            .is_some_and(|methods| !methods.iter().any(|method| method == "client_secret_basic"))
-        {
-            return Err(DomainError::invalid(
-                "oidc_provider",
-                "discovery does not support client_secret_basic",
-            ));
-        }
-        if !document
-            .id_token_signing_alg_values_supported
-            .iter()
-            .any(|algorithm| matches!(algorithm.as_str(), "RS256" | "ES256" | "PS256"))
-        {
-            return Err(DomainError::invalid(
-                "oidc_provider",
-                "discovery has no supported ID token signing algorithm (RS256, ES256 or PS256)",
-            ));
-        }
-        if url::Url::parse(&document.authorization_endpoint).is_ok_and(|url| url.query().is_some())
-        {
-            return Err(DomainError::invalid(
-                "oidc_provider",
-                "authorization endpoint must not contain a query",
-            ));
-        }
-        for endpoint in [
-            &document.authorization_endpoint,
-            &document.token_endpoint,
-            &document.jwks_uri,
-        ] {
-            validate_https_url(endpoint)?;
-            crate::outbound::ssrf::check_url(endpoint).map_err(|_| {
-                DomainError::invalid(
-                    "oidc_provider",
-                    "discovery endpoint is not a public HTTPS URL",
-                )
-            })?;
-        }
+        let provider = self.prepare_provider(&input).await?;
         let repository = self
             .store
             .scope(tenant.clone())
             .oidc_providers(Arc::clone(&self.kek));
-        let provider = asterius_store_pg::OidcProvider {
-            id: input.id,
-            name: input.name,
-            issuer: input.issuer,
-            authorization_endpoint: document.authorization_endpoint,
-            token_endpoint: document.token_endpoint,
-            jwks_uri: document.jwks_uri,
-            client_id: input.client_id,
-            username_claim: input.username_claim,
-            enabled: input.enabled,
-            allow_registration: input.allow_registration,
-            created_at: time::OffsetDateTime::now_utc(),
-        };
         repository
             .put(
                 &provider,
@@ -1459,9 +1510,16 @@ impl asterius_admin_api::ssf::SsfAdministration for DeploymentSsf {
             } else {
                 "not_started"
             };
+            let origin = repository
+                .flow_origin(peer)
+                .await
+                .map_err(|_| Error::Unavailable)?;
             items.push(UpstreamPeerSummary {
                 peer_client_id: peer.to_owned(),
                 state,
+                stream_id: established.as_ref().map(|stream| stream.stream_id.clone()),
+                origin_flow: origin.as_ref().map(|(flow, _)| flow.to_string()),
+                origin_node: origin.map(|(_, node)| node),
                 expected_audience: crate::ssf_upstream::expected_audience(config, &tenant_entity),
                 allow_all_subjects: config.allow_all_subjects,
                 pending_since: pending
@@ -1482,6 +1540,59 @@ impl asterius_admin_api::ssf::SsfAdministration for DeploymentSsf {
             });
         }
         Ok(items)
+    }
+
+    async fn upstream_preview(
+        &self,
+        tenant: &TenantId,
+        peer: &ClientId,
+    ) -> Result<serde_json::Value, asterius_admin_api::ssf::UpstreamOperationError> {
+        use asterius_admin_api::ssf::UpstreamOperationError as Error;
+        let runtime = self.upstream.as_ref().ok_or(Error::Unavailable)?;
+        let config = runtime.peer(tenant, peer).ok_or(Error::Peer)?;
+        let tenant_entity = self
+            .tenants
+            .find_by_id(tenant)
+            .await
+            .map_err(|_| Error::Unavailable)?
+            .ok_or(Error::Peer)?;
+        crate::ssf_upstream::preview_poll_stream(&runtime.endpoints, &tenant_entity, config)
+            .await
+            .map_err(upstream_setup_error)
+    }
+
+    async fn upstream_setup_flow(
+        &self,
+        tenant: &TenantId,
+        peer: &ClientId,
+        step: &asterius_admin_api::flows::ApplyStep,
+    ) -> Result<(), asterius_admin_api::ssf::UpstreamOperationError> {
+        use asterius_admin_api::ssf::UpstreamOperationError as Error;
+        let runtime = self.upstream.as_ref().ok_or(Error::Unavailable)?;
+        let config = runtime.peer(tenant, peer).ok_or(Error::Peer)?;
+        let tenant_entity = self
+            .tenants
+            .find_by_id(tenant)
+            .await
+            .map_err(|_| Error::Unavailable)?
+            .ok_or(Error::Peer)?;
+        let step = asterius_store_pg::FlowApplyStep {
+            flow: step.flow,
+            token: step.token,
+            revision: step.revision,
+            node: &step.node,
+            now: step.now,
+        };
+        crate::ssf_upstream::create_poll_stream_for_flow(
+            &runtime.endpoints,
+            &tenant_entity,
+            config,
+            &runtime.poster,
+            &step,
+        )
+        .await
+        .map(|_| ())
+        .map_err(upstream_setup_error)
     }
 
     async fn upstream_setup(
@@ -3356,6 +3467,24 @@ impl AdminBackend for Deployment {
                 },
                 now,
             )
+            .await
+    }
+
+    async fn complete_flow_stream(
+        &self,
+        tenant: &TenantId,
+        step: &asterius_admin_api::flows::ApplyStep,
+        peer: &str,
+    ) -> Result<(), DomainError> {
+        let step = asterius_store_pg::FlowApplyStep {
+            flow: step.flow,
+            token: step.token,
+            revision: step.revision,
+            node: &step.node,
+            now: step.now,
+        };
+        asterius_store_pg::PgArchitectureFlows::new(self.store.pool().clone())
+            .complete_stream(tenant, &step, peer)
             .await
     }
 

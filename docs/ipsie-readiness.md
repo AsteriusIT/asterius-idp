@@ -2,12 +2,24 @@
 
 This is an OP-role gap matrix, not an IPSIE conformance statement. The
 [SL1 OpenID Connect draft](https://openid.github.io/ipsie-openid-sl1/draft-openid-ipsie-sl1-profile.html)
-(2 September 2025) incorporates the
-[Common Requirements draft](https://openid.github.io/ipsie-common-requirements-profile/draft-ipsie-common-requirements-profile.html)
-(20 August 2025). Both `latest` pages were checked on 26 September 2026. Both
-Internet-Draft snapshots have expired, and neither page is an Implementer's
-Draft. Clauses and interpretation may change. No metadata or console control
-claims an IPSIE profile today.
+now publishes the 29 September 2026 revision, expiring 2 April 2027. Its source
+repository HEAD checked on 8 October 2026 is
+`4130f7418c2944b150d585c8d4f26e4a11d7023e`; the fetched HTML SHA-256 is
+`21fafe24fdeffb29384cf1f7432b4404c65c0ec1cc68d9c8280ce838af0ceacf`.
+The [Common Requirements draft](https://openid.github.io/ipsie-common-requirements-profile/draft-ipsie-common-requirements-profile.html)
+still publishes 20 August 2025, expired 21 February 2026; fetched HTML SHA-256 is
+`5de8852b00e9c64b9a5a82bd97f478b3a71bfa80f1544aedc77bf980eab0a91f`.
+These pins record inspected documents, not a decision to adopt a revision.
+The older matrix remains candidate implementation evidence; user adoption of
+the newer SL1 revision is pending. No metadata or console control claims IPSIE.
+
+The newly inspected SL1 §3.2.1 adds these unresolved profile obligations:
+
+| Obligation in 29 September 2026 revision | Candidate gap |
+| --- | --- |
+| `session_expiry` at least `iat + 300` | Current configuration permits 60–299 seconds; those values cannot meet this revision. |
+| Satisfy one requested `acr_values` class or return an error | Existing essential ACR handling does not establish enforcement for every profile request. Audit and enforce an adopted profile boundary. |
+| Support a class requiring at least two distinct factors | Recorded evidence and an attainable two-factor ladder need explicit deployment and RP checks. |
 
 “Implemented” below means the named code path has the stated behavior, not
 that deployment or interoperability evidence has been collected. Relying-party
@@ -29,7 +41,7 @@ requirements are excluded unless they constrain something this OP offers.
 | ID-token `aud` is one string | `crates/oidc/src/tokens/id_token.rs` emits the registered client ID as a single JSON string. |
 | ID-token `auth_time` | The builder always emits the actual authentication time. Session and grant snapshot logic in `crates/server/src/http/issuance.rs` preserves it across refresh. |
 | ID-token `acr` and `amr` | ACR is assigned from the tenant's ladder and revalidated against recorded methods; unsupported essential ACR requests fail. ID-token AMR uses only IANA entries backed by the recorded ceremony: `pwd`, `otp`, `pop` for a verified WebAuthn signature, and `user` after verified user presence. The internal existing-session marker is omitted, and historical `swk` rows are read as key possession without asserting software storage. For clients listed in `ipsie_identity_only_client`, code and refresh ID-token issuance now fails closed unless the current ladder validates the recorded ACR and policy releases at least one evidence-backed IANA AMR value. The operator must configure an attainable ACR ladder with AMR release enabled and must reauthenticate clients with old or insufficient grant evidence. Ordinary OIDC clients retain optional claim behavior. This is a bounded candidate control, not full SL1 support. |
-| ID-token integer `session_expiry` | An operator may configure `[[tenant.ipsie_rp_session]]` with `client_id` and `lifetime_seconds` (60–86400) for a client also listed in `ipsie_identity_only_client`. Code-flow and refresh ID tokens for that client carry a server-issued integer Unix deadline equal to this ID token's `iat` plus the policy duration. A refreshed ID token therefore renews the RP session deadline; its `auth_time` still reports the original authentication. Unlisted clients omit the claim. The deadline is independent of OP browser session expiry and user claims. Migration 0128 archived historical user claims of this name, which cannot supply the server-issued value. This is a bounded claim issuer, not full IPSIE SL1 conformance. |
+| ID-token integer `session_expiry` | An operator may configure `[[tenant.ipsie_rp_session]]` with `client_id` and `lifetime_seconds` (60–86400) for a client also listed in `ipsie_identity_only_client`. Code-flow and refresh ID tokens for that client carry a server-issued integer Unix deadline equal to this ID token's `iat` plus the policy duration. A refreshed ID token therefore renews the RP session deadline; its `auth_time` still reports the original authentication. Unlisted clients omit the claim. The deadline is independent of OP browser session expiry and user claims. Migration 0128 archived historical user claims of this name, which cannot supply the server-issued value. This is a bounded claim issuer. Values below 300 seconds do not meet the inspected 29 September 2026 revision; no full IPSIE SL1 conformance. |
 
 ## SL1 §3.2.1: authorization-code obligations
 

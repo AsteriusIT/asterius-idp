@@ -93,6 +93,23 @@ impl PgSsfUpstreamStreams {
     /// another call already reserved this peer, or a stream already exists;
     /// the caller must reconcile or stop, never send a second create request.
     pub async fn begin_setup(&self, intent: &UpstreamSetupIntent) -> Result<bool, DomainError> {
+        self.begin_setup_owned(intent, None).await
+    }
+    pub async fn begin_setup_for_flow(
+        &self,
+        intent: &UpstreamSetupIntent,
+        step: &crate::FlowApplyStep<'_>,
+    ) -> Result<bool, DomainError> {
+        self.begin_setup_owned(intent, Some(step)).await
+    }
+    // Peer row serialization, active flow reservation and durable intent ownership
+    // must be checked before any caller can send an external create request.
+    #[allow(clippy::too_many_lines)]
+    async fn begin_setup_owned(
+        &self,
+        intent: &UpstreamSetupIntent,
+        owner: Option<&crate::FlowApplyStep<'_>>,
+    ) -> Result<bool, DomainError> {
         if intent.peer_client_id != intent.issuer
             || intent.events_requested.is_empty()
             || intent.events_requested.len() > 16
@@ -116,12 +133,41 @@ impl PgSsfUpstreamStreams {
             tx.rollback().await.map_err(to_domain_error)?;
             return Ok(false);
         }
+        let reservation: Option<(uuid::Uuid,String,String)> = sqlx::query_as("select flow_id,node_id,state from flow_resource_links where tenant_id=$1 and resource_kind='stream' and resource_id=$2 and relation='managed'")
+            .bind(self.tenant.as_str()).bind(&intent.peer_client_id).fetch_optional(&mut *tx).await.map_err(to_domain_error)?;
+        let owner_identity = owner.map(|step| (step.flow, step.node.to_owned()));
+        if let Some(step) = owner {
+            let active: bool = sqlx::query_scalar("select exists(select 1 from architecture_flows where tenant_id=$1 and flow_id=$2 and revision=$3 and apply_token=$4 and apply_deadline>clock_timestamp())")
+                .bind(self.tenant.as_str()).bind(step.flow).bind(step.revision).bind(step.token).fetch_one(&mut *tx).await.map_err(to_domain_error)?;
+            if !active || reservation.as_ref().map(|row| (row.0, row.1.clone())) != owner_identity {
+                return Err(DomainError::Conflict(
+                    "exact active flow stream reservation required".into(),
+                ));
+            }
+        } else if reservation.as_ref().is_some_and(|row| row.2 == "pending") {
+            return Err(DomainError::Conflict(
+                "stream setup belongs to an active architecture reservation".into(),
+            ));
+        }
+        let existing_owner: Option<(Option<uuid::Uuid>,Option<String>)> = sqlx::query_as("select origin_flow,origin_node from ssf_receiver_upstream_setup_intents where tenant_id=$1 and peer_client_id=$2")
+            .bind(self.tenant.as_str()).bind(&intent.peer_client_id).fetch_optional(&mut *tx).await.map_err(to_domain_error)?;
+        if existing_owner.is_some_and(|existing| {
+            existing
+                != (
+                    owner.map(|step| step.flow),
+                    owner.map(|step| step.node.to_owned()),
+                )
+        }) {
+            return Err(DomainError::Conflict(
+                "uncertain stream setup has another origin; reconcile it with its owner".into(),
+            ));
+        }
         let result = sqlx::query(
             "insert into ssf_receiver_upstream_setup_intents
                 (tenant_id, peer_client_id, issuer, jwks_uri,
                  configuration_endpoint, status_endpoint, audience,
-                 events_requested, delivery_method, started_at)
-             select $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+                 events_requested, delivery_method, started_at, origin_flow, origin_node)
+             select $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
               where not exists (
                   select 1 from ssf_receiver_upstream_streams
                    where tenant_id = $1 and peer_client_id = $2
@@ -138,11 +184,21 @@ impl PgSsfUpstreamStreams {
         .bind(&intent.events_requested)
         .bind(&intent.delivery_method)
         .bind(intent.started_at)
+        .bind(owner.map(|step| step.flow))
+        .bind(owner.map(|step| step.node))
         .execute(&mut *tx)
         .await
         .map_err(to_domain_error)?;
         tx.commit().await.map_err(to_domain_error)?;
         Ok(result.rows_affected() == 1)
+    }
+
+    pub async fn flow_origin(
+        &self,
+        peer: &str,
+    ) -> Result<Option<(uuid::Uuid, String)>, DomainError> {
+        sqlx::query_as("select origin_flow,origin_node from ssf_receiver_upstream_streams where tenant_id=$1 and peer_client_id=$2 and origin_flow is not null union all select origin_flow,origin_node from ssf_receiver_upstream_setup_intents where tenant_id=$1 and peer_client_id=$2 and origin_flow is not null")
+            .bind(self.tenant.as_str()).bind(peer).fetch_optional(&self.pool).await.map_err(to_domain_error)
     }
 
     /// Reads the exact pending intent that blocks another remote creation.
@@ -203,10 +259,13 @@ impl PgSsfUpstreamStreams {
                     status_endpoint, audience, events_requested,
                     delivery_method, started_at
                from ssf_receiver_upstream_setup_intents
-              where tenant_id = $1 and peer_client_id = $2 for update",
+              where tenant_id = $1 and peer_client_id = $2 and started_at = $3 for update",
         )
         .bind(self.tenant.as_str())
         .bind(&intent.peer_client_id)
+        // Compare using SQLx/PostgreSQL timestamp precision. An original
+        // now_utc intent can contain nanoseconds that timestamptz cannot store.
+        .bind(intent.started_at)
         .fetch_optional(&mut *tx)
         .await
         .map_err(to_domain_error)?;
@@ -219,7 +278,6 @@ impl PgSsfUpstreamStreams {
                 && row.5 == intent.audience
                 && row.6 == intent.events_requested
                 && row.7 == intent.delivery_method
-                && row.8 == intent.started_at
         });
         if !same
             || stream.peer_client_id != intent.peer_client_id
@@ -242,8 +300,10 @@ impl PgSsfUpstreamStreams {
                 (tenant_id, peer_client_id, issuer, jwks_uri,
                  configuration_endpoint, status_endpoint, stream_id,
                  delivery_method, poll_endpoint, audience, events_requested,
-                 created_at, updated_at, last_polled_at)
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                 created_at, updated_at, last_polled_at, origin_flow, origin_node)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+               (select origin_flow from ssf_receiver_upstream_setup_intents where tenant_id=$1 and peer_client_id=$2),
+               (select origin_node from ssf_receiver_upstream_setup_intents where tenant_id=$1 and peer_client_id=$2))
              on conflict (tenant_id, peer_client_id) do nothing",
         )
         .bind(self.tenant.as_str())
