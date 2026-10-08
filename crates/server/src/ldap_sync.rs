@@ -207,18 +207,34 @@ mod tests {
 
     #[tokio::test]
     async fn bind_secret_file_validation_preserves_bounds_and_safe_errors() {
-        let path = std::env::temp_dir().join(format!("asterius-owned-ldap-secret-{}", uuid::Uuid::new_v4()));
-        tokio::fs::write(&path, b"fixture-bind-secret\r\n").await.expect("write own fixture");
-        let password = read_bind_password(&path).await.expect("read bounded fixture");
-        assert!(password.as_str() == "fixture-bind-secret");
+        let path = std::env::temp_dir().join(format!(
+            "asterius-owned-ldap-secret-{}",
+            uuid::Uuid::new_v4()
+        ));
+        tokio::fs::write(&path, b"fixture-bind-secret\r\n")
+            .await
+            .expect("write own fixture");
+        let password = read_bind_password(&path)
+            .await
+            .expect("read bounded fixture");
+        assert_eq!(password.as_str(), "fixture-bind-secret");
         drop(password);
         for bytes in [vec![], vec![b'x'; 4_097], vec![b'\n'], vec![0xff]] {
-            tokio::fs::write(&path, &bytes).await.expect("replace own fixture");
-            let error = read_bind_password(&path).await.expect_err("invalid secret must fail before LDAP connection");
-            assert!(error.starts_with("LDAP bind secret file") || error == "cannot read LDAP bind secret file");
+            tokio::fs::write(&path, &bytes)
+                .await
+                .expect("replace own fixture");
+            let error = read_bind_password(&path)
+                .await
+                .expect_err("invalid secret must fail before LDAP connection");
+            assert!(
+                error.starts_with("LDAP bind secret file")
+                    || error == "cannot read LDAP bind secret file"
+            );
             assert!(!error.contains("fixture-bind-secret"));
         }
-        tokio::fs::remove_file(&path).await.expect("remove own fixture");
+        tokio::fs::remove_file(&path)
+            .await
+            .expect("remove own fixture");
         assert!(read_bind_password(&path).await.is_err());
     }
 }

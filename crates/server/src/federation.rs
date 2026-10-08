@@ -62,9 +62,14 @@ impl FederationEntities {
                 None
             } else {
                 match tenant.federation_signing_key_file.as_ref() {
-                    Some(path) => Some(Zeroizing::new(tokio::fs::read(path).await.map_err(|e| {
-                        format!("tenant {} Federation key file cannot be read: {e}", tenant.id)
-                    })?)),
+                    Some(path) => Some(Zeroizing::new(tokio::fs::read(path).await.map_err(
+                        |e| {
+                            format!(
+                                "tenant {} Federation key file cannot be read: {e}",
+                                tenant.id
+                            )
+                        },
+                    )?)),
                     None => None,
                 }
             };

@@ -378,7 +378,10 @@ mod tests {
             let mut original = event();
             original.event_type = event_type;
             let read = round_trip(&original).expect("a declared event must remain readable");
-            assert_eq!(read, original, "{event_type} lost its stored representation");
+            assert_eq!(
+                read, original,
+                "{event_type} lost its stored representation"
+            );
         }
     }
 
@@ -392,7 +395,7 @@ mod tests {
             occurred_at: OffsetDateTime::UNIX_EPOCH,
             event_type: "vc.issued",
             outcome: "success",
-            actor: br#"{"kind":"system"}"#,
+            actor: br#"{"type":"system","id":"credential-issuer"}"#,
             actor_chain: b"[]",
             subject: None,
             client: None,

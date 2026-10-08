@@ -410,9 +410,14 @@ mod tests {
             "assignment_generation": id, "assigned_reviewer": id,
             "snapshot": {}, "apply_status": "pending"
         });
-        for timestamp in [None, Some(serde_json::Value::Null),
-            Some(serde_json::json!("1970-01-01T00:00:00Z"))] {
-            let expected = timestamp.as_ref().and_then(serde_json::Value::as_str)
+        for timestamp in [
+            None,
+            Some(serde_json::Value::Null),
+            Some(serde_json::json!("1970-01-01T00:00:00Z")),
+        ] {
+            let expected = timestamp
+                .as_ref()
+                .and_then(serde_json::Value::as_str)
                 .map(|_| OffsetDateTime::UNIX_EPOCH);
             let mut review = review.clone();
             let mut item = item.clone();
