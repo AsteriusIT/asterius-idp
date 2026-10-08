@@ -1,0 +1,58 @@
+{
+  "recordedAt": "2026-10-08T18:26:32.886452+00:00",
+  "scope": "native_credential_validation_only",
+  "graphVersion": "v1.0",
+  "tenantId": "f3b3c6c2-ac86-462e-b68e-cfbed01ead3d",
+  "applicationTemplate": "8adf8e6e-67b2-4cf2-a259-e3dc5476c621",
+  "fixture": {
+    "name": "ast-entra-adapter-6c0867f02a6d7746",
+    "applicationId": "93d7ae85-4aa4-4732-8fa0-c1cf7e28ccff",
+    "servicePrincipalId": "94ba4b6a-b0f6-4b06-9747-eb1fa4a58c45",
+    "jobId": "scim.f3b3c6c2ac86462eb68ecfbed01ead3d.0f6ef9f0-bef4-4299-a04e-8f861541a762",
+    "jobTemplate": "scim",
+    "createdAt": "2026-10-08T18:20:41.242986+00:00",
+    "jobStateBeforeValidation": "Disabled"
+  },
+  "adapterBoundary": {
+    "standaloneAdapter": true,
+    "publicHttps": true,
+    "upstream": "dedicated tenant/client, private_key_jwt ES256 + DPoP; global SCIM If-Match unchanged",
+    "credential": "route-bound opaque private-file finite token; plaintext omitted"
+  },
+  "nativeCredentialValidation": {
+    "method": "POST",
+    "operation": "/servicePrincipals/{ownedId}/synchronization/jobs/{ownedJob}/validateCredentials",
+    "result": "passed",
+    "at": "2026-10-08T18:26:00.120006+00:00",
+    "jobStarted": false,
+    "credentialSettingsSaved": false
+  },
+  "unauthorizedActionsNotPerformed": [
+    "source user creation",
+    "source group creation",
+    "memberships",
+    "app assignments",
+    "provisioning job start",
+    "schema update",
+    "permission grants or elevation"
+  ],
+  "readOnlySchemaReview": {
+    "sourceAccountEnabledType": "Boolean",
+    "targetActiveType": "Boolean",
+    "defaultUserTarget": "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User",
+    "defaultUserMappings": 22,
+    "futureFullMapping": "4User+3Group candidate prepared privately, not applied",
+    "futureCompatibilityQuestion": "Enterprise schema envelope requires bounded review before lifecycle; User and msiam_access roles require explicit role selection"
+  },
+  "cleanup": {
+    "jobDeleted": true,
+    "servicePrincipalDeleted": true,
+    "applicationDeleted": true,
+    "verifiedAbsent": {
+      "servicePrincipal": true,
+      "application": true
+    },
+    "withinFourHourLimit": true
+  },
+  "acceptanceLimit": "Connection validation only. No native provisioning create/update/group/disable/delete/retry evidence; ast-9mjp and ast-p3p3 remain open until separately approved lifecycle."
+}
