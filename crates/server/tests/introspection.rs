@@ -379,7 +379,10 @@ async fn signed_introspection_refuses_unauthenticated_callers_before_token_reads
     let body = axum::body::Bytes::from(format!("token={}", fixture.access_token));
 
     let mut headers = form_headers();
-    headers.insert(header::ACCEPT, HeaderValue::from_static("application/token-introspection+jwt"));
+    headers.insert(
+        header::ACCEPT,
+        HeaderValue::from_static("application/token-introspection+jwt"),
+    );
 
     // Act
     let response = introspect(
