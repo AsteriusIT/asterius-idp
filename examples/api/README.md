@@ -42,7 +42,10 @@ route.
 The isolated playground uses `API_URL=<origin>/financial-api`,
 `WEBAPP_URL=<origin>/financial/`, `RESOURCE=<origin>/financial-api`, and
 `OIDC_INTERNAL_ISSUER=http://asterius.asterius.svc.cluster.local:9443/t/demo`.
-The gateway strips only the `/financial-api` prefix; the API listens on4000.
+The gateway strips only the `/financial-api` prefix; the API listens on 4000.
+Set `COOKIE_NAME=asterius_playground_financial` to isolate its browser sessions
+from other applications on the same hostname. The default is `financial_sid`;
+the login-state cookie uses `<COOKIE_NAME>_login`. Ports do not isolate cookies.
 Register the exact public callback and permit the financial resource with
 `openid accounts:read accounts:write`. For direct resource calls from a
 different registered client, add this API's client ID to the resource's

@@ -58,3 +58,13 @@ export function hasScope(claims, scope) {
 export function sameOriginWrite(req, origin) {
   return req.headers.origin === origin && (req.headers['content-type'] ?? '').split(';')[0] === 'application/json';
 }
+
+export function cookieValue(header = '', name) {
+  const values = String(header).split(';').flatMap((part) => {
+    const separator = part.indexOf('=');
+    return separator > 0 && part.slice(0, separator).trim() === name
+      ? [part.slice(separator + 1).trim()] : [];
+  });
+  // Refuse ambiguous same-name cookies from overlapping paths.
+  return values.length === 1 ? values[0] : undefined;
+}

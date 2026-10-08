@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createHash } from 'node:crypto';
 import { calculateJwkThumbprint, decodeJwt, exportJWK, generateKeyPair, SignJWT } from 'jose';
-import { OAuthRequests, verifyResourceProof, hasScope, sameOriginWrite } from './oauth.mjs';
+import { OAuthRequests, verifyResourceProof, hasScope, sameOriginWrite, cookieValue } from './oauth.mjs';
 
 test('financial OAuth nonce challenge retries exactly once with fresh signed assertions', async () => {
   const key = await generateKeyPair('ES256');
@@ -49,4 +49,14 @@ test('browser write controls reject cross-site, missing-origin and non-JSON writ
   assert(!sameOriginWrite({ headers: { origin: 'https://attacker.example', 'content-type': 'application/json' } }, origin));
   assert(!sameOriginWrite({ headers: { 'content-type': 'application/json' } }, origin));
   assert(!sameOriginWrite({ headers: { origin, 'content-type': 'text/plain' } }, origin));
+});
+
+test('financial cookie parsing isolates applications on the same host and refuses ambiguous cookies', () => {
+  const header = 'financial_sid=old-app; asterius_session=idp;asterius_playground_financial=new-app; asterius_playground_financial_login=owned-state';
+  assert.equal(cookieValue(header, 'asterius_playground_financial'), 'new-app');
+  assert.equal(cookieValue(header, 'asterius_playground_financial_login'), 'owned-state');
+  assert.equal(cookieValue(header, 'financial_sid'), 'old-app');
+  assert.equal(cookieValue(header, 'playground_financial'), undefined);
+  assert.equal(cookieValue(undefined, 'asterius_playground_financial'), undefined);
+  assert.equal(cookieValue('asterius_playground_financial=one; asterius_playground_financial=two', 'asterius_playground_financial'), undefined);
 });
