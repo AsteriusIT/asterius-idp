@@ -3013,3 +3013,22 @@ existing resource-server expiry/revocation semantics. Source provenance retains
 the exact SPIFFE domain/ID and provider without storing raw SVIDs. X.509-SVID
 client authentication, automatic federation, bundle URLs and Workload API
 watchers are outside this adapter.
+
+
+### Signing-key withdrawal and cached material
+
+The decrypted-key cache has a fixed lease. Before a cached key can sign, the
+server retains the exact tenant, key ID and algorithm row with a PostgreSQL
+`FOR SHARE` lock and confirms that it is active or retiring. The prepared signer
+retains that authority through the policy and task publication commits, including
+online Kubernetes binding persistence. Emergency retirement and purge update the
+same row: withdrawal that commits first refuses preparation; publication that
+acquires authority first makes withdrawal wait until the publication commits and
+the prepared signer is released. Routine rotation preserves published retiring
+overlap. Waiting and retries never extend the prepared cache lease.
+
+This governs new credential publication. A relying party that cached an earlier
+JWKS may continue to verify a previously issued credential until its cache or the
+credential expires. Removing a JWK does not guarantee immediate loss of external
+credential usability. Composed signing reserves three retained database
+connections plus one for fact reads; its configured pool minimum is four.

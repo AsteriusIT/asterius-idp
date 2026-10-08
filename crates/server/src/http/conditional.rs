@@ -1587,9 +1587,9 @@ impl asterius_domain::Signer for ConditionalSigner<'_> {
         if self.admission.is_some() {
             return Ok(None);
         }
-        if self.access.store.pool().options().get_max_connections() < 3 {
+        if self.access.store.pool().options().get_max_connections() < 4 {
             return Err(DomainError::Storage(
-                "composed signing requires database.max_connections >= 3".into(),
+                "composed signing requires database.max_connections >= 4".into(),
             ));
         }
         let admission = tokio::time::timeout(

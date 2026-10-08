@@ -16042,3 +16042,42 @@ db_test! {
         assert_eq!(disabled.iter().map(|user| user.username.as_str()).collect::<Vec<_>>(), vec!["zara"]);
     }
 }
+
+db_test! {
+    #[ignore = "slow: requires PostgreSQL and migrated isolated schema"]
+    async fn signing_authority_serializes_emergency_withdrawal_and_preserves_overlap(db) {
+        seed_tenant(&db.pool, "signing-fence").await;
+        let tenant = TenantId::new("signing-fence");
+        let repo = keys(&db.pool, tenant.as_str());
+        let store = TenantKeyStore::new(db.pool.clone(), kek(), Arc::new(PgAuditSink::new(db.pool.clone())));
+        let now = epoch();
+        let old = repo.rotate(SigningAlgorithm::EdDsa, operator(), now).await.expect("old").created.expect("created");
+        let (_, signing) = repo.active_signing_key(SigningAlgorithm::EdDsa).await.expect("key").expect("active");
+        let successor = repo.rotate(SigningAlgorithm::EdDsa, operator(), now).await.expect("stage").created.expect("successor");
+        repo.activate(&successor, operator(), now).await.expect("rotate");
+        // Normal rotation won first, but the cached old material still has
+        // exact published authority throughout the intentional overlap.
+        let authority = store.signing_authority(&tenant, &old, SigningAlgorithm::EdDsa).await.expect("retiring overlap");
+        let token = jws::sign(&signing, &old, "at+jwt", &json!({"sub":"alice"})).expect("sign");
+        let jwk = repo.published_keys(&tenant).await.expect("published").into_iter().find(|record| record.kid == old).expect("old published");
+        jws::parse(token.as_str()).expect("parse").verify(&verifying_key_from_jwk(&jwk.public_jwk)).expect("current published key verifies");
+
+        // The exact UPDATE lock used by retire/purge cannot be acquired while
+        // a prepared publication retains authority. NOWAIT makes this check
+        // deterministic without timing sleeps or leaving a blocked test task.
+        let mut withdrawal = db.pool.begin().await.expect("withdrawal");
+        let blocked = sqlx::query("select kid from signing_keys where tenant_id=$1 and kid=$2 for update nowait")
+            .bind(tenant.as_str()).bind(old.as_str()).execute(&mut *withdrawal).await.expect_err("withdrawal must wait");
+        assert_eq!(blocked.as_database_error().and_then(sqlx::error::DatabaseError::code).as_deref(), Some("55P03"));
+        withdrawal.rollback().await.expect("failed probe rollback");
+        assert!(store.signing_authority(&TenantId::new("other"), &old, SigningAlgorithm::EdDsa).await.is_err());
+        assert!(store.signing_authority(&tenant, &old, SigningAlgorithm::Es256).await.is_err());
+        drop(authority);
+        repo.retire(&old, operator(), now).await.expect("withdraw after publication");
+        assert!(store.signing_authority(&tenant, &old, SigningAlgorithm::EdDsa).await.is_err());
+        assert!(!published(&repo, tenant.as_str()).await.iter().any(|(kid, _)| kid == &old));
+        let reason = PurgeReason::parse("signing authority regression fixture").expect("reason");
+        repo.purge(&old, &reason, operator(), now).await.expect("purge");
+        assert!(store.signing_authority(&tenant, &old, SigningAlgorithm::EdDsa).await.is_err());
+    }
+}
