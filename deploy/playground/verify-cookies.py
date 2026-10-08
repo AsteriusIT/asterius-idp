@@ -110,6 +110,8 @@ def main():
             with response:
                 if response.code != 308 or response.headers.get('Location') != path + '/':
                     raise AssertionError(f'Gateway exposed internal redirect authority for {path}')
+                if response.headers.get('Cache-Control') != 'no-store':
+                    raise AssertionError(f'Gateway allows cached slash redirect for {path}')
             controls.append('relative-redirect:' + path)
         app_cookies = {
             "asterius_playground_demo_a": "dummy-demo-a-session",

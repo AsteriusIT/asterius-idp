@@ -74,8 +74,8 @@ The six Deployments have one replica each, `Recreate` strategy and small CPU/mem
 | Service | Image | Internal port / readiness | Public path |
 | --- | --- | --- | --- |
 | `gateway` | `asterius-playground-gateway:20261008` | 8080, `/healthz` | `/` and route proxy |
-| `demo-a` | `asterius-playground-sso:20261008` | 8080, `/demo-a/healthz` | `/demo-a/` |
-| `demo-b` | `asterius-playground-sso:20261008` | 8080, `/demo-b/healthz` | `/demo-b/` |
+| `demo-a` | `asterius-playground-sso:ast-qzw6-20261008` | 8080, `/demo-a/healthz` | `/demo-a/` |
+| `demo-b` | `asterius-playground-sso:ast-qzw6-20261008` | 8080, `/demo-b/healthz` | `/demo-b/` |
 | `financial-web` | `asterius-playground-web:20261008` | 8080, `/financial/` | `/financial/` |
 | `financial-api` | `asterius-playground-api:20261008` | 4000, `/health` | `/financial-api/` with prefix stripped upstream |
 | `protocol-lab` | `asterius-playground-protocols:20261008` | 8080, `/health` | `/protocols/` with prefix stripped upstream |
@@ -87,6 +87,8 @@ Browser cookies are scoped to a host, not a port. The playground therefore uses 
 After a rollout, run `python3 deploy/playground/verify-live.py`. It checks the deployed cookie names, completed app rollouts, actual login handoff cookies and the protocol page's `same-origin` referrer policy. It requires no user credentials and prints no cookie values. The browser form regression is `node scripts/testing/playground-form-origin-browser.mjs`; strict Origin and CSRF checks remain enabled.
 
 After an application restart, start sign-in again from its home page: pending login state is held in memory, so an old callback cannot finish. An IdP interaction page also requires its browser cookie; a copied interaction URL alone cannot resume sign-in. Report a fresh displayed support reference if a new journey fails, without sharing callback URLs or cookies.
+
+Application returns use the trailing-slash home URL directly. Gateway slash redirects are relative and carry `Cache-Control: no-store`, preserving the public HTTPS port and avoiding new cached internal-port redirects. If an older browser cache still sends `/demo-a` to port 8080, open `/demo-a/` at port 8446 directly. Refresh and session checks return home with a visible operation result; reauthentication and passkey requests show their completed or refused result after the IdP callback.
 
 The IdP's internal origin is `http://asterius.asterius.svc.cluster.local:9443/t/demo`. Client requests retain the canonical public issuer and expected protocol audience while using the internal connection path. Do not enable permissive TLS verification, rewrite the token issuer or use the internal service URL as the issuer in a registration.
 

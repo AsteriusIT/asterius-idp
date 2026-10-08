@@ -271,7 +271,8 @@ function page(name, body) {
 
 export async function startDemo(config = process.env) {
   const port = Number(config.PORT ?? '8080');
-  const externalUrl = config.EXTERNAL_URL ?? `http://127.0.0.1:${port}`;
+  const externalUrl = (config.EXTERNAL_URL ?? `http://127.0.0.1:${port}`).replace(/\/$/, '');
+  const homeUrl = `${externalUrl}/`;
   const name = config.APP_NAME ?? 'Asterius demo';
   const cookieName = config.COOKIE_NAME ?? `asterius_demo_${createHash('sha256').update(externalUrl).digest('hex').slice(0, 10)}`;
   const cookiePath = new URL(externalUrl).pathname.replace(/\/$/, '') || '/';
@@ -289,7 +290,14 @@ export async function startDemo(config = process.env) {
       const path = url.pathname.replace(new URL(externalUrl).pathname.replace(/\/$/, ''), '') || '/';
       const sid = cookies(request.headers.cookie)[cookieName];
       let session = sid ? sessions.get(sid) : undefined;
+      const resultPage = (status, message) => {
+        response.statusCode = status;
+        response.end(page(name, `<p role="status">${escapeHtml(message)}</p><p><a href="${escapeHtml(homeUrl)}">Return to application</a></p><p><a href="${escapeHtml(externalUrl)}/login">Sign in with Asterius</a></p>`));
+      };
       if (path === '/healthz') return void response.end('ok');
+      if (['/refresh', '/check-session', '/reauth', '/step-up', '/logout'].includes(path) && !session) {
+        return resultPage(401, 'This action requires an application session. Sign in first.');
+      }
       if (path === '/login' || path === '/reauth' || path === '/step-up') {
         const extra = path === '/reauth' ? { prompt: 'login', max_age: '0' } :
           path === '/step-up' ? {
@@ -300,14 +308,14 @@ export async function startDemo(config = process.env) {
             }),
           } : {};
         const started = await client.begin(extra);
-        pending.set(started.state, { ...started, createdAt: Date.now() });
+        pending.set(started.state, { ...started, sessionId: sid, action: path, createdAt: Date.now() });
         response.setHeader('set-cookie', sessionCookie(`${cookieName}_login`, started.state, cookiePath, externalUrl.startsWith('https:')) + '; Max-Age=600');
         response.writeHead(303, { location: started.authorize });
         return void response.end();
       }
       if (path === '/check-session' && session) {
         const started = await client.begin({ prompt: 'none' });
-        pending.set(started.state, { ...started, sessionId: sid, createdAt: Date.now() });
+        pending.set(started.state, { ...started, sessionId: sid, action: path, createdAt: Date.now() });
         response.setHeader('set-cookie', sessionCookie(`${cookieName}_login`, started.state, cookiePath, externalUrl.startsWith('https:')) + '; Max-Age=600');
         response.writeHead(303, { location: started.authorize });
         return void response.end();
@@ -319,23 +327,40 @@ export async function startDemo(config = process.env) {
         pending.delete(state);
         if (url.searchParams.has('error')) {
           if (flow.sessionId) sessions.delete(flow.sessionId);
-          response.writeHead(303, {
-            location: externalUrl,
-            'set-cookie': sessionCookie(cookieName, '', cookiePath, externalUrl.startsWith('https:')) + '; Max-Age=0',
-          });
-          return void response.end();
+          response.setHeader('set-cookie', sessionCookie(cookieName, '', cookiePath, externalUrl.startsWith('https:')) + '; Max-Age=0');
+          return resultPage(401, flow.action === '/check-session'
+            ? 'The identity provider did not confirm an active session. Sign in again.'
+            : 'The identity provider refused this sign-in or authentication request.');
         }
-        const tokens = await client.redeem(url.searchParams.get('code'), flow);
+        const code = url.searchParams.get('code');
+        if (!code) throw new Error('invalid authorization response');
+        const tokens = await client.redeem(code, flow);
         const idClaims = await client.verifyIdToken(tokens.id_token, flow.nonce);
+        if (flow.action === '/step-up' && idClaims.acr !== 'urn:asterius:acr:passkey') throw new Error('required authentication level was not confirmed');
         const id = flow.sessionId ?? randomUUID();
-        sessions.set(id, { ...tokens, dpop: flow.dpop, idClaims });
-        response.writeHead(303, { location: externalUrl, 'set-cookie': sessionCookie(cookieName, id, cookiePath, externalUrl.startsWith('https:')) });
+        const outcome = flow.action === '/check-session' ? 'The identity provider confirmed your session.'
+          : flow.action === '/reauth' ? 'Reauthentication completed.'
+          : flow.action === '/step-up' ? 'Passkey step-up completed.' : 'Sign-in completed.';
+        sessions.set(id, { ...tokens, dpop: flow.dpop, idClaims, outcome });
+        response.writeHead(303, { location: homeUrl, 'set-cookie': sessionCookie(cookieName, id, cookiePath, externalUrl.startsWith('https:')) });
         return void response.end();
       }
       if (path === '/refresh' && session) {
-        const refreshed = await client.refresh(session);
-        Object.assign(session, refreshed);
-        response.writeHead(303, { location: externalUrl });
+        let refreshed;
+        try {
+          refreshed = await client.refresh(session);
+          if (refreshed.token_type?.toLowerCase() !== 'dpop') throw new Error('invalid refreshed token binding');
+          if (refreshed.id_token) {
+            // OIDC refresh ID tokens omit nonce; verify issuer/audience/signature
+            // and retain the authenticated subject before replacing tokens.
+            const claims = await client.verifyIdToken(refreshed.id_token, undefined);
+            if (claims.sub !== session.idClaims.sub) throw new Error('refreshed identity changed');
+            session.idClaims = claims;
+          }
+        }
+        catch { return resultPage(502, 'Token refresh was refused or unavailable. No successful refresh was confirmed.'); }
+        Object.assign(session, refreshed, { outcome: 'Tokens refreshed successfully.' });
+        response.writeHead(303, { location: homeUrl });
         return void response.end();
       }
       if (path === '/logout' && session) {
@@ -349,21 +374,28 @@ export async function startDemo(config = process.env) {
         return void response.end();
       }
       if (path === '/logged-out') {
-        response.end(page(name, `<p class="ok">This application session is signed out.</p><p><a href="${escapeHtml(externalUrl)}">Return home</a></p>`));
+        response.end(page(name, `<p class="ok">This application session is signed out.</p><p><a href="${escapeHtml(homeUrl)}">Return home</a></p>`));
         return;
       }
+      if (path !== '/') return resultPage(404, 'This application action does not exist.');
       let userInfo;
       if (session) {
         try { userInfo = await client.userInfo(session); }
-        catch { sessions.delete(sid); session = undefined; }
+        catch {
+          sessions.delete(sid);
+          response.setHeader('set-cookie', sessionCookie(cookieName, '', cookiePath, externalUrl.startsWith('https:')) + '; Max-Age=0');
+          return resultPage(401, 'UserInfo could not confirm this application session. The token may be expired, revoked, or the identity provider unavailable. Sign in again.');
+        }
       }
+      const outcome = session?.outcome;
+      if (session) delete session.outcome;
       const body = session
         ? `<p class="ok">Signed in as ${escapeHtml(userInfo.sub)}</p><pre data-testid="userinfo">${escapeHtml(JSON.stringify(userInfo, null, 2))}</pre><nav><a href="${escapeHtml(externalUrl)}/refresh">Refresh tokens</a><a href="${escapeHtml(externalUrl)}/check-session">Check IdP session</a><a href="${escapeHtml(externalUrl)}/reauth">Force reauthentication</a><a href="${escapeHtml(externalUrl)}/step-up">Require passkey step-up</a><a href="${escapeHtml(externalUrl)}/logout">Revoke and log out</a></nav>`
         : `<p>Signed out.</p><p><a href="${escapeHtml(externalUrl)}/login">Sign in with Asterius</a></p>`;
-      response.end(page(name, body));
+      response.end(page(name, (outcome ? `<p role="status">${escapeHtml(outcome)}</p>` : '') + body));
     } catch (error) {
       response.statusCode = 500;
-      response.end(page(name, `<p>Request failed: ${escapeHtml(error.message)}</p>`));
+      response.end(page(name, `<p role="status">${error.message === 'invalid authorization response' ? 'Invalid or expired authorization response. Start sign-in again.' : 'The requested operation was refused or unavailable.'}</p><p><a href="${escapeHtml(homeUrl)}">Return to application</a></p>`));
     }
   };
 

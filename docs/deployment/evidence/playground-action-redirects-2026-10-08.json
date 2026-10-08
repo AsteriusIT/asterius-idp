@@ -1,0 +1,28 @@
+{
+  "ticket": "ast-qzw6",
+  "date": "2026-10-08",
+  "reported": "Correct action links followed by internal port8080 redirect or no visible outcome",
+  "source_fix": [
+    "All SSO home returns have trailing slash; registered callback/logout URLs unchanged",
+    "Gateway redirects relative and no-store",
+    "Actual action success or refusal shown; missing session and UserInfo refusal explicit",
+    "Callback state/cookie/issuer guards preserved, missing code refused"
+  ],
+  "image": "asterius-playground-sso:ast-qzw6-20261008",
+  "image_id": "sha256:49d6265f1a6530d0ff0de75e3ac34bed0e9f221abc22157b42df182523c3102c",
+  "demo_source_sha256": "d87e39cb6a4f25cb535fac46d375b7c003009da0c2c9820d3a4b2b92845ee475",
+  "checks": {
+    "sso_node_tests": 7,
+    "real_gateway_http_checks": 16,
+    "public_slash_redirects": 6,
+    "live_missing_session_action_checks": 8,
+    "demo_a_and_b_source_hash_match": true,
+    "live_deployment_cookie_verifier": "pass",
+    "controlled_chrome_cached_redirect": "Old cached permanent slashless redirect reproduced; direct trailing-slash home bypassed it"
+  },
+  "limits": [
+    "Controlled cache fixture demonstrates mechanism; actual user browser cache not inspected",
+    "Signed-in live actions require user confirmation; parent ticket remains in progress",
+    "No user credentials, token values, cloud writes, remote CI or Rust changes"
+  ]
+}
