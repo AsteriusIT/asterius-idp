@@ -25,10 +25,10 @@ function makePlan() {
       default_token_lifetime_seconds:300, clients:c.key === 'financial-api' ? [c.key] : []}))};
 }
 function createServer(plan) {
-  const requests = [], clients = new Map(), idempotency = new Map(), resources = new Map();
+  const requests = [], clients = new Map(), idempotency = new Map(), resources = new Map(), users = new Map();
   let nextId = 1;
-  const session = {username:'operator', workspace:'demo', csrf_token:'mock-csrf', scopes:['admin.clients:write','admin.resource_servers:write']};
-  const state = {requests, clients, idempotency, resources, session,
+  const session = {username:'operator', workspace:'demo', csrf_token:'mock-csrf', scopes:['admin.clients:write','admin.resource_servers:write','admin.users:write']};
+  const state = {requests, clients, idempotency, resources, users, session, userFailureStatus:null,
     failCreateAfterCommit:null, failAssignmentOnce:false, currentTransform:value => value};
   const response = (status, body) => ({ok:status >= 200 && status < 300, status, json:async () => clone(body)});
   state.fetch = async (url, options = {}) => {
@@ -45,6 +45,16 @@ function createServer(plan) {
     }
     const path = url.slice(apiBase.length);
     if (path === 'session' && method === 'GET') return response(200, session);
+    if (path === 'users' && method === 'POST') {
+      assert.ok(options.headers['Idempotency-Key']);
+      assert.deepEqual(Object.keys(body).sort(), ['claims','password','username']);
+      assert.deepEqual(body.claims, {name:'Playground user'});
+      if (state.userFailureStatus) return response(state.userFailureStatus, {error:{message:'mock user create refused'}});
+      if (users.has(body.username)) return response(409, {error:{message:'Username already exists'}});
+      const created = {username:body.username, user_id:'20000000-0000-4000-8000-000000000001'};
+      users.set(body.username, {...clone(created), password:body.password});
+      return response(201, created);
+    }
     if (path === 'clients' && method === 'POST') {
       const key = options.headers['Idempotency-Key'];
       assert.ok(key, 'every create must carry its fixed idempotency key');
@@ -84,11 +94,19 @@ function createServer(plan) {
   return state;
 }
 async function page(plan, server, {storage=new Map(), pageOrigin=origin} = {}) {
-  const elements = new Map(['status','plan','apply'].map(id => [id,{textContent:'', disabled:id === 'apply'}]));
-  const context = {fetch:server.fetch, location:{origin:pageOrigin}, document:{getElementById:id => elements.get(id)},
+  const elements = new Map(['status','plan','apply','create-user','user-form','user-status','tour-username','tour-password']
+    .map(id => [id,{textContent:'', value:'', disabled:id === 'apply' || id === 'create-user'}]));
+  let userKey = 0;
+  const context = {crypto:{randomUUID:() => `mock-user-attempt-${++userKey}`}, fetch:server.fetch, location:{origin:pageOrigin}, document:{getElementById:id => elements.get(id)},
     localStorage:{getItem:key => storage.get(key) ?? null, setItem:(key,value) => storage.set(key,String(value))}};
   await vm.runInNewContext(source, context, {timeout:1000, filename:'setup.js'});
-  return {elements, storage, apply:() => elements.get('apply').onclick(), status:() => elements.get('status').textContent};
+  return {elements, storage, apply:() => elements.get('apply').onclick(), status:() => elements.get('status').textContent,
+    createUser:async (username,password) => {
+      elements.get('tour-username').value = username; elements.get('tour-password').value = password;
+      let prevented = false;
+      await elements.get('user-form').onsubmit({preventDefault:() => {prevented = true;}});
+      assert.ok(prevented, 'user submission must suppress browser navigation');
+    }, userStatus:() => elements.get('user-status').textContent};
 }
 const writes = server => server.requests.filter(r => r.method !== 'GET');
 const resourceWrites = server => writes(server).filter(r => r.url.includes('/resource-servers/'));
@@ -186,4 +204,72 @@ test('an administrator missing resource-write permission cannot apply through th
   assert.equal(ui.elements.get('apply').disabled, true);
   assert.match(ui.status(), /write permissions required/);
   assert.equal(writes(server).length, 0);
+});
+
+
+test('ordinary user creation clears the password and never persists it in browser storage', async () => {
+  const plan = makePlan(), server = createServer(plan), ui = await page(plan, server);
+  await ui.apply(); // Exercise the page's actual localStorage write path too.
+  const password = 'mock-password-never-store-1234';
+  await ui.createUser('tour-owned-user', password);
+  assert.match(ui.userStatus(), /^Created tour-owned-user in demo with no administrator role/);
+  assert.equal(ui.elements.get('tour-password').value, '');
+  assert.equal(ui.elements.get('create-user').disabled, false);
+  assert.ok(!JSON.stringify([...ui.storage]).includes(password));
+  assert.ok(!ui.userStatus().includes(password));
+  const posted = server.requests.filter(r => r.url === apiBase+'users');
+  assert.equal(posted.length, 1);
+  assert.deepEqual(posted[0].body, {username:'tour-owned-user', password, claims:{name:'Playground user'}});
+  assert.equal(posted[0].method, 'POST');
+});
+
+test('HTTP failure never reports a user created and same-body retry keeps its attempt key', async () => {
+  const plan = makePlan(), server = createServer(plan), ui = await page(plan, server);
+  server.userFailureStatus = 503;
+  const password = 'mock-failed-password-1234';
+  await ui.createUser('tour-retry-user', password);
+  assert.match(ui.userStatus(), /503/);
+  assert.doesNotMatch(ui.userStatus(), /^Created /);
+  assert.equal(server.users.size, 0);
+  assert.equal(ui.elements.get('create-user').disabled, false);
+  assert.ok(!JSON.stringify([...ui.storage]).includes(password));
+  server.userFailureStatus = null;
+  await ui.createUser('tour-retry-user', password);
+  assert.match(ui.userStatus(), /^Created tour-retry-user/);
+  const posted = server.requests.filter(r => r.url === apiBase+'users');
+  assert.equal(posted.length, 2);
+  assert.equal(posted[0].headers['Idempotency-Key'], posted[1].headers['Idempotency-Key']);
+});
+
+test('existing username conflicts never reset its password; changed bodies use a new attempt key', async () => {
+  const plan = makePlan(), server = createServer(plan), ui = await page(plan, server);
+  const existing = {username:'tour-existing-user', user_id:'existing-user-id', password:'existing-password-unchanged'};
+  server.users.set(existing.username, clone(existing));
+  await ui.createUser(existing.username, 'mock-first-password-1234');
+  assert.match(ui.userStatus(), /409/);
+  assert.doesNotMatch(ui.userStatus(), /^Created /);
+  await ui.createUser(existing.username, 'mock-changed-password-5678');
+  assert.match(ui.userStatus(), /409/);
+  assert.deepEqual(server.users.get(existing.username), existing);
+  const posted = server.requests.filter(r => r.url.startsWith(apiBase+'users'));
+  assert.deepEqual(posted.map(r => [r.url,r.method]), [[apiBase+'users','POST'],[apiBase+'users','POST']]);
+  assert.notEqual(posted[0].headers['Idempotency-Key'], posted[1].headers['Idempotency-Key']);
+});
+
+test('user form validates the tour prefix and minimum password before a create request', async () => {
+  const plan = makePlan(), server = createServer(plan), ui = await page(plan, server);
+  await ui.createUser('existing-operator', 'mock-password-long-enough');
+  assert.match(ui.userStatus(), /Choose a tour-\* login/);
+  await ui.createUser('tour-owned-user', 'short');
+  assert.match(ui.userStatus(), /at least 12 characters/);
+  assert.equal(server.requests.filter(r => r.url === apiBase+'users').length, 0);
+});
+
+test('user creation requires fresh user-write authority and makes no mutation without it', async () => {
+  const plan = makePlan(), server = createServer(plan), ui = await page(plan, server);
+  server.session.scopes = ['admin.clients:write','admin.resource_servers:write'];
+  await ui.createUser('tour-owned-user', 'mock-password-long-enough');
+  assert.match(ui.userStatus(), /User write permission required/);
+  assert.equal(ui.elements.get('create-user').disabled, true);
+  assert.equal(server.requests.filter(r => r.url === apiBase+'users').length, 0);
 });
