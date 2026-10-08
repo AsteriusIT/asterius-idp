@@ -39,7 +39,9 @@ def main():
             response = error
         with response:
             if response.code != 308 or response.headers.get('Location') != path + '/':
-                raise RuntimeError(f'{path}: gateway redirect exposes the internal authority')
+                raise RuntimeError(f'{path}: expected a relative slash redirect; HTTP {response.code}')
+            if response.headers.get('Cache-Control') != 'no-store':
+                raise RuntimeError(f'{path}: gateway allows cached slash redirects')
     with opener.open(ORIGIN + '/protocols/', timeout=15) as response:
         if response.headers.get_all('Referrer-Policy') != ['same-origin']:
             raise RuntimeError('Protocol page referrer policy suppresses native form origins')
