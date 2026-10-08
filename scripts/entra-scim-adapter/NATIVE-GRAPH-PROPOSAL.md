@@ -63,3 +63,42 @@ Sources: [template instantiation](https://learn.microsoft.com/en-us/graph/api/ap
 [job creation](https://learn.microsoft.com/en-us/graph/api/synchronization-synchronization-post-jobs?view=graph-rest-1.0),
 [full schema replacement](https://learn.microsoft.com/en-us/graph/api/synchronization-synchronizationschema-update?view=graph-rest-1.0),
 [attribute mapping types](https://learn.microsoft.com/en-us/graph/api/resources/synchronization-attributemapping?view=graph-rest-1.0).
+
+## Complete disposable identity scope
+
+Read-only domain inventory on 2026-10-08 found three verified domains:
+`quentinrodicprooutlook.onmicrosoft.com`, `asterius.fr`, and initial domain
+`asteriusit.onmicrosoft.com`. The fixture selects the initial onmicrosoft domain,
+not the default custom domain. The manifest now includes complete creation bodies
+for two nonce-named users and one non-mail-enabled security group, two membership
+references, three assignments solely to the owned app, and bounded update/disable/
+unassignment operations for native lifecycle checks. Password placeholders are
+replaced with independent random private-file values; neither user is used to log in.
+No licenses are assigned; verify each returned user's assignedLicenses is empty and
+abort if tenant automatic policy grants a license. No mailbox or role is provisioned.
+
+The Custom applicationTemplate metadata GET has no instantiated application,
+servicePrincipal or appRoles. After approved instantiation, GET only the returned
+owned SP's appRoles. Select exactly one enabled role whose allowedMemberTypes
+contains User; ambiguous roles abort. If the returned collection is empty, the
+[documented default all-zero role](https://learn.microsoft.com/en-us/graph/api/resources/approleassignment?view=graph-rest-1.0)
+is used. This returned role parameter is not permission to create roles or grant
+Microsoft Graph application consent.
+
+The proposed single full-scope approval therefore covers one app/SP/SCIM job,
+two new source users, one new source security group, two own memberships and three
+assignments, mapping/credential settings, assigned-only scheduled/on-demand
+provisioning during a maximum four-hour supervised window, and owned cleanup.
+It covers updates, disabling, unassignment and deletion only for those fixture IDs.
+Recheck the tenant/domain and empty initial assignments before writes; no existing
+identities may be substituted. Group-based provisioning may require an existing
+Entra tenant license; no purchase or new license assignment is included.
+
+Cleanup first stops the job, revokes the adapter credential and HTTPS exposure,
+then removes recorded assignments, memberships/group and both users, the job, SP
+and application. Verify each owned ID absent. Source user deletion can leave a
+recoverable deleted directory object under Microsoft's retention; record this state
+and do not claim permanent purge or purge existing deleted identities. No secret
+appears in the recovery manifest. A failed cleanup retains owned IDs and requires
+completion before another invocation. See [user creation](https://learn.microsoft.com/en-us/graph/api/user-post-users?view=graph-rest-1.0)
+and [owned app role assignment](https://learn.microsoft.com/en-us/graph/api/serviceprincipal-post-approleassignedto?view=graph-rest-1.0).
