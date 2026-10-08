@@ -26,6 +26,8 @@ export class DpopClient {
  constructor(config){
   this.issuer=config.issuer.replace(/\/$/,'');this.base=`${this.issuer}/admin/api/v1/scim/v2`;
   const issuerUrl=new URL(this.issuer);if(issuerUrl.protocol!=='https:'||issuerUrl.search||issuerUrl.hash||issuerUrl.username||issuerUrl.password)fail('Exact HTTPS issuer required',500);
+  this.scopes=config.scopes??['admin.scim:read','admin.scim:write'];
+  if(!Array.isArray(this.scopes)||!this.scopes.length||this.scopes.some(scope=>typeof scope!=='string'||!/^admin\.[a-z_]+:(read|write)$/.test(scope)))fail('Bounded admin scopes required',500);
   this.id=config.clientId;this.kid=config.keyId;this.key=createPrivateKey(privateFile(config.keyFile));
   if(this.key.asymmetricKeyDetails?.namedCurve!=='prime256v1')fail('P-256 client key required',500);
   this.proofKey=generateKeyPairSync('ec',{namedCurve:'prime256v1'}).privateKey;this.jwk=createPublicKey(this.proofKey).export({format:'jwk'});
@@ -44,16 +46,24 @@ export class DpopClient {
    return {status:res.status,headers:{etag:res.headers.get('etag')},body:raw.length?JSON.parse(raw):null};
   }
  }
- async request(method,path,body,headers={}){
+ async authorize(){
   if(Date.now()>=this.expires){
    this.token='';const now=Math.floor(Date.now()/1000);
    const assertion=jwt(this.key,{typ:'JWT',alg:'ES256',kid:this.kid},{iss:this.id,sub:this.id,aud:this.issuer,iat:now,exp:now+60,jti:randomUUID()});
-   const form=new URLSearchParams({client_id:this.id,grant_type:'client_credentials',client_assertion_type:'urn:ietf:params:oauth:client-assertion-type:jwt-bearer',client_assertion:assertion,scope:'admin.scim:read admin.scim:write',resource:`${this.issuer}/admin/api/v1`});
+   const form=new URLSearchParams({client_id:this.id,grant_type:'client_credentials',client_assertion_type:'urn:ietf:params:oauth:client-assertion-type:jwt-bearer',client_assertion:assertion,scope:this.scopes.join(' '),resource:`${this.issuer}/admin/api/v1`});
    const res=await this.wire('POST',`${this.issuer}/token`,form.toString(),{'content-type':'application/x-www-form-urlencoded'});
    if(res.status!==200||res.body?.token_type?.toLowerCase()!=='dpop'||typeof res.body.access_token!=='string'||!Number.isFinite(res.body.expires_in)||res.body.expires_in<=0)fail('Scoped DPoP credentials refused',502);
    this.token=res.body.access_token;this.expires=Date.now()+Math.max(0,res.body.expires_in-15)*1000;
   }
+ }
+ async request(method,path,body,headers={}){
+  await this.authorize();
   return this.wire(method,`${this.base}${path}`,body===undefined?undefined:JSON.stringify(body),headers);
+ }
+ async admin(method,path,body,headers={}){
+  if(typeof path!=='string'||!/^\/[a-zA-Z0-9_/?=&%.:-]*$/.test(path)||path.startsWith('//')||path.includes('..'))fail('Bounded admin API path required',500);
+  await this.authorize();
+  return this.wire(method,`${this.issuer}/admin/api/v1${path}`,body===undefined?undefined:JSON.stringify(body),{'content-type':'application/json',...headers});
  }
 }
 function fields(kind){return kind==='Users'?['schemas','id','meta','userName','externalId','active','emails']:['schemas','id','meta','displayName','externalId','members'];}
