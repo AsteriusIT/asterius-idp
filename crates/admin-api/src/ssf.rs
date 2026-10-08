@@ -70,6 +70,9 @@ pub const MAX_BODY_BYTES: usize = 4 * 1024;
 pub struct UpstreamPeerSummary {
     pub peer_client_id: String,
     pub state: &'static str,
+    pub stream_id: Option<String>,
+    pub origin_flow: Option<String>,
+    pub origin_node: Option<String>,
     /// Exact transmitter-assigned audience accepted for this peer's SETs.
     pub expected_audience: String,
     /// Operator consent for an upstream stream with `default_subjects=ALL`.
@@ -132,11 +135,21 @@ pub fn parse_upstream_peer(body: &[u8]) -> Result<ClientId, AdminError> {
 /// `asterius_server::admin::Deployment`.
 #[async_trait::async_trait]
 pub trait SsfAdministration: Debug + Send + Sync {
+    /// Read-only, validated poll setup contract. Never exposes bearer paths.
+    async fn upstream_preview(&self, _tenant: &TenantId, _peer: &ClientId)
+        -> Result<serde_json::Value, UpstreamOperationError> {
+        Err(UpstreamOperationError::Unavailable)
+    }
+
     /// Configured upstream peers and durable setup state for this tenant.
     async fn upstream_peers(
         &self,
         _tenant: &TenantId,
     ) -> Result<Vec<UpstreamPeerSummary>, UpstreamOperationError> {
+        Err(UpstreamOperationError::Unavailable)
+    }
+
+    async fn upstream_setup_flow(&self, _tenant: &TenantId, _peer: &ClientId, _step: &crate::flows::ApplyStep) -> Result<(), UpstreamOperationError> {
         Err(UpstreamOperationError::Unavailable)
     }
 

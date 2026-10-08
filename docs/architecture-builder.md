@@ -8,12 +8,14 @@ nodes and connections.
 The implemented catalog provisions FAPI web applications, APIs with scopes,
 groups, application roles, application-to-API access, and group-to-role grants.
 An application needs either a public JWKS URI or inline public JWKS JSON, plus redirect URIs, before it can be applied.
-The server rejects secrets in node settings. Stream and external identity
-provider nodes document architecture only; they do not configure integrations.
+The server rejects secrets in node settings. Typed external OIDC provider and
+configured upstream SSF poll-stream nodes now support managed provisioning and
+existing live references. Older reference nodes without typed integration settings
+remain labelled diagram context until explicitly configured.
 
 ## Operator journey
 
-1. Use the **Architecture builder** network icon before the account menu in the top bar for the active tenant. Start from a blank canvas
+1. Open **Architecture** in the active tenant navigation. Start from a blank canvas
    or a template such as **Web app + API**.
 2. Add typed nodes for a web application, API/resource server, group, role and
    context-only signal integration or user. Select a node to inspect it in the right pane; click the canvas background for architecture settings. Roles are leaf nodes. External identity providers may connect only to groups or users. Select a connection to reveal its remove action. Unlinked draft objects can be deleted; removing linked objects preserves live resources. A node
@@ -31,8 +33,9 @@ provider nodes document architecture only; they do not configure integrations.
    the draft that remain live. Resource screens link back to their flow.
 
 The Web app + API template supplies the graph shape; the operator fills in
-tenant-specific identifiers and credentials before applying. The canvas does
-not treat a drawn external identity provider as connected.
+tenant-specific identifiers and credentials before applying. Provider/group/user and application/stream edges describe relationships only:
+they never link upstream accounts, grant memberships or prove event delivery.
+An explicitly configured integration node has its own reviewed apply operation.
 
 ## Graph model
 
@@ -171,3 +174,55 @@ selected connection from the diagram. Linked live resources are preserved.
 Escape returns to architecture settings; ? opens the keyboard shortcut guide.
 Single-key shortcuts do not run in form fields, and edit actions are disabled
 in the viewer or while saving/applying.
+
+
+## Sign-in provider and security stream adapters
+
+Choose **Create with flow** to manage a new integration, or **Existing reference**
+to reference a live integration in the same tenant. References keep existing
+configuration and credentials. Each integration requires its own read scope and
+managed apply requires `admin.oidc_providers:write` or `admin.ssf:write`, in addition
+to flow authority. Resource screens show backlinks to the source flow/node.
+
+An OIDC provider uses a stable provider ID, exact HTTPS issuer, upstream client ID,
+optional username claim, enabled state and first-login registration policy. The
+preview fetches guarded discovery and pins its exact public endpoints. Register
+this tenant's callback at the upstream provider before enabling sign-in. Enter
+initial or replacement credentials only in the **Preview and apply** review:
+credentials travel in an apply-only map, are encrypted with tenant/provider binding,
+are never returned or added to the graph, plan digest, export or resource receipt,
+and browser drafts are cleared after every apply attempt. A newly created provider
+or changed issuer/client ID requires a credential. An unchanged provider does not.
+
+Provider configuration, its opaque public revision and the applied origin receipt
+commit in one transaction beneath the existing provider lock. A missing credential,
+expired lease or stale preview rolls back that provider write. Any external edit,
+including a credential-only rotation, causes a conflict rather than an overwrite.
+After a lost response, an applied receipt can be read and a fresh preview can reuse
+the stored credential without retaining plaintext in browser memory.
+
+A stream node selects an **operator-configured upstream transmitter** and records
+its audience and ALL-subject consent as public pins. The operator continues to own
+its bearer credential, credential file path, trusted signing keys and subject policy.
+The adapter validates the configured poll contract, selects no arbitrary remote URL,
+and requires explicit ALL-subject consent for its live-delivery setup. Inbound SETs
+retain the existing EdDSA/ES256 profile. NONE enrollment is not silently advertised
+as a delivering stream.
+
+Before the first external create, the peer row serializes setup callers and the
+server records a durable flow-owned intent. A competing standalone setup cannot
+adopt an active flow reservation. The intent's owner transfers atomically to the
+established record; the resource receipt pins the exact stream ID. Retries reconcile
+the same intent by authenticated readback and never repeat an uncertain POST.
+Foreign intents, deletion-pending state, changed pins and replacement streams are
+conflicts. A successfully established/configuration-checked stream does **not** prove
+signed event delivery: request verification and poll in **Shared signals**, then
+inspect the recorded signed-verification timestamps.
+
+Applying a multi-resource flow can stop after earlier operations succeed. Those
+resources and their origin receipts remain visible; preview again before retrying.
+There is no automatic remote compensation or promised global rollback. For a stream
+that must be removed, use the explicit **Shared signals → Delete stream** control,
+which retains its delete intent until authenticated readback confirms removal. Keep
+the peer configured while reconciling an uncertain setup/delete. Removing a diagram
+node preserves the live resource and its durable origin.

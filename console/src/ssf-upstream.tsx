@@ -1,3 +1,4 @@
+import { FlowOrigin } from './flow-origin';
 /** Operator controls for explicitly configured upstream SSF transmitters. */
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
@@ -114,7 +115,7 @@ export function SsfUpstreamPeers({ session }: Readonly<{ session: Session }>): J
           rowKey={(peer) => peer.peer_client_id}
           empty={<EmptyState title="No upstream transmitter configured." body="Configure an upstream peer on the server before creating a stream." />}
           columns={[
-            { key: 'peer', header: 'Peer', sortBy: (peer) => peer.peer_client_id, cell: (peer) => <code>{peer.peer_client_id}</code> },
+            { key: 'peer', header: 'Peer', sortBy: (peer) => peer.peer_client_id, cell: (peer) => <><code>{peer.peer_client_id}</code><FlowOrigin session={session} kind="stream" resource={peer.peer_client_id} /></> },
             { key: 'state', header: 'State', sortBy: (peer) => peer.state, cell: (peer) => (
               <>
                 <Badge tone={peer.state === 'established' ? 'ok' : peer.state === 'pending_review' || peer.state === 'deletion_pending' ? 'warn' : 'neutral'}>

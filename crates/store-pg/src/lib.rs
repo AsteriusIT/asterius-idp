@@ -138,7 +138,7 @@ pub use oid4vp_transactions::{
     TRANSACTION_LIFETIME as OID4VP_TRANSACTION_LIFETIME,
 };
 pub use oidc_bindings::{OidcBinding, OidcRefusal, OidcResolution, PgOidcBindings};
-pub use oidc_providers::{OidcProvider, OidcProviderCredential, PgOidcProviders};
+pub use oidc_providers::{OidcFlowWrite, OidcProvider, OidcProviderCredential, PgOidcProviders};
 pub use oidc_upstream_pending::{ConsumedOidcPending, NewOidcPending, PgOidcUpstreamPending};
 pub use outbox::{
     Backoff, DEFAULT_LEASE, DEFAULT_MAX_ATTEMPTS, NewOutboxEntry, Outcome, PgOutbox, PgTransaction,

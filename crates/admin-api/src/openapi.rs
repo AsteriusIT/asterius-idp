@@ -218,6 +218,9 @@ fn operation_object(operation: &Operation) -> Value {
     agent_task_documentation(operation, &mut object);
     theme_documentation(operation, &mut object);
     workload_documentation(operation, &mut object);
+    if operation.id() == crate::FLOW_APPLY_ID {
+        object["requestBody"] = json!({"required":true,"content":{"application/json":{"schema":{"type":"object","additionalProperties":false,"required":["revision","digest"],"properties":{"revision":{"type":"integer","minimum":1},"digest":{"type":"string","pattern":"^[0-9a-f]{64}$"},"credentials":{"type":"object","maxProperties":100,"writeOnly":true,"additionalProperties":{"type":"string","minLength":1,"maxLength":4096,"writeOnly":true,"format":"password"},"description":"Apply-only upstream OIDC client credentials, keyed by changed managed provider node ID. Never persisted in graph, preview, provenance or replay output. Required for creation or changed issuer/client ID; omitted to preserve an existing credential."}}}}}});
+    }
     if let Some(request_body) = group_request_body(operation) {
         object["requestBody"] = request_body;
     }

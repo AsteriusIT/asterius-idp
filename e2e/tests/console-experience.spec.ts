@@ -2438,3 +2438,65 @@ test('every console destination retains hierarchy and reflows when its reads are
   }
   expect(errors).toEqual([]);
 });
+
+
+test('architecture OIDC integration keeps credentials apply-only and clears failed attempts', async ({ page }) => {
+  const id='a0000000-0000-4000-8000-000000000066';
+  let saved: any={id,name:'Integration architecture',revision:1,updated_at:'2026-10-08T00:00:00Z',graph:{schema_version:1,nodes:[{id:'provider',kind:'identity_provider',mode:'managed',label:'Corporate',identifier:'corp',x:0,y:0,settings:{integration:true,issuer:'https://login.example',client_id:'upstream',enabled:false,allow_registration:false}}],edges:[]}};
+  let apply: any=null; let storedDraft: any=null;
+  const errors=await prepare(page,(path,route)=>{
+    if(path==='session')return {body:{...session,scopes:[...session.scopes,'admin.flows:write','admin.oidc_providers:read','admin.oidc_providers:write']}};
+    if(path===`flows/${id}`){if(route.request().method()==='PUT'){storedDraft=route.request().postDataJSON();saved={...saved,...storedDraft,revision:2};}return {body:saved};}
+    if(path===`flows/${id}/plan`)return {body:{flow_id:id,revision:saved.revision,digest:'reviewed',applicable:true,steps:[{id:'provider',label:'Corporate',kind:'identity_provider',action:'create',scope:'admin.oidc_providers:write',resource_id:'corp',explanation:'Discovery checked; no account binding is created.',live:{requires_credential:true}}]}};
+    if(path===`flows/${id}/apply`){apply=route.request().postDataJSON();return {status:409,body:{error:{message:'Discovery changed; preview again'}}};}
+    return undefined;
+  });
+  await page.goto(`${entry}#/architecture?flow=${id}&mode=edit`);
+  await page.getByRole('button',{name:'Show object list',exact:true}).click();
+  await page.getByRole('button',{name:'Corporate · External identity provider',exact:true}).click();
+  await page.getByLabel('Upstream client ID',{exact:true}).fill('reviewed-client');
+  await page.getByRole('button',{name:'Save draft',exact:true}).click();
+  await expect.poll(()=>storedDraft?.graph.nodes[0].settings.client_id).toBe('reviewed-client');
+  await page.getByRole('button',{name:'Review changes',exact:true}).click();
+  await expect(page.getByRole('button',{name:'Apply this plan',exact:true})).toBeDisabled();
+  await page.getByLabel('Corporate: Client secret required',{exact:true}).fill('apply-only-browser-secret');
+  expect(JSON.stringify(storedDraft)).not.toContain('apply-only-browser-secret');
+  await expect(page.getByRole('button',{name:'Apply this plan',exact:true})).toBeEnabled();
+  await expect(page.getByRole('button',{name:'Apply this plan',exact:true})).toHaveCSS('opacity', '1');
+  expect((await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze()).violations).toEqual([]);
+  await page.getByRole('button',{name:'Apply this plan',exact:true}).click();
+  await expect.poll(()=>apply?.credentials.provider).toBe('apply-only-browser-secret');
+  expect(apply).toEqual({revision:2,digest:'reviewed',credentials:{provider:'apply-only-browser-secret'}});
+  await page.getByRole('button',{name:'Review changes',exact:true}).click();
+  await expect(page.getByLabel('Corporate: Client secret required',{exact:true})).toHaveValue('');
+  expect(await page.evaluate(()=>JSON.stringify(localStorage))).not.toContain('apply-only-browser-secret');
+  expect(errors).toEqual([]);
+});
+
+test('architecture stream integration pins configured peer policy without storing credentials', async ({ page }) => {
+  const id='a0000000-0000-4000-8000-000000000067';const peer='https://transmitter.example';
+  let saved: any={id,name:'Signals architecture',revision:1,updated_at:'2026-10-08T00:00:00Z',graph:{schema_version:1,nodes:[{id:'stream',kind:'stream',mode:'managed',label:'Security signals',identifier:'',x:0,y:0,settings:{integration:true}}],edges:[]}};
+  let written: any=null;
+  const errors=await prepare(page,(path,route)=>{
+    if(path==='session')return {body:{...session,scopes:[...session.scopes,'admin.flows:write','admin.ssf:read','admin.ssf:write']}};
+    if(path==='ssf/upstream/peers')return {body:{items:[{peer_client_id:peer,state:'not_started',expected_audience:'https://as.example/ssf/receiver',allow_all_subjects:true}]}};
+    if(path===`flows/${id}`){if(route.request().method()==='PUT'){written=route.request().postDataJSON();saved={...saved,...written,revision:2};}return {body:saved};}
+    if(path===`flows/${id}/plan`)return {body:{flow_id:id,revision:2,digest:'signals',applicable:true,steps:[{id:'stream',kind:'stream',label:'Security signals',action:'create',scope:'admin.ssf:write',resource_id:peer,explanation:'Setup does not prove signed event delivery. Request verification in Shared signals.'}]}};
+    return undefined;
+  });
+  await page.goto(`${entry}#/architecture?flow=${id}&mode=edit`);
+  await page.getByRole('button',{name:'Show object list',exact:true}).click();
+  await page.getByRole('button',{name:'Security signals · Security event stream',exact:true}).click();
+  await page.getByLabel('Configured upstream transmitter',{exact:true}).focus();
+  await page.keyboard.press('Space');
+  await expect(page.getByRole('option', {name: `${peer} · not_started`, exact:true})).toBeVisible();
+  await page.keyboard.press('End');
+  await page.keyboard.press('Enter');
+  await expect(page.getByText('The operator allows ALL-subject delivery.',{exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'Save draft',exact:true}).click();
+  await expect.poll(()=>written?.graph.nodes[0].identifier).toBe(peer);
+  expect(written.graph.nodes[0].settings).toEqual({integration:true,expected_audience:'https://as.example/ssf/receiver',allow_all_subjects:true});
+  await page.getByRole('button',{name:'Review changes',exact:true}).click();
+  await expect(page.getByText('Setup does not prove signed event delivery. Request verification in Shared signals.',{exact:true})).toBeVisible();
+  expect(errors).toEqual([]);
+});

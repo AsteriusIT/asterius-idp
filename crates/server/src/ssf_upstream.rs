@@ -680,6 +680,24 @@ fn parse_polled_set(response: &PostResponse) -> Result<Option<(String, String)>,
     Ok(Some((jti.clone(), token.to_owned())))
 }
 
+/// Read-only poll setup validation for a reviewable architecture plan. No
+/// credential is read and no remote create/verification request is performed.
+pub async fn preview_poll_stream(endpoints: &ClientEndpoints, tenant: &Tenant, config: &SsfUpstreamPeerConfig)
+    -> Result<serde_json::Value, SetupError> {
+    let peer = ClientId::new(config.issuer.as_str());
+    let (issuer, _jwks, scopes, metadata) = ssf_receiver::configured_peer(endpoints, tenant, &peer).await.map_err(|_| SetupError::Peer)?;
+    if issuer != config.issuer || !metadata.supports_poll || !metadata.subject_policy_allowed(config.allow_all_subjects) {
+        return Err(SetupError::Peer);
+    }
+    same_origin_management_endpoint(&metadata.configuration_endpoint, &issuer)?;
+    same_origin_management_endpoint(&metadata.status_endpoint, &issuer)?;
+    Ok(serde_json::json!({"peer_client_id": peer.as_str(), "issuer": issuer.as_str(),
+        "jwks_uri": metadata.jwks_uri, "configuration_endpoint": metadata.configuration_endpoint,
+        "status_endpoint": metadata.status_endpoint, "delivery_method": stream::DELIVERY_POLL,
+        "expected_audience": expected_audience(config, tenant), "allow_all_subjects": config.allow_all_subjects,
+        "account_disabled_events": scopes.contains(ssf_receiver::DISABLE_ACCOUNT_SCOPE)}))
+}
+
 /// Create one poll stream using a separate, operator-provided OAuth bearer
 /// file. The token is read only after the active registered peer and its
 /// metadata have been checked, then sent only to metadata-pinned configuration
@@ -689,9 +707,6 @@ fn parse_polled_set(response: &PostResponse) -> Result<Option<(String, String)>,
 /// The durable intent blocks a second POST after a crash. A retry reads the
 /// authenticated transmitter list and may adopt one exact match; zero or
 /// multiple matches require operator review and never trigger another POST.
-// Persisted intent, remote creation and reconciliation are one ordered
-// operation; splitting the function would obscure the crash-safe boundary.
-#[allow(clippy::too_many_lines)]
 pub async fn create_poll_stream(
     endpoints: &ClientEndpoints,
     tenant: &Tenant,
@@ -699,6 +714,17 @@ pub async fn create_poll_stream(
     poster: &HttpsPoster,
     now: OffsetDateTime,
 ) -> Result<asterius_store_pg::UpstreamStream, SetupError> {
+    create_poll_stream_owned(endpoints, tenant, config, poster, now, None).await
+}
+/// Architecture-origin setup uses the same guarded remote exchange and records
+/// its ownership before the first POST, so another caller cannot adopt it.
+pub async fn create_poll_stream_for_flow(endpoints: &ClientEndpoints, tenant: &Tenant, config: &SsfUpstreamPeerConfig, poster: &HttpsPoster, step: &asterius_store_pg::FlowApplyStep<'_>) -> Result<asterius_store_pg::UpstreamStream, SetupError> {
+    create_poll_stream_owned(endpoints, tenant, config, poster, step.now, Some(step)).await
+}
+// Keep discovery, durable intent, authenticated reconciliation and POST order
+// visible together; either caller must never repeat an uncertain create.
+#[allow(clippy::too_many_lines)]
+async fn create_poll_stream_owned(endpoints: &ClientEndpoints, tenant: &Tenant, config: &SsfUpstreamPeerConfig, poster: &HttpsPoster, now: OffsetDateTime, owner: Option<&asterius_store_pg::FlowApplyStep<'_>>) -> Result<asterius_store_pg::UpstreamStream, SetupError> {
     let peer = ClientId::new(config.issuer.as_str());
     let (issuer, _jwks, scopes, metadata) = ssf_receiver::configured_peer(endpoints, tenant, &peer)
         .await
@@ -715,12 +741,12 @@ pub async fn create_poll_stream(
         .store
         .scope(tenant.id.clone())
         .ssf_upstream_streams();
-    if repository
-        .find(peer.as_str())
-        .await
-        .map_err(|_| SetupError::Storage)?
-        .is_some()
-    {
+    if let Some(existing) = repository.find(peer.as_str()).await.map_err(|_| SetupError::Storage)? {
+        if let Some(owner) = owner {
+            if repository.flow_origin(peer.as_str()).await.map_err(|_| SetupError::Storage)? == Some((owner.flow,owner.node.to_owned())) {
+                return Ok(existing);
+            }
+        }
         return Err(SetupError::AlreadyConfigured);
     }
     let token = read_bearer_file(&config.bearer_token_file)?;
@@ -744,10 +770,10 @@ pub async fn create_poll_stream(
         delivery_method: stream::DELIVERY_POLL.to_owned(),
         started_at: now,
     };
-    let newly_reserved = repository
-        .begin_setup(&intent)
-        .await
-        .map_err(|_| SetupError::Storage)?;
+    let newly_reserved = match owner {
+        Some(owner) => repository.begin_setup_for_flow(&intent,owner).await,
+        None => repository.begin_setup(&intent).await,
+    }.map_err(|_| SetupError::Storage)?;
     let intent = if newly_reserved {
         intent
     } else {
