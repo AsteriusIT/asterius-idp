@@ -13,7 +13,23 @@ They require access to the private tailnet and an Asterius account. Sign in with
 
 The local deployment runbook records [routing and access](../deployment/local-tailscale.md). Confirm the current rollout's readiness and image evidence before testing; that runbook also contains historical deployments. This guide does not pin an image or assume optional features were enabled by the rollout.
 
-The deployment owner confirmed the local cluster context `kind-asterius-local`, namespace `asterius`, and configured tenant `demo` at `https://desktop-cpbptqn-1.tailacbb15.ts.net/t/demo`. The `admin` tenant is bootstrapped separately. The inspected configuration has an empty deployment feature set and no configured OIDC, SSF, SAML, LDAP, federation, IPSIE or Message Signing peers/selections. Treat those rows as setup-dependent; inspect current tenant settings and discovery before assuming availability. The existing Kubernetes online broker is separate from a verified human `kubectl` login.
+The deployment owner confirmed the local cluster context `kind-asterius-local`, namespace `asterius`, and configured tenant `demo` at `https://desktop-cpbptqn-1.tailacbb15.ts.net/t/demo`. The `admin` tenant is bootstrapped separately. The approved rollout will enable the seven deployment capabilities listed below; this configuration change is **planned, pending rollout verification**. No OIDC, SSF, SAML, LDAP, federation, IPSIE or Message Signing peers/selections are configured. Treat those integrations as setup-dependent; inspect current tenant settings and discovery before assuming availability. The existing Kubernetes online broker is separate from a verified human `kubectl` login.
+
+### Approved local protocol configuration
+
+| Deployment capability | Rollout status | What remains necessary |
+| --- | --- | --- |
+| `ciba` | Planned: enable | A registered CIBA client and supported separate-device approval flow. |
+| `device_flow` | Planned: enable | A client permitting device authorization and a second browser. |
+| `grant_management` | Planned: enable | Appropriate resource/scopes and a standing grant owned by the caller. |
+| `token_exchange` | Planned: enable | Explicit actor, resource and delegation policy. |
+| `ssf` | Planned: enable | A configured transmitter/receiver, trust and subject mapping. |
+| `request_object` | Planned: enable | A client that signs valid request objects inside PAR. |
+| `dpop_nonce` | Planned: enable | Clients must handle the server's nonce challenge and retry with a fresh DPoP proof. Reusing the challenged proof is insufficient. |
+
+mTLS, AuthZEN and self-registration remain disabled in the current deployment configuration. Their scenarios require a later configuration change. Tenant capability settings stay within the deployment's server ceiling; saving a tenant switch cannot enable a globally disabled protocol. The rollout verifier must replace the planned statuses with the observed configuration/discovery outcomes before these seven rows are treated as active.
+
+Local readiness reports `mail_transport: journal`. Invitation, verification and recovery messages are retrieved by an authorized operator from the local mail journal, rather than delivered through SMTP to an inbox. Their links and one-time values are private credentials: inspect only the disposable user's messages and do not publish journal content.
 
 For writes, use a dedicated sandbox tenant and records named `tour-*`. Keep a separate administrator session available. Use a second browser profile for the test user and a third for an auditor or restricted administrator. A tenant administrator's read permission does not imply write permission or deployment-wide authority.
 
@@ -33,7 +49,7 @@ Record the selected tenant, scenario number, time, expected and observed result,
 | Sandbox | A dedicated tenant, two disposable users, a group, an application, an exact resource audience, and sufficient administration scopes. Creation of the tenant requires deployment authority. |
 | Test RP | A callback application that validates signatures, issuer, audience, nonce and state, supports PKCE/PAR and the selected client authentication and sender constraint. Use [confidential-client integration](../integrating-a-confidential-client.md). |
 | API client | A dedicated automation client with only the required scopes, private keys held outside the repository, and DPoP where required. Read the deployed tenant's OpenAPI document and discovery rather than inventing payloads or endpoints. |
-| Mail | A sandbox SMTP sink or approved recipient inbox; invitations, verification and recovery need actual delivered mail. |
+| Mail | Authorized inspection of the local mail journal for the disposable user. Invitations, verification and recovery need the actual emitted message/link; readiness is not SMTP delivery evidence. A separately configured SMTP sink or inbox is an alternative fixture. |
 | Hardware | A browser-supported passkey authenticator and, for TOTP, an authenticator app. A virtual authenticator is a controlled test fixture rather than evidence for physical hardware. |
 | External peer | An explicitly configured HTTPS OIDC/SAML/SSF/SCIM/claims provider, wallet or resource server. Pin the issuer and expected keys/URLs. Public reachability alone does not establish trust. |
 | Operator access | Separate access for configuration files, Kubernetes manifests, certificates, monitoring and backups. Console actions do not automatically apply generated manifests to the cluster. |
@@ -58,7 +74,7 @@ These exercises use the sandbox and browser sessions above. Table actions are pr
 | 10 | **Users → Connected apps:** approve a test RP, inspect its grant and withdraw it. | The grant disappears or becomes inactive and online protected operations refuse it. | Test RP. Already issued offline JWTs retain their expiry bound. |
 | 11 | **Users → Profile:** disable and re-enable the disposable account; try fresh sign-in while disabled. | Disabled account cannot obtain new authority; re-enable is explicit and does not resurrect withdrawn grants. | Only the disposable user; restore active state for later exercises. |
 | 12 | **Invitations:** issue an invitation from the available user workflow; resend, accept once, and attempt reuse. | The user completes the intended enrollment; reuse/expired links are refused. | Mail. Cancel unused invitations; follow [invitations](../invitations.md). |
-| 13 | **Account email / verification / recovery:** verify an address, request an email change and password recovery, then complete the mailbox flows. | Only the proven address is verified; consumed links cannot repeat the operation. | Mail and disposable account. See [email change](../email-change.md) and [recovery](../runbooks/passkey-recovery.md). |
+| 13 | **Account email / verification / recovery:** verify an address, request an email change and password recovery, then complete the message-link flows from the local journal. | Only the proven address is verified; consumed links cannot repeat the operation. | Mail and disposable account. See [email change](../email-change.md) and [recovery](../runbooks/passkey-recovery.md). |
 | 14 | **Groups:** create a group, add both users, rename it and remove one member. | Stable group ID survives the rename; membership changes are reflected on reload. | Remove tour memberships, then delete the unused tour group at the end. |
 | 15 | **Roles / Groups → Roles / Users → Access roles:** define a tour role; grant it both directly and through the group; remove one source. | Effective access retains the remaining source and explains its origin. | Remove both sources before deleting the role. See [group administration](../runbooks/console-sso-administration.md). |
 | 16 | **Permissions:** repeat a read and an attempted write as an auditor/restricted administrator, including a direct API request. | Authorized reads succeed; server refuses unauthorized writes even if a URL is entered manually. | Separate restricted session; leave role assignments unchanged afterward. |
@@ -199,6 +215,6 @@ For browser writes, repeat one mutation without its write permission and one wit
 
 Remove fixtures in dependency order: stop downstream jobs/receivers, revoke task roots and grants, end disposable sessions, remove assignments/bindings and owned remote streams, then remove clients/trusts/groups and disable disposable users. Use supported APIs and receipts; a failed remote delete is unresolved cleanup, not a successful rollback. Do not delete audit history, the operator's sign-in methods, unrelated cluster resources or another administrator's records.
 
-The browser tour is ready to start once a sandbox and permissions are agreed. Mail, a test RP, authenticators, online Kubernetes helpers, provisioning receivers and external protocol peers must be supplied separately. Ask the operator which fixtures already exist before provisioning replacements. Dedicated conformance/Keycloak/SSF/Entra fixtures from earlier milestone verification were removed; their recorded results do not make them live dependencies today.
+The browser tour is ready to start once a sandbox and permissions are agreed. Authorized local mail-journal inspection, a test RP, authenticators, online Kubernetes helpers, provisioning receivers and external protocol peers must be available for their respective exercises. Ask the operator which fixtures already exist before provisioning replacements. Dedicated conformance/Keycloak/SSF/Entra fixtures from earlier milestone verification were removed; their recorded results do not make them live dependencies today.
 
 For each selected scenario, record **passed**, **failed**, or **not exercised** and its actual evidence. Keep failure support references for investigation. Existing [milestone evidence](../deployment/console-sso-milestone-evidence.md) has precise profile and artifact limits; it does not certify every optional protocol, cloud deployment, hardware combination or release package. Full native Entra lifecycle, release coverage proof and deferred maintainability remediation remain distinct follow-up work.
