@@ -1,87 +1,141 @@
 # Console and SSO milestone evidence
 
-This is the release audit snapshot for `ast-6uqw.15`, captured on 2026-09-20.
-It records what was actually observed; it is **not a release approval**. The
-candidate exists only in local commits at this snapshot, so no remote check is
-evidence for its exact revision.
+This 2026-10-08 audit supersedes the historical 2026-09-20 local release posture.
+The user explicitly authorized local merges without remote CI, necessary
+focused verification, standalone Sonar analysis with cleanup, and deferral of
+coverage proof and remaining maintainability debt for this local milestone.
+It is **not production release approval or OIDF certification**.
 
-## Local focused browser evidence
+## Exact source and local verification
 
-The integrated candidate through local merge `e4211ed` was exercised against a
-real Asterius process with the JavaScript Playwright project:
+Final production source is `18375e7e253eb47c37aa3745db8e0b88971ea6fa`.
+Later evidence-only merges do not constitute a new protocol runtime test. The
+root agent verified formatting, strict Clippy across all targets, and these
+separate focused test gates with mandatory source/secret audits:
 
-```sh
-E2E_RESET_DB=1 ./scripts/browser-tests.sh --project=js \
-  e2e/tests/groups.spec.ts e2e/tests/sso-demo.spec.ts e2e/tests/console.spec.ts \
-  --grep 'group membership|two confidential|branding|authentication assurance editor|policy editor'
-```
+| Focused gate | Passed | Scope and limit |
+| --- | ---: | --- |
+| Security, retention and architecture adapter database regressions | 86 | Includes the expressly approved ignored PostgreSQL cases; all passed. |
+| IPSIE and Message Signing compatibility | 55 | Explicit selected profiles and real signed request-object checks. |
+| SSF receiver and Basic-client response encryption | 35 | Actual extractor and schema fixes, including database regressions. |
+| Final Message Signing error handling | 35 | Mandatory PAR browser refusal and forbidden signed-object parameters. |
+| RFC 9701 and generated configuration reference | 60 | Includes current reference and mandatory audits; 4,453 tests intentionally excluded. |
+| Final Sonar fixes and audit inventory | 45 | Review timestamp codecs, explicit-null lifecycle context, asynchronous file reads and complete audit-event round trips; 4,472 tests intentionally excluded. |
 
-Five journeys passed: branding validation/save/runtime sign-in rendering,
-branding reset/refusal/unsaved state, authentication-assurance editing, managed
-group membership with effective application roles, and two-confidential-BFF
-SSO/logout. The policy-editor journey exposed an incorrect console URL: it sent
-the probe outside `/admin/api/v1` and received 404. The route was corrected and
-the failed journey was repeated with:
+These gates overlap. Their counts must not be added and reported as distinct
+coverage or a full suite. No full local Rust suite or remote GitHub workflow ran.
+Frontend architecture changes passed eight focused model checks and three
+browser journeys. The final Sonar frontend fixes passed typecheck/build, six
+focused model checks, and two browser journeys covering native input/button
+keyboard access, refused drafts, mobile themes and axe. Local Kubernetes
+v1.35 admission validation passed two tests covering 26 controls; the owned
+cluster was cleaned up.
 
-```sh
-E2E_RESET_DB=1 ./scripts/browser-tests.sh --project=js \
-  e2e/tests/console.spec.ts --grep 'policy editor refuses'
-```
+Historical milestone journeys remain separately recorded: six focused browser
+journeys covered branding save/reset and real sign-in rendering, assurance
+editing, managed group membership/effective roles, policy refusal and two
+confidential BFF SSO/logout. The group-name follow-up passed its focused browser
+lifecycle and frontend checks. These historical observations do not imply a
+fresh run of the entire browser matrix on the final source.
 
-That journey then passed (one passed, zero failed). Together these runs cover
-all six selected journeys, including the real saved branding at the sign-in
-runtime; they do not claim the unrun browser matrix.
+## Independent protocol outcomes
 
-The single permitted final targeted verifier (`./scripts/verify.sh console
-policy`) completed formatting and strict Clippy, then stopped after 66 passing
-tests and two integration failures. It found the branding URL placeholder in
-the embedded-bundle origin audit and a stale registration-policy assertion that
-still rejected the ADR-0014 `client_secret_basic` method. Both inconsistencies
-were corrected, and `cargo check` then passed. The verifier was not run a
-second time because repository policy permits exactly one final invocation;
-therefore this snapshot does not call the targeted Rust result green.
+The official pinned OIDF suite `release-v5.2.4` ran both plans on the same exact
+GNU runtime source `0b4c7a4a4486fb981ac18dac39b9a8431065accc`:
 
-The subsequent group-name usability follow-up passed all 48 console unit tests,
-the production TypeScript/Vite build, and the focused Chromium group lifecycle
-(one passed, zero failed). That journey now searches and assigns a group by its
-display and machine names, observes those names in effective-role provenance,
-and removes the membership without presenting a group UUID. Its one targeted
-verifier completed formatting and strict Clippy, then reported 32 passing
-source audits and one failing route assertion because the assertion had not
-seeded a group-role assignment. The fixture and assertion were corrected and
-the corrected focused assertion passed (one passed, zero failed), followed by
-`cargo check -p asterius-admin-api`; under the one-verifier rule the verifier
-itself was not rerun, so this follow-up does not claim a green full targeted
-Rust result.
+- Security Profile: all 56 modules executed, 50 PASSED, 4 REVIEW, 1 WARNING,
+  1 SKIPPED, zero FAILED.
+- Message Signing: all 70 modules executed, 63 PASSED, 4 REVIEW, 1 WARNING,
+  2 SKIPPED, zero FAILED.
 
-## Remote evidence and disposition
+Both repository gates exited zero with empty waiver lists. The four REVIEW
+pages in each plan were inspected against captured HTTP and HTML: missing PAR
+and another client's handle refused with HTTP400; reused and expired handles
+refused with HTTP404. Each browser stayed on the local authorization error
+page. Official REVIEW results are preserved, not relabelled as PASSED. The
+warning is the `sid` extension; RSA negative modules were skipped because the
+client fixture used ES256. No RSA interoperability, OIDF submission approval or
+certification is claimed. See the
+[complete sanitized plan outcomes](../integrations/evidence/oidf-fapi-2026-10-08.json).
 
-| Evidence | Revision and time | Observed outcome | Release meaning |
-| --- | --- | --- | --- |
-| Required CI, [run 35490524519](https://github.com/AsteriusIT/asterius-idp/actions/runs/35490524519) | `f7c8d734`, 2026-09-20 | Red | It predates the local milestone and cannot clear it. |
-| FAPI conformance, [run 35500540377](https://github.com/AsteriusIT/asterius-idp/actions/runs/35500540377) | remote `main`, 2026-09-20 | Red: 10 failed modules and interrupted modules | [Issue #72](https://github.com/AsteriusIT/asterius-idp/issues/72) is the existing linked release blocker. |
-| Sonar quality gate | `f7c8d734`, 2026-09-20 05:00 UTC | Green | Useful historical evidence only; it is not a local-candidate analysis. |
-| Supply-chain audit, run 35507462902 | remote `main`, 2026-09-20 | Green | It covers its remote revision, not this candidate. |
-| Nightly fuzzing, run 35497801255 | remote `main`, 2026-09-20 | Green | It covers its remote revision, not this candidate. |
+The [RFC 9701 consumer](../integrations/evidence/rfc9701-independent-consumer-2026-10-08.json)
+passed 13 independent controls on source `97ac7245`, separately from the 126
+OIDF modules. The [provider-command consumer](../integrations/evidence/provider-commands-2026-10-08.json)
+passed 25 controls. Native and independent
+[SSF lifecycle](../integrations/evidence/ssfgo-asterius-lifecycle-2026-10-08.json),
+[native SSF push](../integrations/evidence/ssfgo-native-push-2026-10-08.json),
+[Keycloak OIDC/JWE adversarial callbacks](../integrations/evidence/keycloak-oidc-adversarial-2026-10-08.json)
+and [selected IPSIE RPs](../integrations/evidence/ipsie-selected-rp-2026-10-08.json)
+retain their own exact revisions and bounded profile assertions. They do not
+certify every advertised standard or the final build merely because its source
+includes their fixes.
 
-The Sonar analysis reports no bugs, vulnerabilities or unreviewed security
-hotspots. Its 48 unresolved findings are 47 major and one minor code smells;
-the bounded dispositions and ownership are the already closed `ast-4p31`
-remediation workstreams. The gate is green for `f7c8d734`, but Sonar must still
-analyse the exact release candidate before this ticket can close.
+The final GNU artifact was built with fresh embedded console assets from
+`18375e7e`: image `asterius-idp:local-ticket-verified-release-20261008`, binary
+SHA256 `cf4d4872108b09b53ba9cbad9cea7b0d860f555befbe97c8c4d8194a45f14a03`.
+This build is not an additional runtime interoperability run. Default musl
+Dockerfile packaging is not validated by this evidence. Owned protocol and
+selected-profile runtimes, databases, test containers and public fixture routes
+were removed; pre-existing user services and Serve ports were preserved.
 
-[ADR-0015](../adr/0015-certify-the-fapi-profile-only.md), delivered and closed
-as `ast-p2l.2`, fixes the claim boundary: only the production FAPI 2.0 Security
-Profile path using `private_key_jwt` and DPoP is targeted for certification.
-There is no `conformance_mode` or non-PAR test exception, and the optional
-standard OIDC profile from ADR-0014 is outside that certification claim.
+## Sonar outcome and explicit deferred ownership
 
-## Release decision
+Official standalone SonarScanner 8.1 scanned clean source `18375e7e` using the
+existing production-source scope. Analysis ID:
+`33e93dac-6303-4b9b-8c2d-c049d4c2a831`.
 
-The milestone is **blocked for release**, and `ast-6uqw.15` remains open. To
-clear it, the exact integrated revision must be pushed and receive green
-required CI, a fresh green FAPI conformance verdict under the repository's
-24-hour rule, and a green Sonar analysis whose remaining findings have explicit
-outcomes. Issue #72 remains the linked conformance blocker. Follow
-[Verifying a release](verifying-a-release.md) and attach the exact run URLs and
-commit SHA; do not substitute the focused local journeys or an older green run.
+The raw analysis-ID gate remains **ERROR**, preserving pre-disposition
+reliability D and missing coverage. Five individually evidenced findings were
+then marked FALSE-POSITIVE: two lifecycle fields intentionally require explicit
+null approval context, and three credential-like literals exist only in
+compiled-out test assertions. Their actual issue keys, API outcomes, actors and
+times are recorded. No `NOSONAR`, scope exclusion or blanket secret waiver was
+introduced.
+
+Before restoring Automatic Analysis, the exact candidate was confirmed current
+both before and after these dispositions. Its recomputed current gate had
+reliability, security and maintainability ratings A, reviewed hotspots 100%,
+and duplication 2.1%; **only coverage remained ERROR** (0% imported, existing
+80% requirement). No overall green Sonar gate is claimed. Missing imported
+coverage is not evidence that the executed tests covered no code.
+
+The user explicitly approved these two deferred records:
+
+- `ast-wwsr`: all 426 unresolved CODE_SMELL findings—34 critical, 316 major,
+  76 minor; 382 in new code. Every key, source, rule, severity and maintainer
+  area is inventoried. They remain OPEN in Sonar and DEFERRED in Beads.
+- `ast-84ny`: generate and import genuine coverage for the production release
+  candidate and satisfy the existing actual coverage gate in a future
+  authorized release workflow. No report is fabricated or threshold lowered.
+
+There are zero unresolved bugs, zero unresolved vulnerabilities and zero
+hotspots in the captured post-disposition candidate snapshot. This fresh debt
+is distinct from the closed historical `ast-4p31` campaign. See the
+[full 426-key accounting and cleanup proof](evidence/sonar-local-milestone-2026-10-08.json).
+Both scanner runs restored the project's original Automatic Analysis mode and
+revoked only their uniquely owned temporary tokens, verifying token absence
+and failed token authentication. The separate disposition window also restored
+the original mode. Restoration may immediately analyze older remote source;
+that mutable project status must not replace the captured local candidate.
+
+## Local milestone disposition and production release boundary
+
+The implementation and bounded local validation are complete under the user's
+explicit local exceptions, subject to the root agent's final ticket review.
+The administration runbook covers
+[groups, policy changes, branding and SSO](../runbooks/console-sso-administration.md),
+and [the runnable two-application demo](../sso-demo.md) remains documented.
+[ADR-0015](../adr/0015-certify-the-fapi-profile-only.md) preserves the approved
+FAPI certification boundary without a non-PAR testing exception.
+
+A production release still needs green required CI, genuine coverage proof,
+current release conformance evidence under the release gate, and the applicable
+packaging and supply-chain checks. Historical red remote runs and GitHub issue
+#72 are not silently reclassified by local success. Follow
+[Verifying a release](verifying-a-release.md) for that separately authorized
+workflow. No push, remote CI, release publication or formal certification occurs
+as part of this local completion.
+
+SCIM is outside `ast-6uqw` scope. `ast-p3p3` explicitly remains open for future
+full native Entra lifecycle authorization; controlled local adapter checks and
+native credential validation do not substitute for that lifecycle.
