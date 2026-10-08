@@ -370,6 +370,44 @@ mod tests {
         })
     }
 
+    /// Every declared event must survive the actual writer/reader codec;
+    /// ALL and event constants share one declaration, rather than two lists.
+    #[test]
+    fn every_declared_event_remains_readable_from_stored_columns() {
+        for event_type in EventType::ALL {
+            let mut original = event();
+            original.event_type = event_type;
+            let read = round_trip(&original).expect("a declared event must remain readable");
+            assert_eq!(
+                read, original,
+                "{event_type} lost its stored representation"
+            );
+        }
+    }
+
+    /// vc.issued is already emitted by the credential endpoint. Its historic
+    /// omission from ALL turned an authentic issuance row into an opaque row.
+    #[test]
+    fn a_stored_verifiable_credential_issuance_is_readable() {
+        let tenant = TenantId::new("demo");
+        let read = read_event(&StoredEvent {
+            tenant: &tenant,
+            occurred_at: OffsetDateTime::UNIX_EPOCH,
+            event_type: "vc.issued",
+            outcome: "success",
+            actor: br#"{"type":"system","id":"credential-issuer"}"#,
+            actor_chain: b"[]",
+            subject: None,
+            client: None,
+            session: None,
+            grant: None,
+            request_id: None,
+            detail: b"{}",
+        })
+        .expect("an authentic credential issuance must be readable");
+        assert_eq!(read.event_type, EventType::VC_ISSUED);
+    }
+
     #[test]
     fn an_event_survives_the_round_trip_through_its_stored_columns() {
         let original = event();

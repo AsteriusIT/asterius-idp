@@ -40,7 +40,21 @@ pub use redaction::{Sensitive, fingerprint};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EventType(&'static str);
 
-impl EventType {
+// Declare each event once: constants and the readable/filterable inventory
+// are generated together. A new event cannot be emitted while being omitted
+// from ALL, which would make an authentic stored event appear opaque.
+macro_rules! event_types {
+    ($( $(#[$documentation:meta])* pub const $name:ident: Self = Self($wire:literal); )*) => {
+        impl EventType {
+            $( $(#[$documentation])* pub const $name: Self = Self($wire); )*
+
+            /// Every declared event type, for storage readback and admin filters.
+            pub const ALL: [Self; [$(stringify!($name)),*].len()] = [$(Self::$name),*];
+        }
+    };
+}
+
+event_types! {
     /// A pushed authorization request was accepted (RFC 9126).
     pub const PAR_ACCEPTED: Self = Self("par.accepted");
     /// A pushed authorization request was rejected.
@@ -629,124 +643,9 @@ impl EventType {
     /// A device was removed and its identifying/posture data erased.
     pub const DEVICE_REMOVED: Self = Self("device.removed");
 
-    /// Every event type, for the admin API's filter list and for the test that
-    /// keeps this list honest.
-    pub const ALL: [Self; 113] = [
-        Self::PAR_ACCEPTED,
-        Self::PAR_REJECTED,
-        Self::AUTH_LOGIN,
-        Self::AUTH_FAILED,
-        Self::AUTH_THROTTLED,
-        Self::REQUEST_THROTTLED,
-        Self::CREDENTIAL_CREATED,
-        Self::CREDENTIAL_CHANGED,
-        Self::RECOVERY_REQUESTED,
-        Self::RECOVERY_SENT,
-        Self::RECOVERY_USED,
-        Self::RECOVERY_REFUSED,
-        Self::EMAIL_VERIFICATION_SENT,
-        Self::EMAIL_VERIFIED,
-        Self::EMAIL_VERIFICATION_REFUSED,
-        Self::EMAIL_CHANGE_REQUESTED,
-        Self::EMAIL_CHANGED,
-        Self::EMAIL_CHANGE_REFUSED,
-        Self::CONSENT_GRANTED,
-        Self::CONSENT_DENIED,
-        Self::CODE_ISSUED,
-        Self::CODE_REDEEMED,
-        Self::CODE_REPLAYED,
-        Self::TOKEN_ISSUED,
-        Self::TEST_TOKEN_REQUESTED,
-        Self::TEST_TOKEN_ISSUED,
-        Self::TOKEN_REFUSED,
-        Self::TOKEN_EXCHANGED,
-        Self::OID4VP_PRESENTED,
-        Self::TOKEN_REFRESHED,
-        Self::TOKEN_ISSUANCE_DENIED,
-        Self::TOKEN_REVOKED,
-        Self::TOKEN_INTROSPECTED,
-        Self::AGENT_TASK_APPROVED,
-        Self::AGENT_TASK_ISSUED,
-        Self::AGENT_TASK_WITHDRAWN,
-        Self::GRANT_REVOKED,
-        Self::SESSION_REVOKED,
-        Self::CLIENT_AUTHENTICATED,
-        Self::CLIENT_AUTH_FAILED,
-        Self::CLIENT_REGISTERED,
-        Self::CLIENT_READ,
-        Self::CLIENT_UPDATED,
-        Self::CLIENT_DELETED,
-        Self::CLIENT_CREDENTIAL_ROTATED,
-        Self::KEY_ROTATED,
-        Self::KEY_PURGED,
-        Self::KEY_SCHEDULE_APPLIED,
-        Self::SUBJECT_COLLISION,
-        Self::ADMIN_CHANGED,
-        Self::USER_CREATED,
-        Self::INVITATION_ISSUED,
-        Self::INVITATION_RESENT,
-        Self::INVITATION_REVOKED,
-        Self::INVITATION_ACTIVATED,
-        Self::INVITATION_ASSIGNMENTS_APPLIED,
-        Self::USER_CLAIMS_CHANGED,
-        Self::USER_SCIM_PROFILE_CHANGED,
-        Self::ACCOUNT_DISABLED,
-        Self::ACCOUNT_ENABLED,
-        Self::ROLE_GRANTED,
-        Self::ROLE_REVOKED,
-        Self::APP_ROLE_DEFINED,
-        Self::APP_ROLE_REMOVED,
-        Self::APP_ROLE_ASSIGNED,
-        Self::APP_ROLE_WITHDRAWN,
-        Self::POLICY_UPDATED,
-        Self::POLICY_SIMULATED,
-        Self::ACCESS_EVALUATED,
-        Self::ACCESS_SEARCHED,
-        Self::AUDIT_PURGED,
-        Self::BACKCHANNEL_REQUESTED,
-        Self::BACKCHANNEL_REFUSED,
-        Self::BACKCHANNEL_NOTIFIED,
-        Self::SSF_STREAM_CREATED,
-        Self::SSF_STREAM_UPDATED,
-        Self::SSF_STREAM_DELETED,
-        Self::SSF_SETS_DELIVERED,
-        Self::SSF_SETS_ACKNOWLEDGED,
-        Self::SSF_SET_REJECTED,
-        Self::SSF_SET_PUSHED,
-        Self::SSF_PUSH_REFUSED,
-        Self::SSF_STREAM_PAUSED,
-        Self::SSF_STREAM_STATUS_CHANGED,
-        Self::SSF_SUBJECT_ADDED,
-        Self::SSF_SUBJECT_REMOVED,
-        Self::ID_JAG_SUBJECT_BOUND,
-        Self::ID_JAG_SUBJECT_UNBOUND,
-        Self::SAML_SP_PROVISIONED,
-        Self::SAML_SP_REMOVED,
-        Self::OIDC_PROVIDER_SAVED,
-        Self::DEVICE_SOURCE_CHANGED,
-        Self::DEVICE_ENROLLED,
-        Self::DEVICE_POSTURE_UPDATED,
-        Self::DEVICE_REMOVED,
-        Self::WORKLOAD_TRUST_SAVED,
-        Self::WORKLOAD_TRUST_DELETED,
-        Self::WORKLOAD_VERIFIED,
-        Self::WORKLOAD_REJECTED,
-        Self::OIDC_PROVIDER_REMOVED,
-        Self::OIDC_IDENTITY_CREATED,
-        Self::OIDC_IDENTITY_LINKED,
-        Self::OIDC_IDENTITY_UNLINKED,
-        Self::OIDC_USERNAME_SYNCED,
-        Self::SAML_IDP_KEY_PROVISIONED,
-        Self::SAML_IDP_KEY_ACTIVATED,
-        Self::SAML_IDP_KEY_RETIRED,
-        Self::PROVIDER_COMMAND_DELIVERED,
-        Self::SSF_VERIFICATION_REQUESTED,
-        Self::OUTBOX_RETRIED,
-        Self::OUTBOUND_SCIM_DELIVERED,
-        Self::OUTBOUND_SCIM_REFUSED,
-        Self::OUTBOX_DROPPED,
-    ];
+}
 
+impl EventType {
     /// The wire and storage spelling.
     #[must_use]
     pub const fn as_str(self) -> &'static str {

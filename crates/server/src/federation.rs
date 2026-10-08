@@ -61,18 +61,17 @@ impl FederationEntities {
             {
                 None
             } else {
-                tenant
-                    .federation_signing_key_file
-                    .as_ref()
-                    .map(|path| {
-                        std::fs::read(path).map(Zeroizing::new).map_err(|e| {
+                match tenant.federation_signing_key_file.as_ref() {
+                    Some(path) => Some(Zeroizing::new(tokio::fs::read(path).await.map_err(
+                        |e| {
                             format!(
                                 "tenant {} Federation key file cannot be read: {e}",
                                 tenant.id
                             )
-                        })
-                    })
-                    .transpose()?
+                        },
+                    )?)),
+                    None => None,
+                }
             };
             federation_keys
                 .initialize(

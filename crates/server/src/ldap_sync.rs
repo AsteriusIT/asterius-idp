@@ -29,21 +29,7 @@ async fn read_inner(source: &LdapSourceConfig) -> Result<LdapSnapshot, String> {
     if !source.url.starts_with("ldaps://") {
         return Err("LDAP source must use LDAPS".to_owned());
     }
-    let metadata = std::fs::metadata(&source.bind_password_file)
-        .map_err(|_| "cannot read LDAP bind secret file".to_owned())?;
-    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > 4_096 {
-        return Err("LDAP bind secret file must contain 1–4096 bytes".to_owned());
-    }
-    let mut password = Zeroizing::new(
-        std::fs::read_to_string(&source.bind_password_file)
-            .map_err(|_| "cannot read LDAP bind secret file".to_owned())?,
-    );
-    while password.ends_with(['\r', '\n']) {
-        password.pop();
-    }
-    if password.is_empty() {
-        return Err("LDAP bind secret file is empty".to_owned());
-    }
+    let password = read_bind_password(&source.bind_password_file).await?;
     let settings = LdapConnSettings::new()
         .set_conn_timeout(Duration::from_secs(10))
         .set_no_tls_verify(false)
@@ -135,6 +121,27 @@ async fn read_inner(source: &LdapSourceConfig) -> Result<LdapSnapshot, String> {
     Ok(LdapSnapshot { users, groups })
 }
 
+async fn read_bind_password(path: &std::path::Path) -> Result<Zeroizing<String>, String> {
+    let metadata = tokio::fs::metadata(path)
+        .await
+        .map_err(|_| "cannot read LDAP bind secret file".to_owned())?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > 4_096 {
+        return Err("LDAP bind secret file must contain 1–4096 bytes".to_owned());
+    }
+    let mut password = Zeroizing::new(
+        tokio::fs::read_to_string(path)
+            .await
+            .map_err(|_| "cannot read LDAP bind secret file".to_owned())?,
+    );
+    while password.ends_with(['\r', '\n']) {
+        password.pop();
+    }
+    if password.is_empty() {
+        return Err("LDAP bind secret file is empty".to_owned());
+    }
+    Ok(password)
+}
+
 async fn search_bounded(
     ldap: &mut Ldap,
     base: &str,
@@ -192,4 +199,42 @@ fn values(entry: &SearchEntry, attribute: &str) -> Option<Vec<String>> {
         .iter()
         .find(|(name, _)| name.eq_ignore_ascii_case(attribute))
         .map(|(_, values)| values.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_bind_password;
+
+    #[tokio::test]
+    async fn bind_secret_file_validation_preserves_bounds_and_safe_errors() {
+        let path = std::env::temp_dir().join(format!(
+            "asterius-owned-ldap-secret-{}",
+            uuid::Uuid::new_v4()
+        ));
+        tokio::fs::write(&path, b"fixture-bind-secret\r\n")
+            .await
+            .expect("write own fixture");
+        let password = read_bind_password(&path)
+            .await
+            .expect("read bounded fixture");
+        assert_eq!(password.as_str(), "fixture-bind-secret");
+        drop(password);
+        for bytes in [vec![], vec![b'x'; 4_097], vec![b'\n'], vec![0xff]] {
+            tokio::fs::write(&path, &bytes)
+                .await
+                .expect("replace own fixture");
+            let error = read_bind_password(&path)
+                .await
+                .expect_err("invalid secret must fail before LDAP connection");
+            assert!(
+                error.starts_with("LDAP bind secret file")
+                    || error == "cannot read LDAP bind secret file"
+            );
+            assert!(!error.contains("fixture-bind-secret"));
+        }
+        tokio::fs::remove_file(&path)
+            .await
+            .expect("remove own fixture");
+        assert!(read_bind_password(&path).await.is_err());
+    }
 }

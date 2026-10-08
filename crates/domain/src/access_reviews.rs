@@ -162,12 +162,12 @@ pub struct Item {
     pub snapshot: Value,
     pub decision: Option<Decision>,
     pub decided_by: Option<Uuid>,
-    #[serde(with = "time::serde::rfc3339::option")]
+    #[serde(default, with = "time::serde::rfc3339::option")]
     pub decided_at: Option<OffsetDateTime>,
     pub reason: Option<String>,
     pub apply_status: ApplyStatus,
     pub applied_by: Option<Uuid>,
-    #[serde(with = "time::serde::rfc3339::option")]
+    #[serde(default, with = "time::serde::rfc3339::option")]
     pub applied_at: Option<OffsetDateTime>,
 }
 
@@ -179,9 +179,9 @@ pub struct Review {
     pub created_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]
     pub due_at: OffsetDateTime,
-    #[serde(with = "time::serde::rfc3339::option")]
+    #[serde(default, with = "time::serde::rfc3339::option")]
     pub completed_at: Option<OffsetDateTime>,
-    #[serde(with = "time::serde::rfc3339::option")]
+    #[serde(default, with = "time::serde::rfc3339::option")]
     pub cancelled_at: Option<OffsetDateTime>,
 }
 
@@ -396,6 +396,48 @@ pub fn parse_decision(bytes: &[u8]) -> Result<RecordedDecision, DomainError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn review_record_optional_instants_accept_missing_null_and_populated_values() {
+        let id = Uuid::from_u128(1);
+        let review = serde_json::json!({
+            "id": id, "created_by": id,
+            "created_at": "1970-01-01T00:00:00Z",
+            "due_at": "1970-01-02T00:00:00Z"
+        });
+        let item = serde_json::json!({
+            "id": id, "ownership_id": id, "ownership_revision": id,
+            "target": {"kind": "membership", "group_id": id, "user_id": id},
+            "assignment_generation": id, "assigned_reviewer": id,
+            "snapshot": {}, "apply_status": "pending"
+        });
+        for timestamp in [
+            None,
+            Some(serde_json::Value::Null),
+            Some(serde_json::json!("1970-01-01T00:00:00Z")),
+        ] {
+            let expected = timestamp
+                .as_ref()
+                .and_then(serde_json::Value::as_str)
+                .map(|_| OffsetDateTime::UNIX_EPOCH);
+            let mut review = review.clone();
+            let mut item = item.clone();
+            if let Some(timestamp) = timestamp {
+                for field in ["completed_at", "cancelled_at"] {
+                    review[field] = timestamp.clone();
+                }
+                for field in ["decided_at", "applied_at"] {
+                    item[field] = timestamp.clone();
+                }
+            }
+            let review: Review = serde_json::from_value(review).expect("review record");
+            let item: Item = serde_json::from_value(item).expect("review item");
+            assert_eq!(review.completed_at, expected);
+            assert_eq!(review.cancelled_at, expected);
+            assert_eq!(item.decided_at, expected);
+            assert_eq!(item.applied_at, expected);
+        }
+    }
+
     #[test]
     fn review_cannot_use_posted_access_or_duplicate_targets() {
         let id = Uuid::new_v4();
