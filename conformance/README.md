@@ -373,9 +373,13 @@ Profile reports used by the release gate.
 This plan exercises the OIDF signed JAR/JARM authorization-server options. It
 does not establish independent RFC 9701 signed-introspection interoperability,
 IPSIE, SSF, or CAEP conformance. The command needs the same Docker/build disk
-space as the existing harness; no Message Signing execution evidence has yet
-been recorded. Use the approved external profile/environment before changing
-any product support claim.
+space as the existing harness. The independent 2026-10-08 run on exact
+source `0b4c7a4a` executed all 70 modules with 63 PASSED, 4 REVIEW, 1 WARNING, 2 SKIPPED
+and 0 FAILED, using no waivers. The official REVIEW/WARNING/SKIPPED limits remain;
+see [the recorded results](../docs/certification.md#current-independently-executed-evidence).
+A separate [independent RFC9701 consumer](../docs/integrations/evidence/rfc9701-independent-consumer-2026-10-08.json)
+passed 13 controls on later source `97ac7245`; that later source does not reuse the
+earlier suite verdict as new certification.
 
 
 ## 2026-10-08 fixture reconciliation
