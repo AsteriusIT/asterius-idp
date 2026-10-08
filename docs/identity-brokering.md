@@ -274,3 +274,58 @@ See [Keycloak hostname setup](https://www.keycloak.org/server/hostname),
 [Keycloak OIDC endpoints](https://www.keycloak.org/securing-apps/oidc-layers),
 [Entra OIDC discovery](https://learn.microsoft.com/en-us/entra/identity-platform/v2-protocols-oidc),
 and [Entra authorization code flow](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow).
+
+### Guarded callback and encrypted RP evidence, 2026-10-08
+
+The repeatable [native Keycloak browser harness](../scripts/integrations/keycloak_upstream_browser.mjs)
+passed 27 guarded callback checks and a separate eight-check native encrypted RP
+run. [Sanitized results](integrations/evidence/keycloak-oidc-adversarial-2026-10-08.json)
+pin the Asterius binary/revision and Keycloak 26.7.4 image. Native Keycloak
+completed the upstream code exchange, exact operator-created identity binding,
+and downstream ordinary RP authorization. The RP independently verified the
+Asterius ES256 ID token. A newly generated, higher-priority native Keycloak ES256
+key became the active signer, and a fresh upstream login continued to the RP.
+
+Fresh guarded callbacks rejected foreign-browser and unknown state, consumed
+state replay, mismatched authorization issuer and expired pending interaction
+with HTTP 400. A second provider using the same native subject required its own
+explicit issuer/subject binding; the unbound provider returned HTTP 400. A
+callback transplanted to another tenant was refused. Each refusal preserved
+owned local user, session and binding counts.
+
+The [controlled peer](../scripts/integrations/controlled_oidc_peer.py) delegates
+real browser login and code redemption to Keycloak, verifies its native ES256
+signature, then signs the requested fault with a separately registered ephemeral
+ES256 key. These are explicitly independent controlled tokens. Correctly signed
+expired, wrong-issuer, wrong-nonce and unmapped-subject tokens, and a token signed
+by an untrusted private key under a trusted key identifier, each returned HTTP
+400 without mutation. Token endpoint outage and JWKS outage with an uncached
+signing key returned HTTP 503 without mutation. Fresh logins succeeded after
+rotation and outage recovery.
+
+As an independent enterprise RP, native Keycloak authenticated with Basic,
+decrypted the nested ES256 ID token and signed UserInfo using RSA-OAEP-256 and
+A256GCM, and completed its downstream RP callback. The allowlisted temporary
+[relay](../scripts/integrations/protocol_peer_relay.py) recorded only HTTP status,
+verified backend TLS, five compact segments and algorithm names for each fresh
+response. Native first-broker profile completion used a unique disposable
+Keycloak username; it did not change Asterius identity ownership. The run exposed
+and verified the correction of the Basic-plus-encryption-JWKS database constraint.
+
+To repeat, supply private mode-0600 JSON with `manifest`, `keycloakPrivate`,
+`keycloakIssuer`, `publicRelay`, `evidence`, `relayMetrics`, `controlledIssuer` and
+`controlledMode`; use the owned product fixture manifest and peer configuration.
+Set `ASTERIUS_ACCEPTANCE_DB_CONTAINER` to the owned fixture database container
+and `ASTERIUS_PLAYWRIGHT_MODULE` to the installed Playwright Core module, then run
+`node scripts/integrations/keycloak_upstream_browser.mjs <private-input.json>`.
+`skipEncrypted` runs only the callback matrix; `jweOnly` runs the native encrypted
+RP after provider setup. The controlled peer and relay accept their own private
+configuration JSON. Their public paths expose only owned protocol endpoints;
+private fault controls and Keycloak administration are not routed publicly.
+
+These results cover the controlled runtime and ordinary OIDC configuration.
+They do not certify IPSIE, prove production edge configuration, or add new Entra
+upstream evidence. The browser accepts only the disposable local self-signed
+Asterius certificate; guarded peer back-channel and relay backend TLS validation
+remain active. Cleanup removes only the owned fixture processes, database,
+Keycloak container and temporary Funnel listener, preserving existing listeners.
