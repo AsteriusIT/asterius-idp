@@ -19,9 +19,11 @@
 //!    `request_object_signing_alg`. A client that registered none has not
 //!    asked to send request objects, and *any* algorithm would otherwise be
 //!    acceptable for it.
-//! 2. **`typ` is `oauth-authz-req+jwt`**, then the algorithm, then the
+//! 2. **`typ` matches the selected profile**, then the algorithm, then the
 //!    signature — [`asterius_jose::verify()`]'s order, which spends nothing
-//!    cryptographic on a token that was not meant for this endpoint.
+//!    cryptographic on a token that was not meant for this endpoint. Ordinary
+//!    JAR requires explicit typing; FAPI Message Signing also admits absent or
+//!    legacy JWT typing, as RFC 9101 and its final profile permit.
 //! 3. **The algorithm is the one registered, and only that one.** Not the
 //!    allow-list: RFC 9101 §6.3 has the object signed "using the algorithm
 //!    specified in `request_object_signing_alg`", so a client that registered
@@ -147,7 +149,7 @@ pub async fn parameters(
     // wants the issuer identifier. The stricter, string-only rule is applied
     // by `asterius_oidc::request_object::parameters` below, and setting both
     // would leave the laxer one deciding.
-    let policy = Policy::new(TypRule::Exactly(REQUEST_OBJECT_TYP), vec![algorithm])
+    let policy = Policy::new(request_object_typ(fapi_message_signing), vec![algorithm])
         .issued_by(client.id.as_str());
     let verified = verify(object, &policy, &key_set, now).map_err(|_| Refusal::NotVerified)?;
 
@@ -179,10 +181,88 @@ pub async fn parameters(
     Ok(mapped)
 }
 
+// FAPI Message Signing final §5.3.2(5) recommends explicit typing rather than
+// requiring it. Keep this compatibility at the opted-in JAR endpoint only;
+// signature, client algorithm/issuer and strict profile claims still bind use.
+fn request_object_typ(fapi_message_signing: bool) -> TypRule {
+    if fapi_message_signing {
+        TypRule::OptionalOneOf(&[REQUEST_OBJECT_TYP, "JWT"])
+    } else {
+        TypRule::Exactly(REQUEST_OBJECT_TYP)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use asterius_oidc::request_object::RequestObjectError;
+
+    #[test]
+    fn signed_fapi_jar_accepts_optional_typ_and_rejects_other_jwt_contexts() {
+        use asterius_domain::{Kid, SigningAlgorithm};
+        use asterius_jose::SigningKey;
+        use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD as B64};
+        use serde_json::json;
+        let now = OffsetDateTime::from_unix_timestamp(1_760_000_000).expect("test instant");
+        let key = SigningKey::generate(SigningAlgorithm::Es256).expect("P-256 key");
+        let verifying = key.verifying_key().expect("public key");
+        let resolver = |_: Option<&Kid>| vec![verifying.clone()];
+        let client = "a0000000-0000-4000-8000-000000000001";
+        let issuer = "https://as.example/t/demo";
+        let claims = json!({"iss":client,"client_id":client,"aud":issuer,
+            "nbf":now.unix_timestamp(),"exp":now.unix_timestamp()+300,
+            "response_type":"code","scope":"openid","redirect_uri":"https://client.example/callback"});
+        let signed = |typ: Option<&str>, claims: &serde_json::Value| {
+            let mut header = json!({"alg":"ES256","kid":"jar-key"});
+            if let Some(typ) = typ {
+                header["typ"] = typ.into();
+            }
+            let input = format!(
+                "{}.{}",
+                B64.encode(serde_json::to_vec(&header).expect("header")),
+                B64.encode(serde_json::to_vec(claims).expect("claims"))
+            );
+            format!(
+                "{input}.{}",
+                B64.encode(key.sign(input.as_bytes()).expect("signature"))
+            )
+        };
+        let fapi =
+            Policy::new(request_object_typ(true), vec![SigningAlgorithm::Es256]).issued_by(client);
+        let strict =
+            Policy::new(request_object_typ(false), vec![SigningAlgorithm::Es256]).issued_by(client);
+        for typ in [None, Some("JWT"), Some(REQUEST_OBJECT_TYP)] {
+            let token = signed(typ, &claims);
+            let verified = verify(&token, &fapi, &resolver, now).expect("valid FAPI JAR");
+            assert!(
+                asterius_oidc::request_object::fapi_parameters(
+                    &verified.claims,
+                    client,
+                    issuer,
+                    now
+                )
+                .is_ok()
+            );
+            assert_eq!(
+                verify(&token, &strict, &resolver, now).is_ok(),
+                typ == Some(REQUEST_OBJECT_TYP)
+            );
+        }
+        for typ in ["at+jwt", "dpop+jwt", "secevent+jwt", "logout+jwt"] {
+            assert!(verify(&signed(Some(typ), &claims), &fapi, &resolver, now).is_err());
+        }
+        let mut foreign = claims.clone();
+        foreign["iss"] = "another-client".into();
+        assert!(verify(&signed(None, &foreign), &fapi, &resolver, now).is_err());
+        let mut wrong_audience = claims;
+        wrong_audience["aud"] = "https://another-as.example".into();
+        let verified =
+            verify(&signed(None, &wrong_audience), &fapi, &resolver, now).expect("valid signature");
+        assert!(
+            asterius_oidc::request_object::fapi_parameters(&verified.claims, client, issuer, now)
+                .is_err()
+        );
+    }
 
     /// A client is told which half of its request was wrong, and never which
     /// guess was closest.

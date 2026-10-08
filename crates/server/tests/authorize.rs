@@ -249,6 +249,27 @@ async fn run_mounted(
     grants: &Grants,
     mount: MountPrefix,
 ) -> axum::response::Response {
+    run_under_policy(
+        store,
+        params,
+        session,
+        grants,
+        mount,
+        &asterius_domain::AcrPolicy::default(),
+        None,
+    )
+    .await
+}
+
+async fn run_under_policy(
+    store: &Store,
+    params: &[(&str, &str)],
+    session: Option<&asterius_domain::Session>,
+    grants: &Grants,
+    mount: MountPrefix,
+    acr: &asterius_domain::AcrPolicy,
+    selected: Option<&std::collections::BTreeSet<String>>,
+) -> axum::response::Response {
     let tenant = tenant();
     let nonce = Nonce::generate();
     authorize(
@@ -263,7 +284,8 @@ async fn run_mounted(
             grants,
             users: &Directory,
             policy: DecisionPolicy::default(),
-            acr: &asterius_domain::AcrPolicy::default(),
+            acr,
+            ipsie_identity_only_clients: selected,
             memory: MemoryPolicy::default(),
             nonce: &nonce,
             mount,
@@ -321,6 +343,40 @@ fn request_with(digest: &str, parameters: Value) -> PushedRequest {
 
 fn later() -> OffsetDateTime {
     OffsetDateTime::now_utc() + time::Duration::seconds(90)
+}
+
+#[tokio::test]
+async fn ipsie_refuses_a_tenant_without_an_attainable_multifactor_class() {
+    use asterius_domain::entities::session::AuthenticationMethod;
+    let policy = asterius_domain::AcrPolicy::new(vec![
+        asterius_domain::acr::AcrLevel::new(
+            asterius_domain::acr::PASSWORD,
+            [AuthenticationMethod::Password],
+        )
+        .expect("password level"),
+    ])
+    .expect("policy");
+    let minted = MintedRequestUri::generate();
+    let store = Store::with(request("billing", minted.digest(), later()));
+    let selected = std::collections::BTreeSet::from(["billing".to_owned()]);
+    let response = run_under_policy(
+        &store,
+        &[("client_id", "billing"), ("request_uri", minted.uri())],
+        None,
+        &Grants::default(),
+        MountPrefix::root(),
+        &policy,
+        Some(&selected),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert!(
+        response.headers()[header::LOCATION]
+            .to_str()
+            .expect("location")
+            .contains("error=unmet_authentication_requirements")
+    );
+    assert!(store.begun.lock().expect("lock").is_empty());
 }
 
 // ---- the happy path ------------------------------------------------------

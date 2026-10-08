@@ -128,6 +128,8 @@ pub struct AuthorizeContext<'a> {
     /// honoured by the login that follows, which writes the highest value it
     /// reached onto the session (§3.1.2.1).
     pub acr: &'a asterius_domain::AcrPolicy,
+    /// Selected IPSIE clients require a currently attainable multifactor class.
+    pub ipsie_identity_only_clients: Option<&'a std::collections::BTreeSet<String>>,
     /// Whether this tenant remembers consent, and for how long it remembers an
     /// `offline_access` one.
     pub memory: MemoryPolicy,
@@ -206,6 +208,20 @@ pub async fn authorize(
             "a request_uri was presented under a different client_id"
         );
         return error_page(&context, StatusCode::BAD_REQUEST);
+    }
+
+    if context
+        .ipsie_identity_only_clients
+        .is_some_and(|clients| clients.contains(client_id))
+        && !context.acr.supports_multiple_factors()
+    {
+        return refuse(
+            &context,
+            &stored,
+            Unmet::UnmetAuthenticationRequirements,
+            now,
+        )
+        .await;
     }
 
     // What this request needs before it can be answered (`ast-gxh.8`). Decided
