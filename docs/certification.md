@@ -71,8 +71,12 @@ tab, and on every push to a `release/**` branch.
 The 2026-10-08 Security Profile Final plan on source `b419e9ba` and the exact
 prebuilt GNU runtime image finished 56 modules: **50 PASSED, 4 REVIEW, 1 WARNING,
 1 SKIPPED, 0 FAILED**. The repository gate passed with an empty waiver list. The
-four REVIEW conditions captured the expected public error page for unsigned
-non-PAR, reused, expired and foreign-client request URIs. The WARNING identifies
+four REVIEW artifacts were inspected: missing PAR and foreign-client request
+URIs return HTTP400; completed/reused and expired handles return HTTP404. Each
+keeps the browser at the authorization endpoint with a local public error page,
+without redirecting an unsafe request to a client callback. The generic wording
+avoids leaking whether a handle is unknown, expired or consumed. The suite
+results remain REVIEW, and this assessment does not claim submission approval. The WARNING identifies
 the `sid` extension. The RSA negative module did not execute because this run's
 client keys are ES256; this does not establish RSA interoperability. Raw exports
 remain private. OIDF human submission review and certification are not claimed.

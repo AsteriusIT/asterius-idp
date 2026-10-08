@@ -108,9 +108,13 @@ One process per state file; requests serialize with a bounded pending queue. Dep
 Ten focused local tests cover signed token/DPoP nonce+ath/audience, stale ETag,
 locked/foreign mutations, durable lost-create recovery, reordered ambiguous
 writes, projection, revoked credentials, persistence, deletion retries and real loopback credential/route refusals.
-No native Entra job or live Asterius handoff has been run for this adapter.
-Actual validateCredentials and full disposable user/group lifecycle, retry,
-revocation and security controls remain required before interoperability closure.
+Native Entra Graph v1.0 `validateCredentials` passed on 2026-10-08 using an
+owned disposable modern SCIM job against this public HTTPS adapter and its real
+Asterius backend. The job stayed disabled and its app/SP/job were deleted. See
+[credential-validation evidence](../../docs/integrations/evidence/entra-adapter-native-validation-2026-10-08.json).
+Full native user/group lifecycle, retry, revocation and security controls remain
+required before interoperability closure; no source identities or provisioning
+start were authorized for this validation.
 Cloud application/job creation must be separately authorized after reviewing
 its exact disposable payload and mappings.
 
@@ -137,3 +141,11 @@ lock. Output contains case names/statuses and explicit evidence limits, never
 raw tokens, credentials or source identities. A successful controlled run does
 not establish native Entra cloud provisioning interoperability. Native cloud
 job approval and lifecycle evidence remain a separate requirement.
+
+2026-10-08 controlled runtime evidence records 29 passing case outcomes in
+`docs/integrations/evidence/entra-adapter-controlled-2026-10-08.json`, against the
+exact image revision and binary hash recorded there. The adapter's durable
+source map rejects foreign GET/PUT/PATCH/DELETE with 404. The raw tenant admin
+Users API remains tenant-wide by design; backend Groups retain client ownership.
+The bridge narrows the operator's backend credential to the source identities
+recorded for that integration. This evidence does not replace a native Entra job.

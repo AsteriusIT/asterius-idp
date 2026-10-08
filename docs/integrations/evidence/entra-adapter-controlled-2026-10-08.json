@@ -1,0 +1,129 @@
+{
+  "profile": "Controlled Entra adapter to actual Asterius; not native Entra cloud evidence",
+  "cases": [
+    {
+      "case": "actual DPoP discovery",
+      "status": 200
+    },
+    {
+      "case": "successful create response deliberately lost",
+      "status": "interrupted"
+    },
+    {
+      "case": "durable lost-create reconciliation",
+      "status": 200
+    },
+    {
+      "case": "same source changed create refused",
+      "status": 409
+    },
+    {
+      "case": "owned externalId filter and projection",
+      "status": 200
+    },
+    {
+      "case": "omitted If-Match uses actual GET and one CAS",
+      "status": 200
+    },
+    {
+      "case": "explicit stale ETag preserved",
+      "status": 412
+    },
+    {
+      "case": "reordered old event with stale ETag refused",
+      "status": 412
+    },
+    {
+      "case": "foreign adapter namespace GET",
+      "status": 404
+    },
+    {
+      "case": "foreign adapter namespace PUT",
+      "status": 404
+    },
+    {
+      "case": "foreign adapter namespace PATCH",
+      "status": 404
+    },
+    {
+      "case": "foreign adapter namespace DELETE",
+      "status": 404
+    },
+    {
+      "case": "disable revokes owned seeded session",
+      "status": 200
+    },
+    {
+      "case": "reactivate provisioning-disabled user",
+      "status": 200
+    },
+    {
+      "case": "actual intervening write returns one-CAS 412",
+      "status": 412
+    },
+    {
+      "case": "create actual group membership",
+      "status": 201
+    },
+    {
+      "case": "actual backend foreign group namespace",
+      "status": 404
+    },
+    {
+      "case": "remove actual group membership without If-Match",
+      "status": 200
+    },
+    {
+      "case": "delete actual group",
+      "status": 204
+    },
+    {
+      "case": "repeat group delete remains idempotent",
+      "status": 204
+    },
+    {
+      "case": "security lock activation refused",
+      "status": 409
+    },
+    {
+      "case": "disable preserves security lock",
+      "status": 200
+    },
+    {
+      "case": "disable then activate cannot bypass lock",
+      "status": 409
+    },
+    {
+      "case": "successful PATCH response deliberately lost",
+      "status": "interrupted"
+    },
+    {
+      "case": "advanced ETag after lost PATCH remains ambiguous",
+      "status": 409
+    },
+    {
+      "case": "delete actual user",
+      "status": 204
+    },
+    {
+      "case": "deleted actual user hidden",
+      "status": 404
+    },
+    {
+      "case": "finite inbound credential reaches actual backend",
+      "status": 200
+    },
+    {
+      "case": "authoritative credential-file revocation immediate",
+      "status": 401
+    }
+  ],
+  "limits": [
+    "Revocation uses an explicitly seeded disposable session, not a browser authentication ceremony.",
+    "Omitted-ETag reordered source events have no source sequence; native retry ambiguity requires operator reconciliation.",
+    "Lost-response faults are injected only after a verified actual successful backend response."
+  ],
+  "runtime_revision": "b419e9ba47f3e70de40f0321e61aba02da4c1137",
+  "binary_sha256": "2451a0974b971ff21acf3ae212e5b708ec4139e745ea08a7954d2866777855ca",
+  "ownership": "Adapter durable maps scope all resource methods; tenant admin raw Users API remains tenant-wide by design. Backend Groups enforce client ownership."
+}

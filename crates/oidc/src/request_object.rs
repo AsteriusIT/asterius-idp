@@ -99,6 +99,9 @@ pub enum RequestObjectError {
     /// FAPI Message Signing requires an explicit bounded `nbf`/`exp` window.
     #[error("the FAPI request object validity window is missing or too long")]
     InvalidFapiWindow,
+    /// RFC 9101 §4 forbids recursive request-object parameters.
+    #[error("the request object must not contain {0}")]
+    ForbiddenParameter(&'static str),
     /// A claim's JSON has no form spelling, so no parameter rule could read it.
     #[error("the request object carries a {0} this server cannot read as a parameter")]
     Unrepresentable(String),
@@ -199,6 +202,15 @@ fn parameters_for_profile(
             || expiry.saturating_sub(not_before) > 60 * 60
         {
             return Err(RequestObjectError::InvalidFapiWindow);
+        }
+    }
+
+    // RFC 9101 §4: these parameters belong to the outer request only. An
+    // authenticated signed object containing either is an invalid object,
+    // rather than a malformed outer PAR form.
+    for parameter in ["request", "request_uri"] {
+        if object.contains_key(parameter) {
+            return Err(RequestObjectError::ForbiddenParameter(parameter));
         }
     }
 

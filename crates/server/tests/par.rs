@@ -1767,6 +1767,31 @@ async fn a_request_uri_in_a_pushed_request_is_refused() {
     }
 }
 
+/// RFC 9101 §4 forbids nesting request/request_uri in a verified signed
+/// object. The outer form's corresponding error remains invalid_request.
+#[tokio::test]
+async fn signed_request_objects_refuse_nested_request_parameters() {
+    let mut client = jar_client();
+    client.registration.authorization_signed_response_alg =
+        Some(asterius_domain::SigningAlgorithm::EdDsa);
+    for fapi in [false, true] {
+        for parameter in ["request", "request_uri"] {
+            let overrides = json!({parameter: "urn:ietf:params:oauth:request_uri:nested"});
+            let object = if fapi {
+                fapi_jar_request(&overrides)
+            } else {
+                request_object(&overrides)
+            };
+            let pairs = jar_form(&object);
+            let (status, body, store) =
+                pushed_with_jar_profile(&borrowed(&pairs), &client, fapi).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+            assert_eq!(body["error"], "invalid_request_object", "{body}");
+            assert!(store.0.lock().expect("lock").is_empty());
+        }
+    }
+}
+
 /// RFC 9101 §6.3 and ADR-0003: the object is signed with the algorithm the
 /// client registered, and `none` is not an algorithm that exists here.
 #[tokio::test]
