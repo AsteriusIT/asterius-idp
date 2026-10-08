@@ -37,6 +37,7 @@ services:
       retries: 30
 
   asterius:
+    image: ${CONFORMANCE_ASTERIUS_IMAGE:-asterius-conformance-asterius:latest}
     build:
       context: ..
       dockerfile: Dockerfile

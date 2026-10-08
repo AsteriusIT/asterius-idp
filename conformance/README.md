@@ -400,3 +400,14 @@ variants and waivers. This validates fixture compatibility and idempotency; a
 new suite run against the exact target revision is still required before claiming
 conformance or closing the release gate. Recorded evidence is in
 `docs/deployment/evidence/conformance-fixture-repair-2026-10-08.json`.
+
+
+For a disk-constrained disposable run, `CONFORMANCE_ASTERIUS_IMAGE` may name a
+prebuilt image. The script refuses it unless its
+`org.opencontainers.image.revision` label equals the clean checkout's exact HEAD,
+then prints the immutable image ID and uses `--no-build`. Build and label this
+artifact from that source revision; assigning a label to an old binary does not
+establish provenance. The same TLS configuration, suite pins, fixtures, reports
+and verdict gate still apply. The default command continues to build the release
+Dockerfile. An alternate runtime artifact proves the profile of that artifact;
+it does not validate the release Dockerfile or its musl packaging.
