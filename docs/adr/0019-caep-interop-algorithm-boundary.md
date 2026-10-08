@@ -44,9 +44,28 @@ the generic JWT verifier or silently enabled for all peers.
 
 SSF Final integration with configured EdDSA or ES256 peers can proceed on its
 own merits. CAEP Draft 01 interoperability and certification remain unsupported;
-documentation and metadata must say so. The current stream lifecycle work
-still needs verification event handling, deletion, credential lifecycle and
-cross-implementation evidence for any narrower SSF interoperability claim.
+documentation and metadata must say so. The original decision required stream
+verification, deletion, credential lifecycle and independent evidence before a
+narrower SSF interoperability claim. The dated implementation update below
+records those gates without changing the algorithm decision.
 
 Rejected alternative: enabling RS256 generally for draft compatibility. That
 would contradict ADR-0003 and the FAPI 2.0 Security Profile algorithm set.
+
+
+## Implementation update, 8 October 2026
+
+The supported receiver policy retains EdDSA/ES256 and the operator-managed bearer
+boundary. ALL subjects are permitted only with explicit tenant opt-in and explicit
+local mappings; NONE peers still require external enrollment. Correlated signed
+verification, authenticated multi-stream readback and exact remote deletion are
+implemented. Operator credentials are read afresh per operation, must be rotated
+before expiry and are not automatically acquired or refreshed.
+
+[Independent SSFgo evidence](../integrations/evidence/ssfgo-asterius-lifecycle-2026-10-08.json)
+records guarded ES256 poll setup and verification, actual mapped seeded-session
+revocation, lost-ACK redelivery with one inbox row, bearer refusal/recovery,
+untrusted issuer refusal and unaffected delivery on a second stream after deletion.
+The peer advertises polling only and push is refused accordingly. This supports a
+bounded SSF1 Final integration claim; it does not certify CAEP Draft01 or establish
+native push interoperability. The September decision and its RS256 refusal stand.
