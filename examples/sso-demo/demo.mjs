@@ -5,6 +5,8 @@ import { createServer as createHttpsServer } from 'node:https';
 import {
   SignJWT,
   createRemoteJWKSet,
+  customFetch,
+  importJWK,
   exportJWK,
   generateKeyPair,
   jwtVerify,
@@ -40,16 +42,22 @@ export function sessionCookie(name, id, path = '/', secure = true) {
 
 async function responseJson(response, operation) {
   const text = await response.text();
-  if (!response.ok) throw new Error(`${operation} failed (${response.status}): ${text}`);
+  if (!response.ok) throw new Error(`${operation} failed (${response.status})`);
   return JSON.parse(text);
 }
 
 export class OidcClient {
-  constructor({ issuer, internalIssuer = issuer, externalUrl, name, fetchImpl = fetch }) {
+  constructor({ issuer, internalIssuer = issuer, externalUrl, name, clientId, clientPrivateJwk, clientKeyId, scopes = 'openid profile offline_access', resource, fetchImpl = fetch }) {
     this.issuer = issuer.replace(/\/$/, '');
     this.internalIssuer = internalIssuer.replace(/\/$/, '');
     this.externalUrl = externalUrl.replace(/\/$/, '');
     this.name = name;
+    this.clientId = clientId;
+    this.clientPrivateJwk = clientPrivateJwk;
+    this.clientKid = clientKeyId ?? clientPrivateJwk?.kid;
+    this.scopes = scopes;
+    this.resource = resource ?? `${this.issuer}/userinfo`;
+    this.nonces = new WeakMap();
     this.fetch = (url, options) => this.fetchInternal(url, options, fetchImpl);
   }
 
@@ -64,7 +72,7 @@ export class OidcClient {
     headers.set('host', publicUrl.host);
     headers.set('x-forwarded-host', publicUrl.host);
     headers.set('x-forwarded-proto', publicUrl.protocol.slice(0, -1));
-    return retryFetch(() => fetchImpl(target, { ...options, headers }));
+    return retryFetch(() => fetchImpl(target, { ...options, headers, redirect: 'error' }));
   }
 
   async initialise() {
@@ -72,10 +80,17 @@ export class OidcClient {
       await this.fetch(`${this.internalIssuer}/.well-known/openid-configuration`),
       'discovery',
     );
-    if (!this.discovery.registration_endpoint) {
-      throw new Error('the tenant does not advertise dynamic client registration');
+    if (this.discovery.issuer !== this.issuer) throw new Error('discovery issuer mismatch');
+    this.idTokenKeys = createRemoteJWKSet(new URL(this.discovery.jwks_uri), {
+      [customFetch]: (url, options) => this.fetch(url, options),
+    });
+    if (this.clientId || this.clientPrivateJwk) {
+      if (!this.clientId || !this.clientPrivateJwk || !this.clientKid) throw new Error('configured client requires an ID, private JWK and key ID');
+      if (this.clientPrivateJwk.kty !== 'EC' || this.clientPrivateJwk.crv !== 'P-256' || !this.clientPrivateJwk.d) throw new Error('configured client requires an ES256 private JWK');
+      this.clientPrivateKey = await importJWK(this.clientPrivateJwk, 'ES256');
+      return;
     }
-    this.idTokenKeys = createRemoteJWKSet(new URL(this.discovery.jwks_uri));
+    if (!this.discovery.registration_endpoint) throw new Error('configure a registered client when registration is closed');
     const pair = await generateKeyPair('ES256', { extractable: true });
     this.clientPrivateKey = pair.privateKey;
     this.clientKid = `${this.name.toLowerCase().replaceAll(' ', '-')}-auth`;
@@ -95,7 +110,8 @@ export class OidcClient {
           post_logout_redirect_uris: [`${this.externalUrl}/logged-out`],
           response_types: ['code'],
           grant_types: ['authorization_code', 'refresh_token'],
-          scope: 'openid profile offline_access',
+          scope: this.scopes,
+          resources: [this.resource],
           token_endpoint_auth_method: 'private_key_jwt',
           jwks: { keys: [publicJwk] },
           require_pushed_authorization_requests: true,
@@ -110,7 +126,7 @@ export class OidcClient {
   async assertion() {
     const now = Math.floor(Date.now() / 1000);
     return new SignJWT({})
-      .setProtectedHeader({ alg: 'ES256', kid: this.clientKid, typ: 'client-authentication+jwt' })
+      .setProtectedHeader({ alg: 'ES256', kid: this.clientKid, typ: 'JWT' })
       .setIssuer(this.clientId)
       .setSubject(this.clientId)
       .setAudience(this.discovery.issuer)
@@ -122,12 +138,47 @@ export class OidcClient {
 
   async proof(key, method, url, accessToken) {
     const publicJwk = await exportJWK(key.publicKey);
-    const claims = { htm: method, htu: url, jti: randomUUID() };
+    const target = new URL(url);
+    target.search = ''; target.hash = '';
+    const claims = { htm: method, htu: target.toString(), jti: randomUUID() };
+    const nonce = this.nonces.get(key)?.get(target.origin);
+    if (nonce) claims.nonce = nonce;
     if (accessToken) claims.ath = base64url(createHash('sha256').update(accessToken).digest());
     return new SignJWT(claims)
       .setProtectedHeader({ alg: 'ES256', typ: 'dpop+jwt', jwk: publicJwk })
       .setIssuedAt()
       .sign(key.privateKey);
+  }
+
+  async dpopRequest(key, method, url, { form, accessToken } = {}) {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const body = form ? new URLSearchParams(form) : undefined;
+      if (body) {
+        body.set('client_id', this.clientId);
+        body.set('client_assertion_type', ASSERTION_TYPE);
+        body.set('client_assertion', await this.assertion());
+      }
+      const headers = { dpop: await this.proof(key, method, url, accessToken) };
+      if (body) headers['content-type'] = 'application/x-www-form-urlencoded';
+      if (accessToken) headers.authorization = `DPoP ${accessToken}`;
+      const response = await this.fetch(url, { method, headers, body });
+      const nonce = response.headers.get('dpop-nonce');
+      if (nonce && nonce.length <= 512) {
+        const nonces = this.nonces.get(key) ?? new Map();
+        nonces.set(new URL(url).origin, nonce);
+        this.nonces.set(key, nonces);
+        if ((response.status === 400 || response.status === 401) && attempt === 0) {
+          const error = await response.clone().json().catch(() => ({}));
+          if (error.error === 'use_dpop_nonce') continue;
+        }
+      }
+      return response;
+    }
+    throw new Error('DPoP nonce negotiation failed');
+  }
+
+  async oauthPost(endpoint, form, dpop) {
+    return responseJson(await this.dpopRequest(dpop, 'POST', endpoint, { form }), 'OAuth request');
   }
 
   async begin(extra = {}) {
@@ -143,46 +194,23 @@ export class OidcClient {
       client_assertion: await this.assertion(),
       response_type: 'code',
       redirect_uri: `${this.externalUrl}/callback`,
-      scope: 'openid profile offline_access',
+      scope: this.scopes,
+      resource: this.resource,
       code_challenge: challenge,
       code_challenge_method: 'S256',
       state,
       nonce,
       ...extra,
     });
-    const pushed = await responseJson(
-      await this.fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/x-www-form-urlencoded',
-          dpop: await this.proof(dpop, 'POST', endpoint),
-        },
-        body: form,
-      }),
-      'PAR',
-    );
+    const pushed = await this.oauthPost(endpoint, form, dpop);
     const authorize = new URL(this.discovery.authorization_endpoint);
     authorize.searchParams.set('client_id', this.clientId);
     authorize.searchParams.set('request_uri', pushed.request_uri);
     return { authorize: authorize.toString(), verifier, state, nonce, dpop };
   }
 
-  async token(form, dpop) {
-    const endpoint = this.discovery.token_endpoint;
-    form.set('client_id', this.clientId);
-    form.set('client_assertion_type', ASSERTION_TYPE);
-    form.set('client_assertion', await this.assertion());
-    return responseJson(
-      await this.fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/x-www-form-urlencoded',
-          dpop: await this.proof(dpop, 'POST', endpoint),
-        },
-        body: form,
-      }),
-      'token request',
-    );
+  token(form, dpop) {
+    return this.oauthPost(this.discovery.token_endpoint, form, dpop);
   }
 
   redeem(code, pending) {
@@ -206,15 +234,7 @@ export class OidcClient {
 
   async userInfo(session) {
     const endpoint = this.discovery.userinfo_endpoint;
-    return responseJson(
-      await this.fetch(endpoint, {
-        headers: {
-          authorization: `DPoP ${session.access_token}`,
-          dpop: await this.proof(session.dpop, 'GET', endpoint, session.access_token),
-        },
-      }),
-      'UserInfo',
-    );
+    return responseJson(await this.dpopRequest(session.dpop, 'GET', endpoint, { accessToken: session.access_token }), 'UserInfo');
   }
 
   async revoke(token) {
@@ -238,6 +258,7 @@ export class OidcClient {
     const verified = await jwtVerify(token, this.idTokenKeys, {
       issuer: this.discovery.issuer,
       audience: this.clientId,
+      algorithms: ['EdDSA', 'ES256', 'PS256'],
     });
     if (verified.payload.nonce !== nonce) throw new Error('ID token nonce mismatch');
     return verified.payload;
@@ -254,7 +275,10 @@ export async function startDemo(config = process.env) {
   const name = config.APP_NAME ?? 'Asterius demo';
   const cookieName = config.COOKIE_NAME ?? `asterius_demo_${createHash('sha256').update(externalUrl).digest('hex').slice(0, 10)}`;
   const cookiePath = new URL(externalUrl).pathname.replace(/\/$/, '') || '/';
-  const client = new OidcClient({ issuer: config.ISSUER, internalIssuer: config.OIDC_INTERNAL_ISSUER, externalUrl, name });
+  const keyText = config.CLIENT_PRIVATE_KEY_JWK_FILE ? await readFile(config.CLIENT_PRIVATE_KEY_JWK_FILE, 'utf8') : config.CLIENT_PRIVATE_KEY_JWK;
+  const client = new OidcClient({ issuer: config.ISSUER, internalIssuer: config.OIDC_INTERNAL_ISSUER, externalUrl, name,
+    clientId: config.CLIENT_ID, clientPrivateJwk: keyText ? JSON.parse(keyText) : undefined,
+    clientKeyId: config.CLIENT_KEY_ID, scopes: config.SCOPES, resource: config.RESOURCE });
   await client.initialise();
   const pending = new Map();
   const sessions = new Map();
@@ -276,20 +300,22 @@ export async function startDemo(config = process.env) {
             }),
           } : {};
         const started = await client.begin(extra);
-        pending.set(started.state, started);
+        pending.set(started.state, { ...started, createdAt: Date.now() });
+        response.setHeader('set-cookie', sessionCookie(`${cookieName}_login`, started.state, cookiePath, externalUrl.startsWith('https:')) + '; Max-Age=600');
         response.writeHead(303, { location: started.authorize });
         return void response.end();
       }
       if (path === '/check-session' && session) {
         const started = await client.begin({ prompt: 'none' });
-        pending.set(started.state, { ...started, sessionId: sid });
+        pending.set(started.state, { ...started, sessionId: sid, createdAt: Date.now() });
+        response.setHeader('set-cookie', sessionCookie(`${cookieName}_login`, started.state, cookiePath, externalUrl.startsWith('https:')) + '; Max-Age=600');
         response.writeHead(303, { location: started.authorize });
         return void response.end();
       }
       if (path === '/callback') {
         const state = url.searchParams.get('state');
         const flow = state ? pending.get(state) : undefined;
-        if (!flow || url.searchParams.get('iss') !== client.discovery.issuer) throw new Error('invalid authorization response');
+        if (!flow || Date.now() - flow.createdAt > 600_000 || cookies(request.headers.cookie)[`${cookieName}_login`] !== state || url.searchParams.get('iss') !== client.discovery.issuer) throw new Error('invalid authorization response');
         pending.delete(state);
         if (url.searchParams.has('error')) {
           if (flow.sessionId) sessions.delete(flow.sessionId);
