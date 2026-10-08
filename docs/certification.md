@@ -102,6 +102,13 @@ regressions before the final full independent plans above.
 [Sanitized outcomes and manual artifact assessments](integrations/evidence/oidf-fapi-2026-10-08.json)
 record all runs and their bounds. Raw exports, keys and tokens remain private.
 
+The separate [independent RFC 9701 consumer evidence](integrations/evidence/rfc9701-independent-consumer-2026-10-08.json)
+records thirteen successful controls on later source
+`97ac7245561064d2f58fbc8c48581f62ee72c451`, including real authenticated token
+introspection, independent Ed25519 verification, privacy envelopes and refusal
+controls. This later consumer run does not move the 126 official suite verdicts
+to the newer revision or constitute OIDF certification.
+
 ## Where the evidence is
 
 Per run, in `conformance/.run/results/` locally and in the `conformance-report`

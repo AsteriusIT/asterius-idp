@@ -1,0 +1,66 @@
+{
+  "status": "pass",
+  "standard": "RFC9701",
+  "independentCryptoVersion": "41.0.7",
+  "consumer": "Python cryptography Ed25519 verification independent of Asterius JOSE",
+  "runtimeRevision": "97ac7245561064d2f58fbc8c48581f62ee72c451",
+  "runtimeBinarySha256": "3e0ac927d6f756cbd67f43345d5e918024c5bb865b1b780c5d91210f1cf2cda0",
+  "checks": [
+    {
+      "case": "dedicated producer real private_key_jwt plus DPoP token issuance",
+      "status": 200
+    },
+    {
+      "case": "independent Ed25519 signature and RFC9701 envelope/issuer/audience/iat plus active token claims",
+      "status": 200
+    },
+    {
+      "case": "unrecognised token signed inactive-only privacy envelope",
+      "status": 200
+    },
+    {
+      "case": "resource-unauthorized authenticated client signed inactive-only privacy envelope",
+      "status": 200
+    },
+    {
+      "case": "unregistered signed response algorithm refused by server",
+      "status": 406
+    },
+    {
+      "case": "independent consumer refuses JSON media downgrade",
+      "pass": true
+    },
+    {
+      "case": "independent consumer refuses altered signature",
+      "pass": true
+    },
+    {
+      "case": "independent consumer refuses wrong issuer",
+      "pass": true
+    },
+    {
+      "case": "independent consumer refuses wrong audience",
+      "pass": true
+    },
+    {
+      "case": "independent consumer refuses unexpected protected signing algorithm",
+      "pass": true
+    },
+    {
+      "case": "wrong client assertion algorithm refused before introspection",
+      "status": 400
+    },
+    {
+      "case": "unauthenticated application/token-introspection+jwt refusal",
+      "status": 400
+    },
+    {
+      "case": "unauthenticated application/json refusal",
+      "status": 401
+    }
+  ],
+  "limits": [
+    "Disposable client/resource registration seeded through guarded fixture SQL; issuance and introspection use actual HTTPS client authentication.",
+    "This evidence alone does not certify FAPI Message Signing."
+  ]
+}
