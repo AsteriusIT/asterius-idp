@@ -182,5 +182,129 @@
     "DELETE owned servicePrincipal",
     "DELETE owned application",
     "GET verify owned IDs absent; retain failed cleanup recovery IDs without secrets"
-  ]
+  ],
+  "readOnlyVerifiedDomains": [
+    "quentinrodicprooutlook.onmicrosoft.com",
+    "asterius.fr",
+    "asteriusit.onmicrosoft.com"
+  ],
+  "selectedFixtureDomain": "asteriusit.onmicrosoft.com",
+  "templateRoleMetadata": "Custom applicationTemplate GET contains no instantiated application/servicePrincipal or appRoles; query returned owned SP appRoles after approved instantiation",
+  "fixtureIdentities": {
+    "licensePolicy": "No assignLicense calls. Verify assignedLicenses empty after creation; abort if tenant automatic licensing assigns any. No login, mailbox, subscriptions or role assignments.",
+    "passwordPolicy": "Independent >=256-bit random passwords in private0600 request files; never evidence/logs. forceChangePasswordNextSignIn=true.",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/users",
+        "body": {
+          "accountEnabled": true,
+          "displayName": "ast-entra-adapter-${NONCE}-user1",
+          "mailNickname": "ast-entra-${NONCE}-u1",
+          "userPrincipalName": "ast-entra-${NONCE}-u1@asteriusit.onmicrosoft.com",
+          "passwordProfile": {
+            "forceChangePasswordNextSignIn": true,
+            "password": "${PRIVATE_RANDOM_PASSWORD_1}"
+          }
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/users",
+        "body": {
+          "accountEnabled": true,
+          "displayName": "ast-entra-adapter-${NONCE}-user2",
+          "mailNickname": "ast-entra-${NONCE}-u2",
+          "userPrincipalName": "ast-entra-${NONCE}-u2@asteriusit.onmicrosoft.com",
+          "passwordProfile": {
+            "forceChangePasswordNextSignIn": true,
+            "password": "${PRIVATE_RANDOM_PASSWORD_2}"
+          }
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/groups",
+        "body": {
+          "displayName": "ast-entra-adapter-${NONCE}-group",
+          "description": "Owned disposable native SCIM fixture; remove within four hours",
+          "mailEnabled": false,
+          "mailNickname": "ast-entra-${NONCE}-group",
+          "securityEnabled": true,
+          "groupTypes": []
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/groups/${OWNED_GROUP_ID}/members/$ref",
+        "body": {
+          "@odata.id": "https://graph.microsoft.com/v1.0/directoryObjects/${OWNED_USER_1_ID}"
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/groups/${OWNED_GROUP_ID}/members/$ref",
+        "body": {
+          "@odata.id": "https://graph.microsoft.com/v1.0/directoryObjects/${OWNED_USER_2_ID}"
+        }
+      },
+      {
+        "method": "GET",
+        "path": "/servicePrincipals/${OWNED_SP_ID}?$select=id,displayName,appRoles,appRoleAssignmentRequired"
+      },
+      {
+        "method": "POST",
+        "path": "/servicePrincipals/${OWNED_SP_ID}/appRoleAssignedTo",
+        "body": {
+          "principalId": "${OWNED_USER_1_ID}",
+          "resourceId": "${OWNED_SP_ID}",
+          "appRoleId": "${OWNED_USER_APP_ROLE_ID}"
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/servicePrincipals/${OWNED_SP_ID}/appRoleAssignedTo",
+        "body": {
+          "principalId": "${OWNED_USER_2_ID}",
+          "resourceId": "${OWNED_SP_ID}",
+          "appRoleId": "${OWNED_USER_APP_ROLE_ID}"
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/servicePrincipals/${OWNED_SP_ID}/appRoleAssignedTo",
+        "body": {
+          "principalId": "${OWNED_GROUP_ID}",
+          "resourceId": "${OWNED_SP_ID}",
+          "appRoleId": "${OWNED_USER_APP_ROLE_ID}"
+        }
+      }
+    ],
+    "roleSelection": "Select exactly one enabled owned SP role allowing User. If appRoles is empty, use documented all-zero default role; ambiguous/unsupported roles abort. Never create roles or grant application permissions.",
+    "lifecycleBodies": [
+      {
+        "method": "PATCH",
+        "path": "/users/${OWNED_USER_1_ID}",
+        "body": {
+          "mail": "ast-entra-${NONCE}-updated@asteriusit.onmicrosoft.com"
+        }
+      },
+      {
+        "method": "DELETE",
+        "path": "/groups/${OWNED_GROUP_ID}/members/${OWNED_USER_2_ID}/$ref"
+      },
+      {
+        "method": "PATCH",
+        "path": "/users/${OWNED_USER_2_ID}",
+        "body": {
+          "accountEnabled": false
+        }
+      },
+      {
+        "method": "DELETE",
+        "path": "/servicePrincipals/${OWNED_SP_ID}/appRoleAssignedTo/${OWNED_USER_2_ASSIGNMENT_ID}"
+      }
+    ],
+    "scopeControls": "All IDs must be recorded from this invocation creates; own group has exactly own two users. Verify SyncAll=false, assigned-only scoping and owned assignments before starting job. Group-based provisioning may require tenant license; no purchase or license assignment authorized by this proposal."
+  }
 }
