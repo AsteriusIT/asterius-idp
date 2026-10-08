@@ -136,8 +136,11 @@ pub fn parse_upstream_peer(body: &[u8]) -> Result<ClientId, AdminError> {
 #[async_trait::async_trait]
 pub trait SsfAdministration: Debug + Send + Sync {
     /// Read-only, validated poll setup contract. Never exposes bearer paths.
-    async fn upstream_preview(&self, _tenant: &TenantId, _peer: &ClientId)
-        -> Result<serde_json::Value, UpstreamOperationError> {
+    async fn upstream_preview(
+        &self,
+        _tenant: &TenantId,
+        _peer: &ClientId,
+    ) -> Result<serde_json::Value, UpstreamOperationError> {
         Err(UpstreamOperationError::Unavailable)
     }
 
@@ -149,7 +152,12 @@ pub trait SsfAdministration: Debug + Send + Sync {
         Err(UpstreamOperationError::Unavailable)
     }
 
-    async fn upstream_setup_flow(&self, _tenant: &TenantId, _peer: &ClientId, _step: &crate::flows::ApplyStep) -> Result<(), UpstreamOperationError> {
+    async fn upstream_setup_flow(
+        &self,
+        _tenant: &TenantId,
+        _peer: &ClientId,
+        _step: &crate::flows::ApplyStep,
+    ) -> Result<(), UpstreamOperationError> {
         Err(UpstreamOperationError::Unavailable)
     }
 

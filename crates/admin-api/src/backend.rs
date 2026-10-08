@@ -305,7 +305,12 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
         Err(DomainError::NotFound)
     }
 
-    async fn complete_flow_stream(&self, _tenant: &TenantId, _step: &crate::flows::ApplyStep, _peer: &str) -> Result<(), DomainError> {
+    async fn complete_flow_stream(
+        &self,
+        _tenant: &TenantId,
+        _step: &crate::flows::ApplyStep,
+        _peer: &str,
+    ) -> Result<(), DomainError> {
         Err(DomainError::NotFound)
     }
 

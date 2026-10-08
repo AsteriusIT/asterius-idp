@@ -891,8 +891,10 @@ struct OidcDiscovery {
 }
 
 impl DeploymentOidcProviders {
-    async fn prepare_provider(&self, input: &asterius_admin_api::oidc_providers::ProviderInput)
-        -> Result<asterius_store_pg::OidcProvider, DomainError> {
+    async fn prepare_provider(
+        &self,
+        input: &asterius_admin_api::oidc_providers::ProviderInput,
+    ) -> Result<asterius_store_pg::OidcProvider, DomainError> {
         use asterius_admin_api::oidc_providers::{discovery_url, validate_https_url};
         crate::outbound::ssrf::check_url(&input.issuer).map_err(|_| {
             DomainError::invalid("oidc_provider", "issuer is not a public HTTPS URL")
@@ -998,20 +1000,46 @@ impl DeploymentOidcProviders {
 
 #[async_trait::async_trait]
 impl asterius_admin_api::oidc_providers::ProviderAdministration for DeploymentOidcProviders {
-    async fn preview(&self, input: &asterius_admin_api::oidc_providers::ProviderInput) -> Result<serde_json::Value, DomainError> {
+    async fn preview(
+        &self,
+        input: &asterius_admin_api::oidc_providers::ProviderInput,
+    ) -> Result<serde_json::Value, DomainError> {
         Ok(self.prepare_provider(input).await?.specification())
     }
-    async fn put_flow(&self, tenant: &TenantId, _tenant_issuer: &str,
+    async fn put_flow(
+        &self,
+        tenant: &TenantId,
+        _tenant_issuer: &str,
         input: asterius_admin_api::oidc_providers::ProviderInput,
-        step: &asterius_admin_api::flows::ApplyStep, expected: Option<&serde_json::Value>, desired: &serde_json::Value) -> Result<(), DomainError> {
+        step: &asterius_admin_api::flows::ApplyStep,
+        expected: Option<&serde_json::Value>,
+        desired: &serde_json::Value,
+    ) -> Result<(), DomainError> {
         let provider = self.prepare_provider(&input).await?;
-        if provider.specification() != *desired { return Err(DomainError::Conflict("OIDC discovery changed after preview".into())); }
+        if provider.specification() != *desired {
+            return Err(DomainError::Conflict(
+                "OIDC discovery changed after preview".into(),
+            ));
+        }
         let write = asterius_store_pg::OidcFlowWrite {
-            step: asterius_store_pg::FlowApplyStep {flow: step.flow, token: step.token, revision: step.revision, node: &step.node, now: step.now},
+            step: asterius_store_pg::FlowApplyStep {
+                flow: step.flow,
+                token: step.token,
+                revision: step.revision,
+                node: &step.node,
+                now: step.now,
+            },
             expected,
         };
-        self.store.scope(tenant.clone()).oidc_providers(Arc::clone(&self.kek))
-            .put_flow(&provider, input.client_secret.as_ref().map(|secret| secret.as_bytes()), &write).await
+        self.store
+            .scope(tenant.clone())
+            .oidc_providers(Arc::clone(&self.kek))
+            .put_flow(
+                &provider,
+                input.client_secret.as_ref().map(|secret| secret.as_bytes()),
+                &write,
+            )
+            .await
     }
 
     async fn check(&self, tenant: &TenantId, id: &str) -> Result<serde_json::Value, DomainError> {
@@ -1128,7 +1156,10 @@ impl asterius_admin_api::oidc_providers::ProviderAdministration for DeploymentOi
         input: asterius_admin_api::oidc_providers::ProviderInput,
     ) -> Result<asterius_admin_api::oidc_providers::ProviderSummary, DomainError> {
         let provider = self.prepare_provider(&input).await?;
-        let repository = self.store.scope(tenant.clone()).oidc_providers(Arc::clone(&self.kek));
+        let repository = self
+            .store
+            .scope(tenant.clone())
+            .oidc_providers(Arc::clone(&self.kek));
         repository
             .put(
                 &provider,
@@ -1479,13 +1510,16 @@ impl asterius_admin_api::ssf::SsfAdministration for DeploymentSsf {
             } else {
                 "not_started"
             };
-            let origin = repository.flow_origin(peer).await.map_err(|_| Error::Unavailable)?;
+            let origin = repository
+                .flow_origin(peer)
+                .await
+                .map_err(|_| Error::Unavailable)?;
             items.push(UpstreamPeerSummary {
                 peer_client_id: peer.to_owned(),
                 state,
                 stream_id: established.as_ref().map(|stream| stream.stream_id.clone()),
-                origin_flow: origin.as_ref().map(|(flow,_)| flow.to_string()),
-                origin_node: origin.map(|(_,node)| node),
+                origin_flow: origin.as_ref().map(|(flow, _)| flow.to_string()),
+                origin_node: origin.map(|(_, node)| node),
                 expected_audience: crate::ssf_upstream::expected_audience(config, &tenant_entity),
                 allow_all_subjects: config.allow_all_subjects,
                 pending_since: pending
@@ -1508,22 +1542,57 @@ impl asterius_admin_api::ssf::SsfAdministration for DeploymentSsf {
         Ok(items)
     }
 
-    async fn upstream_preview(&self, tenant: &TenantId, peer: &ClientId)
-        -> Result<serde_json::Value, asterius_admin_api::ssf::UpstreamOperationError> {
+    async fn upstream_preview(
+        &self,
+        tenant: &TenantId,
+        peer: &ClientId,
+    ) -> Result<serde_json::Value, asterius_admin_api::ssf::UpstreamOperationError> {
         use asterius_admin_api::ssf::UpstreamOperationError as Error;
         let runtime = self.upstream.as_ref().ok_or(Error::Unavailable)?;
         let config = runtime.peer(tenant, peer).ok_or(Error::Peer)?;
-        let tenant_entity = self.tenants.find_by_id(tenant).await.map_err(|_| Error::Unavailable)?.ok_or(Error::Peer)?;
-        crate::ssf_upstream::preview_poll_stream(&runtime.endpoints, &tenant_entity, config).await.map_err(upstream_setup_error)
+        let tenant_entity = self
+            .tenants
+            .find_by_id(tenant)
+            .await
+            .map_err(|_| Error::Unavailable)?
+            .ok_or(Error::Peer)?;
+        crate::ssf_upstream::preview_poll_stream(&runtime.endpoints, &tenant_entity, config)
+            .await
+            .map_err(upstream_setup_error)
     }
 
-    async fn upstream_setup_flow(&self, tenant: &TenantId, peer: &ClientId, step: &asterius_admin_api::flows::ApplyStep) -> Result<(), asterius_admin_api::ssf::UpstreamOperationError> {
+    async fn upstream_setup_flow(
+        &self,
+        tenant: &TenantId,
+        peer: &ClientId,
+        step: &asterius_admin_api::flows::ApplyStep,
+    ) -> Result<(), asterius_admin_api::ssf::UpstreamOperationError> {
         use asterius_admin_api::ssf::UpstreamOperationError as Error;
         let runtime = self.upstream.as_ref().ok_or(Error::Unavailable)?;
-        let config = runtime.peer(tenant,peer).ok_or(Error::Peer)?;
-        let tenant_entity = self.tenants.find_by_id(tenant).await.map_err(|_| Error::Unavailable)?.ok_or(Error::Peer)?;
-        let step = asterius_store_pg::FlowApplyStep {flow:step.flow,token:step.token,revision:step.revision,node:&step.node,now:step.now};
-        crate::ssf_upstream::create_poll_stream_for_flow(&runtime.endpoints,&tenant_entity,config,&runtime.poster,&step).await.map(|_|()).map_err(upstream_setup_error)
+        let config = runtime.peer(tenant, peer).ok_or(Error::Peer)?;
+        let tenant_entity = self
+            .tenants
+            .find_by_id(tenant)
+            .await
+            .map_err(|_| Error::Unavailable)?
+            .ok_or(Error::Peer)?;
+        let step = asterius_store_pg::FlowApplyStep {
+            flow: step.flow,
+            token: step.token,
+            revision: step.revision,
+            node: &step.node,
+            now: step.now,
+        };
+        crate::ssf_upstream::create_poll_stream_for_flow(
+            &runtime.endpoints,
+            &tenant_entity,
+            config,
+            &runtime.poster,
+            &step,
+        )
+        .await
+        .map(|_| ())
+        .map_err(upstream_setup_error)
     }
 
     async fn upstream_setup(
@@ -3401,9 +3470,22 @@ impl AdminBackend for Deployment {
             .await
     }
 
-    async fn complete_flow_stream(&self, tenant: &TenantId, step: &asterius_admin_api::flows::ApplyStep, peer: &str) -> Result<(), DomainError> {
-        let step=asterius_store_pg::FlowApplyStep {flow:step.flow,token:step.token,revision:step.revision,node:&step.node,now:step.now};
-        asterius_store_pg::PgArchitectureFlows::new(self.store.pool().clone()).complete_stream(tenant,&step,peer).await
+    async fn complete_flow_stream(
+        &self,
+        tenant: &TenantId,
+        step: &asterius_admin_api::flows::ApplyStep,
+        peer: &str,
+    ) -> Result<(), DomainError> {
+        let step = asterius_store_pg::FlowApplyStep {
+            flow: step.flow,
+            token: step.token,
+            revision: step.revision,
+            node: &step.node,
+            now: step.now,
+        };
+        asterius_store_pg::PgArchitectureFlows::new(self.store.pool().clone())
+            .complete_stream(tenant, &step, peer)
+            .await
     }
 
     async fn complete_flow_link(

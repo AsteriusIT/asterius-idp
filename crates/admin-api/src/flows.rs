@@ -44,7 +44,9 @@ pub struct ApplyRequest {
 #[serde(transparent)]
 pub struct ApplyCredential(String);
 impl std::fmt::Debug for ApplyCredential {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { formatter.write_str("ApplyCredential([redacted])") }
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ApplyCredential([redacted])")
+    }
 }
 impl ApplyCredential {
     pub fn take(&mut self) -> zeroize::Zeroizing<String> {
@@ -56,7 +58,9 @@ impl ApplyCredential {
     }
 }
 impl Drop for ApplyCredential {
-    fn drop(&mut self) { zeroize::Zeroize::zeroize(&mut self.0); }
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -339,21 +343,41 @@ impl FlowInput {
                     ],
                     NodeKind::Role => &["description"],
                     NodeKind::Stream => &["integration", "expected_audience", "allow_all_subjects"],
-                    NodeKind::IdentityProvider => &["integration", "issuer", "client_id", "username_claim", "enabled", "allow_registration"],
-                    NodeKind::Group
-                    | NodeKind::User
-                    | NodeKind::Gateway => &[],
+                    NodeKind::IdentityProvider => &[
+                        "integration",
+                        "issuer",
+                        "client_id",
+                        "username_claim",
+                        "enabled",
+                        "allow_registration",
+                    ],
+                    NodeKind::Group | NodeKind::User | NodeKind::Gateway => &[],
                 };
                 if matches!(node.kind, NodeKind::IdentityProvider | NodeKind::Stream) {
                     for (key, value) in settings {
                         let valid = match key.as_str() {
-                            "integration" | "enabled" | "allow_registration" | "allow_all_subjects" => value.is_boolean(),
-                            "username_claim" => value.is_null() || value.as_str().is_some_and(|value| value.len() <= 128 && !value.chars().any(char::is_control)),
-                            "issuer" | "expected_audience" => value.as_str().is_some_and(|value| value.len() <= 2048 && !value.chars().any(char::is_control) && (value.is_empty() || crate::oidc_providers::validate_https_url(value).is_ok())),
-                            "client_id" => value.as_str().is_some_and(|value| value.len() <= 512 && !value.chars().any(char::is_control)),
+                            "integration" | "enabled" | "allow_registration"
+                            | "allow_all_subjects" => value.is_boolean(),
+                            "username_claim" => {
+                                value.is_null()
+                                    || value.as_str().is_some_and(|value| {
+                                        value.len() <= 128 && !value.chars().any(char::is_control)
+                                    })
+                            }
+                            "issuer" | "expected_audience" => value.as_str().is_some_and(|value| {
+                                value.len() <= 2048
+                                    && !value.chars().any(char::is_control)
+                                    && (value.is_empty()
+                                        || crate::oidc_providers::validate_https_url(value).is_ok())
+                            }),
+                            "client_id" => value.as_str().is_some_and(|value| {
+                                value.len() <= 512 && !value.chars().any(char::is_control)
+                            }),
                             _ => false,
                         };
-                        if !valid { return Err(AdminError::Invalid("integration settings must contain bounded public typed fields only".into())); }
+                        if !valid {
+                            return Err(AdminError::Invalid("integration settings must contain bounded public typed fields only".into()));
+                        }
                     }
                 }
                 if settings.keys().any(|key| !allowed.contains(&key.as_str())) {

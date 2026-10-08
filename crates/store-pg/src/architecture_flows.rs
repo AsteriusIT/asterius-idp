@@ -260,15 +260,26 @@ impl PgArchitectureFlows {
     }
 
     /// Pin the exact flow-owned established stream under its retained row lock.
-    pub async fn complete_stream(&self, tenant: &TenantId, step: &FlowApplyStep<'_>, peer: &str) -> Result<(), DomainError> {
-        let mut tx=self.pool.begin().await.map_err(to_domain_error)?;
+    pub async fn complete_stream(
+        &self,
+        tenant: &TenantId,
+        step: &FlowApplyStep<'_>,
+        peer: &str,
+    ) -> Result<(), DomainError> {
+        let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
         let stream: Option<String> = sqlx::query_scalar("select stream_id from ssf_receiver_upstream_streams where tenant_id=$1 and peer_client_id=$2 and origin_flow=$3 and origin_node=$4 and deletion_started_at is null for share")
             .bind(tenant.as_str()).bind(peer).bind(step.flow).bind(step.node).fetch_optional(&mut *tx).await.map_err(to_domain_error)?;
-        let stream=stream.ok_or_else(||DomainError::Conflict("exact flow-owned established stream required".into()))?;
+        let stream = stream.ok_or_else(|| {
+            DomainError::Conflict("exact flow-owned established stream required".into())
+        })?;
         let changed=sqlx::query("update flow_resource_links set state='applied',last_applied_revision=$4,resource_revision=$5,updated_at=clock_timestamp() where tenant_id=$1 and flow_id=$2 and node_id=$3 and resource_kind='stream' and resource_id=$6 and relation='managed' and exists(select 1 from architecture_flows where tenant_id=$1 and flow_id=$2 and revision=$4 and apply_token=$7 and apply_deadline>clock_timestamp())")
             .bind(tenant.as_str()).bind(step.flow).bind(step.node).bind(step.revision).bind(stream).bind(peer).bind(step.token)
             .execute(&mut *tx).await.map_err(to_domain_error)?.rows_affected();
-        if changed!=1 {return Err(DomainError::Conflict("stream apply lease or origin changed".into()));}
+        if changed != 1 {
+            return Err(DomainError::Conflict(
+                "stream apply lease or origin changed".into(),
+            ));
+        }
         tx.commit().await.map_err(to_domain_error)
     }
 

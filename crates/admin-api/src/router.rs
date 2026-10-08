@@ -5563,8 +5563,10 @@ impl Handling<'_> {
             .ok_or_else(|| AdminError::Invalid("resource kind is required".into()))?;
         let resource = decoded_query_value(&self.query, "id")
             .ok_or_else(|| AdminError::Invalid("resource ID is required".into()))?;
-        if !matches!(kind.as_str(), "application" | "api" | "group" | "role" | "identity_provider" | "stream")
-            || resource.is_empty()
+        if !matches!(
+            kind.as_str(),
+            "application" | "api" | "group" | "role" | "identity_provider" | "stream"
+        ) || resource.is_empty()
             || resource.len() > 512
         {
             return Err(AdminError::Invalid(
@@ -5653,7 +5655,8 @@ impl Handling<'_> {
     }
 
     async fn apply_flow(&self, body: axum::body::Body) -> Result<Response, AdminError> {
-        let raw = axum::body::to_bytes(body, MAX_BODY_BYTES).await
+        let raw = axum::body::to_bytes(body, MAX_BODY_BYTES)
+            .await
             .map_err(|_| AdminError::Invalid("apply body is too large".into()))?;
         let bytes = zeroize::Zeroizing::new(raw.to_vec());
         drop(raw);
@@ -5670,18 +5673,7 @@ impl Handling<'_> {
         if saved["applied_revision"].as_i64() == Some(request.revision)
             && saved["applied_digest"].as_str() == Some(request.digest.as_str())
         {
-            let links = self
-                .state
-                .backend
-                .flow_links(&self.tenant.id, id)
-                .await
-                .map_err(|error| group_error(crate::FLOW_APPLY_ID, error))?;
-            return Ok(json_no_store(
-                StatusCode::OK,
-                &serde_json::json!({
-                    "flow_id": id, "applied_revision": request.revision, "links": links,
-                }),
-            ));
+            return self.flow_apply_response(id, request.revision).await;
         }
         let (plan, graph) = self.compile_flow(request.revision).await?;
         if plan.digest != request.digest {
@@ -5712,7 +5704,14 @@ impl Handling<'_> {
             .await
             .map_err(|error| group_error(crate::FLOW_APPLY_ID, error))?;
         let result = self
-            .execute_flow(id, token, &plan, &graph, prior.as_ref(), &mut request.credentials)
+            .execute_flow(
+                id,
+                token,
+                &plan,
+                &graph,
+                prior.as_ref(),
+                &mut request.credentials,
+            )
             .await;
         let failure = result.as_ref().err().map(ToString::to_string);
         self.state
@@ -5744,6 +5743,14 @@ impl Handling<'_> {
         )
         .await;
         result?;
+        self.flow_apply_response(id, request.revision).await
+    }
+
+    async fn flow_apply_response(
+        &self,
+        id: uuid::Uuid,
+        revision: i64,
+    ) -> Result<Response, AdminError> {
         let links = self
             .state
             .backend
@@ -5753,7 +5760,7 @@ impl Handling<'_> {
         Ok(json_no_store(
             StatusCode::OK,
             &serde_json::json!({
-                "flow_id": id, "applied_revision": request.revision, "links": links,
+                "flow_id": id, "applied_revision": revision, "links": links,
             }),
         ))
     }
@@ -5827,9 +5834,10 @@ impl Handling<'_> {
                             })?;
                         serde_json::json!([owner, node.identifier]).to_string()
                     }
-                    flows::NodeKind::Stream | flows::NodeKind::IdentityProvider => node.identifier.clone(),
-                    flows::NodeKind::User
-                    | flows::NodeKind::Gateway => {
+                    flows::NodeKind::Stream | flows::NodeKind::IdentityProvider => {
+                        node.identifier.clone()
+                    }
+                    flows::NodeKind::User | flows::NodeKind::Gateway => {
                         return Err(AdminError::Conflict(
                             "integration setup is unavailable".into(),
                         ));
@@ -5853,11 +5861,25 @@ impl Handling<'_> {
                     .reserve_flow_link(&self.tenant.id, id, token, plan.revision, &intent, step_now)
                     .await
                     .map_err(|error| group_error(crate::FLOW_APPLY_ID, error))?;
-                if matches!(node.kind, flows::NodeKind::IdentityProvider | flows::NodeKind::Stream) && relation == "managed" {
-                    let apply_step = flows::ApplyStep { flow: id, token, revision: plan.revision, node: node.id.clone(), now: step_now };
-                    self.apply_integration(node, step, &apply_step, credentials.get_mut(&node.id)).await?;
+                if matches!(
+                    node.kind,
+                    flows::NodeKind::IdentityProvider | flows::NodeKind::Stream
+                ) && relation == "managed"
+                {
+                    let apply_step = flows::ApplyStep {
+                        flow: id,
+                        token,
+                        revision: plan.revision,
+                        node: node.id.clone(),
+                        now: step_now,
+                    };
+                    self.apply_integration(node, step, &apply_step, credentials.get_mut(&node.id))
+                        .await?;
                     if node.kind == flows::NodeKind::Stream {
-                        self.state.backend.complete_flow_stream(&self.tenant.id, &apply_step, &node.identifier).await
+                        self.state
+                            .backend
+                            .complete_flow_stream(&self.tenant.id, &apply_step, &node.identifier)
+                            .await
                             .map_err(|error| group_error(crate::FLOW_APPLY_ID, error))?;
                     }
                 } else if step.action == "update" {
@@ -6331,14 +6353,22 @@ impl Handling<'_> {
                     self.require_flow_scope(flows::scope_for(kind, false))?;
                 }
                 let link = links.iter().find(|link| link["node_id"] == node.id);
-                if matches!(kind, flows::NodeKind::IdentityProvider | flows::NodeKind::Stream) {
-                    let previous = applied_graph.as_ref().and_then(|graph| graph.nodes.iter().find(|old| old.id == node.id));
+                if matches!(
+                    kind,
+                    flows::NodeKind::IdentityProvider | flows::NodeKind::Stream
+                ) {
+                    let previous = applied_graph
+                        .as_ref()
+                        .and_then(|graph| graph.nodes.iter().find(|old| old.id == node.id));
                     let mut step = self.compile_integration(node, link, previous).await?;
-                    if !declared_resources.insert(format!("{}:{}", kind.as_str(), node.identifier)) {
-                        step.action = "conflict".into(); step.explanation = "Another node names the same integration.".into();
+                    if !declared_resources.insert(format!("{}:{}", kind.as_str(), node.identifier))
+                    {
+                        step.action = "conflict".into();
+                        step.explanation = "Another node names the same integration.".into();
                     }
                     fingerprints.push(step.live.clone().unwrap_or(serde_json::Value::Null));
-                    steps.push(step); continue;
+                    steps.push(step);
+                    continue;
                 }
                 let mut resource_id = link
                     .and_then(|link| link["resource_id"].as_str())

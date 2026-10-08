@@ -201,9 +201,16 @@ pub trait ProviderAdministration: Send + Sync {
     }
     /// Conditional registration and durable flow receipt commit together.
     async fn put_flow(
-        &self, _tenant: &TenantId, _tenant_issuer: &str, _input: ProviderInput,
-        _step: &crate::flows::ApplyStep, _expected: Option<&serde_json::Value>, _desired: &serde_json::Value,
-    ) -> Result<(), DomainError> { Err(DomainError::NotFound) }
+        &self,
+        _tenant: &TenantId,
+        _tenant_issuer: &str,
+        _input: ProviderInput,
+        _step: &crate::flows::ApplyStep,
+        _expected: Option<&serde_json::Value>,
+        _desired: &serde_json::Value,
+    ) -> Result<(), DomainError> {
+        Err(DomainError::NotFound)
+    }
 
     async fn check(&self, _tenant: &TenantId, _id: &str) -> Result<serde_json::Value, DomainError> {
         Err(DomainError::NotFound)

@@ -95,13 +95,21 @@ impl PgSsfUpstreamStreams {
     pub async fn begin_setup(&self, intent: &UpstreamSetupIntent) -> Result<bool, DomainError> {
         self.begin_setup_owned(intent, None).await
     }
-    pub async fn begin_setup_for_flow(&self, intent: &UpstreamSetupIntent, step: &crate::FlowApplyStep<'_>) -> Result<bool, DomainError> {
+    pub async fn begin_setup_for_flow(
+        &self,
+        intent: &UpstreamSetupIntent,
+        step: &crate::FlowApplyStep<'_>,
+    ) -> Result<bool, DomainError> {
         self.begin_setup_owned(intent, Some(step)).await
     }
     // Peer row serialization, active flow reservation and durable intent ownership
     // must be checked before any caller can send an external create request.
     #[allow(clippy::too_many_lines)]
-    async fn begin_setup_owned(&self, intent: &UpstreamSetupIntent, owner: Option<&crate::FlowApplyStep<'_>>) -> Result<bool, DomainError> {
+    async fn begin_setup_owned(
+        &self,
+        intent: &UpstreamSetupIntent,
+        owner: Option<&crate::FlowApplyStep<'_>>,
+    ) -> Result<bool, DomainError> {
         if intent.peer_client_id != intent.issuer
             || intent.events_requested.is_empty()
             || intent.events_requested.len() > 16
@@ -131,16 +139,28 @@ impl PgSsfUpstreamStreams {
         if let Some(step) = owner {
             let active: bool = sqlx::query_scalar("select exists(select 1 from architecture_flows where tenant_id=$1 and flow_id=$2 and revision=$3 and apply_token=$4 and apply_deadline>clock_timestamp())")
                 .bind(self.tenant.as_str()).bind(step.flow).bind(step.revision).bind(step.token).fetch_one(&mut *tx).await.map_err(to_domain_error)?;
-            if !active || reservation.as_ref().map(|row| (row.0,row.1.clone())) != owner_identity {
-                return Err(DomainError::Conflict("exact active flow stream reservation required".into()));
+            if !active || reservation.as_ref().map(|row| (row.0, row.1.clone())) != owner_identity {
+                return Err(DomainError::Conflict(
+                    "exact active flow stream reservation required".into(),
+                ));
             }
         } else if reservation.as_ref().is_some_and(|row| row.2 == "pending") {
-            return Err(DomainError::Conflict("stream setup belongs to an active architecture reservation".into()));
+            return Err(DomainError::Conflict(
+                "stream setup belongs to an active architecture reservation".into(),
+            ));
         }
         let existing_owner: Option<(Option<uuid::Uuid>,Option<String>)> = sqlx::query_as("select origin_flow,origin_node from ssf_receiver_upstream_setup_intents where tenant_id=$1 and peer_client_id=$2")
             .bind(self.tenant.as_str()).bind(&intent.peer_client_id).fetch_optional(&mut *tx).await.map_err(to_domain_error)?;
-        if existing_owner.is_some_and(|existing| existing != (owner.map(|step| step.flow),owner.map(|step| step.node.to_owned()))) {
-            return Err(DomainError::Conflict("uncertain stream setup has another origin; reconcile it with its owner".into()));
+        if existing_owner.is_some_and(|existing| {
+            existing
+                != (
+                    owner.map(|step| step.flow),
+                    owner.map(|step| step.node.to_owned()),
+                )
+        }) {
+            return Err(DomainError::Conflict(
+                "uncertain stream setup has another origin; reconcile it with its owner".into(),
+            ));
         }
         let result = sqlx::query(
             "insert into ssf_receiver_upstream_setup_intents
@@ -164,7 +184,8 @@ impl PgSsfUpstreamStreams {
         .bind(&intent.events_requested)
         .bind(&intent.delivery_method)
         .bind(intent.started_at)
-        .bind(owner.map(|step| step.flow)).bind(owner.map(|step| step.node))
+        .bind(owner.map(|step| step.flow))
+        .bind(owner.map(|step| step.node))
         .execute(&mut *tx)
         .await
         .map_err(to_domain_error)?;
@@ -172,7 +193,10 @@ impl PgSsfUpstreamStreams {
         Ok(result.rows_affected() == 1)
     }
 
-    pub async fn flow_origin(&self, peer: &str) -> Result<Option<(uuid::Uuid,String)>, DomainError> {
+    pub async fn flow_origin(
+        &self,
+        peer: &str,
+    ) -> Result<Option<(uuid::Uuid, String)>, DomainError> {
         sqlx::query_as("select origin_flow,origin_node from ssf_receiver_upstream_streams where tenant_id=$1 and peer_client_id=$2 and origin_flow is not null union all select origin_flow,origin_node from ssf_receiver_upstream_setup_intents where tenant_id=$1 and peer_client_id=$2 and origin_flow is not null")
             .bind(self.tenant.as_str()).bind(peer).fetch_optional(&self.pool).await.map_err(to_domain_error)
     }
