@@ -1034,7 +1034,7 @@ function RoleEditor({
   const [chosen, setChosen] = useState<readonly string[]>(held.roles);
   const [saving, setSaving] = useState(false);
   const mayWrite = session.scopes.includes('admin.roles:write') && !isSelf;
-  const roleDraft = useDialogDraft(editing && JSON.stringify([...chosen].sort()) !== JSON.stringify([...held.roles].sort()), busy || saving, () => setEditing(false));
+  const roleDraft = useDialogDraft(editing && JSON.stringify([...chosen].sort((left, right) => left < right ? -1 : left > right ? 1 : 0)) !== JSON.stringify([...held.roles].sort((left, right) => left < right ? -1 : left > right ? 1 : 0)), busy || saving, () => setEditing(false));
 
   // The offered set is what the caller may grant, plus whatever this account
   // already holds: a role the caller cannot grant is still shown, ticked and
