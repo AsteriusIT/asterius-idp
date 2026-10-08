@@ -6,6 +6,8 @@ include the token test console (flask), architecture builder (network), help
 (book), and workspace health (pulse). Preferences are in the account menu;
 Tenant settings and Branding are in the tenant menu.
 
+For a complete set of sandbox exercises, including API and external-peer prerequisites, use [the local feature tour](local-feature-tour.md).
+
 ## Screens
 
 | Feature | Why use it? | How to use it |
