@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Native SSFgo push worker → approved TLS relay → real Asterius receiver."""
-import argparse,hashlib,json,secrets,subprocess,time,urllib.request,urllib.error,urllib.parse,uuid
+import argparse,hashlib,json,re,secrets,subprocess,time,urllib.request,urllib.error,urllib.parse,uuid
 from pathlib import Path
 from lifecycle import Admin
 
@@ -11,9 +11,11 @@ def main():
     args=p.parse_args()
     manifest=json.loads(Path(args.manifest).read_text())
     config=json.loads(Path(args.automation).read_text())
-    assert manifest['issuer']=='https://localhost:18444/t/e2e' and manifest['database']==config['database'] and config['database'].startswith('ast_product_')
+    assert manifest['issuer']=='https://localhost:18444/t/e2e' and manifest['database']==config['database'] and re.fullmatch(r'ast_product_[a-f0-9]{32}',config['database'])
     peer='https://desktop-cpbptqn-1.tailacbb15.ts.net:10000/ssf-push-peer'
     endpoint='https://desktop-cpbptqn-1.tailacbb15.ts.net:10000/asterius-ssf/receiver'
+    assert re.fullmatch(r'asterius-[A-Za-z0-9_.-]+',args.database_container)
+    assert Path(args.bearer_file).stat().st_mode & 0o077 == 0
     bearer=Path(args.bearer_file).read_text().strip()
     admin=Admin(config['issuer'],config['clientId'],config['keyFile'],config['keyId'],config['caFile'])
     q=lambda x:"'"+x.replace("'","''")+"'"
