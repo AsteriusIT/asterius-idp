@@ -43,6 +43,8 @@ class Proxy(http.server.BaseHTTPRequestHandler):
                 connection=http.client.HTTPConnection('127.0.0.1',9488,timeout=20)
             elif path.startswith('/controlled-peer/'):
                 connection=http.client.HTTPConnection('127.0.0.1',9489,timeout=20)
+            elif path.startswith('/ssf-push-peer/') or path=='/.well-known/ssf-configuration/ssf-push-peer':
+                connection=http.client.HTTPConnection('127.0.0.1',19485,timeout=20)
             elif path.startswith('/ssf-peer/') or path=='/.well-known/ssf-configuration/ssf-peer':
                 connection=http.client.HTTPConnection('127.0.0.1',9485,timeout=20)
             elif path in ('/asterius-rp/token','/asterius-rp/userinfo','/asterius-rp/jwks'):
@@ -51,6 +53,16 @@ class Proxy(http.server.BaseHTTPRequestHandler):
                 forwarded_path='/t/e2e/'+path.rsplit('/',1)[1]
                 if '?' in self.path:forwarded_path+='?'+self.path.split('?',1)[1]
                 connection=http.client.HTTPSConnection('localhost',18444,context=ssl.create_default_context(cafile=fixture['ca_file']),timeout=20)
+            elif path in ('/ipsie-rp/token','/ipsie-rp/userinfo','/ipsie-rp/jwks'):
+                fixture=private_json(config['ipsie_manifest'])
+                if fixture['issuer']!='https://localhost:18447/t/e2e':raise ValueError('exact selected owned issuer required')
+                forwarded_path='/t/e2e/'+path.rsplit('/',1)[1]
+                connection=http.client.HTTPSConnection('localhost',18447,context=ssl.create_default_context(cafile=fixture['ca_file']),timeout=20)
+            elif path=='/asterius-ssf/receiver':
+                fixture=private_json(config['manifest'])
+                if fixture['issuer']!='https://localhost:18444/t/e2e':raise ValueError('exact owned receiver issuer required')
+                forwarded_path='/t/e2e/ssf/receiver'
+                connection=http.client.HTTPSConnection('localhost',18444,context=ssl.create_default_context(cafile=fixture['ca_file']),timeout=20)
             else:self.send_error(404);return
             if self.headers.get('Transfer-Encoding'):self.send_error(400);return
             size=int(self.headers.get('Content-Length','0'))
@@ -58,8 +70,10 @@ class Proxy(http.server.BaseHTTPRequestHandler):
             excluded={'host','connection','forwarded','x-forwarded-for','x-forwarded-host','x-forwarded-proto','x-forwarded-port','transfer-encoding'}
             headers={key:value for key,value in self.headers.items() if key.lower() not in excluded}
             headers.update({'Host':config['public_host'],'X-Forwarded-Proto':'https','X-Forwarded-Host':config['public_host'],'X-Forwarded-Port':'10000'})
-            if path.startswith('/asterius-rp/'):
+            if path.startswith('/asterius-rp/') or path=='/asterius-ssf/receiver':
                 headers['Host']='localhost:18444';headers['X-Forwarded-Host']='localhost:18444';headers['X-Forwarded-Port']='18444'
+            if path.startswith('/ipsie-rp/'):
+                headers['Host']='localhost:18447';headers['X-Forwarded-Host']='localhost:18447';headers['X-Forwarded-Port']='18447'
             request_body=self.rfile.read(size) if size else None
             # A private operator arm file injects one authenticated ACK loss
             # before the native transmitter sees it. No public fault endpoint.
@@ -86,10 +100,10 @@ class Proxy(http.server.BaseHTTPRequestHandler):
             connection.request(self.command,forwarded_path,body=request_body,headers=headers)
             response=connection.getresponse();body=response.read(4194305)
             if len(body)>4194304:self.send_error(502);return
-            if path.startswith('/asterius-rp/'):
+            if path.startswith(('/asterius-rp/','/ipsie-rp/')):
                 metric={'path':path,'status':response.status,'backend_tls_verified':True}
-                if response.status==200 and path!='/asterius-rp/jwks':
-                    value=json.loads(body)['id_token'] if path=='/asterius-rp/token' else body.decode()
+                if response.status==200 and not path.endswith('/jwks'):
+                    value=json.loads(body)['id_token'] if path.endswith('/token') else body.decode()
                     metric.update(envelope(value))
                 with LOCK:
                     with Path(config['metrics']).open('a') as output:output.write(json.dumps(metric)+'\n')

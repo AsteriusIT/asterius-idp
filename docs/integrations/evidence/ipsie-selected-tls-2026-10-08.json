@@ -1,0 +1,30 @@
+{
+  "source_revision": "0b4c7a4a4486fb981ac18dac39b9a8431065accc",
+  "scope": "Owned selected IPSIE fixture transport; production edge DNSSEC/HSTS and certificate deployment are not established. Browser uses disposable self-signed fixture certificate; back-channel relay verifies its pinned CA.",
+  "versions": [
+    {
+      "requested": "TLS1.0",
+      "accepted": false
+    },
+    {
+      "requested": "TLS1.1",
+      "accepted": false
+    },
+    {
+      "requested": "TLS1.2",
+      "accepted": true,
+      "negotiated": "TLSv1.2",
+      "cipher": "ECDHE-ECDSA-AES256-GCM-SHA384"
+    },
+    {
+      "requested": "TLS1.3",
+      "accepted": true,
+      "negotiated": "TLSv1.3",
+      "cipher": "TLS_AES_256_GCM_SHA384"
+    }
+  ],
+  "discovery_headers": {
+    "hsts": "max-age=31536000; includeSubDomains; preload",
+    "cors_allow_origin": null
+  }
+}
