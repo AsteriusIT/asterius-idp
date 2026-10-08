@@ -13,7 +13,8 @@
 //! RFC 7662 §2.3 separates them, and this module keeps them separate:
 //!
 //! * *May this caller use the endpoint at all?* §2.1 requires client
-//!   authentication, and a caller that fails it gets a **401** with no body.
+//!   authentication; failure returns **401** for RFC 7662 or **400** for
+//!   the signed RFC 9701 representation.
 //!   That says nothing about any token.
 //! * *May this caller be told about **this** token?* §2.2's note: "if the
 //!   protected resource is not allowed to introspect this particular token"
@@ -299,17 +300,19 @@ pub async fn introspect(
     let caller = match authenticate(&attempt, &rules).await {
         Ok(client) => client,
         Err(failure) => {
-            // §2.3: "If the protected resource uses OAuth 2.0 client
-            // credentials to authenticate to the introspection endpoint and
-            // its credentials are invalid, the authorization server responds
-            // with an HTTP 401". A 401 whatever the authenticator would have
-            // said elsewhere: at the token endpoint a malformed assertion is a
-            // 400 about the request, and here the only fact worth reporting is
-            // that the caller is not one this endpoint knows.
+            // RFC 9701 §5 requires HTTP 400 for an unauthenticated signed
+            // introspection request. RFC 7662 §2.3 retains HTTP 401 for the
+            // ordinary JSON representation. Authenticate before token reads
+            // for both representations; negotiation grants no authority.
+            let status = if wants_signed_response(headers) {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::UNAUTHORIZED
+            };
             return crate::http::token::client_authentication_error(
                 &failure,
                 attempt.authorization_header,
-                StatusCode::UNAUTHORIZED,
+                status,
             );
         }
     };
