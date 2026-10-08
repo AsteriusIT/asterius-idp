@@ -64,7 +64,7 @@ impl Store {
     /// two wait and then find there is nothing to do. Without it the losers
     /// would race on `create table` and crash-loop through the rollout.
     ///
-    /// History selection and SQLx validation share that lock and connection.
+    /// History selection and `SQLx` validation share that lock and connection.
     /// The dedicated connection is detached from the pool: cancellation closes
     /// the session rather than returning an advisory lock to other borrowers.
     /// Each migration still has its own transaction.

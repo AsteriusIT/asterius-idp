@@ -1,4 +1,4 @@
-//! One immutable migration-history exception, selected under the SQLx lock.
+//! One immutable migration-history exception, selected under the `SQLx` lock.
 //!
 //! The corrected 0173 remains authoritative for new/pre-0173 databases. A
 //! database that already applied the exact published 43191d6 payload validates
@@ -7,8 +7,8 @@
 
 use std::borrow::Cow;
 
-use sqlx::migrate::{AppliedMigration, Migrate, MigrateError, Migration, Migrator};
 use sqlx::PgConnection;
+use sqlx::migrate::{AppliedMigration, Migrate, MigrateError, Migration, Migrator};
 
 use crate::store::MIGRATOR;
 
@@ -76,20 +76,36 @@ mod tests {
     use sha2::{Digest, Sha384};
 
     fn recorded(checksum: Vec<u8>) -> AppliedMigration {
-        AppliedMigration { version: LEGACY_VERSION, checksum: Cow::Owned(checksum) }
+        AppliedMigration {
+            version: LEGACY_VERSION,
+            checksum: Cow::Owned(checksum),
+        }
     }
 
     #[test]
     fn historical_payload_is_pinned_to_the_published_sha384() {
-        assert_eq!(hex::encode(Sha384::digest(LEGACY_SQL.as_bytes())), LEGACY_SHA384);
+        assert_eq!(
+            hex::encode(Sha384::digest(LEGACY_SQL.as_bytes())),
+            LEGACY_SHA384
+        );
     }
 
     #[test]
     fn new_and_corrected_databases_retain_the_terminal_cutover_migration() {
-        let current = MIGRATOR.iter().find(|m| m.version == LEGACY_VERSION).expect("0173 embedded");
+        let current = MIGRATOR
+            .iter()
+            .find(|m| m.version == LEGACY_VERSION)
+            .expect("0173 embedded");
         for applied in [vec![], vec![recorded(current.checksum.to_vec())]] {
             let selected = selected_migrator(&applied).expect("current history accepted");
-            assert_eq!(selected.iter().find(|m| m.version == LEGACY_VERSION).expect("0173 selected").sql, current.sql);
+            assert_eq!(
+                selected
+                    .iter()
+                    .find(|m| m.version == LEGACY_VERSION)
+                    .expect("0173 selected")
+                    .sql,
+                current.sql
+            );
             assert!(selected.locking);
             assert!(!selected.ignore_missing);
         }
@@ -97,8 +113,17 @@ mod tests {
 
     #[test]
     fn only_exact_known_history_selects_the_old_payload_and_preserves_other_migrations() {
-        let selected = selected_migrator(&[recorded(hex::decode(LEGACY_SHA384).expect("pinned hex"))]).expect("known history accepted");
-        assert_eq!(selected.iter().find(|m| m.version == LEGACY_VERSION).expect("0173 selected").sql, LEGACY_SQL);
+        let selected =
+            selected_migrator(&[recorded(hex::decode(LEGACY_SHA384).expect("pinned hex"))])
+                .expect("known history accepted");
+        assert_eq!(
+            selected
+                .iter()
+                .find(|m| m.version == LEGACY_VERSION)
+                .expect("0173 selected")
+                .sql,
+            LEGACY_SQL
+        );
         for (original, actual) in MIGRATOR.iter().zip(selected.iter()) {
             if original.version != LEGACY_VERSION {
                 assert_eq!(actual.sql, original.sql);
@@ -111,6 +136,9 @@ mod tests {
 
     #[test]
     fn unknown_0173_checksum_is_refused_instead_of_adopted() {
-        assert!(matches!(selected_migrator(&[recorded(vec![0; 48])]), Err(MigrateError::VersionMismatch(173))));
+        assert!(matches!(
+            selected_migrator(&[recorded(vec![0; 48])]),
+            Err(MigrateError::VersionMismatch(173))
+        ));
     }
 }
