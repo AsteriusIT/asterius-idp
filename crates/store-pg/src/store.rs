@@ -64,10 +64,10 @@ impl Store {
     /// two wait and then find there is nothing to do. Without it the losers
     /// would race on `create table` and crash-loop through the rollout.
     ///
-    /// The lock is session-level and released when the connection returns to
-    /// the pool, so a process that dies mid-migration does not leave the next
-    /// one blocked forever — it leaves a half-applied migration, which is what
-    /// the per-migration transaction is for.
+    /// History selection and SQLx validation share that lock and connection.
+    /// The dedicated connection is detached from the pool: cancellation closes
+    /// the session rather than returning an advisory lock to other borrowers.
+    /// Each migration still has its own transaction.
     ///
     /// The lock is a `sqlx` default, and a default is not a guarantee until
     /// something fails when it changes, so a test below pins it.
@@ -77,7 +77,11 @@ impl Store {
     /// Returns a migration error if a migration fails or if an already-applied
     /// migration's checksum has changed.
     pub async fn migrate(&self) -> Result<(), sqlx::migrate::MigrateError> {
-        MIGRATOR.run(&self.pool).await
+        // Detach rather than return a locked session to the pool if startup is
+        // cancelled or fails. SQLx's advisory lock covers history selection and
+        // its unchanged strict migration validation on this one connection.
+        let mut connection = self.pool.acquire().await?.detach();
+        crate::migration_compatibility::run(&mut connection).await
     }
 
     /// The underlying pool, for adapters in this crate.
