@@ -1,0 +1,186 @@
+{
+  "status": "prepared_not_executed",
+  "tenantId": "f3b3c6c2-ac86-462e-b68e-cfbed01ead3d",
+  "cloud": "AzureCloud",
+  "graphVersion": "v1.0",
+  "maximumRuntimeHours": 4,
+  "credentialLifetimeHours": 24,
+  "ownedNamePrefix": "ast-entra-adapter-",
+  "requiredPlaceholders": [
+    "NONCE",
+    "OWNED_SP_ID",
+    "OWNED_JOB_ID",
+    "PUBLIC_ADAPTER_BASE",
+    "PRIVATE_ENTRA_TOKEN"
+  ],
+  "requests": [
+    {
+      "method": "POST",
+      "path": "/applicationTemplates/8adf8e6e-67b2-4cf2-a259-e3dc5476c621/instantiate",
+      "body": {
+        "displayName": "ast-entra-adapter-${NONCE}"
+      }
+    },
+    {
+      "method": "PATCH",
+      "path": "/servicePrincipals/${OWNED_SP_ID}",
+      "body": {
+        "appRoleAssignmentRequired": true
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/servicePrincipals/${OWNED_SP_ID}/synchronization/templates"
+    },
+    {
+      "method": "POST",
+      "path": "/servicePrincipals/${OWNED_SP_ID}/synchronization/jobs",
+      "body": {
+        "templateId": "scim"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/servicePrincipals/${OWNED_SP_ID}/synchronization/jobs/${OWNED_JOB_ID}/schema"
+    },
+    {
+      "method": "POST",
+      "path": "/servicePrincipals/${OWNED_SP_ID}/synchronization/jobs/${OWNED_JOB_ID}/validateCredentials",
+      "body": {
+        "credentials": [
+          {
+            "key": "BaseAddress",
+            "value": "${PUBLIC_ADAPTER_BASE}"
+          },
+          {
+            "key": "SecretToken",
+            "value": "${PRIVATE_ENTRA_TOKEN}"
+          }
+        ]
+      }
+    },
+    {
+      "method": "PUT",
+      "path": "/servicePrincipals/${OWNED_SP_ID}/synchronization/secrets",
+      "body": {
+        "value": [
+          {
+            "key": "BaseAddress",
+            "value": "${PUBLIC_ADAPTER_BASE}"
+          },
+          {
+            "key": "SecretToken",
+            "value": "${PRIVATE_ENTRA_TOKEN}"
+          },
+          {
+            "key": "SyncAll",
+            "value": "false"
+          }
+        ]
+      }
+    }
+  ],
+  "schemaReplacementPreparation": {
+    "input": "GET owned job/schema; preserve directories, rule IDs and connector metadata; replace exactly User and Group attributeMappings; reject unknown enabled mappings",
+    "User": [
+      {
+        "source": {
+          "name": "objectId",
+          "type": "Attribute",
+          "parameters": []
+        },
+        "targetAttributeName": "externalId",
+        "flowType": "ObjectAddOnly",
+        "flowBehavior": "FlowWhenChanged",
+        "matchingPriority": 0,
+        "exportMissingReferences": false
+      },
+      {
+        "source": {
+          "name": "userPrincipalName",
+          "type": "Attribute",
+          "parameters": []
+        },
+        "targetAttributeName": "userName",
+        "flowType": "Always",
+        "flowBehavior": "FlowWhenChanged",
+        "matchingPriority": 1,
+        "exportMissingReferences": false
+      },
+      {
+        "source": {
+          "name": "accountEnabled",
+          "type": "Attribute",
+          "parameters": []
+        },
+        "targetAttributeName": "active",
+        "flowType": "Always",
+        "flowBehavior": "FlowWhenChanged",
+        "matchingPriority": 0,
+        "exportMissingReferences": false
+      },
+      {
+        "source": {
+          "name": "mail",
+          "type": "Attribute",
+          "parameters": []
+        },
+        "targetAttributeName": "emails[type eq \"work\"].value",
+        "flowType": "Always",
+        "flowBehavior": "FlowWhenChanged",
+        "matchingPriority": 0,
+        "exportMissingReferences": false
+      }
+    ],
+    "Group": [
+      {
+        "source": {
+          "name": "objectId",
+          "type": "Attribute",
+          "parameters": []
+        },
+        "targetAttributeName": "externalId",
+        "flowType": "ObjectAddOnly",
+        "flowBehavior": "FlowWhenChanged",
+        "matchingPriority": 0,
+        "exportMissingReferences": false
+      },
+      {
+        "source": {
+          "name": "displayName",
+          "type": "Attribute",
+          "parameters": []
+        },
+        "targetAttributeName": "displayName",
+        "flowType": "Always",
+        "flowBehavior": "FlowWhenChanged",
+        "matchingPriority": 1,
+        "exportMissingReferences": false
+      },
+      {
+        "source": {
+          "name": "members",
+          "type": "Attribute",
+          "parameters": []
+        },
+        "targetAttributeName": "members",
+        "flowType": "Always",
+        "flowBehavior": "FlowWhenChanged",
+        "matchingPriority": 0,
+        "exportMissingReferences": false
+      }
+    ],
+    "disabledExtraMappings": "Every other object mapping must be disabled; no names, roles, password, extension or displayName User fields",
+    "reviewRequired": "Full schema depends on owned job IDs and directory definitions; inspect generated complete PUT payload before sending"
+  },
+  "startPolicy": "Job stays disabled for credential validation and mapping review. Full lifecycle requires assigned owned fixture users/group and explicit approval; never SyncAll=true.",
+  "cleanupOrder": [
+    "Stop only owned job if started",
+    "Revoke adapter finite credential and stop own HTTPS tunnel",
+    "Delete only manifested owned assignments/source group/source users if explicitly created",
+    "DELETE owned synchronization job",
+    "DELETE owned servicePrincipal",
+    "DELETE owned application",
+    "GET verify owned IDs absent; retain failed cleanup recovery IDs without secrets"
+  ]
+}
