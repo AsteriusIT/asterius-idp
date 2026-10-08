@@ -194,8 +194,6 @@ spec:
           value: Asterius Demo A
         - name: COOKIE_NAME
           value: asterius_playground_demo_a
-        - name: COOKIE_NAME
-          value: asterius_playground_demo_a
         volumeMounts:
         - name: oidc
           mountPath: /run/oidc
@@ -311,8 +309,6 @@ spec:
           value: https://desktop-cpbptqn-1.tailacbb15.ts.net:8446/demo-b
         - name: APP_NAME
           value: Asterius Demo B
-        - name: COOKIE_NAME
-          value: asterius_playground_demo_b
         - name: COOKIE_NAME
           value: asterius_playground_demo_b
         volumeMounts:
