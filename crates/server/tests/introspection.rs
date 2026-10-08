@@ -369,6 +369,46 @@ async fn an_unauthenticated_caller_is_refused_with_401() {
     );
 }
 
+/// RFC 9701 §5: signed introspection refuses unauthenticated requests with 400.
+#[tokio::test]
+async fn signed_introspection_refuses_unauthenticated_callers_before_token_reads() {
+    // Arrange
+    let fixture = Fixture::new(&[ACCOUNTS_API]).await;
+    let tenant = tenant();
+    let clients = FakeClients;
+    let body = axum::body::Bytes::from(format!("token={}", fixture.access_token));
+
+    let mut headers = form_headers();
+    headers.insert(header::ACCEPT, HeaderValue::from_static("application/token-introspection+jwt"));
+
+    // Act
+    let response = introspect(
+        IntrospectionContext {
+            tenant: &tenant,
+            signer: None,
+            clients: &clients,
+            source: &fixture.rows,
+            keys: fixture.keys.as_ref(),
+            audit: &fixture.audit,
+            grant_id_exposed: true,
+            now: now(),
+            certificate: None,
+        },
+        &headers,
+        &body,
+        async |_: &Attempt<'_>, _: &AssertionRules| Err(ClientAuthError::UnknownClient),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        fixture.rows.reads.load(Ordering::SeqCst),
+        0,
+        "a caller that did not authenticate caused a store read"
+    );
+}
+
 /// §2.1: `token` is REQUIRED, and a request without one is a malformed request
 /// rather than a token that is not active. Nothing is looked up.
 #[tokio::test]
