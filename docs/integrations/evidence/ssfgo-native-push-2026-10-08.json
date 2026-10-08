@@ -1,0 +1,35 @@
+{
+  "status": "pass",
+  "profile": "SSF1Final/operator-bearer/ALL/ES256/native-push",
+  "libraryRevision": "ce2353e22367c276f8dada1dbf22ec9939a255b1",
+  "independentBinarySha256": "d4888b537ed2ca1492cefa3e0cec5568e7bc999e92013e7339d51c499bc5fa51",
+  "runtimeRevision": "0b4c7a4a4486fb981ac18dac39b9a8431065accc",
+  "runtimeBinarySha256": "94a104b193cfcab7051e76be732c4794108e580f60b9f6fd0a425fa1a3be352e",
+  "checks": [
+    {
+      "case": "real authenticated explicit subject mapping",
+      "status": 200
+    },
+    {
+      "case": "native push-only stream creation exact HTTPS endpoint",
+      "status": 201
+    },
+    {
+      "case": "native SSFgo Run worker verified HTTPS delivery",
+      "nativeReceipts": [
+        {
+          "attempt": 1,
+          "outcome": "delivered"
+        }
+      ]
+    },
+    {
+      "case": "actual session revoked with exactly one receiver inbox row",
+      "pass": true
+    }
+  ],
+  "formalCAEPConformance": false,
+  "limits": [
+    "Owned session explicitly seeded; native library, not Python, generates/signs/delivers SET."
+  ]
+}

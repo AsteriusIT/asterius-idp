@@ -64,7 +64,7 @@ requirements are excluded unless they constrain something this OP offers.
 | RFC 8725, allowed JWT algorithms, key sizes, no `none`, 128-bit credential entropy | JOSE and credential code constrain these values for their respective paths. A profile audit must enumerate every JWT type and key-import path; the current matrix is not that audit. |
 | Minimize account-attribute disclosure | Claims resolution and grant/consent paths narrow ordinary releases. An enterprise deployment still has to configure scopes, audiences and claims providers for minimum disclosure. |
 | Offer pairwise subject identifiers | Pairwise client sectors exist in `crates/domain/src/entities/user.rs`; public-client registration uses its own sector behavior. Availability for each RP needs registration evidence. |
-| Offer encrypted back-channel assertions | An RP may register `id_token_encrypted_response_alg`/`enc` and `userinfo_encrypted_response_alg`/`enc` as the fixed pair RSA-OAEP-256/A256GCM. UserInfo encryption requires a registered signing algorithm. The RP must register an inline public JWKS with exactly one eligible `use=enc` RSA key; the server refuses private material, ambiguous keys, unsupported values, explicit null and incomplete pairs. The client row stores both opt-ins atomically; readback revalidates the JWKS. Code/refresh ID-token issuance and UserInfo sign first, then wrap the signed JWT as RFC 7516 compact JWE with `cty=JWT`; an encryption error fails issuance without a plaintext fallback. Registration responses echo the selected pair, and Discovery lists the supported algorithms. Key rotation requires replacing the registered key set; simultaneous eligible encryption keys are refused until a future explicit key-selection policy exists. External RP interoperability and conformance evidence remain uncollected. This implemented offering alone does not establish IPSIE SL1 conformance. |
+| Offer encrypted back-channel assertions | An RP may register `id_token_encrypted_response_alg`/`enc` and `userinfo_encrypted_response_alg`/`enc` as the fixed pair RSA-OAEP-256/A256GCM. UserInfo encryption requires a registered signing algorithm. The RP must register an inline public JWKS with exactly one eligible `use=enc` RSA key; the server refuses private material, ambiguous keys, unsupported values, explicit null and incomplete pairs. The client row stores both opt-ins atomically; readback revalidates the JWKS. Code/refresh ID-token issuance and UserInfo sign first, then wrap the signed JWT as RFC 7516 compact JWE with `cty=JWT`; an encryption error fails issuance without a plaintext fallback. Registration responses echo the selected pair, and Discovery lists the supported algorithms. Key rotation requires replacing the registered key set; simultaneous eligible encryption keys are refused until a future explicit key-selection policy exists. Native Keycloak 26.7.4 encrypted ID-token and signed UserInfo interoperability passed on 8 October 2026, including a separately selected-client deployment; see the pinned evidence below. Formal profile conformance evidence remains uncollected. This offering alone does not establish IPSIE SL1 conformance. |
 | Encrypt front-channel assertions | Selected identity clients accept code responses only via query or form_post and cannot overlap the unencrypted Message Signing JARM profile. The code response contains no identity assertion. Ordinary clients retain their separately configured response modes. |
 | Alternative/break-glass authentication rules | The draft places these on *applications* (RPs). They are not OP implementation obligations, though an OP deployment may impose its own operational controls. |
 | Security-control program | Common §3.1 explicitly labels its text non-normative. Operator documentation and independent evidence would still be needed before any assurance claim. |
@@ -73,6 +73,56 @@ The Common Requirements draft's RP-only account-linking and cross-tenant
 subject-keying instructions do not become OP requirements. Likewise, the
 SL1 draft's third-party-initiated-login and DPoP-nonce RP requirements are not
 proof of OP support. No conformance suite has been run for this profile.
+
+## Independent selected deployment evidence, 2026-10-08
+
+The [selected RP harness](../scripts/integrations/ipsie_selected_browser.mjs)
+passed 19 checks on a separate owned tenant/database configured with the HTTPS
+and identity-only client lists, a 300-second RP policy, issuer-only identity
+resource and the default attainable ACR ladder. The
+[sanitized result](integrations/evidence/ipsie-selected-rp-2026-10-08.json)
+pins source `0b4c7a4a4486fb981ac18dac39b9a8431065accc` and the exact binary hash.
+Native Keycloak 26.7.4 requested password ACR through its owned broker and
+completed its real downstream RP callback after decrypting the nested ES256 ID
+token and signed UserInfo as RSA-OAEP-256/A256GCM JWE.
+
+A second independent RP phase replaced only that owned client's encryption
+public key with an ephemeral RSA key, preserving Basic authentication and all
+profile controls. Native Node crypto decrypted the real response and verified
+the nested ES256 signature against Asterius JWKS. The original JSON
+`session_expiry` and `iat` were integers with a difference of 300 seconds;
+issuer, audience and nonce matched the request. The signed token reported
+`acr=urn:asterius:acr:pwd` and `amr=["pwd"]`, without inventing MFA. Discovery
+advertised the attainable user-verified passkey class. An unsupported selected
+ACR returned `unmet_authentication_requirements` and no authorization code.
+Signed encrypted UserInfo used the same subject as the ID token. The original
+native Keycloak encryption JWKS was restored and verified after the run.
+
+The [portable fixture helper](../scripts/integrations/ipsie_selected_fixture.py)
+accepts private output-manifest and public encryption-JWKS paths plus the
+approved Keycloak issuer. It reuses the owned product fixture and existing
+runtime/database environment variables. Its preconfigured selected client is
+fixture setup, not evidence of protected registration. The browser harness
+requires private mode-0600 input keys `manifest`, `keycloakPrivate`,
+`keycloakIssuer`, `publicRelay`, `relayMetrics` and `evidence`; set the installed
+Playwright module and owned PostgreSQL container as for the OIDC adversarial
+harness. Native broker credentials, codes, tokens and private encryption keys
+remain private; the temporary RP private key stays in memory.
+
+The [selected TLS probe](integrations/evidence/ipsie-selected-tls-2026-10-08.json)
+on the same source revision refused TLS 1.0/1.1, accepted TLS 1.2/1.3 with
+ECDHE/AES-GCM, and observed a one-year HSTS header with `includeSubDomains` and
+`preload`. Discovery returned no CORS allow-origin header. The browser accepts
+the disposable local self-signed certificate; native peer back-channel and
+relay backend certificate validation remain active. This probe does not prove
+production DNSSEC, certificate deployment or HSTS preload registration.
+
+This proves selected-client password behavior and independent RP consumption
+on the controlled deployment. It does not claim a hardware MFA ceremony,
+production edge readiness, formal IPSIE certification, or conformance to every
+row above. The separate ordinary-OIDC JWE evidence is linked from
+[identity brokering](identity-brokering.md); it does not prove the selected
+profile boundary by itself.
 
 ## Adjacent drafts
 

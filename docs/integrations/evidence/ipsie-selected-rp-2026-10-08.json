@@ -1,0 +1,99 @@
+{
+  "status": "pass",
+  "date": "2026-10-08",
+  "implementation": "Keycloak26.7.4 + native Node crypto independent RP",
+  "runtime_revision": "0b4c7a4a4486fb981ac18dac39b9a8431065accc",
+  "asterius_binary_sha256": "94a104b193cfcab7051e76be732c4794108e580f60b9f6fd0a425fa1a3be352e",
+  "cases": [
+    {
+      "case": "native Keycloak selected password RP continuation",
+      "result": "pass"
+    },
+    {
+      "case": "native selected JWE /ipsie-rp/token",
+      "result": "pass"
+    },
+    {
+      "case": "native selected JWE /ipsie-rp/userinfo",
+      "result": "pass"
+    },
+    {
+      "case": "selected discovery has attainable two-factor class",
+      "result": "pass"
+    },
+    {
+      "case": "selected requested password ACR returned plain code",
+      "result": "pass"
+    },
+    {
+      "case": "selected independent RP code exchange",
+      "result": "pass"
+    },
+    {
+      "case": "independent RP received compact JWE",
+      "result": "pass"
+    },
+    {
+      "case": "independent RP encryption algorithms pinned",
+      "result": "pass"
+    },
+    {
+      "case": "independent RP nested ES256 signature verified",
+      "result": "pass"
+    },
+    {
+      "case": "selected token issuer audience and nonce exact",
+      "result": "pass"
+    },
+    {
+      "case": "selected session deadline is original JSON integer at least 300 seconds",
+      "result": "pass",
+      "minimum_seconds": 300,
+      "observed_seconds": 300
+    },
+    {
+      "case": "selected password assurance truthful",
+      "result": "pass",
+      "acr": "urn:asterius:acr:pwd",
+      "amr": [
+        "pwd"
+      ]
+    },
+    {
+      "case": "selected independent encrypted UserInfo",
+      "result": "pass"
+    },
+    {
+      "case": "independent RP received compact JWE",
+      "result": "pass"
+    },
+    {
+      "case": "independent RP encryption algorithms pinned",
+      "result": "pass"
+    },
+    {
+      "case": "independent RP nested ES256 signature verified",
+      "result": "pass"
+    },
+    {
+      "case": "selected UserInfo subject bound to ID token",
+      "result": "pass"
+    },
+    {
+      "case": "selected unsupported ACR refused without authorization code",
+      "result": "pass",
+      "observed_error": "unmet_authentication_requirements"
+    },
+    {
+      "case": "owned native encryption key restored",
+      "result": "pass"
+    }
+  ],
+  "formal_conformance": false,
+  "limits": [
+    "Owned isolated selected client deployment; not certification.",
+    "Two-factor class attainable in configuration; hardware MFA execution not claimed.",
+    "No federation ACR invention; password flow supplies pwd.",
+    "Native Keycloak public encryption source restored after independent RP key rotation."
+  ]
+}

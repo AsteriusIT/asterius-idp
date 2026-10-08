@@ -919,5 +919,1019 @@
     "waivers": [],
     "assessment": "The full 70-module plan executed. Valid signed request-object flows now pass. Two failures remain: the opted-in FAPI browser missing-PAR path returned JSON rather than the expected local HTML error page; a request_uri claim inside a signed request object returned invalid_request instead of invalid_request_object. RFC 9101 section 4 forbids both request and request_uri inside signed Request Objects. Narrow fixes and regressions are prepared; a final exact-source runtime rerun remains required.",
     "request_object_rules_source": "https://www.rfc-editor.org/rfc/rfc9101.html#section-4"
+  },
+  "message_signing_final": {
+    "plan": "fapi2-message-signing-final-test-plan[openid=openid_connect][client_auth_type=private_key_jwt][sender_constrain=dpop][fapi_profile=plain_fapi][authorization_request_type=simple][fapi_request_method=signed_non_repudiation][fapi_response_mode=jarm]",
+    "revision": "0b4c7a4a4486fb981ac18dac39b9a8431065accc",
+    "generated": "2026-10-08T19:07:26Z",
+    "counts": {
+      "PASSED": 63,
+      "WARNING": 1,
+      "SKIPPED": 2,
+      "REVIEW": 4
+    },
+    "modules": [
+      {
+        "module": "fapi2-security-profile-final-access-token-type-header-case-sensitivity",
+        "name": "fapi2-security-profile-final-access-token-type-header-case-sensitivity",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=96zQfYDVvyVwp1L"
+      },
+      {
+        "module": "fapi2-security-profile-final-attempt-reuse-authorization-code-after-one-second",
+        "name": "fapi2-security-profile-final-attempt-reuse-authorization-code-after-one-second",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=S0vIa8oDgCfCTls"
+      },
+      {
+        "module": "fapi2-security-profile-final-check-dpop-proof-nbf-exp",
+        "name": "fapi2-security-profile-final-check-dpop-proof-nbf-exp",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=F6ocpTSGPoXLnca"
+      },
+      {
+        "module": "fapi2-security-profile-final-discovery-end-point-verification",
+        "name": "fapi2-security-profile-final-discovery-end-point-verification",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=lAqcGH5P4lX7so7"
+      },
+      {
+        "module": "fapi2-security-profile-final-dpop-negative-tests",
+        "name": "fapi2-security-profile-final-dpop-negative-tests",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=KtwqAjYsoCcMfNL"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-authorization-code-is-bound-to-client",
+        "name": "fapi2-security-profile-final-ensure-authorization-code-is-bound-to-client",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=bRZStLjhdOx0vNh"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-authorization-request-with-64-char-nonce-success",
+        "name": "fapi2-security-profile-final-ensure-authorization-request-with-64-char-nonce-success",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=pzyo18mJWIcDsJL"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-authorization-request-with-long-nonce",
+        "name": "fapi2-security-profile-final-ensure-authorization-request-with-long-nonce",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=SmwBK2zFsfiiysm"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-authorization-request-with-long-state",
+        "name": "fapi2-security-profile-final-ensure-authorization-request-with-long-state",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=yYPZTy1vgrtatvS"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-authorization-request-without-nonce-success",
+        "name": "fapi2-security-profile-final-ensure-authorization-request-without-nonce-success",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=xcVRq8WaIITcuRm"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-authorization-request-without-state-success",
+        "name": "fapi2-security-profile-final-ensure-authorization-request-without-state-success",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=DlKwMIBPDzOU5UZ"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-client-assertion-in-token-endpoint",
+        "name": "fapi2-security-profile-final-ensure-client-assertion-in-token-endpoint",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=yIau39mlJ6SgFxZ"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-client-assertion-with-exp-is-5-minutes-in-past-fails",
+        "name": "fapi2-security-profile-final-ensure-client-assertion-with-exp-is-5-minutes-in-past-fails",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=O4FQBUgjrksotLy"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-client-assertion-with-no-sub-fails",
+        "name": "fapi2-security-profile-final-ensure-client-assertion-with-no-sub-fails",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=P0sLP7nbFKwbXFe"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-client-assertion-with-wrong-aud-fails",
+        "name": "fapi2-security-profile-final-ensure-client-assertion-with-wrong-aud-fails",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=YVJ9EPjtVCYl5oQ"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-client-id-in-token-endpoint",
+        "name": "fapi2-security-profile-final-ensure-client-id-in-token-endpoint",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=EBVBmzbWLSw2XKl"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-different-nonce-inside-and-outside-request-object",
+        "name": "fapi2-security-profile-final-ensure-different-nonce-inside-and-outside-request-object",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=3ItKwWBnK6EL5QG"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-different-state-inside-and-outside-request-object",
+        "name": "fapi2-security-profile-final-ensure-different-state-inside-and-outside-request-object",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=zVLyFLprozLsVxn"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-dpop-auth-code-binding-success",
+        "name": "fapi2-security-profile-final-ensure-dpop-auth-code-binding-success",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=XCfvQ8i33CpTktb"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-dpopproof-at-par-endpoint-binding-success",
+        "name": "fapi2-security-profile-final-ensure-dpopproof-at-par-endpoint-binding-success",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=QCo4JsSjUfAg08o"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-dpopproof-with-iat-10seconds-after-succeeds",
+        "name": "fapi2-security-profile-final-ensure-dpopproof-with-iat-10seconds-after-succeeds",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=ADPJyizL58dCf2a"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-dpopproof-with-iat-10seconds-before-succeeds",
+        "name": "fapi2-security-profile-final-ensure-dpopproof-with-iat-10seconds-before-succeeds",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=wf3kv8jevMgPgIx"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-expired-request-object-fails",
+        "name": "fapi2-security-profile-final-ensure-expired-request-object-fails",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=mV7MTT2aRk3KH4S"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-holder-of-key-required",
+        "name": "fapi2-security-profile-final-ensure-holder-of-key-required",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=Bc5pc6O3IbKfWq1"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-matching-key-in-authorization-request",
+        "name": "fapi2-security-profile-final-ensure-matching-key-in-authorization-request",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=77uDDoN24eJNyo3"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-mismatched-dpop-jkt-fails",
+        "name": "fapi2-security-profile-final-ensure-mismatched-dpop-jkt-fails",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=mNgSVo6gNrKFtFE"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-other-scope-order-succeeds",
+        "name": "fapi2-security-profile-final-ensure-other-scope-order-succeeds",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=rydjpKgmWmCIBUm"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-pkce-code-verifier-required",
+        "name": "fapi2-security-profile-final-ensure-pkce-code-verifier-required",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=P2pmg67FijmnLof"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-redirect-uri-in-authorization-request",
+        "name": "fapi2-security-profile-final-ensure-redirect-uri-in-authorization-request",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=N2nXgLvsTXxPjY8"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-request-object-signature-algorithm-is-not-none",
+        "name": "fapi2-security-profile-final-ensure-request-object-signature-algorithm-is-not-none",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=RnWnpQGzn0CUrZd"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-request-object-with-bad-aud-fails",
+        "name": "fapi2-security-profile-final-ensure-request-object-with-bad-aud-fails",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=374RyfOFClQwnYy"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-request-object-with-exp-over-60-fails",
+        "name": "fapi2-security-profile-final-ensure-request-object-with-exp-over-60-fails",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=MDw5EgepGZNCwpQ"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-request-object-with-invalid-signature-fails",
+        "name": "fapi2-security-profile-final-ensure-request-object-with-invalid-signature-fails",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=n09ImBrUvjAWmT9"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-request-object-with-multiple-aud-succeeds",
+        "name": "fapi2-security-profile-final-ensure-request-object-with-multiple-aud-succeeds",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=4o2Ww01v7hoPdIy"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-request-object-with-nbf-8-seconds-in-the-future-is-accepted",
+        "name": "fapi2-security-profile-final-ensure-request-object-with-nbf-8-seconds-in-the-future-is-accepted",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=bGqC01O7RNpHE2Q"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-request-object-with-nbf-over-60-fails",
+        "name": "fapi2-security-profile-final-ensure-request-object-with-nbf-over-60-fails",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=JBygpsUIVUwrR0w"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-request-object-without-exp-fails",
+        "name": "fapi2-security-profile-final-ensure-request-object-without-exp-fails",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=fALAuWfG4siZ4d7"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-request-object-without-nbf-fails",
+        "name": "fapi2-security-profile-final-ensure-request-object-without-nbf-fails",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=j1hg7izpLNZrdFI"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-request-object-without-redirect-uri-fails",
+        "name": "fapi2-security-profile-final-ensure-request-object-without-redirect-uri-fails",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=UVfJgJK8kIlzqgz"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-response-type-code-idtoken-fails",
+        "name": "fapi2-security-profile-final-ensure-response-type-code-idtoken-fails",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=BrpfJGI7BvOKppl"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-response-type-token-fails",
+        "name": "fapi2-security-profile-final-ensure-response-type-token-fails",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=datlUhGaR8r7SNZ"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-signed-client-assertion-with-RS256-fails",
+        "name": "fapi2-security-profile-final-ensure-signed-client-assertion-with-RS256-fails",
+        "result": "SKIPPED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=ZN4wUIPxE7hQtcw"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-signed-request-object-with-RS256-fails",
+        "name": "fapi2-security-profile-final-ensure-signed-request-object-with-RS256-fails",
+        "result": "SKIPPED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=2pkmdoxGQ1qfnRS"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-token-endpoint-fails-with-expired-auth-code",
+        "name": "fapi2-security-profile-final-ensure-token-endpoint-fails-with-expired-auth-code",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=3Ty8Wzep1ooFQw0"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-token-endpoint-fails-with-mismatched-dpop-jkt",
+        "name": "fapi2-security-profile-final-ensure-token-endpoint-fails-with-mismatched-dpop-jkt",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=R0QPonbdbeu4S5W"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-token-endpoint-fails-with-mismatched-dpop-proof-jkt",
+        "name": "fapi2-security-profile-final-ensure-token-endpoint-fails-with-mismatched-dpop-proof-jkt",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=WCT1XfSjRzoknPx"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-unsigned-authorization-request-without-using-par-fails",
+        "name": "fapi2-security-profile-final-ensure-unsigned-authorization-request-without-using-par-fails",
+        "result": "REVIEW",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=UQanq2yssY9TX7t"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-unsigned-request-at-par-endpoint-fails",
+        "name": "fapi2-security-profile-final-ensure-unsigned-request-at-par-endpoint-fails",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=FJCR4DgwubaVF3z"
+      },
+      {
+        "module": "fapi2-security-profile-final-happy-flow",
+        "name": "fapi2-security-profile-final-happy-flow",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=heq2Y2pcRaG3xDh"
+      },
+      {
+        "module": "fapi2-security-profile-final-incorrect-pkce-code-verifier-rejected",
+        "name": "fapi2-security-profile-final-incorrect-pkce-code-verifier-rejected",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=SP9lqafgx7EBPCV"
+      },
+      {
+        "module": "fapi2-security-profile-final-par-attempt-invalid-http-method",
+        "name": "fapi2-security-profile-final-par-attempt-invalid-http-method",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=aZD7j3SufTTilsp"
+      },
+      {
+        "module": "fapi2-security-profile-final-par-attempt-reuse-request_uri",
+        "name": "fapi2-security-profile-final-par-attempt-reuse-request_uri",
+        "result": "REVIEW",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=8Y1scZZlYaRoiNS"
+      },
+      {
+        "module": "fapi2-security-profile-final-par-attempt-to-use-expired-request_uri",
+        "name": "fapi2-security-profile-final-par-attempt-to-use-expired-request_uri",
+        "result": "REVIEW",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=DubFco68vJo56nx"
+      },
+      {
+        "module": "fapi2-security-profile-final-par-attempt-to-use-request_uri-for-different-client",
+        "name": "fapi2-security-profile-final-par-attempt-to-use-request_uri-for-different-client",
+        "result": "REVIEW",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=t8TQFqRCcUSkd1R"
+      },
+      {
+        "module": "fapi2-security-profile-final-par-authorization-request-containing-request_uri",
+        "name": "fapi2-security-profile-final-par-authorization-request-containing-request_uri",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=vvmqvbILCNBqavA"
+      },
+      {
+        "module": "fapi2-security-profile-final-par-authorization-request-containing-request_uri-form-param",
+        "name": "fapi2-security-profile-final-par-authorization-request-containing-request_uri-form-param",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=Iih0Ne40OMcLIkb"
+      },
+      {
+        "module": "fapi2-security-profile-final-par-ensure-jwt-client-assertions-nbf-8-seconds-in-the-future-is-accepted",
+        "name": "fapi2-security-profile-final-par-ensure-jwt-client-assertions-nbf-8-seconds-in-the-future-is-accepted",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=1t8Mu9og26lu0mt"
+      },
+      {
+        "module": "fapi2-security-profile-final-par-ensure-jwt-client-assertions-nbf-over-60-seconds-in-the-future-fails",
+        "name": "fapi2-security-profile-final-par-ensure-jwt-client-assertions-nbf-over-60-seconds-in-the-future-fails",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=lVHmwMOJOpxgNTF"
+      },
+      {
+        "module": "fapi2-security-profile-final-par-ensure-pkce-required",
+        "name": "fapi2-security-profile-final-par-ensure-pkce-required",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=8pey9x3PiLxWFSA"
+      },
+      {
+        "module": "fapi2-security-profile-final-par-ensure-reused-request-uri-prior-to-auth-completion-succeeds",
+        "name": "fapi2-security-profile-final-par-ensure-reused-request-uri-prior-to-auth-completion-succeeds",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=jZkK2OEcMPaIl3m"
+      },
+      {
+        "module": "fapi2-security-profile-final-par-plain-pkce-rejected",
+        "name": "fapi2-security-profile-final-par-plain-pkce-rejected",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=QEgboThoqho6MaT"
+      },
+      {
+        "module": "fapi2-security-profile-final-par-test-array-as-audience-fails",
+        "name": "fapi2-security-profile-final-par-test-array-as-audience-fails",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=VgKVea0YyPLoZrd"
+      },
+      {
+        "module": "fapi2-security-profile-final-par-test-par-endpoint-url-as-audience-fails",
+        "name": "fapi2-security-profile-final-par-test-par-endpoint-url-as-audience-fails",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=iIy9qy5x5g5hjtB"
+      },
+      {
+        "module": "fapi2-security-profile-final-par-test-token-endpoint-url-as-audience-fails",
+        "name": "fapi2-security-profile-final-par-test-token-endpoint-url-as-audience-fails",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=usoHWl8VFE62xRF"
+      },
+      {
+        "module": "fapi2-security-profile-final-par-without-duplicate-parameters",
+        "name": "fapi2-security-profile-final-par-without-duplicate-parameters",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=zmJ0ITVjJJXOq2t"
+      },
+      {
+        "module": "fapi2-security-profile-final-plain-fapi-tolerate-unregistered-redirect-uri",
+        "name": "fapi2-security-profile-final-plain-fapi-tolerate-unregistered-redirect-uri",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=2mz5yx4k2RNG568"
+      },
+      {
+        "module": "fapi2-security-profile-final-refresh-token",
+        "name": "fapi2-security-profile-final-refresh-token",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=zUYy0E8gHDzgG2v"
+      },
+      {
+        "module": "fapi2-security-profile-final-state-only-outside-request-object-not-used",
+        "name": "fapi2-security-profile-final-state-only-outside-request-object-not-used",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=RDUCqpwnsDUONeA"
+      },
+      {
+        "module": "fapi2-security-profile-final-test-claims-parameter-identity-claims",
+        "name": "fapi2-security-profile-final-test-claims-parameter-identity-claims",
+        "result": "WARNING",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=0MeuXtb9dHPnbp2"
+      },
+      {
+        "module": "fapi2-security-profile-final-user-rejects-authentication",
+        "name": "fapi2-security-profile-final-user-rejects-authentication",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=o11uFbaUwg9Zsmn"
+      }
+    ],
+    "repository_gate_exit": 0,
+    "waivers": [],
+    "artifact": {
+      "image": "asterius-idp:local-ticket-final-composed-20261008",
+      "image_id": "sha256:73299cf611688acf03133a2b238a0752d089ada2d605580ec130d0684a554a3e",
+      "binary_sha256": "94a104b193cfcab7051e76be732c4794108e580f60b9f6fd0a425fa1a3be352e",
+      "packaging": "GNU runtime artifact; default musl Dockerfile packaging not verified by these runs"
+    },
+    "warning_assessment": "The unknown ID-token extension is sid. The warning concerns extension recognition, not signature verification. The suite WARNING remains unchanged.",
+    "skipped_assessment": "Both client-assertion and request-object RS256 negative modules explicitly require an RSA client key and were skipped because the independently configured fixture uses ES256. These runs do not supply RSA interoperability evidence.",
+    "review_assessments": [
+      {
+        "module": "fapi2-security-profile-final-ensure-unsigned-authorization-request-without-using-par-fails",
+        "scenario": "missing required PAR request URI",
+        "observed_http_status": 400,
+        "browser_remained_on_authorization_endpoint": true,
+        "observed_error_text": "This sign-in request cannot be continued.",
+        "manual_artifact_assessment": "Captured error HTML and HTTP refusal were inspected. The result matches the expected safe local error-page alternative; the browser did not continue to a client callback with an unsafe request. Generic public wording deliberately avoids revealing whether a PAR handle was expired, consumed or unknown.",
+        "oidf_result": "REVIEW",
+        "limit": "This assessment does not change the suite result or claim OIDF human submission approval."
+      },
+      {
+        "module": "fapi2-security-profile-final-par-attempt-reuse-request_uri",
+        "scenario": "reuse after completed nominal authorization",
+        "observed_http_status": 404,
+        "browser_remained_on_authorization_endpoint": true,
+        "observed_error_text": "This sign-in request cannot be continued.",
+        "manual_artifact_assessment": "Captured error HTML and HTTP refusal were inspected. The result matches the expected safe local error-page alternative; the browser did not continue to a client callback with an unsafe request. Generic public wording deliberately avoids revealing whether a PAR handle was expired, consumed or unknown.",
+        "oidf_result": "REVIEW",
+        "limit": "This assessment does not change the suite result or claim OIDF human submission approval."
+      },
+      {
+        "module": "fapi2-security-profile-final-par-attempt-to-use-expired-request_uri",
+        "scenario": "expired PAR request URI",
+        "observed_http_status": 404,
+        "browser_remained_on_authorization_endpoint": true,
+        "observed_error_text": "This sign-in request cannot be continued.",
+        "manual_artifact_assessment": "Captured error HTML and HTTP refusal were inspected. The result matches the expected safe local error-page alternative; the browser did not continue to a client callback with an unsafe request. Generic public wording deliberately avoids revealing whether a PAR handle was expired, consumed or unknown.",
+        "oidf_result": "REVIEW",
+        "limit": "This assessment does not change the suite result or claim OIDF human submission approval."
+      },
+      {
+        "module": "fapi2-security-profile-final-par-attempt-to-use-request_uri-for-different-client",
+        "scenario": "PAR request URI presented under another client",
+        "observed_http_status": 400,
+        "browser_remained_on_authorization_endpoint": true,
+        "observed_error_text": "This sign-in request cannot be continued.",
+        "manual_artifact_assessment": "Captured error HTML and HTTP refusal were inspected. The result matches the expected safe local error-page alternative; the browser did not continue to a client callback with an unsafe request. Generic public wording deliberately avoids revealing whether a PAR handle was expired, consumed or unknown.",
+        "oidf_result": "REVIEW",
+        "limit": "This assessment does not change the suite result or claim OIDF human submission approval."
+      }
+    ],
+    "limit": "All 70 modules executed and the repository gate passed without waivers. REVIEW results require human submission evidence assessment; this run does not constitute OIDF certification or cover every supported algorithm/profile."
+  },
+  "security_profile_final": {
+    "plan": "fapi2-security-profile-final-test-plan[openid=openid_connect][client_auth_type=private_key_jwt][sender_constrain=dpop][fapi_profile=plain_fapi][authorization_request_type=simple]",
+    "revision": "0b4c7a4a4486fb981ac18dac39b9a8431065accc",
+    "generated": "2026-10-08T19:11:47Z",
+    "counts": {
+      "PASSED": 50,
+      "WARNING": 1,
+      "REVIEW": 4,
+      "SKIPPED": 1
+    },
+    "modules": [
+      {
+        "module": "fapi2-security-profile-final-access-token-type-header-case-sensitivity",
+        "name": "fapi2-security-profile-final-access-token-type-header-case-sensitivity",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=qy0P7I3rLn4RvTz"
+      },
+      {
+        "module": "fapi2-security-profile-final-attempt-reuse-authorization-code-after-one-second",
+        "name": "fapi2-security-profile-final-attempt-reuse-authorization-code-after-one-second",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=M7CQfcEvhJW673d"
+      },
+      {
+        "module": "fapi2-security-profile-final-check-dpop-proof-nbf-exp",
+        "name": "fapi2-security-profile-final-check-dpop-proof-nbf-exp",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=vnBzgSIefyHROUh"
+      },
+      {
+        "module": "fapi2-security-profile-final-discovery-end-point-verification",
+        "name": "fapi2-security-profile-final-discovery-end-point-verification",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=ejOtYt1nHhDdtNX"
+      },
+      {
+        "module": "fapi2-security-profile-final-dpop-negative-tests",
+        "name": "fapi2-security-profile-final-dpop-negative-tests",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=AHakfdW5PWTPb4I"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-authorization-code-is-bound-to-client",
+        "name": "fapi2-security-profile-final-ensure-authorization-code-is-bound-to-client",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=xqFbfSH53cuem9H"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-authorization-request-with-64-char-nonce-success",
+        "name": "fapi2-security-profile-final-ensure-authorization-request-with-64-char-nonce-success",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=vVPA1eTrKdSqkLR"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-authorization-request-with-long-nonce",
+        "name": "fapi2-security-profile-final-ensure-authorization-request-with-long-nonce",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=NMfk1W13VUbVMUD"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-authorization-request-with-long-state",
+        "name": "fapi2-security-profile-final-ensure-authorization-request-with-long-state",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=4gkHM5FdMCb6Mkp"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-authorization-request-without-nonce-success",
+        "name": "fapi2-security-profile-final-ensure-authorization-request-without-nonce-success",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=Nbsxrjc3bJiPcbi"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-authorization-request-without-state-success",
+        "name": "fapi2-security-profile-final-ensure-authorization-request-without-state-success",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=NOibKrxCvgZYKAG"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-client-assertion-in-token-endpoint",
+        "name": "fapi2-security-profile-final-ensure-client-assertion-in-token-endpoint",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=dVAQa66GXNCxB4t"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-client-assertion-with-exp-is-5-minutes-in-past-fails",
+        "name": "fapi2-security-profile-final-ensure-client-assertion-with-exp-is-5-minutes-in-past-fails",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=30S9fnM4g2kdM4h"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-client-assertion-with-no-sub-fails",
+        "name": "fapi2-security-profile-final-ensure-client-assertion-with-no-sub-fails",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=MMnqi4dRGTgKTZd"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-client-assertion-with-wrong-aud-fails",
+        "name": "fapi2-security-profile-final-ensure-client-assertion-with-wrong-aud-fails",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=5qKLYyK8izvNwPC"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-client-id-in-token-endpoint",
+        "name": "fapi2-security-profile-final-ensure-client-id-in-token-endpoint",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=yQRLHB2JMe8GoFU"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-different-nonce-inside-and-outside-request-object",
+        "name": "fapi2-security-profile-final-ensure-different-nonce-inside-and-outside-request-object",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=UHeCfC7L2CcFtme"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-different-state-inside-and-outside-request-object",
+        "name": "fapi2-security-profile-final-ensure-different-state-inside-and-outside-request-object",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=I35oRvISVnHaa8P"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-dpop-auth-code-binding-success",
+        "name": "fapi2-security-profile-final-ensure-dpop-auth-code-binding-success",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=zyI9jFAUKzEFo8S"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-dpopproof-at-par-endpoint-binding-success",
+        "name": "fapi2-security-profile-final-ensure-dpopproof-at-par-endpoint-binding-success",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=RbcNurKXjm6mNow"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-dpopproof-with-iat-10seconds-after-succeeds",
+        "name": "fapi2-security-profile-final-ensure-dpopproof-with-iat-10seconds-after-succeeds",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=2fuDm1Fhya0cdyM"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-dpopproof-with-iat-10seconds-before-succeeds",
+        "name": "fapi2-security-profile-final-ensure-dpopproof-with-iat-10seconds-before-succeeds",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=q7eW74WG2en263b"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-holder-of-key-required",
+        "name": "fapi2-security-profile-final-ensure-holder-of-key-required",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=UqwnP6rVbqq1RYW"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-mismatched-dpop-jkt-fails",
+        "name": "fapi2-security-profile-final-ensure-mismatched-dpop-jkt-fails",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=AIhQ8ian0Fq8gdc"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-other-scope-order-succeeds",
+        "name": "fapi2-security-profile-final-ensure-other-scope-order-succeeds",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=2MHLBqULgno68p7"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-pkce-code-verifier-required",
+        "name": "fapi2-security-profile-final-ensure-pkce-code-verifier-required",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=BN1tQm4y1XKhXTS"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-redirect-uri-in-authorization-request",
+        "name": "fapi2-security-profile-final-ensure-redirect-uri-in-authorization-request",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=Bynwi4nhlM1LY05"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-request-object-without-redirect-uri-fails",
+        "name": "fapi2-security-profile-final-ensure-request-object-without-redirect-uri-fails",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=TYSBqTeHWlhYWly"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-response-type-code-idtoken-fails",
+        "name": "fapi2-security-profile-final-ensure-response-type-code-idtoken-fails",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=xDlTZjFHmA3rgMo"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-response-type-token-fails",
+        "name": "fapi2-security-profile-final-ensure-response-type-token-fails",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=Nx1Lmm4rGupNFgz"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-signed-client-assertion-with-RS256-fails",
+        "name": "fapi2-security-profile-final-ensure-signed-client-assertion-with-RS256-fails",
+        "result": "SKIPPED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=weoJRxJsXZMClrh"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-token-endpoint-fails-with-expired-auth-code",
+        "name": "fapi2-security-profile-final-ensure-token-endpoint-fails-with-expired-auth-code",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=W8K6P7KMR97oZ3Y"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-token-endpoint-fails-with-mismatched-dpop-jkt",
+        "name": "fapi2-security-profile-final-ensure-token-endpoint-fails-with-mismatched-dpop-jkt",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=gvC71TSAW1WeIEf"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-token-endpoint-fails-with-mismatched-dpop-proof-jkt",
+        "name": "fapi2-security-profile-final-ensure-token-endpoint-fails-with-mismatched-dpop-proof-jkt",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=1fxNUF0iyoEFDK8"
+      },
+      {
+        "module": "fapi2-security-profile-final-ensure-unsigned-authorization-request-without-using-par-fails",
+        "name": "fapi2-security-profile-final-ensure-unsigned-authorization-request-without-using-par-fails",
+        "result": "REVIEW",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=zJkK4cKbXRdS22V"
+      },
+      {
+        "module": "fapi2-security-profile-final-happy-flow",
+        "name": "fapi2-security-profile-final-happy-flow",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=ZjnBiQgJHSOLORm"
+      },
+      {
+        "module": "fapi2-security-profile-final-incorrect-pkce-code-verifier-rejected",
+        "name": "fapi2-security-profile-final-incorrect-pkce-code-verifier-rejected",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=B8J9b9Mji7UCxYd"
+      },
+      {
+        "module": "fapi2-security-profile-final-par-attempt-invalid-http-method",
+        "name": "fapi2-security-profile-final-par-attempt-invalid-http-method",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=gG8bs8S26JsE13S"
+      },
+      {
+        "module": "fapi2-security-profile-final-par-attempt-reuse-request_uri",
+        "name": "fapi2-security-profile-final-par-attempt-reuse-request_uri",
+        "result": "REVIEW",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=ZK8NvK1AVTXS7aA"
+      },
+      {
+        "module": "fapi2-security-profile-final-par-attempt-to-use-expired-request_uri",
+        "name": "fapi2-security-profile-final-par-attempt-to-use-expired-request_uri",
+        "result": "REVIEW",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=ZF5kmmDnZdari20"
+      },
+      {
+        "module": "fapi2-security-profile-final-par-attempt-to-use-request_uri-for-different-client",
+        "name": "fapi2-security-profile-final-par-attempt-to-use-request_uri-for-different-client",
+        "result": "REVIEW",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=gdrmdXjSZUOfl7w"
+      },
+      {
+        "module": "fapi2-security-profile-final-par-authorization-request-containing-request_uri-form-param",
+        "name": "fapi2-security-profile-final-par-authorization-request-containing-request_uri-form-param",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=XB68GzERDD35emU"
+      },
+      {
+        "module": "fapi2-security-profile-final-par-ensure-jwt-client-assertions-nbf-8-seconds-in-the-future-is-accepted",
+        "name": "fapi2-security-profile-final-par-ensure-jwt-client-assertions-nbf-8-seconds-in-the-future-is-accepted",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=KQ28EDNjOlQ6BvL"
+      },
+      {
+        "module": "fapi2-security-profile-final-par-ensure-jwt-client-assertions-nbf-over-60-seconds-in-the-future-fails",
+        "name": "fapi2-security-profile-final-par-ensure-jwt-client-assertions-nbf-over-60-seconds-in-the-future-fails",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=9fJwYVTwcgTp1A5"
+      },
+      {
+        "module": "fapi2-security-profile-final-par-ensure-pkce-required",
+        "name": "fapi2-security-profile-final-par-ensure-pkce-required",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=KImZjdhvH1AJOT4"
+      },
+      {
+        "module": "fapi2-security-profile-final-par-ensure-reused-request-uri-prior-to-auth-completion-succeeds",
+        "name": "fapi2-security-profile-final-par-ensure-reused-request-uri-prior-to-auth-completion-succeeds",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=ok5CXcJHc1t1Tib"
+      },
+      {
+        "module": "fapi2-security-profile-final-par-plain-pkce-rejected",
+        "name": "fapi2-security-profile-final-par-plain-pkce-rejected",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=8CsbcDpyodWCT3Q"
+      },
+      {
+        "module": "fapi2-security-profile-final-par-test-array-as-audience-fails",
+        "name": "fapi2-security-profile-final-par-test-array-as-audience-fails",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=0B0cMoYTzOttB9h"
+      },
+      {
+        "module": "fapi2-security-profile-final-par-test-par-endpoint-url-as-audience-fails",
+        "name": "fapi2-security-profile-final-par-test-par-endpoint-url-as-audience-fails",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=aubkUkmTxxjZzLz"
+      },
+      {
+        "module": "fapi2-security-profile-final-par-test-token-endpoint-url-as-audience-fails",
+        "name": "fapi2-security-profile-final-par-test-token-endpoint-url-as-audience-fails",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=yv7YNPKj1FYHv4t"
+      },
+      {
+        "module": "fapi2-security-profile-final-par-without-duplicate-parameters",
+        "name": "fapi2-security-profile-final-par-without-duplicate-parameters",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=J47opPXIa3ecUzu"
+      },
+      {
+        "module": "fapi2-security-profile-final-plain-fapi-tolerate-unregistered-redirect-uri",
+        "name": "fapi2-security-profile-final-plain-fapi-tolerate-unregistered-redirect-uri",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=kv61jErovcnb08d"
+      },
+      {
+        "module": "fapi2-security-profile-final-refresh-token",
+        "name": "fapi2-security-profile-final-refresh-token",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=SorvjU2xbXtufjf"
+      },
+      {
+        "module": "fapi2-security-profile-final-state-only-outside-request-object-not-used",
+        "name": "fapi2-security-profile-final-state-only-outside-request-object-not-used",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=QgWGLkjhwdT4bni"
+      },
+      {
+        "module": "fapi2-security-profile-final-test-claims-parameter-identity-claims",
+        "name": "fapi2-security-profile-final-test-claims-parameter-identity-claims",
+        "result": "WARNING",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=jGOXk79us4yq5Xe"
+      },
+      {
+        "module": "fapi2-security-profile-final-user-rejects-authentication",
+        "name": "fapi2-security-profile-final-user-rejects-authentication",
+        "result": "PASSED",
+        "status": "FINISHED",
+        "log": "https://localhost.emobix.co.uk:8443/log-detail.html?log=Pg9J0w8y2BDlngH"
+      }
+    ],
+    "repository_gate_exit": 0,
+    "waivers": [],
+    "artifact": {
+      "image": "asterius-idp:local-ticket-final-composed-20261008",
+      "image_id": "sha256:73299cf611688acf03133a2b238a0752d089ada2d605580ec130d0684a554a3e",
+      "binary_sha256": "94a104b193cfcab7051e76be732c4794108e580f60b9f6fd0a425fa1a3be352e",
+      "packaging": "GNU runtime artifact; default musl Dockerfile packaging not verified by these runs"
+    },
+    "warning_assessment": "The suite warns about the sid extension claim. Its WARNING verdict remains unchanged.",
+    "skipped_assessment": "The RS256 client-assertion negative module requires RSA keys and was skipped because the configured fixture uses ES256. RSA interoperability was not exercised.",
+    "review_assessments": [
+      {
+        "module": "fapi2-security-profile-final-ensure-unsigned-authorization-request-without-using-par-fails",
+        "scenario": "missing required PAR request URI",
+        "observed_http_status": 400,
+        "browser_remained_on_authorization_endpoint": true,
+        "observed_error_text": "This sign-in request cannot be continued.",
+        "manual_artifact_assessment": "Captured error HTML and HTTP refusal were inspected. The result matches the expected safe local error-page alternative; the browser did not continue to a client callback with an unsafe request. Generic public wording deliberately avoids revealing whether a PAR handle was expired, consumed or unknown.",
+        "oidf_result": "REVIEW",
+        "limit": "This assessment does not change the suite result or claim OIDF human submission approval."
+      },
+      {
+        "module": "fapi2-security-profile-final-par-attempt-reuse-request_uri",
+        "scenario": "reuse after completed nominal authorization",
+        "observed_http_status": 404,
+        "browser_remained_on_authorization_endpoint": true,
+        "observed_error_text": "This sign-in request cannot be continued.",
+        "manual_artifact_assessment": "Captured error HTML and HTTP refusal were inspected. The result matches the expected safe local error-page alternative; the browser did not continue to a client callback with an unsafe request. Generic public wording deliberately avoids revealing whether a PAR handle was expired, consumed or unknown.",
+        "oidf_result": "REVIEW",
+        "limit": "This assessment does not change the suite result or claim OIDF human submission approval."
+      },
+      {
+        "module": "fapi2-security-profile-final-par-attempt-to-use-expired-request_uri",
+        "scenario": "expired PAR request URI",
+        "observed_http_status": 404,
+        "browser_remained_on_authorization_endpoint": true,
+        "observed_error_text": "This sign-in request cannot be continued.",
+        "manual_artifact_assessment": "Captured error HTML and HTTP refusal were inspected. The result matches the expected safe local error-page alternative; the browser did not continue to a client callback with an unsafe request. Generic public wording deliberately avoids revealing whether a PAR handle was expired, consumed or unknown.",
+        "oidf_result": "REVIEW",
+        "limit": "This assessment does not change the suite result or claim OIDF human submission approval."
+      },
+      {
+        "module": "fapi2-security-profile-final-par-attempt-to-use-request_uri-for-different-client",
+        "scenario": "PAR request URI presented under another client",
+        "observed_http_status": 400,
+        "browser_remained_on_authorization_endpoint": true,
+        "observed_error_text": "This sign-in request cannot be continued.",
+        "manual_artifact_assessment": "Captured error HTML and HTTP refusal were inspected. The result matches the expected safe local error-page alternative; the browser did not continue to a client callback with an unsafe request. Generic public wording deliberately avoids revealing whether a PAR handle was expired, consumed or unknown.",
+        "oidf_result": "REVIEW",
+        "limit": "This assessment does not change the suite result or claim OIDF human submission approval."
+      }
+    ],
+    "limit": "All 56 modules executed and the repository gate passed without waivers. Human OIDF submission approval and certification are not claimed."
   }
 }
