@@ -306,7 +306,49 @@
       "warning": "CheckForUnexpectedClaimsInIdToken identifies the sid extension. Its value is withheld; no signature or identity-claim failure occurred.",
       "skipped": "The RSA/RS256 negative module was skipped because this run config uses ES256 client keys. It did not execute an RSA negative request and does not establish RSA interoperability.",
       "certification": "This is an independently executed local official suite plan, not an OIDF certification or proof that all profiles/algorithms passed."
-    }
+    },
+    "review_assessments": [
+      {
+        "module": "fapi2-security-profile-final-ensure-unsigned-authorization-request-without-using-par-fails",
+        "scenario": "missing required PAR request URI",
+        "observed_http_status": 400,
+        "browser_remained_on_authorization_endpoint": true,
+        "observed_error_text": "This sign-in request cannot be continued.",
+        "manual_artifact_assessment": "Captured error HTML and HTTP refusal were inspected. The result matches the expected safe local error-page alternative; the browser did not continue to a client callback with an unsafe request. Generic public wording deliberately avoids revealing whether a PAR handle was expired, consumed or unknown.",
+        "oidf_result": "REVIEW",
+        "limit": "This assessment does not change the suite result or claim OIDF human submission approval."
+      },
+      {
+        "module": "fapi2-security-profile-final-par-attempt-reuse-request_uri",
+        "scenario": "reuse after completed nominal authorization",
+        "observed_http_status": 404,
+        "browser_remained_on_authorization_endpoint": true,
+        "observed_error_text": "This sign-in request cannot be continued.",
+        "manual_artifact_assessment": "Captured error HTML and HTTP refusal were inspected. The result matches the expected safe local error-page alternative; the browser did not continue to a client callback with an unsafe request. Generic public wording deliberately avoids revealing whether a PAR handle was expired, consumed or unknown.",
+        "oidf_result": "REVIEW",
+        "limit": "This assessment does not change the suite result or claim OIDF human submission approval."
+      },
+      {
+        "module": "fapi2-security-profile-final-par-attempt-to-use-expired-request_uri",
+        "scenario": "expired PAR request URI",
+        "observed_http_status": 404,
+        "browser_remained_on_authorization_endpoint": true,
+        "observed_error_text": "This sign-in request cannot be continued.",
+        "manual_artifact_assessment": "Captured error HTML and HTTP refusal were inspected. The result matches the expected safe local error-page alternative; the browser did not continue to a client callback with an unsafe request. Generic public wording deliberately avoids revealing whether a PAR handle was expired, consumed or unknown.",
+        "oidf_result": "REVIEW",
+        "limit": "This assessment does not change the suite result or claim OIDF human submission approval."
+      },
+      {
+        "module": "fapi2-security-profile-final-par-attempt-to-use-request_uri-for-different-client",
+        "scenario": "PAR request URI presented under another client",
+        "observed_http_status": 400,
+        "browser_remained_on_authorization_endpoint": true,
+        "observed_error_text": "This sign-in request cannot be continued.",
+        "manual_artifact_assessment": "Captured error HTML and HTTP refusal were inspected. The result matches the expected safe local error-page alternative; the browser did not continue to a client callback with an unsafe request. Generic public wording deliberately avoids revealing whether a PAR handle was expired, consumed or unknown.",
+        "oidf_result": "REVIEW",
+        "limit": "This assessment does not change the suite result or claim OIDF human submission approval."
+      }
+    ]
   },
   "message_signing_initial": {
     "plan": "fapi2-message-signing-final-test-plan[openid=openid_connect][client_auth_type=private_key_jwt][sender_constrain=dpop][fapi_profile=plain_fapi][authorization_request_type=simple][fapi_request_method=signed_non_repudiation][fapi_response_mode=jarm]",
