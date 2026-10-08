@@ -14,6 +14,7 @@ export interface Flow {
 export interface PlanStep {
   id: string; label: string; kind: string; action: 'create' | 'update' | 'reference' | 'unchanged' | 'retry' | 'attach' | 'document' | 'detached' | 'conflict';
   scope: string; resource_id: string | null; explanation: string;
+  live?: { current?: Record<string, unknown> | null; desired?: Record<string, unknown>; contract?: Record<string, unknown>; requires_credential?: boolean };
 }
 export interface Plan { flow_id: string; revision: number; digest: string; applicable: boolean; steps: PlanStep[] }
 export interface ResourceLink {
@@ -54,8 +55,17 @@ export function connectionLabel(source: Kind | undefined, target: Kind | undefin
   return target === 'api' ? 'Authorized API access' : 'Sends events · context only';
 }
 
-export function contextOnlyNode(kind: Kind): boolean {
-  return ['gateway', 'stream', 'identity_provider', 'user'].includes(kind);
+export function contextOnlyNode(kind: Kind, settings?: Record<string, unknown>): boolean {
+  return ['gateway', 'user'].includes(kind) || (['stream', 'identity_provider'].includes(kind) && settings?.integration !== true);
+}
+
+/** Only changed provider nodes may carry an apply-only credential. Never spread graph settings. */
+export function integrationCredentials(plan: Plan, draft: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(plan.steps.filter(step => step.kind === 'identity_provider' && ['create', 'retry', 'update'].includes(step.action) && draft[step.id])
+    .map(step => [step.id, draft[step.id]!]));
+}
+export function missingIntegrationCredentials(plan: Plan, draft: Record<string, string>): boolean {
+  return plan.steps.some(step => step.live?.requires_credential === true && !draft[step.id]);
 }
 
 export function contextOnlyConnection(source: Kind | undefined, target: Kind | undefined): boolean {

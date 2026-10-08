@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { bffPreset, connectionLabel, validConnection, type Graph, type Kind } from '../src/architecture-model.ts';
+import { bffPreset, contextOnlyNode, contextOnlyConnection, integrationCredentials, missingIntegrationCredentials, connectionLabel, validConnection, type Graph, type Kind } from '../src/architecture-model.ts';
 
 function graph(source: Kind, target: Kind): Graph {
   return { schema_version: 1, nodes: [
@@ -62,4 +62,25 @@ test('BFF expands into provisionable resources with explicit missing deployment 
   for (const [source, target] of [['api', 'api'], ['api', 'gateway'], ['gateway', 'api'], ['application', 'gateway']] as [Kind, Kind][]) {
     assert(connectionLabel(source, target).includes('context only'));
   }
+});
+
+
+test('legacy integrations stay context until explicitly configured and edges stay descriptive', () => {
+  assert(contextOnlyNode('identity_provider', {}));
+  assert(contextOnlyNode('stream', {}));
+  assert(!contextOnlyNode('identity_provider', { integration: true }));
+  assert(!contextOnlyNode('stream', { integration: true }));
+  assert(contextOnlyConnection('identity_provider', 'user'));
+  assert(contextOnlyConnection('application', 'stream'));
+});
+
+test('apply credentials exclude unchanged, referenced and unrelated nodes', () => {
+  const plan = { flow_id: 'flow', revision: 2, digest: 'digest', applicable: true, steps: [
+    { id: 'create', kind: 'identity_provider', action: 'create' as const, label: 'Create', scope: 'admin.oidc_providers:write', resource_id: null, explanation: '', live: { requires_credential: true } },
+    { id: 'same', kind: 'identity_provider', action: 'unchanged' as const, label: 'Same', scope: '', resource_id: null, explanation: '' },
+    { id: 'stream', kind: 'stream', action: 'create' as const, label: 'Stream', scope: '', resource_id: null, explanation: '' },
+  ] };
+  assert(missingIntegrationCredentials(plan, {}));
+  assert(!missingIntegrationCredentials(plan, { create: 'apply-only' }));
+  assert.deepEqual(integrationCredentials(plan, { create: 'apply-only', same: 'ignored', stream: 'ignored', unrelated: 'ignored' }), { create: 'apply-only' });
 });

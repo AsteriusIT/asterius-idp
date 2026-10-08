@@ -59,6 +59,7 @@ async fn credentials_are_encrypted_and_tenant_bound() {
         enabled: true,
         allow_registration: false,
         created_at: OffsetDateTime::UNIX_EPOCH,
+        revision: String::new(),
     };
     one.put(&provider, Some(b"secret-first"))
         .await
@@ -133,6 +134,7 @@ async fn credentials_are_encrypted_and_tenant_bound() {
             .as_slice(),
         b"secret-second"
     );
+    exercise_flow_provider_contract(&pool, &one, &provider).await;
     assert!(!two.delete("corporate").await.expect("other tenant delete"));
     sqlx::query("update oidc_identity_providers set tenant_id = 'two' where tenant_id = 'one' and provider_id = 'corporate'")
         .execute(&pool).await.expect("simulate cross-tenant row copy");
@@ -152,4 +154,47 @@ async fn credentials_are_encrypted_and_tenant_bound() {
         .await
         .expect("drop schema");
     admin.close().await;
+}
+
+
+// One isolated schema checks atomic receipt commit, lost-response recovery,
+// lease/tenant fencing and credential-only drift against the actual repository.
+#[allow(clippy::too_many_lines)]
+async fn exercise_flow_provider_contract(pool: &sqlx::PgPool, providers: &asterius_store_pg::PgOidcProviders, template: &OidcProvider) {
+    use asterius_store_pg::{FlowApplyStep, FlowLinkIntent, OidcFlowWrite, PgArchitectureFlows};
+    let tenant=TenantId::new("one");
+    let flows=PgArchitectureFlows::new(pool.clone());
+    let flow=Uuid::new_v4(); let node="provider-node";
+    let now=OffsetDateTime::now_utc();
+    flows.create(&tenant,flow,"Provider architecture",serde_json::json!({"schema_version":1,"nodes":[],"edges":[]}),now).await.expect("flow");
+    let token=flows.begin_apply(&tenant,flow,1,now).await.expect("lease");
+    let mut requested=template.clone();requested.id="flow-provider".into();
+    flows.reserve(&tenant,flow,token,1,&FlowLinkIntent {node,kind:"identity_provider",resource:&requested.id,relation:"managed"},now).await.expect("reservation");
+    let step=FlowApplyStep {flow,token,revision:1,node,now};
+    let write=OidcFlowWrite {step,expected:None};
+    assert!(providers.put_flow(&requested,None,&write).await.is_err(),"missing initial secret rolls back the provider");
+    assert!(providers.find(&requested.id).await.expect("read").is_none());
+    assert_eq!(flows.links(&tenant,flow).await.expect("links")[0]["state"],"pending");
+    providers.put_flow(&requested,Some(b"apply-only-secret"),&write).await.expect("atomic create");
+    let stored=providers.list().await.expect("inventory").into_iter().find(|row|row.id==requested.id).expect("provider");
+    let links=flows.links(&tenant,flow).await.expect("links");
+    assert_eq!(links[0]["state"],"applied");
+    assert_eq!(links[0]["resource_revision"],stored.revision);
+    assert!(!serde_json::to_string(&links).expect("public receipts").contains("apply-only-secret"));
+    // Lost HTTP response cannot turn the same reserved create into an overwrite.
+    assert!(providers.put_flow(&requested,Some(b"must-not-replace"),&write).await.is_err());
+    assert_eq!(providers.find(&requested.id).await.expect("read").expect("provider").client_secret.as_slice(),b"apply-only-secret");
+    let expected=stored.snapshot();
+    providers.put(&requested,Some(b"external-rotation")).await.expect("outside edit");
+    let write=OidcFlowWrite {step:FlowApplyStep {flow,token,revision:1,node,now},expected:Some(&expected)};
+    requested.name="New name".into();
+    assert!(providers.put_flow(&requested,Some(b"must-not-replace"),&write).await.is_err(),"secret-only revision drift refuses a stale plan");
+    assert_eq!(providers.find(&requested.id).await.expect("read").expect("provider").client_secret.as_slice(),b"external-rotation");
+    assert_ne!(providers.find(&requested.id).await.expect("read").expect("provider").provider.name,"New name");
+    let current=providers.list().await.expect("inventory").into_iter().find(|row|row.id==requested.id).expect("provider").snapshot();
+    let stale=OidcFlowWrite {step:FlowApplyStep {flow,token:Uuid::new_v4(),revision:1,node,now},expected:Some(&current)};
+    assert!(providers.put_flow(&requested,None,&stale).await.is_err(),"wrong lease token cannot mutate a provider");
+    // Ordinary credential rotation remains supported; only its public opaque
+    // revision is placed in the plan/provenance, never an envelope or hash.
+    assert!(!current.to_string().contains("external-rotation"));
 }

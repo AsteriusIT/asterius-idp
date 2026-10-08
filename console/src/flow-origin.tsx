@@ -12,7 +12,7 @@ export interface FlowOriginLink {
 }
 
 export function FlowOrigin({ session, kind, resource }: {
-  session: Session; kind: 'application' | 'api' | 'group' | 'role'; resource: string;
+  session: Session; kind: 'application' | 'api' | 'group' | 'role' | 'identity_provider' | 'stream'; resource: string;
 }): JSX.Element | null {
   const [links, setLinks] = useState<FlowOriginLink[]>([]);
   useEffect(() => {
