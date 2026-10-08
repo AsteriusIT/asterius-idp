@@ -1549,6 +1549,37 @@ async fn assert_mcp_discovery(flow: &mut Flow) {
     );
 }
 
+/// The assembled tenancy layer stores Arc<Tenant>. A mismatched receiver
+/// extractor previously rejected every push before SET validation with HTTP500.
+#[tokio::test]
+#[ignore = "requires PostgreSQL; exercised by CI and targeted acceptance gates"]
+async fn ssf_receiver_uses_the_resolved_tenant_before_rejecting_invalid_sets() {
+    let Some(mut flow) = Flow::with_capabilities(Capabilities {
+        ssf: true,
+        ..Capabilities::default()
+    })
+    .await
+    else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    for (content_type, expected) in [
+        ("application/secevent+jwt", StatusCode::BAD_REQUEST),
+        ("application/json", StatusCode::UNSUPPORTED_MEDIA_TYPE),
+    ] {
+        let request = Request::builder()
+            .method("POST")
+            .uri(format!("{}/ssf/receiver", flow.prefix()))
+            .header(header::HOST, HOST)
+            .header(header::CONTENT_TYPE, content_type)
+            .body(Body::from("invalid SET"))
+            .expect("a request");
+        let reply = flow.send(request).await;
+        assert_eq!(reply.status, expected, "{}", reply.text());
+    }
+    flow.tear_down().await;
+}
+
 /// The confidential MCP compatibility path from discovery through a
 /// sender-constrained, audience-bound token. The official MCP TypeScript SDK
 /// does not currently orchestrate PAR, so this deliberately exercises its
