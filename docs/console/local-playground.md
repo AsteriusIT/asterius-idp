@@ -2,7 +2,13 @@
 
 Open <https://desktop-cpbptqn-1.tailacbb15.ts.net:8446/> from a browser connected to the private tailnet. The portal links to two SSO applications, a financial example and the protocol lab. These applications use the existing **demo** tenant at `https://desktop-cpbptqn-1.tailacbb15.ts.net/t/demo` and run in the separate Kubernetes namespace **asterius-playground**. The identity provider remains in **asterius**.
 
-These are actual application endpoints once the operator completes the deployment and verification below. This document describes how to exercise them; it does not substitute for recorded rollout or human sign-in evidence. Existing accounts and credentials are preserved. Sample transfers never contact a bank.
+The six workloads are deployed, healthy and connected to four verified registrations and two dedicated resource audiences. This document describes how to exercise them; it does not substitute for recorded rollout or human sign-in evidence. Existing accounts and credentials are preserved. Sample transfers never contact a bank.
+
+## Create your disposable sign-in
+
+Open the [setup page](https://desktop-cpbptqn-1.tailacbb15.ts.net/playground/setup/). The four application registrations are already complete. Sign in through its **administrator console** link, return and reload, then use **Create a disposable demo user**. Choose a unique `tour-*` username and its password. This uses the supported admin API to create an ordinary user in `demo`; it neither resets an existing account nor grants an administrator role. Passwords go directly from your browser to Asterius and are not kept in browser storage or copied to the applications. Save your chosen password privately.
+
+Use that account for all application and protocol exercises. Your deployment administrator belongs to tenant `admin`, so it is not automatically a demo application's user. Enroll passkeys/TOTP on the disposable account only for those exercises. Disable the account and withdraw its grants when finished.
 
 ## Start with the browser applications
 
@@ -47,9 +53,17 @@ kubectl --context kind-asterius-local auth can-i get configmaps \
 
 Expected answers are **yes**, a successful fixture read, then **no**, **no**, **no**. These checks validate the ServiceAccount's namespace RBAC; they do not claim that a human OIDC `kubectl` login or online identity broker has been exercised. Follow [human Kubernetes access](../kubernetes-human-access.md) for that separate integration.
 
+## Deployment evidence
+
+[Recorded local verification](../deployment/evidence/local-playground-2026-10-08.json) records readiness, image identities, registration ownership, live PAR/device requests, protected-resource refusals and namespace permission checks. Human sign-in, approval and sample-transfer completion are user exercises; healthy deployment alone does not claim they passed.
+
 ## Deployment contract
 
-The operator owns builds, registration, private Secret creation, rollout and the HTTPS bridge. Render the checked-in manifests before applying:
+The operator owns builds, registration, private Secret creation, rollout and the HTTPS bridge. The reproducible source is `deploy/playground`. `prepare.py` generates four private keys plus a public setup plan in an explicit private operator directory. After the images have been built and loaded into kind, `install.py --stage` applies the portal/setup and keeps unregistered OAuth applications at zero replicas. The human administrator applies the reviewed plan through the setup page. `install.py` then verifies the public registrations by read-only lookup, checks that owned existing Secrets are identical, creates missing owned Secrets and applies all six workloads. It performs no SQL writes and refuses to overwrite foreign resources or differing keys.
+
+For this deployment the private operator directory is `~/.local/share/asterius/playground-20261008`; it contains no committed source. A fresh plan deliberately requires another directory, so it cannot silently replace existing private keys. The owned persistent bridge is `asterius-playground-bridge.service` in the user's systemd configuration.
+
+Render the checked-in manifests before applying:
 
 ```sh
 kubectl kustomize deploy/playground
@@ -68,6 +82,8 @@ The six Deployments have one replica each, `Recreate` strategy and small CPU/mem
 
 Each Service exposes port 80. The gateway is a ClusterIP Service, not a public NodePort. An owned persistent loopback port-forward such as `127.0.0.1:18086 → gateway:80`, followed by private Tailscale Serve on HTTPS 8446, supplies the public origin. Preserve existing Serve routes on 443/8443/8444/8445. Do not use Funnel or bind the bridge to all host interfaces merely to make an application reachable.
 
+Browser cookies are scoped to a host, not a port. The playground therefore uses distinct app cookie names and paths, and its gateway forwards only each app's own session/login cookies. IdP administrator cookies and the existing financial-demo cookies are not passed to these BFFs.
+
 The IdP's internal origin is `http://asterius.asterius.svc.cluster.local:9443/t/demo`. Client requests retain the canonical public issuer and expected protocol audience while using the internal connection path. Do not enable permissive TLS verification, rewrite the token issuer or use the internal service URL as the issuer in a registration.
 
 ### Registration and Secret references
@@ -82,7 +98,7 @@ The financial resource audience is `https://desktop-cpbptqn-1.tailacbb15.ts.net:
 
 Create the owned Secrets `demo-a-oidc`, `demo-b-oidc`, `financial-api-oidc` and `protocol-lab-oidc` outside Git. Each needs public keys `CLIENT_ID` and `CLIENT_KEY_ID`, and a private JSON JWK under `CLIENT_PRIVATE_KEY_JWK`. The manifest exposes only the public values as environment variables and mounts the private JWK at `/run/oidc/CLIENT_PRIVATE_KEY_JWK`, read-only mode 0440 with the application group 1000. Node applications receive `CLIENT_PRIVATE_KEY_JWK_FILE` pointing there. Never include Secret YAML, plaintext private keys, access tokens or cookies in committed manifests or deployment evidence.
 
-The `playground-connection` ConfigMap has only public issuer/internal-connection/origin values. Kustomize generates ConfigMaps for gateway routing and the static portal. Applications do not call the Kubernetes API and receive no mounted ServiceAccount token. The manifests do not add a NetworkPolicy: namespace placement alone is not a network isolation claim. Select a supported network-policy implementation before adding an enforced egress policy.
+The `playground-connection` ConfigMap has only public issuer/internal-connection/origin values. Kustomize generates ConfigMaps for gateway routing and the static portal. The installer generates a separate setup ConfigMap containing only the public plan and browser administration code. The namespace-owned setup Ingress mounts `/playground/setup` on the canonical HTTPS443 host; the application portal uses private HTTPS8446. Applications do not call the Kubernetes API and receive no mounted ServiceAccount token. The manifests do not add a NetworkPolicy: namespace placement alone is not a network isolation claim. Select a supported network-policy implementation before adding an enforced egress policy.
 
 ## Fixtures that remain separate
 

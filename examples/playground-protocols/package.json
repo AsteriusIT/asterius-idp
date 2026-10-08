@@ -1,0 +1,1 @@
+{"name":"asterius-playground-protocols","private":true,"type":"module","scripts":{"test":"node --test lab.test.mjs"},"dependencies":{"jose":"6.2.12"}}

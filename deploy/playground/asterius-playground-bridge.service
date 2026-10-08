@@ -1,0 +1,15 @@
+[Unit]
+Description=Asterius playground private loopback bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/kubectl --context kind-asterius-local -n asterius-playground port-forward --address 127.0.0.1 service/gateway 18086:80
+Restart=always
+RestartSec=3
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=default.target

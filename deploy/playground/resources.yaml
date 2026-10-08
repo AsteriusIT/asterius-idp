@@ -194,6 +194,8 @@ spec:
           value: Asterius Demo A
         - name: COOKIE_NAME
           value: asterius_playground_demo_a
+        - name: COOKIE_NAME
+          value: asterius_playground_demo_a
         volumeMounts:
         - name: oidc
           mountPath: /run/oidc
@@ -309,6 +311,8 @@ spec:
           value: https://desktop-cpbptqn-1.tailacbb15.ts.net:8446/demo-b
         - name: APP_NAME
           value: Asterius Demo B
+        - name: COOKIE_NAME
+          value: asterius_playground_demo_b
         - name: COOKIE_NAME
           value: asterius_playground_demo_b
         volumeMounts:
@@ -430,6 +434,8 @@ spec:
           value: https://desktop-cpbptqn-1.tailacbb15.ts.net:8446/financial-api
         - name: SCOPES
           value: openid accounts:read accounts:write
+        - name: COOKIE_NAME
+          value: asterius_playground_financial
         volumeMounts:
         - name: oidc
           mountPath: /run/oidc
@@ -630,7 +636,7 @@ spec:
         - name: EXTERNAL_URL
           value: https://desktop-cpbptqn-1.tailacbb15.ts.net:8446/protocols
         - name: RESOURCE
-          value: https://desktop-cpbptqn-1.tailacbb15.ts.net:8446/financial-api
+          value: https://desktop-cpbptqn-1.tailacbb15.ts.net/t/demo/userinfo
         volumeMounts:
         - name: oidc
           mountPath: /run/oidc
@@ -725,7 +731,15 @@ spec:
           subPath: nginx.conf
           readOnly: true
         - name: portal
-          mountPath: /usr/share/nginx/html
+          mountPath: /usr/share/nginx/html/index.html
+          subPath: index.html
+          readOnly: true
+        - name: portal
+          mountPath: /usr/share/nginx/html/style.css
+          subPath: style.css
+          readOnly: true
+        - name: setup
+          mountPath: /usr/share/nginx/html/playground/setup
           readOnly: true
         command:
         - nginx
@@ -742,6 +756,9 @@ spec:
       - name: portal
         configMap:
           name: playground-portal
+      - name: setup
+        configMap:
+          name: playground-setup
 ---
 apiVersion: v1
 kind: Service
@@ -755,3 +772,24 @@ spec:
   - name: http
     port: 80
     targetPort: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: playground-setup
+  namespace: asterius-playground
+  labels:
+    app.kubernetes.io/part-of: asterius-playground
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: desktop-cpbptqn-1.tailacbb15.ts.net
+    http:
+      paths:
+      - path: /playground/setup
+        pathType: Prefix
+        backend:
+          service:
+            name: gateway
+            port:
+              number: 80

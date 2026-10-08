@@ -48,7 +48,7 @@ function createServer(plan) {
     if (path === 'users' && method === 'POST') {
       assert.ok(options.headers['Idempotency-Key']);
       assert.deepEqual(Object.keys(body).sort(), ['claims','password','username']);
-      assert.deepEqual(body.claims, {name:'Playground user'});
+      assert.deepEqual(body.claims, {name:{value:'Playground user',verified:false}});
       if (state.userFailureStatus) return response(state.userFailureStatus, {error:{message:'mock user create refused'}});
       if (users.has(body.username)) return response(409, {error:{message:'Username already exists'}});
       const created = {username:body.username, user_id:'20000000-0000-4000-8000-000000000001'};
@@ -219,7 +219,7 @@ test('ordinary user creation clears the password and never persists it in browse
   assert.ok(!ui.userStatus().includes(password));
   const posted = server.requests.filter(r => r.url === apiBase+'users');
   assert.equal(posted.length, 1);
-  assert.deepEqual(posted[0].body, {username:'tour-owned-user', password, claims:{name:'Playground user'}});
+  assert.deepEqual(posted[0].body, {username:'tour-owned-user', password, claims:{name:{value:'Playground user',verified:false}}});
   assert.equal(posted[0].method, 'POST');
 });
 
