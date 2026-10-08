@@ -286,6 +286,11 @@ async fn flow_setup_owns_uncertain_intent_and_never_adopts_a_replacement_stream(
     let flow = uuid::Uuid::new_v4();
     let node = "stream-node";
     let now = OffsetDateTime::now_utc();
+    // Keep the lease current and force sub-microsecond precision so completion
+    // checks the original intent through PostgreSQL timestamp encoding.
+    let now = now
+        .replace_nanosecond(now.nanosecond() / 1_000 * 1_000 + 1)
+        .expect("bounded nanosecond value");
     flows
         .create(
             &tenant,
