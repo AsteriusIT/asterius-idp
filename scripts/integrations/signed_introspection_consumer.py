@@ -2,6 +2,7 @@
 """Independent RFC9701 consumer for an explicitly owned disposable Asterius DB."""
 import argparse, base64, json, os, re, secrets, ssl, subprocess, sys, time, urllib.request, urllib.error, urllib.parse, uuid
 from pathlib import Path
+import cryptography
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scim'))
 from dpop_fixture import b64, sign
@@ -144,7 +145,7 @@ def main():
             code, _, _, _ = request('/introspect', {'token': 'owned-unknown-token'}, {'Content-Type': 'application/x-www-form-urlencoded', 'Accept': media})
             assert code == expected
             checks.append({'case': 'unauthenticated ' + media + ' refusal', 'status': code})
-        print(json.dumps({'status': 'pass', 'standard': 'RFC9701', 'consumer': 'Python cryptography Ed25519 verification independent of Asterius JOSE', 'runtimeRevision': m['runtime_revision'], 'runtimeBinarySha256': m['binary_sha256'], 'checks': checks, 'limits': ['Disposable client/resource registration seeded through guarded fixture SQL; issuance and introspection use actual HTTPS client authentication.', 'This evidence alone does not certify FAPI Message Signing.']}, indent=2))
+        print(json.dumps({'status': 'pass', 'standard': 'RFC9701', 'independentCryptoVersion': cryptography.__version__, 'consumer': 'Python cryptography Ed25519 verification independent of Asterius JOSE', 'runtimeRevision': m['runtime_revision'], 'runtimeBinarySha256': m['binary_sha256'], 'checks': checks, 'limits': ['Disposable client/resource registration seeded through guarded fixture SQL; issuance and introspection use actual HTTPS client authentication.', 'This evidence alone does not certify FAPI Message Signing.']}, indent=2))
     finally:
         sql("begin; delete from resource_servers where tenant_id='e2e' and identifier=" + q(resource) + "; delete from clients where tenant_id='e2e' and client_id in (" + ','.join(map(q, [producer, rs, outsider, unsigned])) + ');commit;')
 if __name__ == '__main__':
