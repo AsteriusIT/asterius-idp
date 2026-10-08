@@ -2,7 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import crypto from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { OAuthRequests, verifyResourceProof, hasScope, sameOriginWrite } from './oauth.mjs';
+import { OAuthRequests, verifyResourceProof, hasScope, sameOriginWrite, cookieValue } from './oauth.mjs';
 import { createRemoteJWKSet, exportJWK, generateKeyPair, importJWK, jwtVerify, customFetch, calculateJwkThumbprint } from 'jose';
 
 const app = express();
@@ -35,6 +35,9 @@ const jwks = createRemoteJWKSet(new URL(discovery.jwks_uri), { [customFetch]: oi
 const oauth = new OAuthRequests({ issuer, clientId, clientKey, clientKid, dpopPrivate, dpopPublic, fetchImpl: oidcFetch });
 const seenProofs = new Map();
 const cookiePath = new URL(apiUrl).pathname || '/';
+const cookieName = process.env.COOKIE_NAME || 'financial_sid';
+if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(cookieName)) throw new Error('COOKIE_NAME must be a valid cookie name');
+const loginCookieName = `${cookieName}_login`;
 
 app.use(express.json({ limit: '32kb' }));
 app.use((req, res, next) => {
@@ -59,13 +62,13 @@ app.get('/auth/start', async (_req, res) => {
   const request = new URLSearchParams({ client_id: clientId, response_type: 'code', redirect_uri: `${apiUrl}/auth/callback`, scope: scopes, resource, code_challenge: challenge, code_challenge_method: 'S256', state, nonce });
   const par = await oauthPost(discovery.pushed_authorization_request_endpoint, request);
   sessions.set(state, { verifier, nonce, createdAt: Date.now() });
-  res.setHeader('Set-Cookie', `financial_login=${state}; Path=${cookiePath}; HttpOnly; SameSite=Lax; Max-Age=600${process.env.COOKIE_SECURE === 'false' ? '' : '; Secure'}`);
+  res.setHeader('Set-Cookie', `${loginCookieName}=${state}; Path=${cookiePath}; HttpOnly; SameSite=Lax; Max-Age=600${process.env.COOKIE_SECURE === 'false' ? '' : '; Secure'}`);
   res.redirect(`${discovery.authorization_endpoint}?client_id=${encodeURIComponent(clientId)}&request_uri=${encodeURIComponent(par.request_uri)}`);
 });
 
 app.get('/auth/callback', async (req, res) => {
   const pending = sessions.get(req.query.state);
-  if (!pending || req.headers.cookie?.match(/(?:^|; )financial_login=([^;]+)/)?.[1] !== req.query.state || req.query.iss !== issuer || Date.now() - pending.createdAt > 10 * 60_000) return res.status(400).send('Invalid or expired OAuth state');
+  if (!pending || cookieValue(req.headers.cookie, loginCookieName) !== req.query.state || req.query.iss !== issuer || Date.now() - pending.createdAt > 10 * 60_000) return res.status(400).send('Invalid or expired OAuth state');
   sessions.delete(req.query.state);
   if (req.query.error) return res.status(400).send('Authorization was refused');
   const body = new URLSearchParams({ grant_type: 'authorization_code', code: req.query.code, redirect_uri: `${apiUrl}/auth/callback`, client_id: clientId, code_verifier: pending.verifier, resource });
@@ -95,9 +98,9 @@ app.post('/auth/logout', async (req, res) => {
   if (!sameOriginWrite(req, webappOrigin)) return res.status(403).json({ error: 'csrf_refused' });
   const session = sessionFrom(req);
   if (session) for (const token of [session.refresh_token, session.access_token].filter(Boolean)) await oauthPost(discovery.revocation_endpoint, new URLSearchParams({ token }));
-  const sid = req.headers.cookie?.match(/(?:^|; )financial_sid=([^;]+)/)?.[1];
+  const sid = cookieValue(req.headers.cookie, cookieName);
   if (sid) sessions.delete(`sid:${sid}`);
-  res.setHeader('Set-Cookie', `financial_sid=; Path=${cookiePath}; HttpOnly; SameSite=Lax; Max-Age=0${process.env.COOKIE_SECURE === 'false' ? '' : '; Secure'}`);
+  res.setHeader('Set-Cookie', `${cookieName}=; Path=${cookiePath}; HttpOnly; SameSite=Lax; Max-Age=0${process.env.COOKIE_SECURE === 'false' ? '' : '; Secure'}`);
   res.status(204).end();
 });
 
@@ -124,7 +127,7 @@ function required(name) { if (!process.env[name]) throw new Error(`${name} is re
 function random(bytes = 32) { return crypto.randomBytes(bytes).toString('base64url'); }
 function sessionCookie(sid) {
   const secure = process.env.COOKIE_SECURE !== 'false' ? '; Secure' : '';
-  return `financial_sid=${sid}; Path=${cookiePath}; HttpOnly; SameSite=Lax; Max-Age=3600${secure}`;
+  return `${cookieName}=${sid}; Path=${cookiePath}; HttpOnly; SameSite=Lax; Max-Age=3600${secure}`;
 }
 async function getJson(url, oidc = false) {
   const response = await (oidc ? oidcFetch(url) : fetch(url));
@@ -154,7 +157,7 @@ async function retryFetch(operation, attempts = 30) {
   }
   throw lastError;
 }
-function sessionFrom(req) { const sid = req.headers.cookie?.match(/(?:^|; )financial_sid=([^;]+)/)?.[1]; return sid ? sessions.get(`sid:${sid}`) : null; }
+function sessionFrom(req) { const sid = cookieValue(req.headers.cookie, cookieName); return sid ? sessions.get(`sid:${sid}`) : null; }
 async function requireSession(req, res, next) {
   const session = sessionFrom(req);
   if (!session) return res.status(401).json({ error: 'login_required' });
