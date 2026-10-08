@@ -66,16 +66,23 @@ tab, and on every push to a `release/**` branch.
   ticket is closed or unknown, so a waiver cannot outlive the decision behind
   it.
 
-## What is waived today
+## Current independently executed evidence
 
-One module, and the submission has to say so:
+The 2026-10-08 Security Profile Final plan on source `b419e9ba` and the exact
+prebuilt GNU runtime image finished 56 modules: **50 PASSED, 4 REVIEW, 1 WARNING,
+1 SKIPPED, 0 FAILED**. The repository gate passed with an empty waiver list. The
+four REVIEW conditions captured the expected public error page for unsigned
+non-PAR, reused, expired and foreign-client request URIs. The WARNING identifies
+the `sid` extension. The RSA negative module did not execute because this run's
+client keys are ES256; this does not establish RSA interoperability. Raw exports
+remain private. OIDF human submission review and certification are not claimed.
 
-| module | ticket | why |
-| --- | --- | --- |
-| `fapi2-security-profile-final-user-rejects-authentication` | `ast-k5u` | The module needs the person at the browser to refuse. The only refusal this server offers is *Deny* on the consent screen, and that screen is skipped once the tenant remembers a consent covering the request. Fixing it is a product decision — a per-tenant "always ask" setting, a refusal on the login page, or accepting that this one module is driven by hand at submission time. |
-
-Last full run, 2026-09-10, 56 modules: **48 PASSED, 5 REVIEW, 1 WARNING,
-1 SKIPPED, 1 FAILED** — the FAILED being the waived module above.
+The same exact artifact's initial Message Signing run failed at PAR: the signed
+request objects omitted `typ`, while the server required explicit typing. The
+plan stopped after eight interrupted failures (one discovery test passed);
+remaining modules did not execute. The compatibility fix and a full rerun on a
+new exact-source artifact are required. [Sanitized outcomes and module assessment](integrations/evidence/oidf-fapi-2026-10-08.json)
+record both runs and their limits.
 
 ## Where the evidence is
 
