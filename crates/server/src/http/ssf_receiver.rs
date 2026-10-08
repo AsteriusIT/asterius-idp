@@ -194,7 +194,7 @@ pub fn routes(endpoints: std::sync::Arc<crate::http::protocol::ClientEndpoints>)
 
 async fn receive(
     State(endpoints): State<std::sync::Arc<crate::http::protocol::ClientEndpoints>>,
-    Extension(tenant): Extension<Tenant>,
+    Extension(tenant): Extension<std::sync::Arc<Tenant>>,
     uri: Uri,
     headers: HeaderMap,
     token: Bytes,
