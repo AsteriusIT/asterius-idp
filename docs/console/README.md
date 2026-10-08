@@ -8,6 +8,8 @@ Tenant settings and Branding are in the tenant menu.
 
 For a complete set of sandbox exercises, including API and external-peer prerequisites, use [the local feature tour](local-feature-tour.md).
 
+For the isolated application environment and hands-on SSO/financial exercises, use [the local playground](local-playground.md).
+
 ## Screens
 
 | Feature | Why use it? | How to use it |
