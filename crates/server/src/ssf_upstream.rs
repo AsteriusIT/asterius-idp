@@ -105,8 +105,10 @@ pub async fn verify_recorded_stream(
     let token = read_bearer_file(&config.bearer_token_file)?;
     let authorization = Zeroizing::new(format!("Bearer {}", token.as_str()));
     let listed = list_streams(poster, &metadata.configuration_endpoint, &authorization).await?;
+    let selected =
+        recorded_stream_in_list(&listed, &recorded.stream_id)?.ok_or(SetupError::PendingReview)?;
     let remote = reconcile_listed(
-        &listed,
+        std::slice::from_ref(selected),
         &metadata,
         config.allow_all_subjects,
         &issuer,
@@ -261,9 +263,9 @@ pub async fn delete_recorded_stream(
         return Err(SetupError::PendingReview);
     }
     let listed = list_streams(poster, &metadata.configuration_endpoint, &authorization).await?;
-    if !listed.is_empty() {
+    if let Some(selected) = recorded_stream_in_list(&listed, &recorded.stream_id)? {
         let remote = reconcile_listed(
-            &listed,
+            std::slice::from_ref(selected),
             &metadata,
             true,
             &issuer,
@@ -286,10 +288,9 @@ pub async fn delete_recorded_stream(
         }
         // A 204 proves that DELETE was accepted; authenticated readback proves
         // that a retry will not create a second remote stream accidentally.
-        if !list_streams(poster, &metadata.configuration_endpoint, &authorization)
-            .await?
-            .is_empty()
-        {
+        let remaining =
+            list_streams(poster, &metadata.configuration_endpoint, &authorization).await?;
+        if recorded_stream_in_list(&remaining, &recorded.stream_id)?.is_some() {
             return Err(SetupError::PendingReview);
         }
     }
@@ -878,6 +879,31 @@ async fn list_streams(
     value.as_array().cloned().ok_or(SetupError::Response)
 }
 
+/// A durable stream identity disambiguates readback even when this credential
+/// manages other streams. Malformed or duplicate identities cannot prove that
+/// the recorded stream is absent, so deletion must retain its local intent.
+fn recorded_stream_in_list<'a>(
+    listed: &'a [Value],
+    stream_id: &str,
+) -> Result<Option<&'a Value>, SetupError> {
+    let mut identities = std::collections::HashSet::new();
+    let mut selected = None;
+    for value in listed {
+        let identity = value
+            .get("stream_id")
+            .and_then(Value::as_str)
+            .filter(|identity| !identity.is_empty())
+            .ok_or(SetupError::PendingReview)?;
+        if !identities.insert(identity) {
+            return Err(SetupError::PendingReview);
+        }
+        if identity == stream_id {
+            selected = Some(value);
+        }
+    }
+    Ok(selected)
+}
+
 fn reconcile_listed(
     listed: &[Value],
     metadata: &ssf_receiver::UpstreamMetadata,
@@ -1031,6 +1057,39 @@ fn validate_status(response: &PostResponse, stream_id: &str) -> Result<(), Setup
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recorded_readback_selects_exact_stream_among_other_streams() {
+        let listed = vec![
+            json!({"stream_id": "other"}),
+            json!({"stream_id": "recorded", "aud": "receiver"}),
+        ];
+        let selected = recorded_stream_in_list(&listed, "recorded")
+            .expect("unambiguous authenticated list")
+            .expect("recorded stream exists");
+        assert_eq!(selected["aud"], "receiver");
+        assert_eq!(recorded_stream_in_list(&listed, "removed"), Ok(None));
+    }
+
+    #[test]
+    fn recorded_readback_refuses_malformed_or_duplicate_identities() {
+        for listed in [
+            vec![json!({"stream_id": "other"}), json!({})],
+            vec![json!({"stream_id": ""})],
+            vec![json!({"stream_id": 42})],
+            vec![
+                json!({"stream_id": "recorded"}),
+                json!({"stream_id": "recorded"}),
+            ],
+            vec![json!({"stream_id": "other"}), json!({"stream_id": "other"})],
+        ] {
+            assert_eq!(
+                recorded_stream_in_list(&listed, "recorded"),
+                Err(SetupError::PendingReview)
+            );
+        }
+        assert_eq!(recorded_stream_in_list(&[], "recorded"), Ok(None));
+    }
 
     #[test]
     fn poll_create_requests_only_receiver_supplied_members() {
