@@ -1,6 +1,8 @@
 """Shared disposable Asterius bootstrap for native product integration tests."""
 import contextlib
 import hashlib
+import ipaddress
+import re
 import json
 import os
 from pathlib import Path
@@ -33,11 +35,31 @@ def sql(database,body):
 
 
 @contextlib.contextmanager
-def fixture(port,callback,client_id,hostname='127.0.0.1',bind='127.0.0.1'):
+def fixture(port,callback,client_id,hostname='127.0.0.1',bind='127.0.0.1', *,
+            config_extra='', automation_scopes=(), readonly_paths=()):
     os.umask(0o077)
     database='ast_product_'+uuid.uuid4().hex
     binary=Path(os.environ['ASTERIUS_BIN']).resolve()
     created=False;process=None
+    image=os.environ.get('ASTERIUS_RUNTIME_IMAGE')
+    revision=None
+    if image:
+        revision=command(['docker','image','inspect',image,'--format','{{ index .Config.Labels "org.opencontainers.image.revision" }}']).strip()
+        expected_revision=os.environ.get('ASTERIUS_RUNTIME_REVISION')
+        if expected_revision and revision!=expected_revision:
+            raise RuntimeError('runtime image revision differs from requested source revision')
+    container='asterius-product-'+uuid.uuid4().hex
+    database_origin=os.environ.get('ASTERIUS_ACCEPTANCE_DATABASE_ORIGIN','postgres://asterius:asterius@127.0.0.1:5433').rstrip('/')
+    if not database_origin.startswith(('postgres://','postgresql://')) or any(char in database_origin for char in '\r\n'):
+        raise RuntimeError('invalid controlled database origin')
+    hosts=[]
+    for mapping in filter(None,os.environ.get('ASTERIUS_RUNTIME_HOSTS','').split(',')):
+        host,separator,address=mapping.partition(':')
+        if not separator or not re.fullmatch(r'[A-Za-z0-9.-]+',host) or not ipaddress.ip_address(address).is_global:
+            raise RuntimeError('runtime hosts must map a DNS name to a public IP')
+        hosts.extend(['--add-host',mapping])
+    if any(not re.fullmatch(r'[A-Za-z0-9_.:-]+',scope) for scope in automation_scopes):
+        raise RuntimeError('invalid controlled automation scope')
     with tempfile.TemporaryDirectory(prefix='asterius-product-fixture.') as directory:
         root=Path(directory)
         with (root/'server.log').open('w') as log:
@@ -48,17 +70,39 @@ def fixture(port,callback,client_id,hostname='127.0.0.1',bind='127.0.0.1'):
                          '-subj','/CN='+hostname,'-addext',f'subjectAltName=IP:127.0.0.1,IP:{bind},DNS:localhost,DNS:host.docker.internal'])
                 config=(ROOT/'e2e/fixtures/asterius.toml.in').read_text()
                 for key,value in {'@PORT@':str(port),'@CERTIFICATE@':str(root/'ca.pem'),
-                     '@PRIVATE_KEY@':str(root/'key.pem'),'@DATABASE_URL@':f'postgres://asterius:asterius@127.0.0.1:5433/{database}'}.items():
+                     '@PRIVATE_KEY@':str(root/'key.pem'),'@DATABASE_URL@':f'{database_origin}/{database}'}.items():
                     config=config.replace(key,value)
                 config=config.replace(f'bind = "127.0.0.1:{port}"',f'bind = "{bind}:{port}"')
                 config=config.replace('https://127.0.0.1:',f'https://{hostname}:')
+                if config_extra:
+                    # Insert inside the first (e2e) tenant, before the template's
+                    # next tenant; nested SSF peer tables must belong to e2e.
+                    boundary='\n[[tenant]]\nid = "e2e-webauthn"'
+                    config=config.replace(boundary,'\n'+config_extra+'\n'+boundary,1)
                 (root/'asterius.toml').write_text(config)
                 issuer=f'https://{hostname}:{port}/t/e2e'
                 env={**os.environ,'ASTERIUS_KEK':'YXN0ZXJpdXMtZGV2LWtlay1ub3QtYS1zZWNyZXQhISE=',
                      'ASTERIUS_ADMIN_PASSWORD':secrets.token_urlsafe(32)}
                 context=ssl.create_default_context(cafile=str(root/'ca.pem'))
+                def stop(child):
+                    if image:
+                        command(['docker','stop','--time','10',container],timeout=20)
+                    elif child.poll() is None:
+                        child.terminate()
+                    try:child.wait(timeout=15)
+                    except subprocess.TimeoutExpired:child.kill();child.wait(timeout=5)
                 def start():
-                    child=subprocess.Popen([str(binary),'--config',str(root/'asterius.toml')],env=env,stdout=log,stderr=log)
+                    args=[str(binary),'--config',str(root/'asterius.toml')]
+                    if image:
+                        args=['docker','run','--rm','--name',container,'--network','host',
+                              '--user',f'{os.getuid()}:{os.getgid()}',
+                              '--mount',f'type=bind,source={root},target={root},readonly',
+                              '--env','ASTERIUS_KEK','--env','ASTERIUS_ADMIN_PASSWORD',*hosts]
+                        for path in readonly_paths:
+                            owned=Path(path).resolve(strict=True)
+                            args+=['--mount',f'type=bind,source={owned},target={owned},readonly']
+                        args += [image,'--config',str(root/'asterius.toml')]
+                    child=subprocess.Popen(args,env=env,stdout=log,stderr=log)
                     for _ in range(60):
                         if child.poll() is not None:raise RuntimeError('isolated Asterius exited')
                         try:
@@ -66,7 +110,7 @@ def fixture(port,callback,client_id,hostname='127.0.0.1',bind='127.0.0.1'):
                                 if answer.status==200:return child
                         except (urllib.error.URLError,TimeoutError):pass
                         time.sleep(1)
-                    child.terminate();child.wait(timeout=15)
+                    stop(child)
                     raise RuntimeError('isolated Asterius not ready')
                 process=start()
                 seed=(ROOT/'e2e/fixtures/seed.sql').read_text().replace(":'tenant'","'e2e'").replace(":'username'","'sweep@example.test'")
@@ -80,11 +124,14 @@ def fixture(port,callback,client_id,hostname='127.0.0.1',bind='127.0.0.1'):
                 secret=secrets.token_urlsafe(32);digest=hashlib.sha256(secret.encode()).hexdigest()
                 if not client_id.replace('-','').replace('_','').isalnum() or "'" in callback:
                     raise RuntimeError('invalid controlled fixture metadata')
+                scopes=['openid','email',*automation_scopes]
+                scope_sql=','.join("'"+scope+"'" for scope in scopes)
+                grants="'authorization_code','client_credentials'" if automation_scopes else "'authorization_code'"
                 sql(database,f"""update tenants set settings=settings || jsonb_build_object('options',coalesce(settings->'options','{{}}'::jsonb) || '{{"allow_non_fapi_clients":true}}'::jsonb) where tenant_id='e2e';
                      insert into clients(tenant_id,client_id,client_name,compliance_profile,token_endpoint_auth_method,client_secret_hash,
                      grant_types,response_types,redirect_uris,scopes,resources,dpop_bound_access_tokens,tls_client_certificate_bound_access_tokens,id_token_signed_response_alg)
                      values('e2e','{client_id}','Disposable product integration','oidc','client_secret_basic',decode('{digest}','hex'),
-                     array['authorization_code'],array['code'],array['{callback}'],array['openid','email'],
+                     array[{grants}],array['code'],array['{callback}'],array[{scope_sql}],
                      array[(select default_resource from tenants where tenant_id='e2e')],false,false,'ES256');""")
                 # Stable opaque identities are seeded only in this owned disposable DB.
                 # Production obtains these identifiers from verified tokens, never local UUIDs.
@@ -93,13 +140,14 @@ def fixture(port,callback,client_id,hostname='127.0.0.1',bind='127.0.0.1'):
                 sql(database,f"""insert into subject_identifiers(tenant_id,user_id,sector_identifier,subject)
                      select 'e2e',user_id,'',case when username='sweep@example.test' then '{approved_sub}' else '{denied_sub}' end
                      from users where tenant_id='e2e' and username in ('sweep@example.test','denied@example.test');""")
-                process.terminate();process.wait(timeout=15);process=start()
+                stop(process);process=start()
                 yield {'root':root,'issuer':issuer,'secret':secret,'client_id':client_id,'database':database,
                        'approved_sub':approved_sub,'denied_sub':denied_sub,
+                       'sql':lambda body:sql(database,body),'context':context,
+                       'config_path':root/'asterius.toml',
+                       'runtime_revision':revision,
                        'binary_sha256':hashlib.sha256(binary.read_bytes()).hexdigest()}
             finally:
                 if process is not None and process.poll() is None:
-                    process.terminate()
-                    try:process.wait(timeout=15)
-                    except subprocess.TimeoutExpired:process.kill();process.wait(timeout=5)
+                    stop(process)
                 if created:sql('postgres',f'drop database "{database}";')
