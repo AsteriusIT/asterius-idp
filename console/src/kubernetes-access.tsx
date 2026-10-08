@@ -127,7 +127,7 @@ function ClusterDetail({session,cluster,onBack}:{session:Session;cluster:Cluster
   const [online,setOnline]=useState<OnlineProfile|null>(null);const [modeError,setModeError]=useState<string|null>(null);const [modeBusy,setModeBusy]=useState(true);
   const [jit,setJit]=useState<boolean|null>(null);const [statusRefresh,setStatusRefresh]=useState(0); const writable=session.scopes.includes('admin.clients:write');const groupsReadable=session.scopes.includes('admin.groups:read');
   const path=profilePath(cluster.client.client_id);
-  const dirty=namespace!==(saved?.namespace??'default')||name!==(saved?.cluster_id??'')||JSON.stringify([...selected].sort())!==JSON.stringify([...(saved?.group_ids??[])].sort());
+  const dirty=namespace!==(saved?.namespace??'default')||name!==(saved?.cluster_id??'')||JSON.stringify([...selected].sort((left, right) => left < right ? -1 : left > right ? 1 : 0))!==JSON.stringify([...(saved?.group_ids??[])].sort((left, right) => left < right ? -1 : left > right ? 1 : 0));
   const leave=useUnsavedChanges(dirty);
   const loadGroups=useCallback(async(after:string|null=null)=>{
     if(!groupsReadable)return;const request=++groupGeneration.current;setGroupBusy(true);setGroupError(null);

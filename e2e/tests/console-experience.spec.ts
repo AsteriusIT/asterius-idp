@@ -2077,7 +2077,9 @@ test('secret input reveal is local, remasks on blur and keeps rejected raw draft
   await expect(show).toBeDisabled();
   await password.fill('  raw credential  ');
   await expect(password).toHaveAttribute('type', 'password');
-  await show.focus(); await page.keyboard.press('Space');
+  // Decorations add no tab stop: native input → native reveal button.
+  await password.focus(); await page.keyboard.press('Tab');
+  await expect(show).toBeFocused(); await page.keyboard.press('Space');
   await expect(password).toHaveAttribute('type', 'text');
   expect(writes).toHaveLength(0);
   await page.getByRole('textbox', { name: 'Username', exact: true }).fill('new.user');
