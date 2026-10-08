@@ -268,6 +268,20 @@ impl AcrPolicy {
             .any(|level| level.methods().contains(&AuthenticationMethod::OneTimeCode))
     }
 
+    /// Whether an attainable class requires both possession and another factor.
+    /// Two possession ceremonies alone do not establish distinct factors.
+    #[must_use]
+    pub fn supports_multiple_factors(&self) -> bool {
+        use AuthenticationMethod::{OneTimeCode, Passkey, Password, UserVerified};
+        self.validate_attainable().is_ok()
+            && self.levels.iter().any(|level| {
+                let methods = level.methods();
+                (methods.contains(&Password)
+                    && (methods.contains(&OneTimeCode) || methods.contains(&Passkey)))
+                    || (methods.contains(&Passkey) && methods.contains(&UserVerified))
+            })
+    }
+
     /// `acr_values_supported`, strongest first (OIDC Discovery §3).
     ///
     /// Strongest first because the member is a list a human reads as much as a
@@ -518,6 +532,29 @@ pub const PASSKEY_USER_VERIFIED: &str = "urn:asterius:acr:passkey-uv";
 mod tests {
     use super::*;
     use AuthenticationMethod::{Passkey, Password, UserVerified};
+
+    #[test]
+    fn ipsie_requires_an_attainable_class_with_distinct_factors() {
+        assert!(AcrPolicy::default().supports_multiple_factors());
+        for methods in [
+            vec![Password],
+            vec![Passkey],
+            vec![Passkey, AuthenticationMethod::OneTimeCode],
+        ] {
+            let policy = AcrPolicy::new(vec![AcrLevel::new("custom", methods).expect("level")])
+                .expect("policy");
+            assert!(!policy.supports_multiple_factors());
+        }
+        for methods in [
+            vec![Password, AuthenticationMethod::OneTimeCode],
+            vec![Password, Passkey],
+            vec![Passkey, UserVerified],
+        ] {
+            let policy = AcrPolicy::new(vec![AcrLevel::new("custom", methods).expect("level")])
+                .expect("policy");
+            assert!(policy.supports_multiple_factors());
+        }
+    }
 
     fn values(requested: &[&str]) -> Vec<String> {
         requested.iter().map(|value| (*value).to_owned()).collect()

@@ -880,6 +880,25 @@ fn authentication_under(
     current
 }
 
+fn validate_ipsie_assurance(
+    authentication: &Authentication,
+    acr_policy: &asterius_domain::AcrPolicy,
+    rp_session_lifetime_seconds: Option<u32>,
+) -> Result<(), DomainError> {
+    // Missing or stale evidence cannot be replaced by a configured claim.
+    if authentication.acr.is_none()
+        || authentication.amr.is_empty()
+        || !acr_policy.supports_multiple_factors()
+        || rp_session_lifetime_seconds.is_none_or(|seconds| seconds < 300)
+    {
+        return Err(DomainError::invalid(
+            "id_token",
+            "IPSIE requires truthful acr/amr, an attainable multifactor class and an RP deadline of at least 300 seconds",
+        ));
+    }
+    Ok(())
+}
+
 /// Builds and signs an ID token.
 ///
 /// The access token is signed first and handed in whole, because OIDC Core
@@ -930,13 +949,8 @@ pub async fn sign_id_token(
         ));
     }
     let authentication = authentication_under(&session.authentication, acr_policy);
-    if require_ipsie_assurance && (authentication.acr.is_none() || authentication.amr.is_empty()) {
-        // The policy may withhold AMR, or a stored proof may no longer meet
-        // its named ACR. Neither is a license to invent assurance evidence.
-        return Err(DomainError::invalid(
-            "id_token",
-            "IPSIE candidate requires a validated acr and IANA amr",
-        ));
+    if require_ipsie_assurance {
+        validate_ipsie_assurance(&authentication, acr_policy, rp_session_lifetime_seconds)?;
     }
     let mut builder = IdToken::new(
         &tenant.issuer,
@@ -1079,6 +1093,70 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[tokio::test]
+    async fn ipsie_issuance_requires_policy_and_emits_the_minimum_integer_deadline() {
+        use base64::Engine as _;
+        let now = time::OffsetDateTime::UNIX_EPOCH + time::Duration::days(20_000);
+        let tenant = ssf_tenant();
+        let client = targeting_client(&[]);
+        let mut grant = asterius_domain::Grant::new(tenant.id.clone(), client.id.clone(), now);
+        grant.subject = Some(asterius_domain::SubjectId::new("subject"));
+        let claimed = grant.claim(now).expect("live grant");
+        let session = SessionFacts {
+            authentication: Authentication {
+                authenticated_at: now,
+                acr: Some(asterius_domain::acr::PASSKEY_USER_VERIFIED.to_owned()),
+                amr: vec!["pop".to_owned(), "user".to_owned()],
+            },
+            sid: None,
+        };
+        let policy = asterius_domain::AcrPolicy::default();
+        let keys = asterius_jose::LocalKeyStore::new();
+        keys.generate(&tenant.id, client.registration.id_token_signed_response_alg)
+            .expect("key");
+        for duration in [None, Some(299), Some(300)] {
+            let result = sign_id_token(
+                &keys,
+                &tenant,
+                &client,
+                IdTokenParts {
+                    device_binding: None,
+                    grant: &grant,
+                    require_ipsie_assurance: true,
+                    rp_session_lifetime_seconds: duration,
+                    acr_policy: &policy,
+                    claimed: &claimed,
+                    session: &session,
+                    access_token: "access-token",
+                    nonce: None,
+                    key_bound_jwk: None,
+                    device_secret_hash: None,
+                    released: ReleasedToIdToken::default(),
+                },
+                now,
+            )
+            .await;
+            if duration == Some(300) {
+                let token = result.expect("valid IPSIE token");
+                let body = token.split('.').nth(1).expect("payload");
+                let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(body)
+                    .expect("base64");
+                let claims: serde_json::Value = serde_json::from_slice(&decoded).expect("claims");
+                assert_eq!(claims["session_expiry"], now.unix_timestamp() + 300);
+                assert_eq!(claims["acr"], asterius_domain::acr::PASSKEY_USER_VERIFIED);
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(DomainError::Invalid {
+                        field: "id_token",
+                        ..
+                    })
+                ));
+            }
+        }
     }
 
     #[test]

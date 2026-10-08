@@ -4848,6 +4848,9 @@ async fn run_authorize(
             users: &subjects,
             policy: decision_policy(),
             acr: settings.acr_policy(),
+            ipsie_identity_only_clients: endpoints
+                .ipsie_identity_only_clients
+                .get(tenant.id.as_str()),
             memory,
             nonce,
             mount,

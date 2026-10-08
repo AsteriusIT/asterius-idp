@@ -2423,6 +2423,19 @@ fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantCo
             &ipsie_identity_only_clients,
             errors,
         );
+        for client in &ipsie_identity_only_clients {
+            if !ipsie_https_only_clients.contains(client)
+                || !ipsie_rp_sessions
+                    .iter()
+                    .any(|policy| &policy.client_id == client)
+                || fapi_message_signing_clients.contains(client)
+            {
+                errors.problem(
+                    format!("tenant[{index}].ipsie_identity_only_client"),
+                    "each selected client requires HTTPS callbacks and an RP session policy, and must not use the unencrypted JARM profile",
+                );
+            }
+        }
 
         if let (Some(id), Some(issuer)) = (id, issuer) {
             let default_resource = default_resource.unwrap_or_else(|| issuer.as_str().to_owned());
@@ -2816,10 +2829,10 @@ fn validate_ipsie_rp_sessions(
                 );
                 return None;
             }
-            if !(60..=86_400).contains(&entry.lifetime_seconds) {
+            if !(300..=86_400).contains(&entry.lifetime_seconds) {
                 errors.problem(
                     format!("{path}.lifetime_seconds"),
-                    "must be between 60 and 86400 seconds",
+                    "must be between 300 and 86400 seconds",
                 );
                 return None;
             }
@@ -3906,6 +3919,25 @@ mod tests {
             Err(other) => panic!("expected validation problems, got {other}"),
             Ok(_) => panic!("expected validation problems, configuration was accepted"),
         }
+    }
+
+    #[test]
+    fn ipsie_profile_requires_https_and_a_five_minute_rp_deadline() {
+        let profile = format!(
+            "{MINIMAL}\nipsie_https_only_client = [\"rp\"]\nipsie_identity_only_client = [\"rp\"]\n[[tenant.ipsie_rp_session]]\nclient_id = \"rp\"\nlifetime_seconds = 300\n"
+        );
+        assert!(parse(&profile).is_ok());
+        assert!(
+            parse(&profile.replace("lifetime_seconds = 300", "lifetime_seconds = 299")).is_err()
+        );
+        assert!(
+            parse(&profile.replace(
+                "ipsie_https_only_client = [\"rp\"]",
+                "ipsie_https_only_client = []"
+            ))
+            .is_err()
+        );
+        assert!(parse(&format!("{MINIMAL}\nipsie_https_only_client = [\"rp\"]\nipsie_identity_only_client = [\"rp\"]\n")).is_err());
     }
 
     #[test]

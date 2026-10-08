@@ -305,15 +305,42 @@ async fn run(
     requests: &dyn AuthRequestRepository,
     auth: Result<Client, ClientAuthError>,
 ) -> (StatusCode, Value, HeaderMap) {
-    let tenant = tenant();
-    let clients = FakeClients(Some(client()));
+    run_profile(pairs, requests, auth, false).await
+}
+
+async fn run_profile(
+    pairs: &[(&str, &str)],
+    requests: &dyn AuthRequestRepository,
+    auth: Result<Client, ClientAuthError>,
+    selected: bool,
+) -> (StatusCode, Value, HeaderMap) {
+    let mut tenant = tenant();
+    let mut registered = client();
+    if selected {
+        ISSUER.clone_into(&mut tenant.default_resource);
+        registered.registration.resources = std::collections::BTreeSet::from([ISSUER.to_owned()]);
+    }
+    let auth = if selected {
+        auth.map(|_| registered.clone())
+    } else {
+        auth
+    };
+    let clients = FakeClients(Some(registered));
+    let selected_clients = std::collections::BTreeSet::from([CLIENT.to_owned()]);
+    let resources = FakeResourceServers(vec![ResourceServer {
+        identifier: ResourceIdentifier::parse(if selected { ISSUER } else { RESOURCE })
+            .expect("resource"),
+        scopes: None,
+        default_token_lifetime: None,
+        introspection_clients: std::collections::BTreeSet::default(),
+    }]);
     let context = PushContext {
-        ipsie_https_only_clients: None,
-        ipsie_identity_only_clients: None,
+        ipsie_https_only_clients: selected.then_some(&selected_clients),
+        ipsie_identity_only_clients: selected.then_some(&selected_clients),
         tenant: &tenant,
         clients: &clients,
         requests,
-        resource_servers: &registry(),
+        resource_servers: &resources,
         authorization_details_types: &detail_types(),
         keys: &NoKeys,
         policy: AuthorizationPolicy::default(),
@@ -341,6 +368,41 @@ async fn run(
         .expect("body");
     let json: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
     (status, json, headers)
+}
+
+#[tokio::test]
+async fn ipsie_acr_preferences_become_binding_and_conflicts_never_persist() {
+    let mut pairs = valid_pairs();
+    pairs.push(("acr_values", "urn:asterius:acr:pwd phr"));
+    let ordinary = FakeRequests::default();
+    assert_eq!(
+        run(&pairs, &ordinary, Ok(client())).await.0,
+        StatusCode::CREATED
+    );
+    assert_ne!(
+        ordinary.0.lock().expect("lock")[0].parameters["claims"]["id_token"]["acr"]["essential"],
+        true
+    );
+    let selected = FakeRequests::default();
+    assert_eq!(
+        run_profile(&pairs, &selected, Ok(client()), true).await.0,
+        StatusCode::CREATED
+    );
+    let stored = selected.0.lock().expect("lock")[0].parameters.clone();
+    assert_eq!(
+        stored["claims"]["id_token"]["acr"],
+        json!({"essential":true,"values":["urn:asterius:acr:pwd","phr"]})
+    );
+    pairs.push((
+        "claims",
+        r#"{"id_token":{"acr":{"essential":true,"value":"unavailable"}}}"#,
+    ));
+    let refused = FakeRequests::default();
+    assert_eq!(
+        run_profile(&pairs, &refused, Ok(client()), true).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    assert!(refused.0.lock().expect("lock").is_empty());
 }
 
 // ---- the happy path ------------------------------------------------------

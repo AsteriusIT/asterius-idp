@@ -1,0 +1,372 @@
+{
+  "date": "2026-10-08",
+  "suite": "release-v5.2.4",
+  "suite_commit": "ab35a8df4864da35b49eff11483e204e01aa7961",
+  "artifact": {
+    "image": "asterius-idp:local-ticket-final-20261008",
+    "image_id": "sha256:8ccc2c22deb84415ad54d27dbfcc0221b604444c103090e8c9857df59cb5c221",
+    "packaging": "GNU runtime artifact; default musl Dockerfile packaging not verified by these runs"
+  },
+  "security_profile": {
+    "plan": "fapi2-security-profile-final-test-plan[openid=openid_connect][client_auth_type=private_key_jwt][sender_constrain=dpop][fapi_profile=plain_fapi][authorization_request_type=simple]",
+    "revision": "b419e9ba47f3e70de40f0321e61aba02da4c1137",
+    "generated": "2026-10-08T18:32:03Z",
+    "counts": {
+      "PASSED": 50,
+      "WARNING": 1,
+      "REVIEW": 4,
+      "SKIPPED": 1
+    },
+    "modules": [
+      {
+        "name": "fapi2-security-profile-final-access-token-type-header-case-sensitivity",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-attempt-reuse-authorization-code-after-one-second",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-check-dpop-proof-nbf-exp",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-discovery-end-point-verification",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-dpop-negative-tests",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-ensure-authorization-code-is-bound-to-client",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-ensure-authorization-request-with-64-char-nonce-success",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-ensure-authorization-request-with-long-nonce",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-ensure-authorization-request-with-long-state",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-ensure-authorization-request-without-nonce-success",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-ensure-authorization-request-without-state-success",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-ensure-client-assertion-in-token-endpoint",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-ensure-client-assertion-with-exp-is-5-minutes-in-past-fails",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-ensure-client-assertion-with-no-sub-fails",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-ensure-client-assertion-with-wrong-aud-fails",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-ensure-client-id-in-token-endpoint",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-ensure-different-nonce-inside-and-outside-request-object",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-ensure-different-state-inside-and-outside-request-object",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-ensure-dpop-auth-code-binding-success",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-ensure-dpopproof-at-par-endpoint-binding-success",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-ensure-dpopproof-with-iat-10seconds-after-succeeds",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-ensure-dpopproof-with-iat-10seconds-before-succeeds",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-ensure-holder-of-key-required",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-ensure-mismatched-dpop-jkt-fails",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-ensure-other-scope-order-succeeds",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-ensure-pkce-code-verifier-required",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-ensure-redirect-uri-in-authorization-request",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-ensure-request-object-without-redirect-uri-fails",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-ensure-response-type-code-idtoken-fails",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-ensure-response-type-token-fails",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-ensure-signed-client-assertion-with-RS256-fails",
+        "status": "FINISHED",
+        "result": "SKIPPED"
+      },
+      {
+        "name": "fapi2-security-profile-final-ensure-token-endpoint-fails-with-expired-auth-code",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-ensure-token-endpoint-fails-with-mismatched-dpop-jkt",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-ensure-token-endpoint-fails-with-mismatched-dpop-proof-jkt",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-ensure-unsigned-authorization-request-without-using-par-fails",
+        "status": "FINISHED",
+        "result": "REVIEW"
+      },
+      {
+        "name": "fapi2-security-profile-final-happy-flow",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-incorrect-pkce-code-verifier-rejected",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-par-attempt-invalid-http-method",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-par-attempt-reuse-request_uri",
+        "status": "FINISHED",
+        "result": "REVIEW"
+      },
+      {
+        "name": "fapi2-security-profile-final-par-attempt-to-use-expired-request_uri",
+        "status": "FINISHED",
+        "result": "REVIEW"
+      },
+      {
+        "name": "fapi2-security-profile-final-par-attempt-to-use-request_uri-for-different-client",
+        "status": "FINISHED",
+        "result": "REVIEW"
+      },
+      {
+        "name": "fapi2-security-profile-final-par-authorization-request-containing-request_uri-form-param",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-par-ensure-jwt-client-assertions-nbf-8-seconds-in-the-future-is-accepted",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-par-ensure-jwt-client-assertions-nbf-over-60-seconds-in-the-future-fails",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-par-ensure-pkce-required",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-par-ensure-reused-request-uri-prior-to-auth-completion-succeeds",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-par-plain-pkce-rejected",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-par-test-array-as-audience-fails",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-par-test-par-endpoint-url-as-audience-fails",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-par-test-token-endpoint-url-as-audience-fails",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-par-without-duplicate-parameters",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-plain-fapi-tolerate-unregistered-redirect-uri",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-refresh-token",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-state-only-outside-request-object-not-used",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-test-claims-parameter-identity-claims",
+        "status": "FINISHED",
+        "result": "WARNING"
+      },
+      {
+        "name": "fapi2-security-profile-final-user-rejects-authentication",
+        "status": "FINISHED",
+        "result": "PASSED"
+      }
+    ],
+    "repository_gate_exit": 0,
+    "waivers": [],
+    "assessment": {
+      "review": "Four error-page conditions captured page_source with p.error stating This sign-in request cannot be continued. These reject unsigned non-PAR, reused, expired and foreign-client request URIs. OIDF human submission review is not claimed.",
+      "warning": "CheckForUnexpectedClaimsInIdToken identifies the sid extension. Its value is withheld; no signature or identity-claim failure occurred.",
+      "skipped": "The RSA/RS256 negative module was skipped because this run config uses ES256 client keys. It did not execute an RSA negative request and does not establish RSA interoperability.",
+      "certification": "This is an independently executed local official suite plan, not an OIDF certification or proof that all profiles/algorithms passed."
+    }
+  },
+  "message_signing_initial": {
+    "plan": "fapi2-message-signing-final-test-plan[openid=openid_connect][client_auth_type=private_key_jwt][sender_constrain=dpop][fapi_profile=plain_fapi][authorization_request_type=simple][fapi_request_method=signed_non_repudiation][fapi_response_mode=jarm]",
+    "revision": "b419e9ba47f3e70de40f0321e61aba02da4c1137",
+    "generated": "2026-10-08T18:32:56Z",
+    "counts": {
+      "PASSED": 1,
+      "FAILED": 8
+    },
+    "modules": [
+      {
+        "name": "fapi2-security-profile-final-discovery-end-point-verification",
+        "status": "FINISHED",
+        "result": "PASSED"
+      },
+      {
+        "name": "fapi2-security-profile-final-ensure-authorization-request-with-64-char-nonce-success",
+        "status": "INTERRUPTED",
+        "result": "FAILED"
+      },
+      {
+        "name": "fapi2-security-profile-final-ensure-authorization-request-without-nonce-success",
+        "status": "INTERRUPTED",
+        "result": "FAILED"
+      },
+      {
+        "name": "fapi2-security-profile-final-ensure-authorization-request-without-state-success",
+        "status": "INTERRUPTED",
+        "result": "FAILED"
+      },
+      {
+        "name": "fapi2-security-profile-final-ensure-other-scope-order-succeeds",
+        "status": "INTERRUPTED",
+        "result": "FAILED"
+      },
+      {
+        "name": "fapi2-security-profile-final-ensure-request-object-with-multiple-aud-succeeds",
+        "status": "INTERRUPTED",
+        "result": "FAILED"
+      },
+      {
+        "name": "fapi2-security-profile-final-happy-flow",
+        "status": "INTERRUPTED",
+        "result": "FAILED"
+      },
+      {
+        "name": "fapi2-security-profile-final-test-claims-parameter-identity-claims",
+        "status": "INTERRUPTED",
+        "result": "FAILED"
+      },
+      {
+        "name": "fapi2-security-profile-final-user-rejects-authentication",
+        "status": "INTERRUPTED",
+        "result": "FAILED"
+      }
+    ],
+    "repository_gate_exit": 74,
+    "waivers": [],
+    "failure": "Valid independently signed ES256 request objects omitted typ. The opted-in FAPI Message Signing server incorrectly required explicit oauth-authz-req+jwt and returned PAR400 invalid_request_object instead of201. Eight consecutive interrupted failures stopped the plan; remaining modules did not execute.",
+    "fix_status": "A narrowly gated compatibility fix is prepared; verification on a newly labelled exact-source artifact is still required."
+  },
+  "privacy": "Raw JWTs, keys, codes, identities, suite exports and response bodies remain in private ignored runtime artifacts; only module names/statuses are published."
+}
