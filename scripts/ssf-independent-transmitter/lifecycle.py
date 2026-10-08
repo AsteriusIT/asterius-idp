@@ -138,7 +138,11 @@ def main():
         code, envelope = native('POST', owned['delivery']['endpoint_url'], {'maxEvents': 1, 'returnImmediately': True})
         assert code == 200 and len(envelope['sets']) == 1
         jti, compact = next(iter(envelope['sets'].items()))
-        operation('independent signed session revoke applied and ACKed', '/ssf/upstream/poll')
+        code = push(compact)
+        assert code == 202, 'Native first push status=' + str(code)
+        assert sql("select count(*) from sessions where tenant_id='e2e' and session_id=" + quote(session) + ' and revoked_at is not null') == '1'
+        records.append({'case': 'first native signed push revokes mapped owned session', 'status': code})
+        operation('same signed SET replay polled and ACKed', '/ssf/upstream/poll')
         assert sql("select count(*) from sessions where tenant_id='e2e' and session_id=" + quote(session) + ' and revoked_at is not null') == '1'
         assert native('POST', owned['delivery']['endpoint_url'], {'maxEvents': 1, 'returnImmediately': True})[1]['sets'] == {}
         count_sql = "select count(*) from ssf_receiver_events where tenant_id='e2e' and peer_client_id=" + quote(peer) + ' and jti=' + quote(jti)
@@ -157,7 +161,9 @@ def main():
         established = False
         code, remaining = native('GET', metadata['configuration_endpoint'])
         assert code == 200 and all(x['stream_id'] != stream_id for x in remaining) and any(x['stream_id'] == other['stream_id'] for x in remaining)
-        records.append({'case': 'second independently owned stream unaffected by receiver delete', 'status': code})
+        other_poll = native('POST', other['delivery']['endpoint_url'], {'maxEvents': 1, 'returnImmediately': True})
+        assert other_poll[0] == 200 and len(other_poll[1]['sets']) == 1
+        records.append({'case': 'second independently owned stream still delivers after receiver delete', 'status': other_poll[0]})
         assert sql("select count(*) from ssf_receiver_upstream_streams where tenant_id='e2e' and peer_client_id=" + quote(peer)) == '0'
         print(json.dumps({'status': 'pass', 'profile': 'SSF1Final/operator-bearer/ALL/ES256/poll', 'independentLibrary': 'IDFoundry/SSFgo',
             'independentBinarySha256': hashlib.sha256(Path('/dev/shm/asterius-protocol-ssfgo-transmitter').read_bytes()).hexdigest(),
