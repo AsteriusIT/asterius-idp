@@ -41,7 +41,18 @@ test('Kubernetes 1.35 enforces schema, RBAC and admission boundaries', {skip:!pr
   assert.deepEqual(policy.status?.typeChecking?.expressionWarnings ?? [],[]);
   for(const object of examples.slice(2)) pass(`positive ${object.kind} example`,kubectl(['create','-f','-'],object,true));
   pass('administrator installs controller finalizer',kubectl(['patch','application','billing','-n','identity-acme','--type=merge','-p',JSON.stringify({metadata:{finalizers:['identity.asterius.io/remote-resource']}})]));
-  deny('GitOps cannot strip controller finalizer',kubectl(['patch','application','billing','-n','identity-acme','--type=merge','-p',JSON.stringify({metadata:{finalizers:[]}})],null,true),/finalizer|denied/i);
+  // A valid create can succeed before the admission informer sees the binding.
+  // Wait for a forbidden dry-run to demonstrate enforcement without stripping
+  // the installed finalizer while that informer is still catching up.
+  const stripFinalizer=['patch','application','billing','-n','identity-acme','--type=merge','-p',JSON.stringify({metadata:{finalizers:[]}})];
+  let enforcement;
+  for(let i=0;i<30;i++) {
+    enforcement=kubectl([...stripFinalizer,'--dry-run=server'],null,true);
+    if(!enforcement.ok && /finalizer|denied/i.test(enforcement.output)) break;
+    await delay(500);
+  }
+  deny('finalizer admission enforcement becomes ready',enforcement,/finalizer|denied/i);
+  deny('GitOps cannot strip controller finalizer',kubectl(stripFinalizer,null,true),/finalizer|denied/i);
   const app=structuredClone(examples[2]);
   app.metadata.name='cross-tenant';app.spec.tenantRef='other';
   deny('foreign tenantRef denied',kubectl(['create','-f','-'],app,true),/Unsupported value|tenantRef/);
