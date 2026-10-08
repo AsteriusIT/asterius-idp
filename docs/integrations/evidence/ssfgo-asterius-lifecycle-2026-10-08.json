@@ -1,0 +1,90 @@
+{
+  "status": "pass",
+  "profile": "SSF1Final/operator-bearer/ALL/ES256/poll",
+  "independentLibrary": "IDFoundry/SSFgo",
+  "independentBinarySha256": "dbafd955b1d66ba3fcba87c722e42a5dafc3bd0ca2346f0026581b444a602f7a",
+  "libraryRevision": "ce2353e22367c276f8dada1dbf22ec9939a255b1",
+  "runtimeRevision": "790750f6fa69eecbf83fcfce8bce229020c3b77b",
+  "runtimeBinarySha256": "927a707e7cea2515696b44f77e59d52c1e09031afc6ed4ebbe552fea09bf4052",
+  "checks": [
+    {
+      "case": "unconfigured issuer cannot invoke upstream management",
+      "status": 404
+    },
+    {
+      "case": "guarded network stream setup",
+      "status": 200
+    },
+    {
+      "case": "authenticated exact-stream readback",
+      "status": 200
+    },
+    {
+      "case": "authoritative mounted bearer reread refuses rotated wrong credential",
+      "status": 503
+    },
+    {
+      "case": "restored operator bearer recovers authenticated stream verification",
+      "status": 200
+    },
+    {
+      "case": "signed asynchronous verification requested",
+      "status": 202
+    },
+    {
+      "case": "signed verification delivered through guarded poll",
+      "status": 200
+    },
+    {
+      "case": "explicit mapped subject",
+      "status": 200
+    },
+    {
+      "case": "valid native SET push refused for poll-only metadata profile",
+      "status": 400
+    },
+    {
+      "case": "owned injected ACK loss after local session revocation commit",
+      "status": 503
+    },
+    {
+      "case": "same independently signed SET redelivered through poll and ACKed",
+      "status": 200
+    },
+    {
+      "case": "duplicate native SET push retains poll-only refusal and one inbox row",
+      "status": 400
+    },
+    {
+      "case": "unregistered issuer cannot select native peer keys",
+      "status": 400,
+      "also_invalid_signature": true
+    },
+    {
+      "case": "delete exact receiver-owned remote stream",
+      "status": 200
+    },
+    {
+      "case": "second independently owned stream still delivers after receiver delete",
+      "status": 200
+    }
+  ],
+  "formalCAEPConformance": false,
+  "limits": [
+    "Local revocation session explicitly seeded in owned fixture, not a browser ceremony.",
+    "Issuer mutation control also has invalid signature; proves refusal, not isolated signed malicious-issuer test."
+  ],
+  "cleanup": {
+    "ownedRemoteStreamsRemoved": true,
+    "ownedLocalPeerUserSessionRemoved": true,
+    "runtimeMountedCredentialCopyRestored": true,
+    "operatorAndNativeTransmitterCredentialsUnchanged": true
+  },
+  "replayAssertions": {
+    "ackFaultBeforeNativeForward": true,
+    "localRevocationCommittedBeforeAckFailure": true,
+    "sameNativeJtiRetainedForRedelivery": true,
+    "inboxRowsAfterRedelivery": 1,
+    "queueEmptyAfterSuccessfulAck": true
+  }
+}
