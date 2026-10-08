@@ -296,7 +296,7 @@ impl PgGrantRepository {
         }
         lock_authority_principals_on(connection, tenant, grant, &rows).await?;
         // Discovery is untrusted until every row has been locked root to leaf.
-        for expected in rows.iter().rev() {
+        for expected in rows.iter_mut().rev() {
             let locked = authority_row_on(connection, tenant, expected.grant_id, true)
                 .await?
                 .ok_or_else(authority_invalid)?;
@@ -310,19 +310,13 @@ impl PgGrantRepository {
             {
                 return Err(authority_invalid());
             }
+            // Retain the current locked values, not the discovery snapshot:
+            // first-claim timestamps may have changed before we took the lock.
+            *expected = locked;
         }
         // Bookkeeping timestamps change on first claim. Only the durable
         // private authority generation identifies permissions/authentication.
-        let same_revision: bool = sqlx::query_scalar(
-            "select authority_revision=$3 from grants where tenant_id=$1 and grant_id=$2",
-        )
-        .bind(tenant.as_str())
-        .bind(uuid(&grant.id)?)
-        .bind(grant.authority_revision)
-        .fetch_one(&mut *connection)
-        .await
-        .map_err(to_domain_error)?;
-        if !same_revision {
+        if rows.first().map(|row| row.authority_revision) != Some(grant.authority_revision) {
             return Err(authority_invalid());
         }
         for edge in rows.windows(2) {
@@ -335,10 +329,9 @@ impl PgGrantRepository {
             .await
             .map_err(to_domain_error)?;
         let mut expiry: Option<OffsetDateTime> = None;
-        for (index, expected) in rows.iter().enumerate() {
-            let current = authority_row_on(connection, tenant, expected.grant_id, false)
-                .await?
-                .ok_or_else(authority_invalid)?;
+        // The SHARE locks retain these values until the caller commits;
+        // rereading them adds round trips without obtaining newer authority.
+        for (index, current) in rows.iter().enumerate() {
             if current.revoked_at.is_some()
                 || ((claimed || index > 0) && current.claimed_at.is_none())
                 || current.expires_at.is_some_and(|deadline| deadline <= now)

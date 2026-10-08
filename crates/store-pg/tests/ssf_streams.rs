@@ -294,7 +294,7 @@ db_test! {
 
         // Assert
         assert_eq!(listed.len(), 2);
-        assert!(none.is_empty());
+        assert_eq!(none.len(), 0);
     }
 }
 
@@ -430,7 +430,7 @@ db_test! {
             .expect("delete the receiver");
 
         // Assert
-        assert!(streams.list(&receiver()).await.expect("list").is_empty());
+        assert_eq!(streams.list(&receiver()).await.expect("list").len(), 0);
     }
 }
 
@@ -505,13 +505,10 @@ db_test! {
                 },
             ]
         );
-        assert!(
-            streams
+        assert_eq!(streams
                 .subscribed("https://schemas.example/nobody-asked")
                 .await
-                .expect("read")
-                .is_empty()
-        );
+                .expect("read").len(), 0);
     }
 }
 

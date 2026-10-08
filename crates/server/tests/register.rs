@@ -597,7 +597,7 @@ async fn a_device_client_registers_where_the_flow_is_enabled() {
             .registration
             .allows(asterius_domain::GrantType::DeviceCode)
     );
-    assert!(stored.registration.redirect_uris.is_empty());
+    assert_eq!(stored.registration.redirect_uris.len(), 0);
     let document = body_of(response).await;
     assert_eq!(
         document["token_endpoint_auth_method"],
@@ -990,7 +990,7 @@ async fn a_body_that_is_not_json_is_a_metadata_error() {
             .expect("a description")
             .contains("unterminated")
     );
-    assert!(registry.written().is_empty());
+    assert_eq!(registry.written().len(), 0);
 }
 
 /// The gate runs before anything else, so a refused caller cannot make this
@@ -1120,7 +1120,7 @@ async fn a_body_that_is_not_json_encoded_is_refused_before_it_is_read() {
 
     let response = post(&gated(), &registry, &audit, &headers, &body).await;
     assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
-    assert!(registry.written().is_empty());
+    assert_eq!(registry.written().len(), 0);
 }
 
 /// The bound on what an authorized caller can make this process buffer. Checked
@@ -1141,7 +1141,7 @@ async fn an_oversized_document_is_refused() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
-    assert!(registry.written().is_empty());
+    assert_eq!(registry.written().len(), 0);
 }
 
 /// A store that cannot write must not produce a 201. The caller is told the
@@ -1342,7 +1342,7 @@ async fn an_algorithm_the_tenant_cannot_sign_with_is_refused_at_registration() {
     );
     // Nothing was written: a client that could never be issued an ID token must
     // not exist as a row, and must not consume a `client_id`.
-    assert!(registry.written().is_empty());
+    assert_eq!(registry.written().len(), 0);
     let events = audit.events();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].outcome, Outcome::Failure);
@@ -1552,7 +1552,7 @@ async fn a_document_the_tenants_policy_refuses_is_not_registered() {
             .contains("rp.example"),
         "the refusal must not echo a value from the document: {rendered}"
     );
-    assert!(registry.written().is_empty());
+    assert_eq!(registry.written().len(), 0);
     assert_eq!(
         detail(&audit, "rule").as_deref(),
         Some("redirect_host_not_allowed"),
@@ -1635,7 +1635,7 @@ async fn a_statement_from_an_unapproved_issuer_is_refused() {
         body_of(response).await["error"],
         json!("unapproved_software_statement")
     );
-    assert!(registry.written().is_empty());
+    assert_eq!(registry.written().len(), 0);
 }
 
 /// A statement signed by a key the issuer does not publish is
@@ -1673,7 +1673,7 @@ async fn a_statement_signed_by_an_unpublished_key_is_invalid() {
         body_of(response).await["error"],
         json!("invalid_software_statement")
     );
-    assert!(registry.written().is_empty());
+    assert_eq!(registry.written().len(), 0);
 }
 
 #[tokio::test]
@@ -1736,7 +1736,7 @@ async fn a_tenant_that_requires_a_statement_refuses_a_document_without_one() {
         detail(&audit, "rule").as_deref(),
         Some("software_statement_required")
     );
-    assert!(registry.written().is_empty());
+    assert_eq!(registry.written().len(), 0);
 }
 
 /// Precedence decides *which* values are used, never *whether* they are
@@ -1776,7 +1776,7 @@ async fn a_statement_cannot_assert_a_client_the_profile_refuses() {
         body_of(response).await["error"],
         json!("invalid_client_metadata")
     );
-    assert!(registry.written().is_empty());
+    assert_eq!(registry.written().len(), 0);
 }
 
 /// And the tenant's own rules apply to what the statement asserted, so a
@@ -1815,7 +1815,7 @@ async fn a_statement_is_still_subject_to_the_tenants_policy() {
         detail(&audit, "rule").as_deref(),
         Some("redirect_host_not_allowed")
     );
-    assert!(registry.written().is_empty());
+    assert_eq!(registry.written().len(), 0);
 }
 
 /// `ast-0qv`: a tenant closes its own registration endpoint whatever the
@@ -1842,7 +1842,7 @@ async fn a_tenant_that_closed_registration_refuses_a_valid_token() {
 
     // Assert
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    assert!(registry.written().is_empty());
+    assert_eq!(registry.written().len(), 0);
 }
 
 /// And cannot open one the operator gated: a tenant asking for `open` against a
@@ -1868,7 +1868,7 @@ async fn a_tenant_cannot_open_a_gated_deployment() {
 
     // Assert
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    assert!(registry.written().is_empty());
+    assert_eq!(registry.written().len(), 0);
 }
 
 // ---- the per-tenant gate (`ast-cu3`) --------------------------------------
@@ -1979,7 +1979,7 @@ async fn an_expired_token_is_refused() {
 
     // Assert
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    assert!(registry.written().is_empty());
+    assert_eq!(registry.written().len(), 0);
 }
 
 /// The deployment's own credentials do not open a tenant that gates itself.
@@ -2011,7 +2011,7 @@ async fn a_deployment_token_is_refused_at_a_tenant_that_gates_itself() {
 
     // Assert
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    assert!(registry.written().is_empty());
+    assert_eq!(registry.written().len(), 0);
 }
 
 /// The other half of the criterion: a tenant with no policy of its own is still
@@ -2090,7 +2090,7 @@ async fn a_tenant_gate_with_no_store_wired_refuses_everybody() {
 
     // Assert
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    assert!(registry.written().is_empty());
+    assert_eq!(registry.written().len(), 0);
 }
 
 /// A tenant that gates itself inside a *closed* deployment is still closed: the
@@ -2116,5 +2116,5 @@ async fn a_tenant_gate_cannot_open_a_closed_deployment() {
 
     // Assert
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    assert!(registry.written().is_empty());
+    assert_eq!(registry.written().len(), 0);
 }

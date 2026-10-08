@@ -338,10 +338,11 @@ mod tests {
                 .await
                 .expect("decrypt key");
             let key = SigningKey::from_pkcs8(algorithm, &private).expect("signable private key");
-            assert!(
-                !key.sign(b"declarative transactional key")
+            assert_ne!(
+                key.sign(b"declarative transactional key")
                     .expect("signature")
-                    .is_empty()
+                    .len(),
+                0
             );
         }
         transaction.rollback().await.expect("rollback");

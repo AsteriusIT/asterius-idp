@@ -956,7 +956,7 @@ mod tests {
 
         let requirements = Requirements::from_parameters(&stored);
 
-        assert!(requirements.essential_acr.is_empty());
+        assert_eq!(requirements.essential_acr.len(), 0);
     }
 
     /// A stored row this server cannot read back is a damaged row, not an
@@ -968,7 +968,7 @@ mod tests {
 
         let requirements = Requirements::from_parameters(&stored);
 
-        assert!(requirements.essential_acr.is_empty());
+        assert_eq!(requirements.essential_acr.len(), 0);
     }
 
     // ---- row 3: prompt=none with nothing to go on ------------------------

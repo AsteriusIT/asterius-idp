@@ -1354,7 +1354,7 @@ mod tests {
 
         // Assert
         assert!(parsed.evaluations[0].subject.groups().is_empty());
-        assert!(parsed.evaluations[0].subject.grants().is_empty());
+        assert_eq!(parsed.evaluations[0].subject.grants().len(), 0);
         assert_eq!(parsed.evaluations[0].context.acr(), None);
     }
 

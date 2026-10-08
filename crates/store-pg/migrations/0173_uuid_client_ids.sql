@@ -46,7 +46,7 @@ end $$;
 -- every child without exposing an intermediate identity to other sessions.
 create temporary table client_uuid_fk_modes on commit drop as
 select conrelid::regclass as relation, conname, condeferrable, condeferred
-from pg_constraint where contype = 'f' and connamespace = 'public'::regnamespace;
+from pg_constraint where contype = 'f' and connamespace = current_schema()::regnamespace;
 
 do $$ declare fk record; begin
     for fk in select * from client_uuid_fk_modes where not condeferrable loop
@@ -107,7 +107,7 @@ do $$ declare item record; assignments text; predicate text; begin
                string_agg(format('%I = coalesce((select m.new_id from client_uuid_map m where m.tenant_id = t.tenant_id and m.old_id = t.%I), t.%I)', column_name, column_name, column_name), ', ' order by ordinal_position) as assignments,
                string_agg(format('exists (select 1 from client_uuid_map m where m.tenant_id = t.tenant_id and m.old_id = t.%I)', column_name), ' or ' order by ordinal_position) as predicate
         from information_schema.columns c
-        where table_schema = 'public' and data_type = 'text'
+        where table_schema = current_schema() and data_type = 'text'
           and (column_name like '%client_id' or column_name like '%client_reference'
                or (table_name = 'temporary_kubernetes_bindings' and column_name = 'controller_reference'))
           and table_name not in ('clients', 'audit_events', 'client_id_migrations', 'oidc_identity_providers', 'oidc_upstream_pending')
@@ -154,7 +154,7 @@ do $$ declare item record; begin
     for item in
         select c.table_schema, c.table_name, c.column_name
         from information_schema.columns c
-        where c.table_schema = 'public' and c.data_type = 'jsonb'
+        where c.table_schema = current_schema() and c.data_type = 'jsonb'
           and c.table_name in (
             'architecture_flows', 'auth_requests', 'ciba_requests', 'clients',
             'declarative_creation_keys', 'declarative_deletion_receipts',

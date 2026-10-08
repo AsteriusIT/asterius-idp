@@ -370,7 +370,7 @@ mod tests {
         let page = Page::from_overfetched(Vec::<String>::new(), 10, Clone::clone);
 
         // Assert
-        assert!(page.items.is_empty());
+        assert_eq!(page.items.len(), 0);
         assert_eq!(page.next_cursor, None);
     }
 }

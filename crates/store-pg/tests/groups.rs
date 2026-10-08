@@ -214,12 +214,13 @@ async fn kubernetes_profiles_isolate_tenant_groups_and_reject_stale_or_rebound_a
         .replace_kubernetes_profile(&db.tenant, &client.id, &clear)
         .await
         .unwrap();
-    assert!(
+    assert_eq!(
         db.groups
             .released_group_ids(&client, db.user)
             .await
             .unwrap()
-            .is_empty()
+            .len(),
+        0
     );
     db.cleanup().await;
 }
@@ -228,12 +229,13 @@ async fn kubernetes_profiles_isolate_tenant_groups_and_reject_stale_or_rebound_a
 #[ignore = "slow: requires PostgreSQL"]
 async fn groups_migration_and_managed_writes_preserve_legacy_claim_authority() {
     let db = TestDb::setup().await;
-    assert!(
+    assert_eq!(
         db.groups
             .groups_for_user(&db.tenant, db.user, None, 20)
             .await
             .unwrap()
-            .is_empty()
+            .len(),
+        0
     );
     let group = db.group("legacy").await;
     db.groups
@@ -322,19 +324,21 @@ async fn groups_reject_cross_tenant_membership_and_hide_other_tenant_objects() {
         db.groups.delete(&db.other, group.id, 1).await,
         Err(DomainError::NotFound)
     ));
-    assert!(
+    assert_eq!(
         db.groups
             .members(&db.other, group.id, None, 20)
             .await
             .unwrap()
-            .is_empty()
+            .len(),
+        0
     );
-    assert!(
+    assert_eq!(
         db.groups
             .groups_for_user(&db.other, db.user, None, 20)
             .await
             .unwrap()
-            .is_empty()
+            .len(),
+        0
     );
     let direct = sqlx::query("insert into group_memberships (tenant_id, group_id, user_id, created_at) values ($1, $2, $3, $4)")
         .bind(db.other.as_str()).bind(group.id.as_uuid()).bind(db.foreign_user.as_uuid()).bind(now())
@@ -461,12 +465,13 @@ async fn groups_deletion_cascades_memberships_and_user_deletion_preserves_catalo
             .unwrap();
     }
     db.groups.delete(&db.tenant, first.id, 2).await.unwrap();
-    assert!(
+    assert_eq!(
         db.groups
             .members(&db.tenant, first.id, None, 20)
             .await
             .unwrap()
-            .is_empty()
+            .len(),
+        0
     );
     assert!(db.groups.get(&db.tenant, first.id).await.unwrap().is_none());
     sqlx::query("delete from users where tenant_id = $1 and user_id = $2")
@@ -475,12 +480,13 @@ async fn groups_deletion_cascades_memberships_and_user_deletion_preserves_catalo
         .execute(&db.pool)
         .await
         .unwrap();
-    assert!(
+    assert_eq!(
         db.groups
             .members(&db.tenant, second.id, None, 20)
             .await
             .unwrap()
-            .is_empty()
+            .len(),
+        0
     );
     assert!(
         db.groups
@@ -516,12 +522,13 @@ async fn groups_concurrent_add_and_delete_never_leave_orphan_memberships() {
         results => panic!("unexpected concurrent outcomes: {results:?}"),
     }
     assert!(db.groups.get(&db.tenant, group.id).await.unwrap().is_none());
-    assert!(
+    assert_eq!(
         db.groups
             .members(&db.tenant, group.id, None, 20)
             .await
             .unwrap()
-            .is_empty()
+            .len(),
+        0
     );
     db.cleanup().await;
 }
@@ -554,12 +561,13 @@ async fn groups_pages_are_bounded_ordered_and_do_not_repeat_cursor_items() {
             .unwrap(),
         remaining
     );
-    assert!(
+    assert_eq!(
         db.groups
             .members(&db.tenant, page[0].id, Some(db.user), 2)
             .await
             .unwrap()
-            .is_empty()
+            .len(),
+        0
     );
     assert!(matches!(
         db.groups.list(&db.tenant, None, 0).await,

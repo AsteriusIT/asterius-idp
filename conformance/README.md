@@ -345,3 +345,34 @@ What *does* run per PR is `crates/server/tests/conformance_plan.rs`: it ties the
 plan's `match` patterns to the routes the router mounts, and every waiver to a
 beads ticket that is still open. Both are cheap, and both catch the thing that
 would otherwise be found at 3am by a job nobody reads.
+
+## Message Signing candidate harness
+
+Run `./scripts/conformance.sh --message-signing` to select the pinned OIDF
+`fapi2-message-signing-final-test-plan` with `signed_non_repudiation` requests
+and `jarm` responses, private-key JWT client authentication, and DPoP. The
+independent suite selects and judges its actual modules; this command does not
+claim a completed run or certification.
+
+This opt-in uses `plans/fapi2-ms-final.json`,
+`asterius-message-signing.toml`, and `fixtures/message-signing.sql`. Both
+throwaway clients register ES256 request-object and JARM algorithms and the
+`jwt` response mode. Only those clients are selected by the tenant's Message
+Signing setting. The request-object feature is enabled in this disposable
+configuration. The fixture keys are the same deliberately worthless committed
+test keys as the Security Profile harness.
+
+Message Signing uses its own initially empty `message-signing-waivers.json`:
+Security Profile waivers never excuse this plan's findings. Report generation
+still rejects empty runs and unknown results and records the actual plan and
+revision. The default command remains the Security Profile harness. Run these
+profiles sequentially because their compose project is shared. Message Signing
+reports go to `.run/message-signing-results`, preserving the default Security
+Profile reports used by the release gate.
+
+This plan exercises the OIDF signed JAR/JARM authorization-server options. It
+does not establish independent RFC 9701 signed-introspection interoperability,
+IPSIE, SSF, or CAEP conformance. The command needs the same Docker/build disk
+space as the existing harness; no Message Signing execution evidence has yet
+been recorded. Use the approved external profile/environment before changing
+any product support claim.

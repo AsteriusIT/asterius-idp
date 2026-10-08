@@ -125,7 +125,7 @@ pub use invitations::{
     ActivatedInvitation, Invitation, InvitationPreview, MAX_INVITATION_LIFETIME, NewInvitation,
     PgInvitations,
 };
-pub use key_store::TenantKeyStore;
+pub use key_store::{SigningAuthorityFence, TenantKeyStore};
 pub use keys::{PgKeyRepository, Rotation, RotationSchedule};
 pub use ldap_sync::{
     LdapAbsencePolicy, LdapGroup, LdapSnapshot, LdapSyncOutcome, LdapUser, PgLdapSync,

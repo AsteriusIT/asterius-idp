@@ -1199,7 +1199,7 @@ mod tests {
         let listed = standing(vec![lapsed], now);
 
         // Assert
-        assert!(listed.is_empty());
+        assert_eq!(listed.len(), 0);
     }
 
     /// RFC 8693 §4.1: a delegation is shown under the access it came from, and
@@ -1283,7 +1283,7 @@ mod tests {
 
         // Assert
         assert_eq!(listed.len(), 1);
-        assert!(listed[0].delegations.is_empty());
+        assert_eq!(listed[0].delegations.len(), 0);
     }
 
     /// The delegations of a grant are newest first, so the most recent token

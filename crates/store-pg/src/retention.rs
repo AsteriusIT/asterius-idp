@@ -106,11 +106,17 @@ pub const MAX_BATCHES: usize = 100;
 /// Kept in the schema's own order so that reading this next to
 /// `0001_baseline.sql` is a straight comparison.
 pub const POLICY: &[Retention] = &[
+    Retention { table: "client_id_migrations", rule: Rule::Kept("durable old-to-new client identity migration receipts; retained with tenant") },
+    Retention { table: "declarative_deletion_receipts", rule: Rule::Kept("durable deletion replay receipts prevent stale retries and unsafe adoption; retained with tenant") },
+    Retention { table: "governance_ownerships", rule: Rule::Kept("explicit accountable ownership; removed by operator or tenant cascade") },
+    Retention { table: "governance_review_items", rule: Rule::Kept("immutable review decisions and authority snapshots; retained with review") },
+    Retention { table: "governance_reviews", rule: Rule::Kept("accountable review history; explicit lifecycle and tenant cascade") },
+    Retention { table: "outbound_scim_assignments", rule: Rule::Kept("remote subject assignment and reconciliation identity; explicit lifecycle") },
+    Retention { table: "outbound_scim_connectors", rule: Rule::Kept("operator-owned outbound provisioning configuration; explicit lifecycle") },
+    Retention { table: "outbound_scim_lifecycle_requests", rule: Rule::Kept("durable remote lifecycle outcomes and retry fences; retained with tenant") },
+    Retention { table: "outbound_scim_previews", rule: Rule::Kept("bounded provisioning proposal evidence; explicit lifecycle") },
+    Retention { table: "scim_outbound_incarnation_tombstones", rule: Rule::Kept("remote incarnation retirement fence must survive retries; retained with tenant") },
     Retention { table: "managed_device_sources", rule: Rule::Kept("bounded tenant-owned relay trust; defaults disabled, generation changes invalidate enrollments, cascades with its client") },
-    Retention { table: "managed_devices", rule: Rule::Sweep {
-        statement: "delete from managed_devices where ctid = any(array(select ctid from managed_devices where tenant_id = $1 and removed_at<=$2 limit $3))",
-        grace: Duration::days(30),
-    } },
     Retention { table: "managed_device_interaction_proofs", rule: Rule::Sweep {
         statement: "delete from managed_device_interaction_proofs where ctid = any(array(select ctid from managed_device_interaction_proofs where tenant_id = $1 and expires_at<=$2 limit $3))",
         grace: Duration::ZERO,
@@ -118,6 +124,12 @@ pub const POLICY: &[Retention] = &[
     Retention { table: "managed_device_code_proofs", rule: Rule::Sweep {
         statement: "delete from managed_device_code_proofs where ctid = any(array(select ctid from managed_device_code_proofs where tenant_id = $1 and expires_at<=$2 limit $3))",
         grace: Duration::ZERO,
+    } },
+    // Sweep expired proofs before their device parent so the device cascade
+    // cannot hide their deletion counts from the retention outcome.
+    Retention { table: "managed_devices", rule: Rule::Sweep {
+        statement: "delete from managed_devices where ctid = any(array(select ctid from managed_devices where tenant_id = $1 and removed_at<=$2 limit $3))",
+        grace: Duration::days(30),
     } },
     Retention { table: "managed_device_relay_tokens", rule: Rule::Sweep {
         statement: "delete from managed_device_relay_tokens where ctid = any(array(select ctid from managed_device_relay_tokens where tenant_id = $1 and expires_at<=$2 limit $3))",

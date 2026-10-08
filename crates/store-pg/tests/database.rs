@@ -353,6 +353,41 @@ const NOT_A_STORED_SECRET: &[(&str, &str, &str)] = &[
         "salt_nonce",
         "the AEAD nonce for salt_ciphertext; public by construction",
     ),
+    (
+        "kubernetes_online_tokens",
+        "token_digest",
+        "SHA-256 token digest; the bearer value is never stored",
+    ),
+    (
+        "outbound_scim_connectors",
+        "credential_generation",
+        "UUID catalogue generation fence, not key material",
+    ),
+    (
+        "outbound_scim_connectors",
+        "credential_ref",
+        "opaque operator catalogue reference, not the credential",
+    ),
+    (
+        "outbound_scim_lifecycle_requests",
+        "credential_generation",
+        "UUID catalogue generation fence",
+    ),
+    (
+        "outbound_scim_previews",
+        "credential_generation",
+        "UUID catalogue generation fence",
+    ),
+    (
+        "workload_grant_bindings",
+        "assertion_digest",
+        "one-way assertion digest",
+    ),
+    (
+        "workload_grant_bindings",
+        "assertion_expires_at",
+        "assertion expiry deadline, not its contents",
+    ),
 ];
 
 /// Substrings that mark a column as credential-bearing.
@@ -2468,7 +2503,7 @@ db_test! {
             beta.find(&ClientId::new("c.abc")).await.expect("find").is_none(),
             "the other tenant's client was visible"
         );
-        assert!(beta.list().await.expect("list").is_empty());
+        assert_eq!(beta.list().await.expect("list").len(), 0);
         assert_eq!(alpha.list().await.expect("list").len(), 1);
 
         // Both tenants may hold the same identifier without either seeing the
@@ -6147,9 +6182,7 @@ mod grants {
                 repo.list_for_subject(&SubjectId::new("sub-1")).await.expect("list"),
                 vec![found]
             );
-            assert!(
-                repo.list_for_subject(&SubjectId::new("sub-2")).await.expect("list").is_empty()
-            );
+            assert_eq!(repo.list_for_subject(&SubjectId::new("sub-2")).await.expect("list").len(), 0);
             assert!(
                 repo.find(&GrantId::new("00000000-0000-4000-8000-000000000000"))
                     .await
@@ -6486,7 +6519,7 @@ mod grants {
                 0,
                 "a refresh token was revoked by a revocation that failed"
             );
-            assert!(denylisted(&db.pool, "demo").await.is_empty());
+            assert_eq!(denylisted(&db.pool, "demo").await.len(), 0);
             let found = repo.find(&grant.id).await.expect("find").expect("present");
             assert_eq!(
                 found.status(now),
@@ -6578,7 +6611,7 @@ mod grants {
 
             // Reads.
             assert!(beta.find(&theirs.id).await.expect("find").is_none());
-            assert!(beta.list_for_subject(&SubjectId::new("sub-1")).await.expect("list").is_empty());
+            assert_eq!(beta.list_for_subject(&SubjectId::new("sub-1")).await.expect("list").len(), 0);
             assert!(matches!(beta.claim(&theirs.id, epoch()).await, Err(DomainError::NotFound)));
 
             // Revocation.
@@ -6592,8 +6625,8 @@ mod grants {
                 Err(DomainError::NotFound)
             ));
             assert_eq!(revoked_refresh_tokens(&db.pool, "alpha").await, 0);
-            assert!(denylisted(&db.pool, "alpha").await.is_empty());
-            assert!(denylisted(&db.pool, "beta").await.is_empty());
+            assert_eq!(denylisted(&db.pool, "alpha").await.len(), 0);
+            assert_eq!(denylisted(&db.pool, "beta").await.len(), 0);
 
             // Garbage collection.
             let unclaimed = a_grant("alpha", "billing", "sub-2");
@@ -8887,9 +8920,10 @@ mod retention {
             ("fresh", now() + Duration::hours(1)),
         ] {
             let additions = format!(
-                "{}\n{}",
+                "{}\n{}\n{}",
                 include_str!("fixtures/retention-additions.sql"),
-                include_str!("fixtures/temporary-retention.sql")
+                include_str!("fixtures/temporary-retention.sql"),
+                include_str!("fixtures/authority-retention.sql")
             );
             for statement in additions.split(';').filter(|sql| !sql.trim().is_empty()) {
                 sqlx::query(statement)
@@ -11035,7 +11069,7 @@ db_test! {
         let elsewhere = PgRoleRepository::new(db.pool.clone(), TenantId::new("beta"));
 
         assert!(!elsewhere.holds(user, Role::TenantAdmin).await.expect("holds"));
-        assert!(elsewhere.roles_of(user).await.expect("roles").is_empty());
+        assert_eq!(elsewhere.roles_of(user).await.expect("roles").len(), 0);
     }
 }
 
@@ -14562,7 +14596,7 @@ mod outbox {
             assert_eq!(claimed[0].max_attempts, 5, "2 spent + a budget of 3");
             assert_eq!(after, None, "a requeued row is still on the dead-letter screen");
             let letters = outbox.dead_letters(&tenant, 10).await.expect("list");
-            assert!(letters.is_empty());
+            assert_eq!(letters.len(), 0);
         }
     }
 
@@ -15722,12 +15756,9 @@ mod application_roles {
                 .await
                 .expect("delete the client");
 
-            assert!(
-                repo.catalogue(&TenantId::new("demo"), &client)
+            assert_eq!(repo.catalogue(&TenantId::new("demo"), &client)
                     .await
-                    .expect("catalogue")
-                    .is_empty()
-            );
+                    .expect("catalogue").len(), 0);
         }
     }
 }
@@ -16009,5 +16040,44 @@ db_test! {
         assert_eq!(next_active.iter().map(|user| user.username.as_str()).collect::<Vec<_>>(), vec!["mila"]);
         let disabled = users.search_filtered("", None, 2, Some(UserStatus::Disabled), true).await.expect("disabled page");
         assert_eq!(disabled.iter().map(|user| user.username.as_str()).collect::<Vec<_>>(), vec!["zara"]);
+    }
+}
+
+db_test! {
+    #[ignore = "slow: requires PostgreSQL and migrated isolated schema"]
+    async fn signing_authority_serializes_emergency_withdrawal_and_preserves_overlap(db) {
+        seed_tenant(&db.pool, "signing-fence").await;
+        let tenant = TenantId::new("signing-fence");
+        let repo = keys(&db.pool, tenant.as_str());
+        let store = TenantKeyStore::new(db.pool.clone(), kek(), Arc::new(PgAuditSink::new(db.pool.clone())));
+        let now = epoch();
+        let old = repo.rotate(SigningAlgorithm::EdDsa, operator(), now).await.expect("old").created.expect("created");
+        let (_, signing) = repo.active_signing_key(SigningAlgorithm::EdDsa).await.expect("key").expect("active");
+        let successor = repo.rotate(SigningAlgorithm::EdDsa, operator(), now).await.expect("stage").created.expect("successor");
+        repo.activate(&successor, operator(), now).await.expect("rotate");
+        // Normal rotation won first, but the cached old material still has
+        // exact published authority throughout the intentional overlap.
+        let authority = store.signing_authority(&tenant, &old, SigningAlgorithm::EdDsa).await.expect("retiring overlap");
+        let token = jws::sign(&signing, &old, "at+jwt", &json!({"sub":"alice"})).expect("sign");
+        let jwk = repo.published_keys(&tenant).await.expect("published").into_iter().find(|record| record.kid == old).expect("old published");
+        jws::parse(token.as_str()).expect("parse").verify(&verifying_key_from_jwk(&jwk.public_jwk)).expect("current published key verifies");
+
+        // The exact UPDATE lock used by retire/purge cannot be acquired while
+        // a prepared publication retains authority. NOWAIT makes this check
+        // deterministic without timing sleeps or leaving a blocked test task.
+        let mut withdrawal = db.pool.begin().await.expect("withdrawal");
+        let blocked = sqlx::query("select kid from signing_keys where tenant_id=$1 and kid=$2 for update nowait")
+            .bind(tenant.as_str()).bind(old.as_str()).execute(&mut *withdrawal).await.expect_err("withdrawal must wait");
+        assert_eq!(blocked.as_database_error().and_then(sqlx::error::DatabaseError::code).as_deref(), Some("55P03"));
+        withdrawal.rollback().await.expect("failed probe rollback");
+        assert!(store.signing_authority(&TenantId::new("other"), &old, SigningAlgorithm::EdDsa).await.is_err());
+        assert!(store.signing_authority(&tenant, &old, SigningAlgorithm::Es256).await.is_err());
+        drop(authority);
+        repo.retire(&old, operator(), now).await.expect("withdraw after publication");
+        assert!(store.signing_authority(&tenant, &old, SigningAlgorithm::EdDsa).await.is_err());
+        assert!(!published(&repo, tenant.as_str()).await.iter().any(|(kid, _)| kid == &old));
+        let reason = PurgeReason::parse("signing authority regression fixture").expect("reason");
+        repo.purge(&old, &reason, operator(), now).await.expect("purge");
+        assert!(store.signing_authority(&tenant, &old, SigningAlgorithm::EdDsa).await.is_err());
     }
 }

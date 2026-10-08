@@ -1183,7 +1183,7 @@ async fn removing_a_subject_answers_204_and_removes_the_membership() {
 
     // Assert
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
-    assert!(fixture.rows.subjects_of(RECEIVER, &stream).is_empty());
+    assert_eq!(fixture.rows.subjects_of(RECEIVER, &stream).len(), 0);
 }
 
 /// §9.1 again, on the other endpoint: removing a subject that was never a
@@ -1475,7 +1475,7 @@ async fn another_receivers_stream_cannot_be_verified() {
 
     // Assert
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    assert!(fixture.verifier.queued().is_empty());
+    assert_eq!(fixture.verifier.queued().len(), 0);
 }
 
 /// §8.1.4.2 makes `stream_id` REQUIRED: a request without one addresses no
@@ -1513,7 +1513,7 @@ async fn a_state_with_a_control_character_is_refused_before_anything_is_queued()
 
     // Assert
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert!(fixture.verifier.queued().is_empty());
+    assert_eq!(fixture.verifier.queued().len(), 0);
     let body = body_of(response).await.to_string();
     assert!(!body.contains("secret-value"), "{body}");
 }

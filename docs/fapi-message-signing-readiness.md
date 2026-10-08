@@ -27,6 +27,13 @@ signed introspection must register its response signing algorithm and request
 the RFC 9701 media type. The client and resource server must verify signatures;
 the authorization server cannot establish that from its own request path.
 
+The independent OIDF candidate harness is available through
+`./scripts/conformance.sh --message-signing`; see
+[the harness instructions](../conformance/README.md#message-signing-candidate-harness).
+Its dedicated signed JAR/JARM configuration uses an empty waiver list and has
+not yet been executed. It does not cover independent signed-introspection
+interoperability.
+
 No end-to-end interoperability run or OpenID conformance result is recorded for
 this profile. Until that evidence exists, support must not be described as
 certified or fully interoperable. `ast-s36.30` remains open for that evidence

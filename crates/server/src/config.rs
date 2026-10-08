@@ -3918,7 +3918,7 @@ mod tests {
         };
         let mut errors = Collector::default();
         let configured = validate_ssf_upstream_peers(0, Some(vec![raw]), &mut errors);
-        assert!(errors.0.is_empty());
+        assert_eq!(errors.0.len(), 0);
         assert_eq!(
             configured[0].expected_audience.as_deref(),
             Some("receiver-client-id")
@@ -5175,7 +5175,7 @@ mod outbound_scim_credential_tests {
             Some(vec![entry()]),
             &mut errors,
         );
-        assert!(errors.0.is_empty());
+        assert_eq!(errors.0.len(), 0);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].binding.source_tenant, tenant);
         assert_eq!(
@@ -5202,7 +5202,7 @@ mod outbound_scim_credential_tests {
             )
             .is_empty()
         );
-        assert!(!errors.0.is_empty());
+        assert_ne!(errors.0.len(), 0);
         let issuer = Issuer::parse("https://source.example/t/source").unwrap();
         let mut invalid = entry();
         invalid.key_file = PathBuf::from("peer.der");
@@ -5217,7 +5217,7 @@ mod outbound_scim_credential_tests {
             )
             .is_empty()
         );
-        assert!(!errors.0.is_empty());
+        assert_ne!(errors.0.len(), 0);
         let mut errors = Collector::default();
         let entries = validate_outbound_scim_credentials(
             0,
@@ -5227,6 +5227,6 @@ mod outbound_scim_credential_tests {
             &mut errors,
         );
         assert_eq!(entries.len(), 1);
-        assert!(!errors.0.is_empty());
+        assert_ne!(errors.0.len(), 0);
     }
 }

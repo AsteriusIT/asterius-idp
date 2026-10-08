@@ -1260,7 +1260,7 @@ mod tests {
         assert!(event.subject.is_none());
         assert!(event.client.is_none());
         assert!(event.grant.is_none());
-        assert!(event.actor_chain.is_empty());
+        assert_eq!(event.actor_chain.len(), 0);
         assert!(event.detail.is_empty());
     }
 }

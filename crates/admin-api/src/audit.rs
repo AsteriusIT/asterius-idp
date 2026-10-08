@@ -1039,7 +1039,7 @@ mod tests {
         let (lines, error) = drain(export);
 
         // Assert
-        assert!(lines.is_empty());
+        assert_eq!(lines.len(), 0);
         assert!(error.is_some(), "a failed read looked like an empty trail");
     }
 }

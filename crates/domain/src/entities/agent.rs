@@ -839,44 +839,29 @@ mod tests {
                     .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'))
     }
 
-    /// FAPI 2.0 SP §6.7: a client that can influence its `client_id` may have
-    /// it "mistaken for an end-user subject identifier". This asserts the
-    /// stronger property the codebase actually holds — the two populations do
-    /// not overlap at all — against subjects drawn the way the server draws
-    /// them, rather than against a remembered description of their shape.
-    ///
-    /// An agent is the reason it matters here: an agent acts *for* a subject,
-    /// so a log line, an audit row and a `sub` claim all carry both kinds of
-    /// identifier within a few bytes of each other.
+    /// FAPI 2.0 SP §6.7: identifiers are drawn by the server rather than
+    /// supplied by a registering client. UUID client IDs share a spelling with
+    /// public subjects, so spelling alone must never establish user authority.
+    /// Check independent random draws against real public and pairwise subjects.
     #[test]
-    fn no_minted_client_id_can_be_read_as_a_subject_this_server_issues() {
-        // Arrange: one subject of each kind, from the real generators.
+    fn minted_client_ids_are_server_drawn_and_distinct_from_issued_subjects() {
         let user = UserId::generate();
         let public = user.to_string();
         let pairwise = crate::PairwiseSalt::generate()
             .derive_subject(&crate::SectorIdentifier::public(), user)
             .as_str()
             .to_owned();
-
-        // Act: a sample of minted client identifiers.
-        let minted: Vec<String> = (0..64)
-            .map(|_| crate::ClientId::mint().as_str().to_owned())
-            .collect();
-
-        // Assert.
-        assert!(
-            looks_like_a_subject_identifier(&public),
-            "a public sub is a UUID: {public}"
-        );
-        assert!(
-            looks_like_a_subject_identifier(&pairwise),
-            "a pairwise sub is 43 base64url symbols: {pairwise}"
-        );
-        for id in &minted {
-            assert!(
-                !looks_like_a_subject_identifier(id),
-                "{id} could be read as a subject identifier"
-            );
+        assert!(looks_like_a_subject_identifier(&public));
+        assert!(looks_like_a_subject_identifier(&pairwise));
+        let mut seen = std::collections::BTreeSet::new();
+        for _ in 0..64 {
+            let id = crate::ClientId::mint().as_str().to_owned();
+            let uuid = Uuid::parse_str(&id).expect("server-minted canonical UUID");
+            assert_eq!(uuid.get_version_num(), 4);
+            assert_eq!(uuid.to_string(), id);
+            assert_ne!(id, public);
+            assert_ne!(id, pairwise);
+            assert!(seen.insert(id), "independent client draws must be unique");
         }
     }
 

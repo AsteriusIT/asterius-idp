@@ -1084,14 +1084,15 @@ async fn prompt_login_begins_at_the_login_stage_whatever_the_session_says() {
     )
     .await;
 
-    // Assert: nothing was recorded, which is how this handler says an
-    // interaction starts at the beginning — `Stage::Login` is the default of
-    // the state the interaction writes for itself.
+    // The explicit initial state binds the request while still requiring login.
     assert_eq!(response.status().as_u16(), 303);
-    assert!(
-        store.states.lock().expect("lock").is_empty(),
+    let states = store.states.lock().expect("lock");
+    assert_eq!(states.len(), 1);
+    assert_eq!(
+        states[0].1["stage"], "login",
         "prompt=login began somewhere other than the sign-in form"
     );
+    assert!(states[0].1.get("username").is_none());
 }
 
 /// **OIDC Core §3.1.2.3**: an authentication older than `max_age` is stale, and
@@ -1119,8 +1120,11 @@ async fn an_exceeded_max_age_begins_at_the_login_stage() {
 
     // Assert
     assert_eq!(response.status().as_u16(), 303);
-    assert!(
-        store.states.lock().expect("lock").is_empty(),
+    let states = store.states.lock().expect("lock");
+    assert_eq!(states.len(), 1);
+    assert_eq!(
+        states[0].1["stage"], "login",
         "max_age was answered from an authentication that is too old"
     );
+    assert!(states[0].1.get("username").is_none());
 }

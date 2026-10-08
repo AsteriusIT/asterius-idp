@@ -711,6 +711,6 @@ mod tests {
         assert!(policy.assign(&[Passkey, UserVerified], &[], &[]).is_none());
         assert!(policy.can_satisfy(&[]));
         assert!(!policy.can_satisfy(&values(&[PASSKEY])));
-        assert!(policy.supported_values().is_empty());
+        assert_eq!(policy.supported_values().len(), 0);
     }
 }

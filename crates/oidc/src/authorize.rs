@@ -1195,8 +1195,8 @@ mod tests {
 
     #[test]
     fn an_absent_acr_values_asks_for_nothing() {
-        assert!(super::parse_acr_values(None).is_empty());
-        assert!(super::parse_acr_values(Some("   ")).is_empty());
+        assert_eq!(super::parse_acr_values(None).len(), 0);
+        assert_eq!(super::parse_acr_values(Some("   ")).len(), 0);
     }
 
     use super::*;

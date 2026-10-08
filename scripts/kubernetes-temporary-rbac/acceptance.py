@@ -6,6 +6,7 @@ Only aggregate control names are emitted, never sessions, tokens or reasons.
 """
 import base64
 import hashlib
+import ipaddress
 import http.cookiejar
 from html.parser import HTMLParser
 import json
@@ -258,8 +259,7 @@ try:
     while subprocess.run(['docker','inspect',cluster_name+'-control-plane'],capture_output=True).returncode:
         assert create.poll() is None and time.monotonic()<deadline, 'own kind container creation'
         time.sleep(.25)
-    network=json.loads(subprocess.check_output(['docker','network','inspect','kind']))
-    gateway=next(item['Gateway'] for item in network[0]['IPAM']['Config'] if ':' not in item['Gateway'])
+    gateway=str(ipaddress.IPv4Address(json.loads(subprocess.check_output(['docker','inspect',cluster_name+'-control-plane']))[0]['NetworkSettings']['Networks']['kind']['Gateway']))
     subprocess.run(['docker','run','-d','--name',issuer_container,'--network','container:'+cluster_name+'-control-plane','alpine/socat@sha256:5ffbd6ae916cbad86a58fabe0d6d5a6fd5c2b47ddf031e82996baac9300e732f','TCP-LISTEN:9469,bind=127.0.0.1,fork,reuseaddr','TCP:'+gateway+':9469'],check=True,capture_output=True)
     assert create.wait(timeout=150)==0, 'own kind structured authentication readiness'
 finally:

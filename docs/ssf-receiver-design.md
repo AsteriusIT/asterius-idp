@@ -113,7 +113,12 @@ seven-day age limit; push keeps five minutes. There is no automatic poll worker
 or outbound subject-enrollment call. Explicit upstream deletion writes a
 durable pending marker before the guarded DELETE with the exact stream ID.
 An interrupted call reads the authenticated remote stream list on retry; only
-an empty list permits local removal. While deletion is pending, new polls are
+the absence of the exact recorded stream ID permits local removal. Other
+streams managed by the same credential do not block verification or deletion
+of this recorded stream. Readback still validates the recorded stream's pins
+and refuses malformed or duplicate stream identities, since such a list cannot
+prove absence safely. Pending-create reconciliation remains conservative: it
+requires a single matching stream because the new stream ID is not yet known. While deletion is pending, new polls are
 refused and peer summaries expose `deletion_pending`. The admin operation is
 `POST /ssf/upstream/delete` with the configured `peer_client_id` and
 `admin.ssf:write` authority.

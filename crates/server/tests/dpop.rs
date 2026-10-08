@@ -321,7 +321,7 @@ async fn every_advertised_dpop_algorithm_produces_an_acceptable_proof() {
         .as_array()
         .expect("RFC 9449 §5.1 defines this member")
         .clone();
-    assert!(!advertised.is_empty());
+    assert_ne!(advertised.len(), 0);
 
     let checker = checker(Arc::new(FakeReplay::default()));
     for entry in advertised {

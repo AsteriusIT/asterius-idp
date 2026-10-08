@@ -1165,6 +1165,12 @@ fn tenant() -> Section {
                 "For each listed SSF transmitter, require a canonical RFC 9421 Ed25519 signature over POST, the tenant issuer's /ssf/receiver URL, and the RFC 9530 SHA-256 body digest. public_key_file contains the base64-encoded raw 32-byte Ed25519 public key. Signatures expire within five minutes and their nonces are consumed atomically across replicas. A listed peer cannot fall back to unsigned delivery. To require signed responses to that peer, set both response_signing_keyid and response_private_key_file; the latter is a local Ed25519 PKCS#8 DER key. The receiver signs status and the exact empty response body digest with a two-minute expiry. Missing or invalid response keys fail startup; signing failure refuses the response.",
             ),
             key(
+                "outbound_scim_credential",
+                "array of { reference, generation, target_issuer, target_client, key_file, kid, algorithm } tables",
+                "empty (outbound SCIM credentials unavailable)".to_owned(),
+                "Operator-owned outbound SCIM signing catalogue. Each opaque reference and UUID generation is bound to the exact destination issuer and client. key_file names a local private signing key; kid and algorithm select its registered signing identity. Administrative connector settings resolve this catalogue and cannot supply key material or redirect a credential to another destination. Rotate through a new generation.",
+            ),
+            key(
                 "ssf_upstream_peer",
                 "array of { issuer, bearer_token_file, expected_audience?, allow_all_subjects? } tables",
                 "empty (upstream management disabled)".to_owned(),

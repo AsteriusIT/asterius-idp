@@ -738,7 +738,7 @@ input[type='number']::-webkit-inner-spin-button, input[type='number']::-webkit-o
 .account-menu-item > svg { width: 17px; height: 17px; flex: none; color: var(--muted); }
 .account-menu-item > span { min-width: 0; flex: 1; }
 .account-menu-item strong { font-weight: 550; }
-.account-menu-item small, .account-menu-copy code { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; }
+.account-menu-item small, .account-menu-copy code { display: block; margin-top: 3px; color: color-mix(in srgb, var(--muted) 90%, var(--fg)); font-size: 12px; }
 .account-menu-copy code { white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
 .account-menu-item .account-menu-trailing { width: 14px; height: 14px; }
 .account-menu-item[data-highlighted] { background: var(--interaction-hover); color: var(--fg); outline: none; }

@@ -1091,7 +1091,7 @@ mod tests {
         let policy = asterius_domain::AcrPolicy::default().releasing_amr(false);
         let emitted = authentication_under(&facts, &policy);
         assert_eq!(emitted.acr, None);
-        assert!(emitted.amr.is_empty());
+        assert_eq!(emitted.amr.len(), 0);
         assert_eq!(emitted.authenticated_at, facts.authenticated_at);
         assert_eq!(facts.amr, vec!["pwd"]);
     }

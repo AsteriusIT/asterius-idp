@@ -1517,7 +1517,7 @@ mod tests {
     fn every_icon_token_is_a_lower_case_ascii_identifier() {
         for icon in TenantIcon::ALL {
             let name = icon.name();
-            assert!(!name.is_empty());
+            assert_ne!(name.len(), 0);
             assert!(
                 name.bytes()
                     .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'),

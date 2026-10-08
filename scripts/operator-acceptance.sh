@@ -35,7 +35,7 @@ if kind get clusters | rg -qx -- "$cluster_name"; then printf '%s\n' 'Refusing e
 cluster_created=1
 kind create cluster --name "$cluster_name" --image kindest/node:v1.35.0 --kubeconfig "$run_dir/kubeconfig" --wait 90s
 if [[ "$gitops" = 1 ]]; then
-  host=$(docker network inspect kind --format '{{range .IPAM.Config}}{{println .Gateway}}{{end}}' | python3 -c 'import sys,ipaddress;print(next(s.strip() for s in sys.stdin if ipaddress.ip_address(s.strip()).version==4))')
+  host=$(docker inspect "$cluster_name-control-plane" --format '{{(index .NetworkSettings.Networks "kind").Gateway}}' | python3 -c 'import ipaddress,sys; print(ipaddress.IPv4Address(sys.stdin.read().strip()))')
   python3 - "$host" "$port" <<'PY_HOST'
 import socket,sys
 for port in [int(sys.argv[2]),9462]:

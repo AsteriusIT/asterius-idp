@@ -37,7 +37,7 @@ test('group membership changes effective application roles', async ({ page }) =>
   await expect(page.getByRole('cell', { name: role, exact: true })).toBeVisible();
 
   await open(page, 'Users', 'Users');
-  await page.getByLabel('Search').fill(USERNAME);
+  await page.getByRole('searchbox', { name: 'Search', exact: true }).fill(USERNAME);
   await page.getByRole('button', { name: 'Search' }).click();
   await page.getByRole('button', { name: USERNAME, exact: true }).click();
   await page.getByRole('tab', { name: 'Groups' }).click();

@@ -134,7 +134,7 @@ more script beside these.
 `/authorize`, one passkey sign-in, one consent and one redemption through the
 assembled router with a `tracing` layer that records every statement `sqlx`
 executes, and asserts the count against a ceiling. The current measured
-ceiling is **87**. Claims Provider aggregation adds one bounded source lookup during ID-token issuance. The original baseline was 71: the test was written red
+ceiling is **158**. The integrated authority path adds 71 statements for exact-session lineage, verified assurance, current conditional policy, temporary entitlement fences, and recursive grant/task authority checks. The CI statement trace contains fixed reads and transaction boundaries, not queries per collection element. Claims Provider aggregation adds one bounded source lookup during ID-token issuance. The original baseline was 71: the test was written red
 (budget 0) to print the log, and the log was reviewed for per-row lookups.
 `ast-6uqw.4` and `ast-6uqw.5` deliberately add these 15 statements:
 
@@ -242,7 +242,7 @@ max_connections  ≈ 2 × busy connections, and at least the number of CPU threa
 ```
 
 The original load measurements used 12–17 statements per token response.
-The current complete code flow costs 87 statements (the budget test's
+The current complete code flow costs 158 statements (the budget test's
 ceiling); tenant limiter and session policy each add one read at token
 redemption. JWKS and discovery use 1–2 statements.
 

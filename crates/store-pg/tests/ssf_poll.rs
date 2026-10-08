@@ -293,7 +293,7 @@ db_test! {
         let batch = db.queue().deliver(&stream, 0, at(1)).await.expect("poll");
 
         // Assert
-        assert!(batch.sets.is_empty());
+        assert_eq!(batch.sets.len(), 0);
         assert!(batch.more_available);
     }
 }

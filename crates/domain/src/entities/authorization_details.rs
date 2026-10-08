@@ -1160,10 +1160,11 @@ mod tests {
     #[test]
     fn supported_types_are_exactly_the_registered_ones() {
         assert_eq!(registry().supported_types(), vec!["payment_initiation"]);
-        assert!(
+        assert_eq!(
             AuthorizationDetailsRegistry::default()
                 .supported_types()
-                .is_empty()
+                .len(),
+            0
         );
     }
 

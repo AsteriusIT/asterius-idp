@@ -3140,7 +3140,7 @@ async fn an_approval_in_form_post_mode_renders_a_form_to_the_client() {
         html.contains(r#"<input type="hidden" name="code" value=""#),
         "the page carries no code: {html}"
     );
-    assert!(!code.is_empty());
+    assert_ne!(code.len(), 0);
     assert!(
         html.contains(&format!(
             r#"<input type="hidden" name="iss" value="{ISSUER}">"#

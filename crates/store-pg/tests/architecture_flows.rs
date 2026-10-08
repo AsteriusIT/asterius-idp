@@ -55,7 +55,7 @@ async fn drafts_are_tenant_bound_and_stale_writes_conflict() {
         .await
         .expect("create");
     assert_eq!(created["revision"], 1);
-    assert!(repository.list(&two).await.expect("other list").is_empty());
+    assert_eq!(repository.list(&two).await.expect("other list").len(), 0);
     assert!(matches!(
         repository.read(&two, id).await,
         Err(DomainError::NotFound)
@@ -92,12 +92,9 @@ async fn drafts_are_tenant_bound_and_stale_writes_conflict() {
         .await
         .expect("reserve link");
     assert_eq!(pending["state"], "pending");
-    assert!(
-        repository
-            .links(&two, id)
-            .await
-            .expect("other links")
-            .is_empty()
+    assert_eq!(
+        repository.links(&two, id).await.expect("other links").len(),
+        0
     );
     repository
         .complete(&one, id, token, 2, "api-node", now)
@@ -123,12 +120,13 @@ async fn drafts_are_tenant_bound_and_stale_writes_conflict() {
     assert_eq!(origins.len(), 1);
     assert_eq!(origins[0]["flow_id"], id.to_string());
     assert_eq!(origins[0]["relation"], "managed");
-    assert!(
+    assert_eq!(
         repository
             .origins(&two, "api", intent.resource)
             .await
             .expect("other origins")
-            .is_empty()
+            .len(),
+        0
     );
     let reference_flow = Uuid::new_v4();
     repository

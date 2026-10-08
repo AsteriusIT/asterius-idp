@@ -3631,7 +3631,7 @@ mod tests {
         object.insert("response_types".to_owned(), json!([]));
         object.remove("redirect_uris");
         let client = validate(&machine).expect("a client_credentials client is valid");
-        assert!(client.redirect_uris.is_empty());
+        assert_eq!(client.redirect_uris.len(), 0);
         assert!(!client.allows(GrantType::AuthorizationCode));
     }
 
@@ -3971,7 +3971,7 @@ mod tests {
     fn post_logout_redirect_uris_are_optional_and_default_to_none() {
         let client = validate(&minimal()).expect("a valid registration");
 
-        assert!(client.post_logout_redirect_uris.is_empty());
+        assert_eq!(client.post_logout_redirect_uris.len(), 0);
         assert!(!client.accepts_post_logout_redirect_uri("https://rp.example/after-logout"));
     }
 
@@ -5467,7 +5467,7 @@ mod tests {
 
         // Assert
         assert!(accepted.allows(GrantType::DeviceCode));
-        assert!(accepted.redirect_uris.is_empty());
+        assert_eq!(accepted.redirect_uris.len(), 0);
         assert_eq!(
             accepted.token_endpoint_auth_method,
             TokenEndpointAuthMethod::PrivateKeyJwt

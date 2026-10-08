@@ -522,7 +522,7 @@ db_test! {
 
         // Assert
         assert_eq!(added, Added::NoSuchStream);
-        assert!(db.subjects().list(&theirs).await.expect("list").is_empty());
+        assert_eq!(db.subjects().list(&theirs).await.expect("list").len(), 0);
     }
 }
 
@@ -546,7 +546,7 @@ db_test! {
 
         // Assert
         assert!(deleted);
-        assert!(db.subjects().list(&stream).await.expect("list").is_empty());
+        assert_eq!(db.subjects().list(&stream).await.expect("list").len(), 0);
     }
 }
 

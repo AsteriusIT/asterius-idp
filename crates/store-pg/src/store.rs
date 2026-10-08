@@ -38,10 +38,10 @@ impl Store {
     /// Wraps an existing pool.
     #[must_use]
     pub fn from_pool(pool: PgPool) -> Self {
-        // A composed signature holds task and policy transactions, then needs
+        // A composed signature holds key, task and policy transactions, then needs
         // an independent connection for current facts/audit. Reserve room for
         // those reads rather than letting signers starve their own pool.
-        let slots = (pool.options().get_max_connections().saturating_sub(1) / 2).max(1);
+        let slots = (pool.options().get_max_connections().saturating_sub(1) / 3).max(1);
         Self {
             pool,
             signing_admission: std::sync::Arc::new(tokio::sync::Semaphore::new(slots as usize)),

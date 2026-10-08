@@ -43,6 +43,68 @@ with sentinels (name) as (
 -- hash-chained, so editing a member would invalidate every record after it.
 -- Those findings are reported for a human to decide.
 docs (table_name, column_name, repairable, row_key, doc) as (
+    -- New authority, ownership and proof records are detection-only: rewriting
+    -- their keys or snapshots can change identity, replay or authorization facts.
+    select 'agent_tasks', 'permissions', false,
+           jsonb_build_object('tenant_id', tenant_id, 'task_id', task_id), permissions
+    from agent_tasks
+    union all
+    select 'authorization_diagnostics', 'diagnostics', false,
+           jsonb_build_object('tenant_id', tenant_id, 'evidence_id', evidence_id), diagnostics
+    from authorization_diagnostics
+    union all
+    select 'declarative_creation_keys', 'initial_spec', false,
+           jsonb_build_object('tenant_id', tenant_id, 'kind', kind, 'owner', owner, 'external_key', external_key), initial_spec
+    from declarative_creation_keys
+    union all
+    select 'declarative_creation_keys', 'keys', false,
+           jsonb_build_object('tenant_id', tenant_id, 'kind', kind, 'owner', owner, 'external_key', external_key), keys
+    from declarative_creation_keys
+    union all
+    select 'declarative_deletion_receipts', 'keys', false,
+           jsonb_build_object('tenant_id', tenant_id, 'kind', kind, 'keys', keys, 'owner', owner, 'expected_revision', expected_revision), keys
+    from declarative_deletion_receipts
+    union all
+    select 'declarative_owners', 'keys', false,
+           jsonb_build_object('tenant_id', tenant_id, 'kind', kind, 'keys', keys), keys
+    from declarative_owners
+    union all
+    select 'governance_ownerships', 'target_keys', false,
+           jsonb_build_object('tenant_id', tenant_id, 'ownership_id', ownership_id), target_keys
+    from governance_ownerships
+    union all
+    select 'governance_review_items', 'snapshot', false,
+           jsonb_build_object('tenant_id', tenant_id, 'review_id', review_id, 'item_id', item_id), snapshot
+    from governance_review_items
+    union all
+    select 'governance_review_items', 'target_keys', false,
+           jsonb_build_object('tenant_id', tenant_id, 'review_id', review_id, 'item_id', item_id), target_keys
+    from governance_review_items
+    union all
+    select 'managed_device_code_proofs', 'binding', false,
+           jsonb_build_object('tenant_id', tenant_id, 'code_hash', encode(code_hash, 'hex')), binding
+    from managed_device_code_proofs
+    union all
+    select 'managed_device_interaction_proofs', 'binding', false,
+           jsonb_build_object('tenant_id', tenant_id, 'request_uri_hash', encode(request_uri_hash, 'hex')), binding
+    from managed_device_interaction_proofs
+    union all
+    select 'temporary_entitlement_replays', 'payload', false,
+           jsonb_build_object('tenant_id', tenant_id, 'actor_user_id', actor_user_id, 'operation', operation, 'idempotency_key', idempotency_key), payload
+    from temporary_entitlement_replays
+    union all
+    select 'temporary_entitlement_replays', 'response', false,
+           jsonb_build_object('tenant_id', tenant_id, 'actor_user_id', actor_user_id, 'operation', operation, 'idempotency_key', idempotency_key), response
+    from temporary_entitlement_replays
+    union all
+    select 'workload_spiffe_bundle_history', 'snapshot', false,
+           jsonb_build_object('tenant_id', tenant_id, 'trust_id', trust_id, 'trust_domain', trust_domain), snapshot
+    from workload_spiffe_bundle_history
+    union all
+    select 'workload_trusts', 'config', false,
+           jsonb_build_object('tenant_id', tenant_id, 'trust_id', trust_id), config
+    from workload_trusts
+    union all
     select 'architecture_flows', 'graph', false, jsonb_build_object('tenant_id', tenant_id, 'flow_id', flow_id), graph
     from architecture_flows
     union all
@@ -212,6 +274,21 @@ docs (table_name, column_name, repairable, row_key, doc) as (
 -- the database before filtering any of them.
 inventory (table_name, column_name) as (
     values ('architecture_flows', 'graph'),
+           ('agent_tasks', 'permissions'),
+           ('authorization_diagnostics', 'diagnostics'),
+           ('declarative_creation_keys', 'initial_spec'),
+           ('declarative_creation_keys', 'keys'),
+           ('declarative_deletion_receipts', 'keys'),
+           ('declarative_owners', 'keys'),
+           ('governance_ownerships', 'target_keys'),
+           ('governance_review_items', 'snapshot'),
+           ('governance_review_items', 'target_keys'),
+           ('managed_device_code_proofs', 'binding'),
+           ('managed_device_interaction_proofs', 'binding'),
+           ('temporary_entitlement_replays', 'payload'),
+           ('temporary_entitlement_replays', 'response'),
+           ('workload_spiffe_bundle_history', 'snapshot'),
+           ('workload_trusts', 'config'),
            ('architecture_flows', 'applied_graph'),
            ('federation_signing_keys', 'public_jwk'),
            ('legacy_session_expiry_claims', 'claim_value'),

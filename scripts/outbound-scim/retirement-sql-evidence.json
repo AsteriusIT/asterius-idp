@@ -18,5 +18,19 @@
   ],
   "owned_database_cleaned": true,
   "normative_contract_review": "pending",
-  "full_runtime_acceptance": "awaiting_corrected_composed_binary"
+  "full_runtime_acceptance": "awaiting_corrected_composed_binary",
+  "full_composed_namespace_controls": {
+    "source_checkpoint": "94ed776e",
+    "successful_migrations": 116,
+    "reserved_parser_sha256": "e9a3029123186cc5c8557432160bf9582e25d8d387a6414d47c7c0ece7464fed",
+    "exact_production_update_and_actual_target_tombstone_trigger": true,
+    "controls": [
+      "valid_source_clears_email_verification_preserves_lock_and_retains_one_key",
+      "uppercase_source_retains_email_verification_lock_and_no_reserved_key",
+      "leading_dash_source_retains_email_verification_lock_and_no_reserved_key",
+      "path_source_retains_email_verification_lock_and_no_reserved_key"
+    ],
+    "all_seeded_rows_rolled_back": true,
+    "http_completion_claimed": false
+  }
 }
