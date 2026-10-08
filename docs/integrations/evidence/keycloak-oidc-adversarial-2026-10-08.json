@@ -1,0 +1,225 @@
+{
+  "date": "2026-10-08",
+  "ticket": "ast-508l",
+  "peer": {
+    "implementation": "Keycloak26.7.4",
+    "image_digest": "sha256:82a77884f3af238beab1e7afd63b5f530e1b5c0590bd7aa60b40a40463e29b2c",
+    "controlled_signer": "independent ephemeral P-256/ES256 keys; native Keycloak signature verified before fault injection"
+  },
+  "runs": {
+    "guarded_callback": {
+      "status": "pass",
+      "implementation": "Keycloak26.7.4",
+      "cases": [
+        {
+          "case": "guarded native Keycloak provider registration",
+          "result": "pass"
+        },
+        {
+          "case": "guarded exact upstream binding",
+          "result": "pass"
+        },
+        {
+          "case": "foreign browser callback refused",
+          "result": "pass",
+          "expected_status": 400,
+          "observed_status": 400,
+          "mutation": false
+        },
+        {
+          "case": "unknown state refused without session or binding",
+          "result": "pass",
+          "expected_status": 400,
+          "observed_status": 400,
+          "mutation": false
+        },
+        {
+          "case": "native downstream authorization continuation",
+          "result": "pass"
+        },
+        {
+          "case": "real downstream RP code exchange",
+          "result": "pass"
+        },
+        {
+          "case": "downstream ES256 identity token verified",
+          "result": "pass"
+        },
+        {
+          "case": "consumed state replay refused without session or binding",
+          "result": "pass",
+          "expected_status": 400,
+          "observed_status": 400,
+          "mutation": false
+        },
+        {
+          "case": "mismatched authorization issuer refused without session or binding",
+          "result": "pass",
+          "expected_status": 400,
+          "observed_status": 400,
+          "mutation": false
+        },
+        {
+          "case": "expired pending callback refused without session or binding",
+          "result": "pass",
+          "expected_status": 400,
+          "observed_status": 400,
+          "mutation": false
+        },
+        {
+          "case": "guarded controlled provider registration",
+          "result": "pass"
+        },
+        {
+          "case": "identical native subject cannot cross provider ownership",
+          "result": "pass",
+          "expected_status": 400,
+          "observed_status": 400,
+          "mutation": false
+        },
+        {
+          "case": "guarded exact controlled provider binding",
+          "result": "pass"
+        },
+        {
+          "case": "independently signed controlled identity accepted",
+          "result": "pass"
+        },
+        {
+          "case": "controlled expired refused without user session or binding",
+          "result": "pass",
+          "expected_status": 400,
+          "observed_status": 400,
+          "mutation": false
+        },
+        {
+          "case": "controlled forged refused without user session or binding",
+          "result": "pass",
+          "expected_status": 400,
+          "observed_status": 400,
+          "mutation": false
+        },
+        {
+          "case": "controlled wrong_issuer refused without user session or binding",
+          "result": "pass",
+          "expected_status": 400,
+          "observed_status": 400,
+          "mutation": false
+        },
+        {
+          "case": "controlled wrong_nonce refused without user session or binding",
+          "result": "pass",
+          "expected_status": 400,
+          "observed_status": 400,
+          "mutation": false
+        },
+        {
+          "case": "controlled wrong_subject refused without user session or binding",
+          "result": "pass",
+          "expected_status": 400,
+          "observed_status": 400,
+          "mutation": false
+        },
+        {
+          "case": "controlled token_outage refused without user session or binding",
+          "result": "pass",
+          "expected_status": 503,
+          "observed_status": 503,
+          "mutation": false
+        },
+        {
+          "case": "controlled jwks_outage refused without user session or binding",
+          "result": "pass",
+          "expected_status": 503,
+          "observed_status": 503,
+          "mutation": false
+        },
+        {
+          "case": "independent peer signing key rotation accepted",
+          "result": "pass"
+        },
+        {
+          "case": "independent peer recovered after token and JWKS outages",
+          "result": "pass"
+        },
+        {
+          "case": "cross tenant pending callback refused without mutation",
+          "result": "pass",
+          "observed_status": 400,
+          "mutation": false
+        },
+        {
+          "case": "native Keycloak active ES256 signing key changed",
+          "result": "pass"
+        },
+        {
+          "case": "native Keycloak published newly generated signing key",
+          "result": "pass"
+        },
+        {
+          "case": "native Keycloak signing key rotation continued to downstream RP",
+          "result": "pass"
+        }
+      ],
+      "asterius_binary_sha256": "927a707e7cea2515696b44f77e59d52c1e09031afc6ed4ebbe552fea09bf4052",
+      "runtime_revision": "790750f6fa69eecbf83fcfce8bce229020c3b77b",
+      "native_keycloak": true,
+      "native_encrypted_id_token": false,
+      "native_encrypted_userinfo": false,
+      "controlled_token_faults": true,
+      "formal_conformance": false
+    },
+    "native_encrypted_rp": {
+      "status": "pass",
+      "implementation": "Keycloak26.7.4",
+      "cases": [
+        {
+          "case": "guarded native Keycloak provider registration",
+          "result": "pass"
+        },
+        {
+          "case": "guarded exact upstream binding",
+          "result": "pass"
+        },
+        {
+          "case": "guarded encrypted RP client registration",
+          "result": "pass"
+        },
+        {
+          "case": "guarded identity-only resource registration",
+          "result": "pass"
+        },
+        {
+          "case": "guarded RP issuer audience assignment",
+          "result": "pass"
+        },
+        {
+          "case": "native Keycloak decrypted encrypted ID token and UserInfo",
+          "result": "pass"
+        },
+        {
+          "case": "actual JWE ciphertext /asterius-rp/token",
+          "result": "pass"
+        },
+        {
+          "case": "actual JWE ciphertext /asterius-rp/userinfo",
+          "result": "pass"
+        }
+      ],
+      "asterius_binary_sha256": "927a707e7cea2515696b44f77e59d52c1e09031afc6ed4ebbe552fea09bf4052",
+      "runtime_revision": "790750f6fa69eecbf83fcfce8bce229020c3b77b",
+      "native_keycloak": true,
+      "native_encrypted_id_token": true,
+      "native_encrypted_userinfo": true,
+      "controlled_token_faults": false,
+      "formal_conformance": false
+    }
+  },
+  "limitations": [
+    "Disposable local Asterius and public HTTPS peer, unchanged production SSRF and certificate guards.",
+    "Independent controlled tokens are not signed by native Keycloak; native baseline and active signing-key rotation are recorded separately.",
+    "Browser ignores the disposable local self-signed Asterius certificate; peer back-channel and Asterius relay backend verify certificates.",
+    "Ordinary OIDC RP configuration; not selected IPSIE profile conformance or formal certification.",
+    "No raw tokens, codes, subjects, credentials or private keys recorded."
+  ]
+}
