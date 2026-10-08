@@ -132,7 +132,12 @@ Commands to an RP's explicitly registered HTTPS command endpoint when a
 supported account lifecycle action occurs. Delivery uses a durable intent,
 fresh token signing, guarded transport and outcome audit. This does not make
 this deployment an RP command receiver, establish IPSIE SL1 conformance, or
-provide interoperability evidence against an independent RP.
+provide full draft conformance. The supported synchronous invalidate/delete flows
+now have actual independent controlled RP evidence, including a real OIDC-issued
+subject, guarded public HTTPS delivery, native signature verification, RP session
+and account changes, malformed response refusal and replay/claim pin checks; see
+[Provider Commands evidence](provider-commands-evidence.md). Metadata, tenant,
+migrate and other commands remain unsupported and are not advertised.
 
 [OpenID Connect Enterprise Extensions](https://openid.net/specs/openid-connect-enterprise-extensions-1_0.html)
 defines `session_expiry`, `tenant`, `aud_sub` and request hints. The tenant-per-
