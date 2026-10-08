@@ -1,0 +1,128 @@
+{
+  "date": "2026-10-08",
+  "context": "kind-asterius-local",
+  "namespace": "asterius",
+  "artifact": {
+    "image": "asterius-idp:local-ast-kkye-20261008",
+    "source_revision": "a663043fa0eeae668d1b22bb3083d6cf18378f71",
+    "binary_sha256": "33b4b00d659d3325972836f79d84c75dd859c543a446387b10d87e4f1e3199ec",
+    "image_id": "sha256:bde6fc48623c0e820b9bdffd612ec50ac2ed2d8704d398504698295cffcde6fa",
+    "runtime_profile": "GNU host binary with embedded console; default musl release packaging not exercised"
+  },
+  "pod": "asterius-69474d7798-wrpgj",
+  "runtime_image_id": "sha256:bde6fc48623c0e820b9bdffd612ec50ac2ed2d8704d398504698295cffcde6fa",
+  "readiness": {
+    "ready": true,
+    "database": true,
+    "migrations_applied": true,
+    "features": [
+      "grant_management",
+      "ciba",
+      "device_flow",
+      "token_exchange",
+      "ssf",
+      "dpop_nonce",
+      "request_object"
+    ],
+    "mail_transport": "journal"
+  },
+  "live_historical_migration_ledger_unchanged": true,
+  "successful_migrations": 122,
+  "new_versions": [
+    174,
+    175,
+    176,
+    177
+  ],
+  "clients_preserved": 6,
+  "secret_data_unchanged": true,
+  "tailscale_serve_unchanged": true,
+  "configuration_change": "Only seven explicitly approved global protocol booleans",
+  "https_discovery_and_protected_login_pages": "pass",
+  "console_asset_hashes_verified": 10,
+  "isolated_upgrade_rehearsal": {
+    "isolated_restore": "pass",
+    "isolated_runtime_readiness": "pass",
+    "isolated_identity_equality": true,
+    "historical_migration_ledger_unchanged": true,
+    "successful_migrations": 122,
+    "new_versions": [
+      174,
+      175,
+      176,
+      177
+    ],
+    "client_count_preserved": true,
+    "isolated_canonical_discovery": "pass",
+    "isolated_protected_redirects": "pass",
+    "console_assets": [
+      {
+        "file": "inter-cyrillic-ext-wght-normal-BOeWTOD4.woff2",
+        "sha256": "ca157063339ac4ad418f214f3abfed119b0798ab4d377386ce5c9e5a7a435ebd"
+      },
+      {
+        "file": "inter-cyrillic-wght-normal-DqGufNeO.woff2",
+        "sha256": "71d5ee93cc1e9f1d520a3a8b66456de18c7879d8df09d57fcd2eaff75fef0075"
+      },
+      {
+        "file": "inter-greek-ext-wght-normal-DlzME5K_.woff2",
+        "sha256": "6e9e020a25f9b56d418f2c085b1d3c09725a4da23fe693a5b463064606732190"
+      },
+      {
+        "file": "inter-greek-wght-normal-CkhJZR-_.woff2",
+        "sha256": "1be3448e292fbf05ffe176fe1e43f135013d50b1e7d324ad1a558f623d3bb6f6"
+      },
+      {
+        "file": "inter-latin-ext-wght-normal-DO1Apj_S.woff2",
+        "sha256": "34b9c504cab7a73e37b746343a449132e56cf7b5481af2cb81dc74dcff25c956"
+      },
+      {
+        "file": "inter-latin-wght-normal-Dx4kXJAl.woff2",
+        "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+      },
+      {
+        "file": "inter-vietnamese-wght-normal-CBcvBZtf.woff2",
+        "sha256": "5c66f9e07e90c6d4ac4922cc68d60de26c17b1858e677fb5e603fce3952b3ff2"
+      },
+      {
+        "file": "kubernetes-sXAxUTAP.svg",
+        "sha256": "ff5427cfeeff39e82834ab1b4fe3ed61fc08596225a17eed56adc04f7cc1f712"
+      },
+      {
+        "file": "main-ChdQF4HH.js",
+        "sha256": "2d2bc9631bf1c86adcdedee5c6df104f86d1e2e69bf5d9c164584c35f7446927"
+      },
+      {
+        "file": "style-Ywrca4K5.css",
+        "sha256": "6b7493ab7c0e0a9375e4e31302db5a8d8706897198d04185599421467538d1db"
+      }
+    ],
+    "global_features": [
+      "grant_management",
+      "ciba",
+      "device_flow",
+      "token_exchange",
+      "ssf",
+      "dpop_nonce",
+      "request_object"
+    ],
+    "isolated_second_startup_idempotent": true
+  },
+  "identity_check": {
+    "users": "All four rows exactly unchanged",
+    "password_credentials": "All four rows exactly unchanged",
+    "totp_credentials": "Encrypted secret and every identity/state column unchanged; only last_used_step increased, consistent with successful TOTP verification",
+    "independent_read_only_review": "security_worker",
+    "isolated_restore": "All identity rows exactly unchanged after two candidate startups"
+  },
+  "verification": "fmt, strict all-target clippy and 49 targeted nextest tests including mandatory audits passed",
+  "limits": [
+    "No full Rust suite or remote CI",
+    "GNU runtime profile; default musl packaging not exercised",
+    "Human password/TOTP sign-in and 98 proposed scenarios not executed",
+    "External peers and cloud native lifecycle require prerequisites"
+  ],
+  "backup": "Private PostgreSQL dump, roles, manifests, secrets and Serve snapshot retained under the operator backup directory; raw files not published",
+  "status": "verified local deployment",
+  "scenarios": "Proposed 98-scenario guide; scenarios are not represented as completed acceptance tests"
+}

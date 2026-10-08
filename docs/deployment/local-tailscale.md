@@ -1,5 +1,18 @@
 # Local deployment and private remote access
 
+
+## Current local feature-tour deployment — 8 October 2026
+
+The merged local candidate is running in `kind-asterius-local`, namespace `asterius`, as image `asterius-idp:local-ast-kkye-20261008` (production source `a663043fa0eeae668d1b22bb3083d6cf18378f71`). [Recorded upgrade evidence](evidence/local-feature-tour-2026-10-08.json) covers the live readiness, migration ledger, identity review, secrets, routing and embedded console asset hashes. Later sections include historical deployments.
+
+Open the [console](https://desktop-cpbptqn-1.tailacbb15.ts.net/t/admin/admin/) using your existing tailnet access and credentials, then follow the [98-scenario feature tour](../console/local-feature-tour.md). The configured demo issuer is `https://desktop-cpbptqn-1.tailacbb15.ts.net/t/demo`.
+
+The user approved enabling `ciba`, `device_flow`, `grant_management`, `token_exchange`, `ssf`, `request_object` and `dpop_nonce`; live `/readyz` reports all seven. Tenant/client policy and external integration prerequisites still apply. Certificate authentication, AuthZEN and public self-registration remain disabled. Local mail uses the private journal.
+
+Before rollout, the PostgreSQL 18 database, roles, configuration, referenced secrets and existing Tailscale Serve settings were backed up privately. A restored disposable database successfully booted the actual candidate twice, preserving all identities and the 118 historical migration records. The live upgrade added migrations 174–177, for 122 successful records. Existing users and password credentials are identical; the sole TOTP difference is an increased replay-protection counter, with its encrypted secret and all other fields unchanged. Secrets and Serve settings are unchanged. The compatibility fix accepts only the exact known historical migration-173 checksum and supplies additive history-schema parity without rewriting the ledger.
+
+Validation passed formatting, strict all-target Clippy, 49 targeted nextest checks including mandatory audits, live HTTPS discovery and protected login pages, and hashes for all ten console assets. The local container uses the GNU runtime profile; default musl packaging, remote CI, the full Rust suite, human password/TOTP sign-in and the proposed user scenarios were not executed as part of this deployment. External peers, wallets and cloud lifecycle fixtures require their stated setup. Full native Entra provisioning remains tracked by `ast-p3p3`.
+
 The validated local deployment is available to computers connected to the same
 tailnet at:
 
