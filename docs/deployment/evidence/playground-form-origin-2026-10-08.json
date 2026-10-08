@@ -1,0 +1,32 @@
+{
+  "ticket": "ast-qzw6.1",
+  "recorded_at": "2026-10-08T21:18:54.333842+00:00",
+  "live_before_fix": {
+    "url": "https://desktop-cpbptqn-1.tailacbb15.ts.net:8446/protocols/",
+    "action": "native browser POST /protocols/device",
+    "browser": "headless Chrome",
+    "response_referrer_policy": "no-referrer",
+    "observed_request_origin": "null",
+    "result": "Origin refused",
+    "status": 403,
+    "credentials_used": false
+  },
+  "source_fix": {
+    "component": "playground gateway",
+    "referrer_policy": "same-origin",
+    "server_origin_and_csrf_checks": "unchanged"
+  },
+  "controlled_browser_checks": {
+    "command": "node scripts/testing/playground-form-origin-browser.mjs",
+    "old_no_referrer": "Origin null and refused",
+    "production_same_origin": "exact local Origin and admitted with owned test CSRF",
+    "invalid_csrf": "same-origin refused",
+    "missing_null_foreign_origin": "refused even with valid owned test CSRF",
+    "live_idp_used": false
+  },
+  "limitations": [
+    "Post-fix live rollout and browser acceptance belong to root verification.",
+    "Controlled fixture verifies native browser policy behavior and exact Origin/CSRF admission; it does not obtain an OAuth device grant."
+  ],
+  "secrets_recorded": false
+}
