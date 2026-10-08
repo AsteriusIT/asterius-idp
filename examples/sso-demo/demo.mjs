@@ -332,7 +332,9 @@ export async function startDemo(config = process.env) {
             ? 'The identity provider did not confirm an active session. Sign in again.'
             : 'The identity provider refused this sign-in or authentication request.');
         }
-        const tokens = await client.redeem(url.searchParams.get('code'), flow);
+        const code = url.searchParams.get('code');
+        if (!code) throw new Error('invalid authorization response');
+        const tokens = await client.redeem(code, flow);
         const idClaims = await client.verifyIdToken(tokens.id_token, flow.nonce);
         if (flow.action === '/step-up' && idClaims.acr !== 'urn:asterius:acr:passkey') throw new Error('required authentication level was not confirmed');
         const id = flow.sessionId ?? randomUUID();
