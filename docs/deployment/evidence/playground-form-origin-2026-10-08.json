@@ -1,0 +1,44 @@
+{
+  "ticket": "ast-qzw6.1",
+  "recorded_at": "2026-10-08T21:18:54.333842+00:00",
+  "live_before_fix": {
+    "url": "https://desktop-cpbptqn-1.tailacbb15.ts.net:8446/protocols/",
+    "action": "native browser POST /protocols/device",
+    "browser": "headless Chrome",
+    "response_referrer_policy": "no-referrer",
+    "observed_request_origin": "null",
+    "result": "Origin refused",
+    "status": 403,
+    "credentials_used": false
+  },
+  "source_fix": {
+    "component": "playground gateway",
+    "referrer_policy": "same-origin",
+    "server_origin_and_csrf_checks": "unchanged"
+  },
+  "controlled_browser_checks": {
+    "command": "node scripts/testing/playground-form-origin-browser.mjs",
+    "old_no_referrer": "Origin null and refused",
+    "production_same_origin": "exact local Origin and admitted with owned test CSRF",
+    "invalid_csrf": "same-origin refused",
+    "missing_null_foreign_origin": "refused even with valid owned test CSRF",
+    "live_idp_used": false
+  },
+  "limitations": [
+    "The real device authorization request was accepted; its user approval/token issuance was not exercised.",
+    "Clearing the owned lab session forgets its in-process flow; unapproved server-side device requests expire normally.",
+    "Controlled fixture additionally verifies strict Origin/CSRF refusals without live IdP credentials."
+  ],
+  "secrets_recorded": false,
+  "live_after_fix": {
+    "recorded_at": "2026-10-08T21:20:22.267077+00:00",
+    "browser": "headless Chrome",
+    "public_protocol_page_status": 200,
+    "observed_post_origin": "https://desktop-cpbptqn-1.tailacbb15.ts.net:8446",
+    "origin_refused": false,
+    "observed_result": "Device authorization accepted",
+    "owned_lab_state_cleared": true,
+    "human_login_or_approval": false,
+    "tokens_or_device_codes_recorded": false
+  }
+}
