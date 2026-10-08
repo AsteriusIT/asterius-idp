@@ -54,12 +54,10 @@ build_filter() {
     return 0
   fi
 
-  local user
-  user=$(
-    IFS='|'
-    echo "${parts[*]}"
-  )
-  user=${user//|/ or }
+  local user=${parts[0]} part
+  for part in "${parts[@]:1}"; do
+    user+=" or $part"
+  done
   printf '(%s) or (%s)\n' "$user" "$AUDIT_FILTER"
 }
 
@@ -85,6 +83,10 @@ self_test() {
   check "(package(asterius-web)) or ($AUDIT_FILTER)" --package=asterius-web
   check "(test(~a) or test(~b)) or ($AUDIT_FILTER)" a b
   check "((test(oidc))) or ($AUDIT_FILTER)" 'test(oidc)'
+  check "((binary(/authorization_code|refresh_token/))) or ($AUDIT_FILTER)" \
+    'binary(/authorization_code|refresh_token/)'
+  check "((binary(/authorization_code|refresh_token/)) or test(~tenancy)) or ($AUDIT_FILTER)" \
+    'binary(/authorization_code|refresh_token/)' tenancy
 
   # A wrong flag must stop the run, not be silently folded into the filter.
   if build_filter --jobs 4 >/dev/null 2>&1; then
@@ -99,7 +101,8 @@ self_test() {
   # after that point: reaching the profile error proves the filterset parsed,
   # and costs no compilation.
   local expr out
-  for expr in "$(build_filter)" "$(build_filter tenancy)" "$(build_filter -p asterius-web x)"; do
+  for expr in "$(build_filter)" "$(build_filter tenancy)" "$(build_filter -p asterius-web x)" \
+    "$(build_filter 'binary(/authorization_code|refresh_token/)' tenancy)"; do
     out=$(SQLX_OFFLINE=true cargo nextest list -E "$expr" \
       --cargo-profile nextest-filterset-parse-check-only 2>&1 || true)
     if [[ $out == *nextest-filterset-parse-check-only* ]]; then
