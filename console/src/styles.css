@@ -1573,3 +1573,66 @@
 .architecture-shortcuts span { display: inline-flex; gap: .5rem; align-items: center; }
 .architecture-shortcuts kbd { background: var(--line); border-radius: .25rem; padding: .15rem .35rem; }
 .architecture-shortcuts small { flex-basis: 100%; color: var(--muted); }
+
+/* Conditional policy structure shares the console form vocabulary and tokens. */
+.conditional-rule, .conditional-condition {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--space-4);
+}
+.conditional-rule { background: var(--surface); }
+.conditional-condition { background: var(--surface-sunken); container-type: inline-size; }
+@container (min-width: 420px) {
+  .conditional-condition[data-leaf="true"] > [data-slot="field-group"] { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .conditional-condition[data-leaf="true"] > [data-slot="field-group"] > :not(.field) { grid-column: 1 / -1; }
+}
+.conditional-child { min-width: 0; padding-inline-start: var(--space-3); border-inline-start: 2px solid var(--line); display: flex; flex-direction: column; gap: var(--space-2); }
+.conditional-rule-header, .conditional-zone, .conditional-selected li { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.conditional-zone > .field { flex: 1; min-width: 0; }
+.conditional-selected { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: var(--space-2); }
+.conditional-selected li { padding: var(--space-3); border: 1px solid var(--line); border-radius: var(--ctl); }
+.conditional-selected li > div { min-width: 0; display: flex; flex-direction: column; gap: var(--space-1); overflow-wrap: anywhere; }
+/* Horizontal library fields keep checkbox geometry independent of text fields. */
+.conditional-builder { max-width: 1120px; display: flex; flex-direction: column; gap: var(--space-5); }
+.conditional-toolbar { padding-bottom: var(--space-4); border-bottom: 1px solid var(--line); }
+.conditional-toolbar .actions { align-items: flex-end; }
+.conditional-step { min-width: 0; border: 1px solid var(--line); border-radius: var(--radius-lg, 15px); overflow: clip; }
+.conditional-step-heading { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-4) var(--space-5); background: var(--surface-sunken); border-bottom: 1px solid var(--line); }
+.conditional-step-heading > div { flex: 1; min-width: 0; }
+.conditional-step-heading h3 { margin: 0; font-size: 1rem; font-weight: 600; }
+.conditional-step-heading p { margin: var(--space-1) 0 0; color: var(--muted); font-size: .875rem; }
+.conditional-step-number { display: grid; place-items: center; flex: 0 0 30px; height: 30px; border: 1px solid var(--line); border-radius: 50%; background: var(--surface); color: var(--fg); font-size: .875rem; font-weight: 600; }
+.conditional-step-body { padding: var(--space-5); }
+.conditional-builder .conditional-choice-set { border: 0; padding: 0; margin: 0; }
+.conditional-choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); gap: var(--space-2); }
+.conditional-choice { min-width: 0; gap: var(--space-3); padding-inline: var(--space-3); border: 1px solid var(--line); border-radius: var(--ctl); background: var(--surface); }
+.conditional-choice[data-selected="true"] { border-color: var(--accent); background: var(--surface-sunken); box-shadow: inset 3px 0 0 var(--accent); }
+.conditional-choice:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.conditional-choice > [data-slot="checkbox"] { flex: 0 0 16px; width: 16px; height: 16px; }
+.conditional-choice > [data-slot="field-label"] { min-width: 0; min-height: 60px; padding-block: var(--space-3); cursor: pointer; }
+.conditional-choice [data-slot="field-label"] span { min-width: 0; display: flex; flex-direction: column; gap: var(--space-1); overflow-wrap: anywhere; }
+.conditional-choice strong { font-size: .875rem; font-weight: 500; }
+.conditional-choice small { color: var(--muted); font-size: .75rem; font-weight: 400; }
+.conditional-choice[data-disabled="true"] { opacity: .6; }
+.conditional-help { font-size: .875rem; line-height: 1.6; max-width: 80ch; }
+.conditional-empty { padding: var(--space-4); border: 1px dashed var(--line); border-radius: var(--ctl); color: var(--muted); font-size: .875rem; }
+.conditional-empty p { margin: var(--space-2) 0 0; }
+.conditional-advanced { border-top: 1px solid var(--line); padding-top: var(--space-3); }
+.conditional-advanced > summary { cursor: pointer; padding-block: var(--space-3); font-weight: 500; min-height: 44px; }
+.conditional-advanced > summary > span { margin-inline-start: var(--space-2); font-size: .8125rem; font-weight: 400; }
+.conditional-advanced > .stack { padding-top: var(--space-4); }
+.conditional-scope-footer { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: var(--space-3); font-size: .875rem; }
+@media (max-width: 700px) {
+  .conditional-step-heading, .conditional-step-body { padding: var(--space-3); }
+  .conditional-step-heading { flex-wrap: wrap; }
+  .conditional-advanced > summary > span { display: block; margin-inline-start: var(--space-4); }
+}
+.conditional-review-value { white-space: pre-wrap; overflow-wrap: anywhere; }
+.conditional-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4); }
+@media (max-width: 700px) {
+  .conditional-rule, .conditional-condition { padding: var(--space-2); }
+  .conditional-child { padding-inline-start: var(--space-1); }
+  .conditional-zone { align-items: flex-start; flex-direction: column; }
+  .conditional-comparison { grid-template-columns: minmax(0, 1fr); }
+}

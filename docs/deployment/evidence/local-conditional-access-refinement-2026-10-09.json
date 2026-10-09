@@ -1,0 +1,106 @@
+{
+  "ticket": "ast-xprt",
+  "inherited_implementation_ticket": "ast-j9wd",
+  "source": {
+    "base_commit": "99f4ae3996711b590a42c7f5f6002c314176e429",
+    "branch": "claude/ast-xprt",
+    "worktree": "/home/qrodic/workspace/worktrees/ast-xprt",
+    "state": "Uncommitted isolated candidate carrying ast-j9wd; no commit, merge, push or remote CI",
+    "files_sha256": {
+      "console/DESIGN_SYSTEM.md": "208dbc7722ee1e085cda3faa7d67b2b2c90a64ba9074101af8456d072dd648e6",
+      "console/src/conditional-policy.tsx": "f51fa13e6d26b9bd3b1233aba844238221b027df3f542a74ddfac72472f10891",
+      "console/src/conditional-policy-builder.tsx": "4c5a19da4dcad2d22043f8cfbed534ac4e8b3f73056b072d18f2e6fae6a85b08",
+      "console/src/conditional-policy-builder-model.ts": "7cd7d358a8bc0d153fc4d2d2aad124125f21d7d44ad5c7ed58ec105f841655c1",
+      "console/src/policy.tsx": "eec3cd3e4c6c144752aec7ac9d0cc2ed49d55dfa878f55fa30e78b461c0288a9",
+      "console/src/policy-simulation.tsx": "c9abc1887e15403ba9f99ba9e43577935373376a8af3e6cb7e0a06f955497bd2",
+      "console/src/styles.css": "e082cf5de189f5b7ae10ec802e555a1ad93875eb01630fda403b867e01e27a91",
+      "console/tests/conditional-policy-builder.test.ts": "7438029fd4c94b6d06aa8902f607917b4b9ce2f9a401ccaa64f2945c577fe546",
+      "e2e/tests/console.spec.ts": "fd7f40c4a94c294fb26c688d2ac024ed0493e5c60ef71adf3adb5cbee0563d1a"
+    }
+  },
+  "candidate_probe": {
+    "restore": true,
+    "candidate_startup_ready": true,
+    "identity_and_migration_digests_unchanged": true,
+    "binary_sha256": "e2bf38f5ba702fd982a3bdcb52bd74e6de96ffc68dfb6ba06cff83c2a693b65c"
+  },
+  "live": {
+    "verified_at": "2026-10-09T17:33:35.622676+00:00",
+    "context": "kind-asterius-local",
+    "namespace": "asterius",
+    "image": "asterius-idp:local-ast-xprt-20261009",
+    "image_id": "sha256:971787250082c954aedbca48c1d68fbc02ee32a251a4e54b5afe74c68eefcae4",
+    "pod": "asterius-75f46b6b8f-f89gz",
+    "private_backup": "/home/qrodic/.local/share/asterius/backups/ast-xprt-20261009T172644Z",
+    "previous_image": "asterius-idp:local-ast-j9wd-20261009",
+    "identity_migration_digests_unchanged": true,
+    "counts": {
+      "users": 5,
+      "credentials": 5,
+      "totp_credentials": 1,
+      "_sqlx_migrations": 122
+    },
+    "configuration_and_secret_data_unchanged": true,
+    "ingress_and_tailscale_serve_unchanged": true,
+    "deployment_spec_changed_only_image": true,
+    "canonical_readyz": {
+      "ready": true,
+      "database": true,
+      "migrations_applied": true,
+      "features": [
+        "grant_management",
+        "ciba",
+        "device_flow",
+        "token_exchange",
+        "ssf",
+        "dpop_nonce",
+        "request_object"
+      ],
+      "mail_transport": "journal"
+    },
+    "discovery_issuer_verified": true,
+    "protected_login_verified": true,
+    "served_asset_sha256": {
+      "inter-cyrillic-ext-wght-normal-BOeWTOD4.woff2": "ca157063339ac4ad418f214f3abfed119b0798ab4d377386ce5c9e5a7a435ebd",
+      "inter-cyrillic-wght-normal-DqGufNeO.woff2": "71d5ee93cc1e9f1d520a3a8b66456de18c7879d8df09d57fcd2eaff75fef0075",
+      "inter-greek-ext-wght-normal-DlzME5K_.woff2": "6e9e020a25f9b56d418f2c085b1d3c09725a4da23fe693a5b463064606732190",
+      "inter-greek-wght-normal-CkhJZR-_.woff2": "1be3448e292fbf05ffe176fe1e43f135013d50b1e7d324ad1a558f623d3bb6f6",
+      "inter-latin-ext-wght-normal-DO1Apj_S.woff2": "34b9c504cab7a73e37b746343a449132e56cf7b5481af2cb81dc74dcff25c956",
+      "inter-latin-wght-normal-Dx4kXJAl.woff2": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62",
+      "inter-vietnamese-wght-normal-CBcvBZtf.woff2": "5c66f9e07e90c6d4ac4922cc68d60de26c17b1858e677fb5e603fce3952b3ff2",
+      "kubernetes-sXAxUTAP.svg": "ff5427cfeeff39e82834ab1b4fe3ed61fc08596225a17eed56adc04f7cc1f712",
+      "main-DpZtQhZ8.js": "321c3a0746e13879af688d19bca3ed419998224652a76abd4760c8bc4d528d2a",
+      "style-DqUlP3Ta.css": "99b669ea98fbdbd33f076406b417b3ce650a3543c250738e0008b016ae3b7e4c"
+    }
+  },
+  "validation": {
+    "frontend_typecheck_and_build": "passed",
+    "model_publication_tests": 7,
+    "unique_targeted_browser_scenarios_passed": 8,
+    "browser_runs": "Final eight-scenario run: seven passed, one stored-set-order assertion corrected and passed on targeted recheck; exact reviewed PUT snapshot remains asserted. Earlier label/focus expectation fixes are included.",
+    "geometry_widths": [
+      1792,
+      1280,
+      390
+    ],
+    "wcag_tags": [
+      "wcag2a",
+      "wcag2aa",
+      "wcag21a",
+      "wcag21aa"
+    ],
+    "inspected_screens": [
+      "desktop light targets/selected cards",
+      "nested Any/Not and paired leaf fields",
+      "390px dark targets and advanced evidence"
+    ],
+    "limitations": [
+      "Full Rust suite and remote CI not run; no Rust source changes",
+      "GNU development runtime embeds production console; default musl release packaging not verified",
+      "Live human sign-in and pointer hover/motion replay not performed",
+      "Preexisting table landmark naming follow-up remains ast-11b2"
+    ]
+  },
+  "rollback_command": "kubectl --context kind-asterius-local -n asterius set image deployment/asterius asterius=asterius-idp:local-ast-j9wd-20261009",
+  "live_policy_and_classification_writes": false
+}

@@ -1,0 +1,137 @@
+{
+  "date": "2026-10-09T17:16:06.457015+00:00",
+  "ticket": "ast-j9wd",
+  "context": "kind-asterius-local",
+  "namespace": "asterius",
+  "source": {
+    "base_commit": "99f4ae3996711b590a42c7f5f6002c314176e429",
+    "branch": "claude/ast-j9wd",
+    "state": "uncommitted isolated worktree; no merge, commit, remote push or remote CI",
+    "files_sha256": {
+      "console/DESIGN_SYSTEM.md": "a7fcb106e08996afecab42dba50133183c872c2ef7e97effbd021db629de87c1",
+      "console/src/conditional-policy.tsx": "f51fa13e6d26b9bd3b1233aba844238221b027df3f542a74ddfac72472f10891",
+      "console/src/conditional-policy-builder.tsx": "078bad537638e66c43eb18520ba4b5c710d0e283e59bf1fc0e5ea3391d684d36",
+      "console/src/conditional-policy-builder-model.ts": "7cd7d358a8bc0d153fc4d2d2aad124125f21d7d44ad5c7ed58ec105f841655c1",
+      "console/src/policy.tsx": "eec3cd3e4c6c144752aec7ac9d0cc2ed49d55dfa878f55fa30e78b461c0288a9",
+      "console/src/policy-simulation.tsx": "c9abc1887e15403ba9f99ba9e43577935373376a8af3e6cb7e0a06f955497bd2",
+      "console/src/styles.css": "d7b4065f0c289f7df52363db1ff74ea2dfa8c372a82eab459a262bd3ce82d455",
+      "console/tests/conditional-policy-builder.test.ts": "7438029fd4c94b6d06aa8902f607917b4b9ce2f9a401ccaa64f2945c577fe546",
+      "e2e/tests/console.spec.ts": "1cdfee3e36fc5a395f8819154a5d2411655eac9eb88331b578a23c83dc09395e"
+    }
+  },
+  "image": {
+    "tag": "asterius-idp:local-ast-j9wd-20261009",
+    "id": "sha256:30bb62ea6ba98abf9bcb8d7998476f4926a3e8afc29ac65acad7e012012c9e4c",
+    "binary_sha256": "0929d86e40f3345c97b7f422a4e90dd7b7b6ff7892e5f728eec373da9a6c77a2",
+    "runtime_profile": "GNU development build, embedded production console; default musl release packaging not tested"
+  },
+  "rollout": {
+    "pod": "asterius-59bf767877-bzblr",
+    "ready_replicas": 1,
+    "image": "asterius-idp:local-ast-j9wd-20261009",
+    "readyz": {
+      "ready": true,
+      "database": true,
+      "migrations_applied": true,
+      "features": [
+        "grant_management",
+        "ciba",
+        "device_flow",
+        "token_exchange",
+        "ssf",
+        "dpop_nonce",
+        "request_object"
+      ],
+      "mail_transport": "journal"
+    }
+  },
+  "preservation": {
+    "users": 5,
+    "password_credentials": 5,
+    "totp_credentials": 1,
+    "migration_entries": 122,
+    "exact_identity_totp_and_migration_digests_unchanged": true,
+    "isolated_pg18_restore_and_candidate_startup_passed": true,
+    "configmaps_data_unchanged": true,
+    "secrets_data_unchanged": true,
+    "ingress_specs_unchanged": true,
+    "tailscale_serve_unchanged": true
+  },
+  "https": {
+    "discovery_issuer": "https://desktop-cpbptqn-1.tailacbb15.ts.net/t/demo",
+    "protected_console_sign_in_status": 200,
+    "verified_assets": [
+      {
+        "file": "inter-cyrillic-ext-wght-normal-BOeWTOD4.woff2",
+        "sha256": "ca157063339ac4ad418f214f3abfed119b0798ab4d377386ce5c9e5a7a435ebd",
+        "status": 200
+      },
+      {
+        "file": "inter-cyrillic-wght-normal-DqGufNeO.woff2",
+        "sha256": "71d5ee93cc1e9f1d520a3a8b66456de18c7879d8df09d57fcd2eaff75fef0075",
+        "status": 200
+      },
+      {
+        "file": "inter-greek-ext-wght-normal-DlzME5K_.woff2",
+        "sha256": "6e9e020a25f9b56d418f2c085b1d3c09725a4da23fe693a5b463064606732190",
+        "status": 200
+      },
+      {
+        "file": "inter-greek-wght-normal-CkhJZR-_.woff2",
+        "sha256": "1be3448e292fbf05ffe176fe1e43f135013d50b1e7d324ad1a558f623d3bb6f6",
+        "status": 200
+      },
+      {
+        "file": "inter-latin-ext-wght-normal-DO1Apj_S.woff2",
+        "sha256": "34b9c504cab7a73e37b746343a449132e56cf7b5481af2cb81dc74dcff25c956",
+        "status": 200
+      },
+      {
+        "file": "inter-latin-wght-normal-Dx4kXJAl.woff2",
+        "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62",
+        "status": 200
+      },
+      {
+        "file": "inter-vietnamese-wght-normal-CBcvBZtf.woff2",
+        "sha256": "5c66f9e07e90c6d4ac4922cc68d60de26c17b1858e677fb5e603fce3952b3ff2",
+        "status": 200
+      },
+      {
+        "file": "kubernetes-sXAxUTAP.svg",
+        "sha256": "ff5427cfeeff39e82834ab1b4fe3ed61fc08596225a17eed56adc04f7cc1f712",
+        "status": 200
+      },
+      {
+        "file": "main-B2-eNsV4.js",
+        "sha256": "2954b3fadfcd8666dde2bf3c2b5afc660899ae96fd2f6ccefef6d6ca8cc98f8d",
+        "status": 200
+      },
+      {
+        "file": "style-CmteEuSq.css",
+        "sha256": "5671943620bf786595a5d143dbd364f3ada47db7393782fc216b28e5af82f4b4",
+        "status": 200
+      }
+    ]
+  },
+  "validation": {
+    "console_typecheck_and_build": "passed",
+    "targeted_model_and_publication_tests": 7,
+    "unique_targeted_browser_scenarios": 7,
+    "browser_runs": "6 passed main targeted run; 2 passed additional run including repeated creation scenario and new permission/retry scenario",
+    "browser_evidence": "disposable e2e tenant only; real server policy publication/simulation; controlled 409, pagination, search failure and session-permission responses",
+    "interface": "desktop light and 390px mobile dark screenshots inspected; narrow overflow, keyboard focus, WCAG 2 A/AA and 2.1 A/AA checked; CSP watched on real creation workflow",
+    "not_run": [
+      "full Rust suite",
+      "remote CI",
+      "default musl release packaging",
+      "human sign-in on live deployment",
+      "live policy publication"
+    ]
+  },
+  "backup": {
+    "private_directory": "/home/qrodic/.local/share/asterius/backups/ast-j9wd-20261009T170652Z",
+    "previous_image": "asterius-idp:local-ast-kkye-20261008",
+    "rollback": "kubectl --context kind-asterius-local -n asterius set image deployment/asterius asterius=asterius-idp:local-ast-kkye-20261008"
+  },
+  "try_url": "https://desktop-cpbptqn-1.tailacbb15.ts.net/t/admin/admin/#/policy"
+}

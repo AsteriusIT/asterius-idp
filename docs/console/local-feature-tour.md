@@ -1,5 +1,14 @@
 # Try Asterius on the local cluster
 
+The 9 October conditional-access UI trial is now deployed as
+`asterius-idp:local-ast-xprt-20261009`. Open **Access policy → Build conditional
+access** to try it. See the [current trial instructions](../deployment/local-tailscale.md#current-local-ui-trial--9-october-2026)
+and [verification evidence](../deployment/evidence/local-conditional-access-refinement-2026-10-09.json).
+The feature inventory below records the 8 October deployment and remains a
+historical reference; use the current trial evidence for the running image.
+
+## Feature inventory — 8 October 2026
+
 Use this guide to explore the browser console and the supported API and integration workflows. These are proposed exercises, not a claim that every scenario has been run on the deployed cluster. A feature switch, a generated configuration, or a successful preview is only one step toward a working integration.
 
 ## Start here

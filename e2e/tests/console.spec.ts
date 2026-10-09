@@ -1212,7 +1212,7 @@ test('the policy editor refuses a bad document, saves a good one and answers the
 });
 
 test('policy simulation uses actual references without saving a hypothetical draft', async ({ page }) => {
-  await signIn(page);
+  await signIn(page); await ensurePolicyReferences(page);
   await openPolicy(page);
   await page.getByRole('button', { name: 'Edit policy', exact: true }).click();
   await page.getByLabel('The rule document, as the evaluator reads it').fill(JSON.stringify({
@@ -1227,7 +1227,8 @@ test('policy simulation uses actual references without saving a hypothetical dra
     await expect.poll(() => choices.count()).toBeGreaterThan(1);
     await choices.nth(1).click();
   }
-  await page.getByLabel('Use the editor draft as hypothetical policy').check();
+  await page.getByLabel('Policy to simulate', { exact: true }).click();
+  await page.getByRole('option', { name: 'Draft policy (hypothetical)', exact: true }).click();
   await page.getByRole('button', { name: 'Simulate', exact: true }).click();
   await expect(page.getByText('Hypothetical result', { exact: false })).toBeVisible();
   const result = page.getByRole('region', { name: 'Decision', exact: true });
@@ -2097,4 +2098,272 @@ test('linked identities require confirmation and send only accepted identity fie
   await page.getByRole('dialog').getByRole('button', { name: 'Confirm link' }).click();
   await expect(page.getByRole('button', { name: 'Unlink', exact: true })).toBeVisible();
   expect(mutations[1]).toEqual({ method: 'PUT', body: identity });
+});
+
+/** Self-contained references for targeted policy runs, only inside the disposable e2e tenant. */
+async function ensurePolicyReferences(page: Page): Promise<void> {
+  const result = await page.evaluate(async () => {
+    const session = await (await fetch('api/v1/session')).json() as { csrf_token: string; workspace: string };
+    if (session.workspace !== 'e2e') throw new Error('Policy fixtures require the e2e tenant.');
+    const headers = { 'X-CSRF-Token': session.csrf_token, 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() };
+    const clients = await (await fetch('api/v1/clients?limit=100')).json() as { items: unknown[] };
+    if (!clients.items.length) {
+      const response = await fetch('api/v1/clients', { method: 'POST', headers, body: JSON.stringify({ client_name: 'Conditional builder fixture', redirect_uris: ['https://builder.example.test/callback'], grant_types: ['authorization_code', 'refresh_token'], scope: 'openid profile', jwks_uri: 'https://builder.example.test/jwks.json' }) });
+      if (!response.ok) throw new Error(`Fixture application registration: ${response.status} ${await response.text()}`);
+    }
+    const resources = await (await fetch('api/v1/resource-servers')).json() as { items: unknown[] };
+    if (!resources.items.length) {
+      const response = await fetch('api/v1/resource-servers/' + encodeURIComponent('https://builder.example.test/api'), { method: 'PUT', headers, body: JSON.stringify({ scopes: null, default_token_lifetime_seconds: 300 }) });
+      if (!response.ok) throw new Error(`Fixture resource registration: ${response.status} ${await response.text()}`);
+    }
+    return true;
+  });
+  expect(result).toBe(true);
+}
+
+async function builderChoose(page: Page, label: string, option: string): Promise<void> {
+  await page.getByLabel(label, { exact: true }).click();
+  await page.getByRole('option', { name: option, exact: true }).click();
+}
+async function builderJSON(page: Page): Promise<Record<string, unknown>> {
+  await page.getByRole('button', { name: 'JSON', exact: true }).click();
+  return JSON.parse(await page.getByLabel('The rule document, as the evaluator reads it').inputValue()) as Record<string, unknown>;
+}
+async function restoreBuilderPolicy(page: Page, document: unknown): Promise<void> {
+  const status = await page.evaluate(async original => {
+    const session = await (await fetch('api/v1/session')).json() as { csrf_token: string };
+    const current = await (await fetch('api/v1/policies')).json() as { revision: string | null };
+    const response = await fetch('api/v1/policies', { method: 'PUT', headers: {
+      'Content-Type': 'application/json', 'X-CSRF-Token': session.csrf_token,
+      ...(current.revision ? { 'If-Match': `"${current.revision}"` } : { 'If-None-Match': '*' }),
+    }, body: JSON.stringify(original) });
+    return response.status;
+  }, document);
+  expect(status).toBe(200);
+}
+
+test('conditional access builder creates nested conditions, simulates and publishes the reviewed document', async ({ page, context }) => {
+  const watcher = await CspWatcher.attach(context, true);
+  await signIn(page); await ensurePolicyReferences(page); await openPolicy(page);
+  const original = await page.evaluate(async () => (await (await fetch('api/v1/policies')).json() as { document: unknown }).document);
+  try {
+    await page.getByRole('button', { name: 'Build conditional access', exact: true }).click();
+    await page.getByRole('button', { name: 'Add conditional scope', exact: true }).click();
+    await page.getByLabel('Scope identifier', { exact: true }).fill('browser-builder-fixture');
+    await page.getByLabel('Find applications', { exact: true }).click();
+    await expect.poll(() => page.getByRole('option').count()).toBeGreaterThan(0);
+    await page.getByRole('option').first().click();
+    await page.getByRole('button', { name: 'Select browser sign-in flows', exact: true }).click();
+    await expect(page.getByRole('checkbox', { name: 'Browser authorization authorize', exact: true })).toBeChecked();
+    await expect(page.getByRole('checkbox', { name: 'Code redemption authorization_code', exact: true })).toBeChecked();
+    await page.getByRole('button', { name: 'Add conditional rule', exact: true }).click();
+    await page.getByRole('button', { name: 'Add group to Rule 1 condition', exact: true }).click();
+    await builderChoose(page, 'Rule 1 condition.2 type', 'Any condition');
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Replace condition', exact: true }).click();
+    await page.getByRole('button', { name: 'Add condition to Rule 1 condition.2', exact: true }).click();
+    await builderChoose(page, 'Rule 1 condition.2.1 type', 'Not');
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Replace condition', exact: true }).click();
+    await expect(page.getByRole('region', { name: 'Conditional access rollout', exact: true })).toBeVisible();
+    await page.getByLabel('Scope identifier', { exact: true }).scrollIntoViewIfNeeded();
+    await page.screenshot({ path: test.info().outputPath('conditional-builder-desktop.png') });
+    await page.getByLabel('Rule 1 condition.2.1 type', { exact: true }).scrollIntoViewIfNeeded();
+    await page.screenshot({ path: test.info().outputPath('conditional-builder-nested-rules.png') });
+    const draft = await builderJSON(page);
+    const scopes = draft['conditional_scopes'] as { mode: string; clients: string[]; rules: { when: unknown }[] }[];
+    expect(scopes[0]?.mode).toBe('report_only');
+    expect(scopes[0]?.rules[0]?.when).toEqual({ all: [{ application_sensitivity: 'critical' }, { any: [{ not: { application_sensitivity: 'critical' } }] }] });
+    await page.getByRole('button', { name: 'Builder', exact: true }).click();
+    // An actual fixture user/application/resource; conditional facts remain server-resolved.
+    for (const label of ['Tenant user', 'Application', 'Registered resource']) {
+      await page.getByLabel(label, { exact: true }).click();
+      await expect.poll(() => page.getByRole('option').count()).toBeGreaterThan(1);
+      await page.getByRole('option').nth(1).click();
+    }
+    await page.getByRole('button', { name: 'Simulate', exact: true }).click();
+    await expect(page.getByText('Hypothetical result', { exact: false })).toBeVisible();
+    const stored = await page.evaluate(async () => (await (await fetch('api/v1/policies')).json() as { document: unknown }).document);
+    expect(stored).toEqual(original);
+    await page.getByRole('button', { name: 'Save policy', exact: true }).click();
+    const dialog = page.getByRole('alertdialog');
+    await expect(dialog).toContainText('Reviewed revision');
+    await expect(dialog).toContainText('browser-builder-fixture');
+    const publication = page.waitForRequest(request => request.url().endsWith('/api/v1/policies') && request.method() === 'PUT');
+    await dialog.getByRole('button', { name: 'Publish reviewed policy', exact: true }).click();
+    expect((await publication).postDataJSON()).toEqual(draft);
+    await expect(page.getByRole('heading', { name: 'Access policy', exact: true })).toBeVisible();
+    const published = await page.evaluate(async () => (await (await fetch('api/v1/policies')).json() as { document: unknown }).document);
+    // Scope actions are a server-side set; its stored representation is sorted.
+    // The PUT body above must still equal the exact reviewed draft snapshot.
+    const storedDraft = structuredClone(draft);
+    for (const scope of storedDraft['conditional_scopes'] as { actions: string[] }[]) scope.actions.sort();
+    expect(published).toMatchObject(storedDraft);
+    await page.getByRole('button', { name: 'Stage active enforcement', exact: true }).click();
+    const summary = page.getByRole('region', { name: 'Conditional access rollout', exact: true });
+    await expect(summary).toContainText('Active enforcement');
+    await page.getByRole('button', { name: 'Cancel editing', exact: true }).click();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Discard changes', exact: true }).click();
+    await expect(summary).toContainText('Report-only');
+    watcher.assertClean('conditional access builder');
+  } finally { await restoreBuilderPolicy(page, original); }
+});
+
+test('conditional access builder preserves advanced JSON and drafts after publication conflicts', async ({ page }) => {
+  await signIn(page); await openPolicy(page);
+  await page.getByRole('button', { name: 'Edit policy', exact: true }).click();
+  const advanced = { version: 1, rules: [{ id: 'base', effect: 'deny' }], metadata: { keep: true }, conditional_scopes: [{ id: 'advanced', mode: 'report_only', clients: ['unresolved'], actions: ['authorize'], rules: [{ id: 'r', effect: 'permit', when: { all: [{ group: 'existing-group' }, { application_sensitivity: 'critical' }] }, acr_values: ['custom'] }] }] };
+  await page.getByLabel('The rule document, as the evaluator reads it').fill(JSON.stringify(advanced));
+  await page.getByRole('button', { name: 'Builder', exact: true }).click();
+  await expect(page.getByText('This expression is preserved.', { exact: false })).toBeVisible();
+  await page.getByLabel('Scope identifier', { exact: true }).fill('renamed');
+  const edited = await builderJSON(page);
+  expect(edited).toEqual({ ...advanced, conditional_scopes: [{ ...advanced.conditional_scopes[0], id: 'renamed' }] });
+  let publicationCount = 0;
+  await page.route('**/api/v1/policies', async route => {
+    if (route.request().method() !== 'PUT') return route.continue();
+    publicationCount++;
+    expect(route.request().postDataJSON()).toEqual(edited);
+    await route.fulfill({ status: 409, contentType: 'application/json', body: '{"error":"conflict fixture"}' });
+  });
+  await page.getByRole('button', { name: 'Save policy', exact: true }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Publish reviewed policy', exact: true }).click();
+  await expect(page.getByText('Another operator changed the policy.', { exact: false })).toBeVisible();
+  expect(await builderJSON(page)).toEqual(edited);
+  await expect(page.getByRole('button', { name: 'Save policy', exact: true })).toBeDisabled();
+  expect(publicationCount).toBe(1);
+  await page.unroute('**/api/v1/policies');
+});
+
+test('conditional access builder retains malformed JSON, supports paginated targets and narrow dark layouts', async ({ page }) => {
+  await signIn(page); await openPolicy(page);
+  await page.getByRole('button', { name: 'Edit policy', exact: true }).click();
+  await page.getByLabel('The rule document, as the evaluator reads it').fill('{ unreadable draft');
+  await page.getByRole('button', { name: 'Builder', exact: true }).click();
+  await expect(page.getByText('The draft cannot be edited structurally.', { exact: false })).toBeVisible();
+  await page.getByRole('button', { name: 'Open JSON editor', exact: true }).click();
+  await expect(page.getByLabel('The rule document, as the evaluator reads it')).toHaveValue('{ unreadable draft');
+  await page.getByLabel('The rule document, as the evaluator reads it').fill('{"version":1,"rules":[]}');
+  await page.getByRole('button', { name: 'Builder', exact: true }).click();
+  await page.getByRole('button', { name: 'Add conditional scope', exact: true }).click();
+  await page.route('**/api/v1/clients?**', route => {
+    const params = new URL(route.request().url()).searchParams;
+    return route.fulfill({ contentType: 'application/json', body: JSON.stringify(params.has('cursor') ? { items: [{ client_id: 'second-page', client_name: 'Second page application' }], next_cursor: null } : { items: [{ client_id: 'first-page', client_name: 'First page application' }], next_cursor: 'page-2' }) });
+  });
+  await page.getByLabel('Find applications', { exact: true }).click();
+  await page.getByRole('button', { name: 'Load more applications', exact: true }).click();
+  await page.getByRole('option', { name: 'Second page application', exact: false }).click();
+  expect(((await builderJSON(page))['conditional_scopes'] as { clients: string[] }[])[0]?.clients).toEqual(['second-page']);
+  await page.getByRole('button', { name: 'Builder', exact: true }).click();
+  await page.getByRole('button', { name: 'Add conditional rule', exact: true }).click();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.evaluate(() => document.documentElement.classList.add('dark'));
+  await expect(page.getByLabel('Scope identifier', { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await expect(page.getByRole('checkbox', { name: 'Browser authorization authorize', exact: true })).toBeVisible();
+  await page.getByLabel('Scope identifier', { exact: true }).focus();
+  await page.keyboard.press('Tab');
+  await expect(page.getByRole('button', { name: 'Remove application second-page', exact: true })).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(page.getByLabel('Find applications', { exact: true })).toBeFocused();
+  await page.screenshot({ path: test.info().outputPath('conditional-builder-mobile-dark.png') });
+  const axe = await new AxeBuilder({ page }).include('main').withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+  expect(axe.violations).toEqual([]);
+});
+
+test('conditional access builder rejects late simulation results after draft changes', async ({ page }) => {
+  await signIn(page); await ensurePolicyReferences(page); await openPolicy(page);
+  await page.getByRole('button', { name: 'Edit policy', exact: true }).click();
+  for (const label of ['Tenant user', 'Application', 'Registered resource']) {
+    await page.getByLabel(label, { exact: true }).click();
+    await expect.poll(() => page.getByRole('option').count()).toBeGreaterThan(1);
+    await page.getByRole('option').nth(1).click();
+  }
+  let release: (() => void) | undefined;
+  const delayed = new Promise<void>(resolve => { release = resolve; });
+  let arrived: (() => void) | undefined;
+  const received = new Promise<void>(resolve => { arrived = resolve; });
+  await page.route('**/api/v1/policies/simulate', async route => {
+    const response = await route.fetch();
+    arrived?.(); await delayed; await route.fulfill({ response });
+  });
+  await page.getByRole('button', { name: 'Simulate', exact: true }).click();
+  await received;
+  await page.getByLabel('The rule document, as the evaluator reads it').fill('{"version":1,"rules":[{"id":"new-draft","effect":"deny"}]}');
+  const completed = page.waitForResponse('**/api/v1/policies/simulate');
+  release?.(); await completed;
+  await expect(page.getByText('Hypothetical result', { exact: false })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Simulate', exact: true })).toBeEnabled();
+});
+
+
+test('conditional access builder respects read-only access and retries application search failures', async ({ page }) => {
+  await signIn(page); await openPolicy(page);
+  await page.getByRole('button', { name: 'Build conditional access', exact: true }).click();
+  await page.getByRole('button', { name: 'Add conditional scope', exact: true }).click();
+  let attempts = 0;
+  await page.route('**/api/v1/clients?**', route => {
+    attempts++;
+    return attempts === 1 ? route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":{"message":"Fixture directory unavailable"}}' }) : route.fulfill({ contentType: 'application/json', body: '{"items":[{"client_id":"retry-fixture","client_name":"Recovered application"}],"next_cursor":null}' });
+  });
+  await page.getByLabel('Find applications', { exact: true }).click();
+  await page.getByRole('button', { name: 'Retry applications', exact: true }).click();
+  await page.getByRole('option', { name: 'Recovered application', exact: false }).click();
+  expect(((await builderJSON(page))['conditional_scopes'] as { clients: string[] }[])[0]?.clients).toEqual(['retry-fixture']);
+  await page.getByRole('button', { name: 'Cancel editing', exact: true }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Discard changes', exact: true }).click();
+  await page.unroute('**/api/v1/clients?**');
+  await page.route('**/api/v1/session', async route => {
+    const response = await route.fetch();
+    const session = await response.json() as { scopes: string[] };
+    await route.fulfill({ response, json: { ...session, scopes: session.scopes.filter(scope => scope !== 'admin.policies:write') } });
+  });
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Access policy', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Build conditional access', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Edit policy', exact: true })).toHaveCount(0);
+});
+
+
+test('conditional access builder keeps choice geometry readable across desktop and mobile', async ({ page }) => {
+  await signIn(page); await openPolicy(page);
+  await page.getByRole('button', { name: 'Edit policy', exact: true }).click();
+  await page.getByLabel('The rule document, as the evaluator reads it').fill(JSON.stringify({ version: 1, rules: [], conditional_scopes: [{ id: 'layout-fixture', mode: 'report_only', clients: [], actions: ['authorize'], required_facts: ['groups'], rules: [] }] }));
+  await page.getByRole('button', { name: 'Builder', exact: true }).click();
+  const advanced = page.locator('.conditional-advanced').filter({ has: page.locator('summary', { hasText: 'Advanced settings' }) });
+  await expect(advanced).not.toHaveAttribute('open', '');
+  await expect(advanced.locator('summary')).toContainText('1 required facts');
+  for (const width of [1792, 1280, 390]) {
+    await page.setViewportSize({ width, height: 1000 });
+    await page.evaluate(dark => document.documentElement.classList.toggle('dark', dark), width === 390);
+    if (width === 390) await advanced.locator('summary').click();
+    const choices = page.locator('.conditional-choice:visible');
+    expect(await choices.count()).toBe(width === 390 ? 17 : 9);
+    const geometry = await choices.evaluateAll(rows => rows.map(row => {
+      const box = row.querySelector('[role="checkbox"]')!.getBoundingClientRect();
+      const label = row.querySelector('label')!.getBoundingClientRect();
+      const bounds = row.getBoundingClientRect();
+      return { boxWidth: box.width, boxHeight: box.height, gap: label.left - box.right, labelWidth: label.width, labelHeight: label.height, contained: label.right <= bounds.right + 1 && box.left >= bounds.left };
+    }));
+    for (const row of geometry) {
+      expect(row.boxWidth).toBe(16); expect(row.boxHeight).toBe(16);
+      expect(row.gap).toBeGreaterThanOrEqual(8); expect(row.labelWidth).toBeGreaterThan(100);
+      expect(row.labelHeight).toBeGreaterThanOrEqual(44); expect(row.contained).toBe(true);
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    if (width === 390) {
+      await page.getByRole('checkbox', { name: 'Browser authorization authorize', exact: true }).scrollIntoViewIfNeeded();
+      await page.screenshot({ path: test.info().outputPath(`conditional-targets-${width}.png`) });
+    } else await page.locator('.conditional-step').first().screenshot({ path: test.info().outputPath(`conditional-targets-${width}.png`) });
+    if (width === 390) {
+      await page.getByRole('checkbox', { name: 'Groups', exact: true }).scrollIntoViewIfNeeded();
+      await page.screenshot({ path: test.info().outputPath('conditional-advanced-mobile.png') });
+    }
+  }
+  // A label click and keyboard Space both toggle only the intended canonical fact.
+  await advanced.locator('label', { hasText: 'Roles' }).click();
+  await page.getByRole('checkbox', { name: 'Roles', exact: true }).focus();
+  await page.keyboard.press('Space');
+  expect(((await builderJSON(page))['conditional_scopes'] as { required_facts: string[] }[])[0]?.required_facts).toEqual(['groups']);
+  await page.getByRole('button', { name: 'Builder', exact: true }).click();
+  const axe = await new AxeBuilder({ page }).include('.conditional-builder').withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+  expect(axe.violations).toEqual([]);
 });

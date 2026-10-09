@@ -1,5 +1,46 @@
 # Local deployment and private remote access
 
+## Current local UI trial — 9 October 2026
+
+The conditional access builder refinement (`ast-xprt`, including `ast-j9wd`) is running in
+`kind-asterius-local`, namespace `asterius`, as
+`asterius-idp:local-ast-xprt-20261009`. The deployed image was built from source
+base `99f4ae3996711b590a42c7f5f6002c314176e429` plus the builder and refinement
+changes. Evidence captures the candidate before Git integration; exact
+source-file, binary and served-asset hashes are in
+[the deployment evidence](evidence/local-conditional-access-refinement-2026-10-09.json).
+
+Open the [admin access-policy screen](https://desktop-cpbptqn-1.tailacbb15.ts.net/t/admin/admin/#/policy)
+and choose **Build conditional access**. Add a report-only scope, select actual
+applications and enforcement boundaries, then add nested All/Any/Not rules.
+The builder now has numbered **Choose what to protect**, **Define access
+conditions** and **Choose your rollout** sections. Choice cards have compact
+checkboxes and readable labels; **Select browser sign-in flows** selects both
+required browser boundaries. **Advanced settings** and **Rule details** expand
+when needed and retain configured-value summaries while collapsed.
+
+Builder and JSON edit the same draft. Use **What-if simulation** with **Draft
+policy**, then review **Save policy** before any publication. Drafting and
+simulation do not publish or grant access. Tenant `demo` has its own separate
+[policy screen](https://desktop-cpbptqn-1.tailacbb15.ts.net/t/demo/admin/#/policy).
+
+Typecheck, console build, seven targeted model/publication tests and eight
+unique targeted browser scenarios passed. Desktop light and narrow dark views
+were inspected. The fresh private PostgreSQL 18 backup restore and candidate
+startup preserved exact user, password-credential, TOTP and migration digests;
+the live rollout preserved the same digests (5 users, 5 password credentials,
+1 TOTP credential, 122 migration entries), all configuration/secret data,
+Ingress specs and Tailscale Serve configuration. Readiness, canonical discovery,
+the protected sign-in page and hashes of all ten served assets passed.
+
+No live policy or client classification was changed for this trial. The build
+uses the GNU runtime; full Rust tests, remote CI, default musl packaging and a
+human sign-in on the live deployment were not performed. The prior image and
+private backup remain available; the evidence records the image-only rollback
+command. The following sections describe earlier deployments.
+
+## Previous local rollout — 8 October 2026
+
 
 ## Current local feature-tour deployment — 8 October 2026
 
