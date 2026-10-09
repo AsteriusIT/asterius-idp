@@ -4,9 +4,10 @@
 
 The conditional access builder refinement (`ast-xprt`, including `ast-j9wd`) is running in
 `kind-asterius-local`, namespace `asterius`, as
-`asterius-idp:local-ast-xprt-20261009`. This is an uncommitted isolated-worktree
-candidate based on `99f4ae3996711b590a42c7f5f6002c314176e429`; it has not been
-merged or pushed. Exact source-file, binary and served-asset hashes are in
+`asterius-idp:local-ast-xprt-20261009`. The deployed image was built from source
+base `99f4ae3996711b590a42c7f5f6002c314176e429` plus the builder and refinement
+changes. Evidence captures the candidate before Git integration; exact
+source-file, binary and served-asset hashes are in
 [the deployment evidence](evidence/local-conditional-access-refinement-2026-10-09.json).
 
 Open the [admin access-policy screen](https://desktop-cpbptqn-1.tailacbb15.ts.net/t/admin/admin/#/policy)
