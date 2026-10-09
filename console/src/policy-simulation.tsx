@@ -2,7 +2,7 @@ import { JsonDraftEditor } from './components/json-draft-editor';
 import { FormSelect } from './components/ui/select';
 import { ConditionalExamples } from './conditional-examples';
 import { ENFORCEMENT_ACTIONS, factExamples, type EnforcementAction, type ExampleFactName, type FactExample } from './conditional-policy-model';
-import { useEffect, useState, type JSX } from 'react';
+import { useEffect, useRef, useState, type JSX } from 'react';
 import { probe, read, type Session } from './api';
 import { Verdict, type DecisionDocument } from './policy';
 import { Actions, Badge, Button, DataTable, Field, Message, Panel } from './ui';
@@ -14,8 +14,8 @@ interface References {
 }
 
 /** Actual tenant identities; hypothetical evidence never becomes production authority. */
-export function PolicySimulation({ session, revision, draft }: Readonly<{
-  session: Session; revision: string | null; draft: string;
+export function PolicySimulation({ session, revision, draft, editing = false }: Readonly<{
+  session: Session; revision: string | null; draft: string; editing?: boolean;
 }>): JSX.Element {
   const permitted = ['admin.policies:read', 'admin.users:read', 'admin.clients:read', 'admin.resource_servers:read']
     .every((scope) => session.scopes.includes(scope));
@@ -32,7 +32,12 @@ export function PolicySimulation({ session, revision, draft }: Readonly<{
   const [useExamples, setUseExamples] = useState(false);
   const [examples, setExamples] = useState<Partial<Record<ExampleFactName, FactExample>>>({});
   const [context, setContext] = useState('{}');
-  const [useDraft, setUseDraft] = useState(false);
+  const [useDraft, setUseDraft] = useState(editing);
+  useEffect(() => { setUseDraft(editing); }, [editing]);
+  const requestGeneration = useRef(0);
+  const inputKey = JSON.stringify([user, client, resource, kind, action, boundary, useExamples, examples, context, useDraft, draft, snapshot]);
+  const latestInput = useRef(inputKey);
+  latestInput.current = inputKey;
   const [busy, setBusy] = useState(false);
   const [decision, setDecision] = useState<DecisionDocument | null>(null);
   useEffect(() => {
@@ -49,8 +54,12 @@ export function PolicySimulation({ session, revision, draft }: Readonly<{
     return () => { current = false; };
   }, [permitted]);
 
-  useEffect(() => { setDecision(null); }, [user, client, resource, kind, action, boundary, useExamples, examples, context, useDraft, draft]);
+  useEffect(() => { requestGeneration.current++; setDecision(null); setFailure(null); setBusy(false); }, [inputKey]);
+  useEffect(() => () => { requestGeneration.current++; }, []);
   const simulate = async (): Promise<void> => {
+    const generation = ++requestGeneration.current;
+    const inspectedInput = inputKey;
+    const current = () => generation === requestGeneration.current && inspectedInput === latestInput.current;
     setBusy(true); setFailure(null); setDecision(null);
     try {
       const result = await probe('policies/simulate', session, {
@@ -60,10 +69,10 @@ export function PolicySimulation({ session, revision, draft }: Readonly<{
         hypothetical_context: JSON.parse(context) as unknown,
         ...(useDraft ? { hypothetical_policy: JSON.parse(draft) as unknown } : {}),
       });
-      setDecision(result as DecisionDocument);
+      if (current()) setDecision(result as DecisionDocument);
     } catch (error: unknown) {
-      setFailure(error instanceof Error ? error.message : 'Simulation refused');
-    } finally { setBusy(false); }
+      if (current()) setFailure(error instanceof Error ? error.message : 'Simulation refused');
+    } finally { if (current()) setBusy(false); }
   };
   return <Panel title="What-if simulation" description="Choose actual tenant records, then try hypothetical context or the editor draft. Groups, roles and active grants come from the server. Transaction evidence is absent unless explicitly supplied as a hypothetical example. Each inspection is audited.">
     {!permitted ? <p>Requires policy, user, application and resource read access.</p> : <>
@@ -78,7 +87,7 @@ export function PolicySimulation({ session, revision, draft }: Readonly<{
         <Field label="Enforcement boundary">{props => <FormSelect {...props} value={boundary} onValueChange={value => setBoundary(value as EnforcementAction)} options={ENFORCEMENT_ACTIONS.map(value => ({ value, label: value }))} />}</Field>
         <ConditionalExamples enabled={useExamples} examples={examples} onEnable={setUseExamples} onChange={(name,value) => setExamples(current => { const next={...current}; if(value) next[name]=value; else delete next[name]; return next; })} />
         <Field label="Hypothetical context properties (JSON)">{(props) => <JsonDraftEditor {...props} rows={6} maxLength={65536} value={context} onValueChange={setContext} />}</Field>
-        <label><input type="checkbox" checked={useDraft} onChange={(event) => setUseDraft(event.target.checked)} /> Use the editor draft as hypothetical policy</label>
+        <Field label="Policy to simulate">{props => <FormSelect {...props} value={useDraft ? 'draft' : 'saved'} onValueChange={value => setUseDraft(value === 'draft')} options={[{ value: 'saved', label: 'Saved policy' }, { value: 'draft', label: 'Draft policy (hypothetical)' }]} />}</Field>
         <Actions><Button type="submit" variant="primary" disabled={busy || references === null}>Simulate</Button><Button onClick={() => {
           void read('policies').then((value) => { setSnapshot((value as { revision: string | null }).revision); setDecision(null); setFailure(null); }, (error: unknown) => setFailure(String(error)));
         }} disabled={busy}>Refresh policy snapshot</Button></Actions>

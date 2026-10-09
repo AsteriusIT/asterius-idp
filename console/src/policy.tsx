@@ -1,4 +1,7 @@
 import { JsonDraftEditor } from './components/json-draft-editor';
+import { ConditionalPolicyBuilder } from './conditional-policy-builder';
+import { scopeChanges } from './conditional-policy-builder-model';
+import { ToggleGroup, ToggleGroupItem } from './components/ui/toggle-group';
 import { ConditionalPolicy } from './conditional-policy';
 import { hasConditionalScopes } from './conditional-policy-model';
 import { PolicySimulation } from './policy-simulation';
@@ -282,6 +285,7 @@ export function Policy({ session }: Readonly<{ session: Session }>): JSX.Element
   const [refusal, setRefusal] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [editorView, setEditorView] = useState('json');
   // The question in front of the one irreversible act on this screen.
   const [removing, setRemoving] = useState(false);
   const [stale, setStale] = useState(false);
@@ -430,21 +434,27 @@ export function Policy({ session }: Readonly<{ session: Session }>): JSX.Element
         </div>
       )}
 
-      {!editing && <ConditionalPolicy draft={draft} revision={load.policy.revision} mayWrite={mayWrite} busy={busy}
-        onStage={text => { setDraft(text); setEditing(true); setRefusal(null); }} />}
+      <ConditionalPolicy draft={draft} savedDraft={baseline} revision={load.policy.revision} mayWrite={mayWrite} busy={busy}
+        onStage={text => { setDraft(text); setEditing(true); setEditorView('builder'); setRefusal(null); }} />
+      {editing && <Panel title="Editor view" description="Both views edit the same draft. Base rules and unsupported expressions remain available in JSON.">
+        <ToggleGroup value={[editorView]} onValueChange={values => { if (values[0]) setEditorView(values[0]); }} aria-label="Policy editor view">
+          <ToggleGroupItem value="builder">Builder</ToggleGroupItem><ToggleGroupItem value="json">JSON</ToggleGroupItem>
+        </ToggleGroup>
+      </Panel>}
+      {editing && <div hidden={editorView !== 'builder'}><ConditionalPolicyBuilder draft={draft} session={session} disabled={busy || stale || !mayWrite} onChange={setDraft} onJSON={() => setEditorView('json')} /></div>}
       {editing && <Panel title="Draft document" className="document-workspace" description="The server validates the policy when you save. A conflict keeps this draft for review.">
-        <Field
+        {editorView === 'json' && <Field
           label="The rule document, as the evaluator reads it"
           error={jsonDocument(draft, 'The document')}
         >
           {props => <JsonDraftEditor {...props} name="document" rows={20} value={draft} readOnly={!mayWrite} onValueChange={setDraft} />}
-        </Field>
+        </Field>}
         <Actions>
           <Button disabled={busy} onClick={closeEditor}>Cancel editing</Button>
           <Button variant="primary" disabled={busy || stale || !mayWrite} onClick={save}>Save policy</Button>
         </Actions>
       </Panel>}
-      <Panel title="Rules">
+      <Panel title="Base authorization rules">
       {preview === null ? (
         <p className="muted">The draft document is not JSON yet, so there is nothing to summarise.</p>
       ) : (
@@ -493,16 +503,17 @@ export function Policy({ session }: Readonly<{ session: Session }>): JSX.Element
       )}
       </Panel>
 
-      {!editing && <Panel title="Saved document" actions={mayWrite ? <Actions><Button onClick={() => setEditing(true)}>Edit policy</Button><Button variant="danger" onClick={() => setRemoving(true)}>Remove policy</Button></Actions> : undefined}>
+      {!editing && <Panel title="Saved document" actions={mayWrite ? <Actions><Button variant="primary" onClick={() => { setEditorView('builder'); setEditing(true); }}>Build conditional access</Button><Button onClick={() => { setEditorView('json'); setEditing(true); }}>Edit policy</Button><Button variant="danger" onClick={() => setRemoving(true)}>Remove policy</Button></Actions> : undefined}>
         <JsonSourceView source={baseline} label="Saved policy document" />
       </Panel>}
 
       {!editing && <PolicyHistory revision={load.policy.revision} session={session} dirty={busy || draft !== baseline} onRestored={refresh} />}
       {!editing && <TestBench session={session} />}
-      {load.kind === 'ready' && <PolicySimulation session={session} revision={load.policy.revision} draft={draft} />}
+      <PolicySimulation session={session} revision={load.policy.revision} draft={draft} editing={editing} />
+      {editing && <PolicyChangeReview baseline={baseline} draft={draft} revision={load.policy.revision} />}
 
       {publishing !== null && <ConfirmDialog title="Publish conditional access changes?"
-        body={<><p>This replaces the policy in {session.workspace} at the revision shown above. Active scopes immediately enforce their restrictions; report-only results do not grant access. Removing or relaxing a scope can change who is denied.</p><p>Preview and simulation are hypothetical. Publishing is audited.</p></>}
+        body={<><p>Tenant: <strong>{session.workspace}</strong>. Reviewed revision: <code>{publishing.revision ?? 'First publication'}</code>.</p><p>This replaces the reviewed policy document. Active scopes immediately enforce their restrictions; report-only results do not grant access. Removing or relaxing a scope can change who is denied.</p><p>Preview and simulation are hypothetical. Publishing is audited.</p><PolicyChangeReview baseline={baseline} draft={JSON.stringify(publishing.document, null, 2)} revision={publishing.revision} /></>}
         confirmLabel="Publish reviewed policy" busy={busy} onCancel={() => setPublishing(null)}
         onConfirm={() => { const {document,revision} = publishing; setPublishing(null); run(() => replacePolicy(session, document, revision), 'The reviewed policy was published.', 'Policy published'); }} />}
       {removing && (
@@ -524,6 +535,19 @@ export function Policy({ session }: Readonly<{ session: Session }>): JSX.Element
       )}
     </Screen>
   );
+}
+
+function PolicyChangeReview({ baseline, draft, revision }: { baseline: string; draft: string; revision: string | null }): JSX.Element {
+  const changes = scopeChanges(baseline, draft);
+  return <section aria-label="Publication review" className="stack">
+    <h3>Review policy changes</h3><p className="muted">Saved revision: <code>{revision ?? 'No saved document'}</code>. Changes take effect only after publication.</p>
+    <DataTable rows={changes} rowKey={row => row.key} empty={<EmptyState title="No conditional scope changes" body="Review the complete documents for changes to base rules or other fields." />} columns={[
+      { key: 'change', header: 'Changed field', cell: row => row.change },
+      { key: 'before', header: 'Saved value', cell: row => <code className="conditional-review-value">{row.before}</code> },
+      { key: 'after', header: 'Draft value', cell: row => <code className="conditional-review-value">{row.after}</code> },
+    ]} />
+    <details><summary>Compare complete policy documents</summary><div className="conditional-comparison"><JsonSourceView source={baseline} label="Saved document before publication" /><JsonSourceView source={draft} label="Reviewed draft document" /></div></details>
+  </section>;
 }
 
 type Answer =

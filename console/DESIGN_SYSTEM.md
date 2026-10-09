@@ -457,3 +457,60 @@ The concise user guide at `docs/console/README.md` covers all 29 destination
 features, account/settings tabs and supporting integration tools, with why/how
 instructions. Root and console READMEs link to it; developer documentation stays
 separate from operator instructions.
+
+## Conditional access builder (`ast-j9wd`)
+
+The access-policy task page offers a structured conditional-scope builder and an
+advanced JSON view over one canonical draft. Existing Edit policy opens JSON;
+Build conditional access opens the builder. Switching views keeps the builder
+mounted and retains draft text and scope selection. Base authorization rules
+remain separate from conditional rules. The rollout table remains visible while
+editing and distinguishes published mode from draft mode.
+
+`ConditionalPolicyBuilder` owns scope targets, evidence requirements, network
+zones and nested All/Any/Not rule compositions. It composes owned Field/FieldSet,
+FormSelect, Checkbox, Combobox and DurationInput; it adds no primitive library or
+parallel theme. Application choice uses registered IDs and cursor pagination.
+Unresolved values and unsupported expressions remain visible and lossless; the
+JSON editor is their explicit editing path. The tenant ladder supplies assurance
+values. Age conditions follow the server's 60–86400-second bound, separate from
+the wider hypothetical simulation-example range. Empty All/Any semantics are
+stated, and removing a complete condition requires confirmation.
+
+Simulation offers an explicit saved/draft policy choice, defaults to draft on
+entering editing, and uses the existing server endpoint. Changed inputs invalidate
+results and late responses cannot replace a current result. Hypothetical evidence
+remains labelled. Publication review shows changed scope fields and expandable
+complete before/after documents, binds the exact reviewed document and revision,
+and retains drafts on conflicts. Client sensitivity remains a separate audited
+application setting. No local evaluator or second policy-language validator is
+introduced; the server owns permission and policy validity.
+
+
+The refinement (`ast-xprt`) groups the builder into numbered target, condition,
+and rollout sections within a readable 1120px maximum width. Checkbox choices
+compose horizontal Field, Checkbox and FieldLabel rows; they must never use the
+vertical text-field adapter, whose full-width children stretch checkbox roots.
+A selected card has a checkbox and a border cue, and its label remains a large
+click target. Protocol IDs are secondary text. Browser sign-in has an explicit
+shortcut selecting both authorization and code redemption while retaining other
+selected flows. Evidence/remedy/network settings and rule selectors/reasons use
+native disclosures with configured-value summaries; collapsing preserves state.
+Condition leaves use two columns only when their own container is wide enough.
+
+
+Refinement verification (9 October 2026):
+
+| Severity | Location | Before | After | Why |
+| --- | --- | --- | --- | --- |
+| HIGH, resolved | `src/conditional-policy-builder.tsx`, `src/styles.css` | Full-width checkbox children and overlapping labels | Horizontal 16px checkboxes, contained labels and 60px choice rows | Keep control geometry and hit areas independent of text-field sizing |
+| MEDIUM, resolved | `src/conditional-policy-builder.tsx` | Advanced fields competed with applications and conditions | Three numbered sections, concise labels and native disclosures | Group by the operator’s task and show complexity when needed |
+| LOW, resolved | `src/conditional-policy-builder.tsx`, `src/styles.css` | Long path labels and vertically stacked condition leaves | Short visible buttons, unique accessible names and container-aware paired fields | Preserve context while reducing visual noise |
+
+Browser coverage includes empty and selected choices, keyboard focus/Space,
+label clicks, application loading/retry/pagination, read-only access, malformed
+and preserved JSON, nested groups, publication/conflict states, desktop light,
+390px dark and WCAG A/AA scans. Checkbox/label geometry is asserted at 1792px,
+1280px and 390px. No new animated transition was introduced. Pointer hover and
+motion replay are not verified interactively. Approve the inspected coverage;
+no blocking UI-polish finding remains in that coverage.

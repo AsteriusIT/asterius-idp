@@ -2,10 +2,11 @@ import { useState, type JSX } from 'react';
 import { conditionalScopes, stageMode } from './conditional-policy-model';
 import { Actions, Badge, Button, DataTable, EmptyState, Message, Panel } from './ui';
 
-export function ConditionalPolicy({ draft, revision, mayWrite, busy, onStage }: Readonly<{
-  draft: string; revision: string | null; mayWrite: boolean; busy: boolean; onStage: (text: string) => void;
+export function ConditionalPolicy({ draft, savedDraft, revision, mayWrite, busy, onStage }: Readonly<{
+  draft: string; savedDraft?: string; revision: string | null; mayWrite: boolean; busy: boolean; onStage: (text: string) => void;
 }>): JSX.Element {
   const scopes = conditionalScopes(draft);
+  const savedScopes = savedDraft === undefined ? null : conditionalScopes(savedDraft);
   const [failure, setFailure] = useState<string | null>(null);
   const stage = (id: string, mode: 'active' | 'report_only'): void => {
     try { onStage(stageMode(draft, id, mode)); setFailure(null); }
@@ -18,6 +19,7 @@ export function ConditionalPolicy({ draft, revision, mayWrite, busy, onStage }: 
       empty={<EmptyState title="No conditional scopes" body="The document has no conditional rollout configured." />}
       columns={[
         { key: 'scope', header: 'Scope', cell: scope => <code>{scope.id}</code> },
+        { key: 'published', header: 'Published mode', cell: scope => { const saved = savedScopes?.filter(item => item.id === scope.id); return saved?.length === 1 ? saved[0]?.mode === 'active' ? 'Active enforcement' : saved[0]?.mode === 'report_only' ? 'Report-only' : 'Unknown mode' : 'No uniquely matching saved scope'; } },
         { key: 'mode', header: 'Draft mode', cell: scope => <Badge tone={scope.mode === 'active' ? 'bad' : scope.mode === 'report_only' ? 'warn' : 'neutral'}>{scope.mode === 'active' ? 'Active enforcement' : scope.mode === 'report_only' ? 'Report-only' : 'Unknown mode'}</Badge> },
         { key: 'target', header: 'Selected applications and boundaries', cell: scope => <><p>{scope.clients.join(', ') || 'No applications selected'}</p><p>{scope.actions.join(', ') || 'No boundaries selected'}</p></> },
         { key: 'facts', header: 'Explicit required facts', cell: scope => scope.required_facts.join(', ') || 'Rule conditions may also require facts' },
