@@ -385,6 +385,9 @@ input[type='number']::-webkit-inner-spin-button, input[type='number']::-webkit-o
 .assurance-method strong, .assurance-method small { white-space: normal; overflow: visible; }
 .table-wrap { max-width: 100%; overflow-x: auto; }
 .table-wrap:focus-visible { outline: 2px solid var(--info); outline-offset: 3px; }
+/* The scroll region inside the frame takes focus (`ast-11b2`); its ring is drawn
+   inside so the frame's own overflow does not clip it. */
+.table-wrap > [data-slot='table-container']:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
 .table-wrap td { overflow-wrap: normal; }
 .table-wrap td code { overflow-wrap: anywhere; }
 [data-slot='dialog-content'], [data-slot='alert-dialog-content'] { max-height: calc(100dvh - 32px); overflow-y: auto; overscroll-behavior: contain; }

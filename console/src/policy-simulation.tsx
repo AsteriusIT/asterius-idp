@@ -103,12 +103,12 @@ function ConditionalResult({ conditional }: Readonly<{ conditional: NonNullable<
   return <div className="stack">
     <p>Enforcement boundary: <code>{conditional.enforcement_action}</code>. Base result: {conditional.legacy_would_permit ? 'permit' : 'deny'}. With active scopes: {conditional.active_would_permit ? 'permit' : 'deny'}.</p>
     {conditional.evaluated_policy_revision && <p className="muted">Evaluated document: <code>{conditional.evaluated_policy_revision}</code>.</p>}
-    <DataTable rows={conditional.facts} rowKey={fact => fact.name} columns={[
+    <DataTable caption="Simulated trusted facts" rows={conditional.facts} rowKey={fact => fact.name} columns={[
       {key:'fact',header:'Trusted fact',cell:fact => fact.name},
       {key:'availability',header:'Availability',cell:fact => <Badge tone={fact.availability === 'known' ? 'ok' : 'warn'}>{fact.availability}</Badge>},
       {key:'source',header:'Evidence source',cell:fact => <>{fact.hypothetical && <Badge tone="warn">Hypothetical example</Badge>} <code>{fact.source}</code></>},
     ]} />
-    <DataTable rows={conditional.scopes} rowKey={scope => scope.id} columns={[
+    <DataTable caption="Simulated conditional scopes" rows={conditional.scopes} rowKey={scope => scope.id} columns={[
       {key:'scope',header:'Scope',cell:scope => scope.id},
       {key:'mode',header:'Mode',cell:scope => <Badge tone={scope.mode === 'active' ? 'bad' : 'warn'}>{scope.mode === 'active' ? 'Active enforcement' : 'Report-only'}</Badge>},
       {key:'result',header:'Would result',cell:scope => scope.would_decision ? 'Permit' : 'Deny'},

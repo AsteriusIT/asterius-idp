@@ -3,13 +3,24 @@
 import * as React from "react"
 import { cn } from "@/lib/utils"
 
-function Table({ className, ...props }: React.ComponentProps<"table">) {
+/**
+ * A table inside its own keyboard-scrollable region.
+ *
+ * `regionLabel` names that region. A page with several tables must give each
+ * one a distinct name (`ast-11b2`): the default is shared by every caller that
+ * omits it, and two regions with one name fail axe `landmark-unique`.
+ */
+function Table({
+  className,
+  regionLabel,
+  ...props
+}: React.ComponentProps<"table"> & { regionLabel?: string }) {
   return (
     <div
       data-slot="table-container"
       tabIndex={0}
       role="region"
-      aria-label={props["aria-label"] ?? "Table — scroll horizontally for more columns"}
+      aria-label={regionLabel ?? props["aria-label"] ?? "Table — scroll horizontally for more columns"}
       // The scroll stays here, and it is what lets a column keep the width it
       // asks for: a table that had to fit squeezed its cells to their minimum,
       // which on the audit trail broke `auth.login` across two lines. What a

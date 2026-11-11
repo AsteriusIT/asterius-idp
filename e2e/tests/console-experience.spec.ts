@@ -1109,11 +1109,25 @@ test('conditional rollout stages locally and stale publication preserves the rev
     return undefined;
   });
   await page.goto(`${entry}#/policy`);
+  // Each policy table names its own scroll region (`ast-11b2`): a shared
+  // default made unrestricted axe report `landmark-unique`.
+  await expect(page.getByRole('region', { name: 'Conditional access scopes table, scroll horizontally for more columns', exact: true })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Base authorization rules table, scroll horizontally for more columns', exact: true })).toBeVisible();
+  expect((await new AxeBuilder({ page }).analyze()).violations.filter(v => v.id === 'landmark-unique')).toEqual([]);
   await page.getByRole('button', { name: 'Stage active enforcement', exact: true }).click();
   expect(writes).toHaveLength(0);
+  // Staging now opens the editor on the builder; the document is under JSON.
+  await page.getByRole('button', { name: 'JSON', exact: true }).click();
   await expect(page.getByLabel('The rule document, as the evaluator reads it')).toContainText('"active"');
+  await expect(page.getByRole('region', { name: 'Conditional scope changes table, scroll horizontally for more columns', exact: true })).toBeVisible();
+  expect((await new AxeBuilder({ page }).analyze()).violations.filter(v => v.id === 'landmark-unique')).toEqual([]);
   await page.getByRole('button', { name: 'Save policy', exact: true }).click();
   expect(writes).toHaveLength(0);
+  const review = page.getByRole('alertdialog').getByRole('region', { name: 'Conditional scope changes to publish table, scroll horizontally for more columns', exact: true });
+  await expect(review).toBeVisible();
+  await review.focus();
+  await expect(review).toBeFocused();
+  expect((await new AxeBuilder({ page }).analyze()).violations.filter(v => v.id === 'landmark-unique')).toEqual([]);
   await page.getByRole('alertdialog').getByRole('button', { name: 'Publish reviewed policy' }).click();
   await expect(page.getByRole('button', { name: 'Save policy', exact: true })).toBeDisabled();
   expect(writes).toHaveLength(1);
@@ -1206,12 +1220,16 @@ test('conditional simulation labels hypothetical evidence and missing report-onl
   await expect(page.getByText('Required evidence is missing, stale, invalid or unavailable.')).toBeVisible();
   expect(requested).toMatchObject({ action: 'read', enforcement_action: 'refresh_token', hypothetical_trusted_context: { device_compliance: { availability: 'stale' } } });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
-  const sourceTable = page.locator('[data-slot="table-container"]').filter({ hasText: 'Evidence source' });
+  for (const name of ['Simulated trusted facts', 'Simulated conditional scopes']) {
+    await expect(page.getByRole('region', { name: `${name} table, scroll horizontally for more columns`, exact: true })).toHaveCount(1);
+  }
+  const sourceTable = page.getByRole('region', { name: 'Simulated trusted facts table, scroll horizontally for more columns', exact: true });
   await sourceTable.focus();
   await page.keyboard.press('ArrowRight');
   await expect.poll(() => sourceTable.evaluate(element => element.scrollLeft)).toBeGreaterThan(0);
   const audit = await new AxeBuilder({ page }).analyze();
   expect(audit.violations.filter(v => v.impact === 'critical' || v.impact === 'serious')).toEqual([]);
+  expect(audit.violations.filter(v => v.id === 'landmark-unique')).toEqual([]);
   expect(errors).toEqual([]);
 });
 

@@ -703,8 +703,16 @@ export function DataTable<Row>({
           }
         />
       ) : (
-        <div className="table-wrap" role="region" aria-label={`${caption ?? 'Results'} table, scroll horizontally for more columns`} tabIndex={0}>
-          <Table aria-label={caption ?? "Table — scroll horizontally for more columns"}>
+        // One region per table (`ast-11b2`). The wrapper used to be a second
+        // focusable region around the table's own, so every table was two tab
+        // stops and two landmarks, the inner one named by a default every
+        // table shared. The wrapper now only frames; the inner container
+        // scrolls, takes focus and carries the caption's name.
+        <div className="table-wrap">
+          <Table
+            regionLabel={`${caption ?? 'Results'} table, scroll horizontally for more columns`}
+            {...(caption === undefined ? { 'aria-label': 'Results' } : {})}
+          >
             {caption !== undefined && <TableCaption>{caption}</TableCaption>}
             <TableHeader>
               <TableRow>

@@ -459,6 +459,7 @@ export function Policy({ session }: Readonly<{ session: Session }>): JSX.Element
         <p className="muted">The draft document is not JSON yet, so there is nothing to summarise.</p>
       ) : (
         <DataTable
+          caption="Base authorization rules"
           rows={preview.map((rule, index) => ({ rule, index }))}
           rowKey={({ rule, index }) => `${index}-${rule.id}`}
           empty={<EmptyState title="No rule." body="Every evaluation is denied." />}
@@ -513,7 +514,7 @@ export function Policy({ session }: Readonly<{ session: Session }>): JSX.Element
       {editing && <PolicyChangeReview baseline={baseline} draft={draft} revision={load.policy.revision} />}
 
       {publishing !== null && <ConfirmDialog title="Publish conditional access changes?"
-        body={<><p>Tenant: <strong>{session.workspace}</strong>. Reviewed revision: <code>{publishing.revision ?? 'First publication'}</code>.</p><p>This replaces the reviewed policy document. Active scopes immediately enforce their restrictions; report-only results do not grant access. Removing or relaxing a scope can change who is denied.</p><p>Preview and simulation are hypothetical. Publishing is audited.</p><PolicyChangeReview baseline={baseline} draft={JSON.stringify(publishing.document, null, 2)} revision={publishing.revision} /></>}
+        body={<><p>Tenant: <strong>{session.workspace}</strong>. Reviewed revision: <code>{publishing.revision ?? 'First publication'}</code>.</p><p>This replaces the reviewed policy document. Active scopes immediately enforce their restrictions; report-only results do not grant access. Removing or relaxing a scope can change who is denied.</p><p>Preview and simulation are hypothetical. Publishing is audited.</p><PolicyChangeReview baseline={baseline} draft={JSON.stringify(publishing.document, null, 2)} revision={publishing.revision} confirming /></>}
         confirmLabel="Publish reviewed policy" busy={busy} onCancel={() => setPublishing(null)}
         onConfirm={() => { const {document,revision} = publishing; setPublishing(null); run(() => replacePolicy(session, document, revision), 'The reviewed policy was published.', 'Policy published'); }} />}
       {removing && (
@@ -537,11 +538,16 @@ export function Policy({ session }: Readonly<{ session: Session }>): JSX.Element
   );
 }
 
-function PolicyChangeReview({ baseline, draft, revision }: { baseline: string; draft: string; revision: string | null }): JSX.Element {
+/**
+ * The scope changes a publication would make. It is drawn twice — under the
+ * editor and inside the confirmation — so `confirming` gives the second copy
+ * its own landmark and table names (`ast-11b2`).
+ */
+function PolicyChangeReview({ baseline, draft, revision, confirming = false }: { baseline: string; draft: string; revision: string | null; confirming?: boolean }): JSX.Element {
   const changes = scopeChanges(baseline, draft);
-  return <section aria-label="Publication review" className="stack">
+  return <section aria-label={confirming ? 'Publication review to confirm' : 'Publication review'} className="stack">
     <h3>Review policy changes</h3><p className="muted">Saved revision: <code>{revision ?? 'No saved document'}</code>. Changes take effect only after publication.</p>
-    <DataTable rows={changes} rowKey={row => row.key} empty={<EmptyState title="No conditional scope changes" body="Review the complete documents for changes to base rules or other fields." />} columns={[
+    <DataTable caption={confirming ? 'Conditional scope changes to publish' : 'Conditional scope changes'} rows={changes} rowKey={row => row.key} empty={<EmptyState title="No conditional scope changes" body="Review the complete documents for changes to base rules or other fields." />} columns={[
       { key: 'change', header: 'Changed field', cell: row => row.change },
       { key: 'before', header: 'Saved value', cell: row => <code className="conditional-review-value">{row.before}</code> },
       { key: 'after', header: 'Draft value', cell: row => <code className="conditional-review-value">{row.after}</code> },
@@ -759,6 +765,7 @@ function DecisionTrace({ diagnostics }: Readonly<{
         <Message tone="info">Some condition details were omitted. All rules still determined the decision.</Message>
       )}
       <DataTable
+        caption="Rule outcomes"
         rows={diagnostics.rules}
         rowKey={(rule) => rule.id}
         empty={<EmptyState title="No rules." body="The tenant has no stored rules to explain." />}
